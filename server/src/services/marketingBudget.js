@@ -18,8 +18,8 @@
 // Le Budget vs Réel (remplace le fichier « Annual Marketing budget », trop
 // fragile pour être modifié programmatiquement) vit dans l'ERP :
 // marketing_budget_lines (budget saisi) × marketing_expenses pertinentes (réel).
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { sendSlackWebhook } from './slack.js'
 import { shiftDate, localDay } from '../utils/datetime.js'
@@ -165,7 +165,7 @@ export function createRule({ vendor_label, acctnum = null, note = null }, userId
     'SELECT * FROM marketing_expense_rules WHERE vendor_key=? AND COALESCE(acctnum,\'\')=COALESCE(?,\'\') AND deleted_at IS NULL'
   ).get(key, acctnum)
   if (existing) return existing
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO marketing_expense_rules (id, vendor_key, vendor_label, acctnum, note, created_by)
     VALUES (?,?,?,?,?,?)
@@ -235,7 +235,7 @@ export async function syncMarketingExpenses({ trigger = 'schedule', force = fals
       for (const e of entries) {
         const rule = matchRule(rules, e)
         const info = insert.run(
-          randomUUID(), e.import_key, e.qb_txn_id, qbEntityForGlType(e.qb_txn_type_label),
+          newRecordId(), e.import_key, e.qb_txn_id, qbEntityForGlType(e.qb_txn_type_label),
           e.txn_date, e.acctnum, e.account_name, e.vendor, e.memo, e.doc_num,
           e.amount, e.amount_foreign, e.currency,
           rule ? 'not_relevant' : 'pending', rule?.id || null,
@@ -532,7 +532,7 @@ export function upsertBudgetCell({ acctnum, month, budget }) {
       .run(amount, existing.id)
     return existing.id
   }
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare('INSERT INTO marketing_budget_lines (id, acctnum, month, budget) VALUES (?,?,?,?)')
     .run(id, String(acctnum), month, amount)
   return id

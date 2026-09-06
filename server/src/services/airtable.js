@@ -1,5 +1,5 @@
-import { v4 as uuid } from 'uuid'
 import { existsSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
 import { mkdir } from 'fs/promises'
 import path from 'path'
 import db from '../db/database.js'
@@ -9,9 +9,11 @@ import { broadcastAll } from './realtime.js'
 import { emitCompany, emitOrder } from './realtimeEmitters.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
-import { consumeWritebackEcho, fieldMapDirection } from './airtableWriteback.js'
+import { consumeWritebackEcho, fieldMapDirection, dynamicFieldDirection } from './airtableWriteback.js'
+import { ENVOIS_FIELD_MAP_PLAN, fieldMapFromUi } from './airtableUiFieldMap.js'
 import { reconcileFacturesForOrder } from './quickbooks.js'
 import { logSystemRun } from './systemAutomations.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // Cache live SQLite columns per table — read once at module level, refreshed
 // only when an UPDATE/INSERT references an unknown column (rare, indicates a
@@ -51,7 +53,7 @@ function upsertRecord(table, airtableId, payload) {
     const allKeys = ['id', 'airtable_id', ...keys]
     const placeholders = allKeys.map(() => '?').join(',')
     db.prepare(`INSERT INTO ${table} (${allKeys.join(',')}) VALUES (${placeholders})`)
-      .run(uuid(), airtableId, ...keys.map(k => payload[k] ?? null))
+      .run(newRecordId(), airtableId, ...keys.map(k => payload[k] ?? null))
     return 'imported'
   }
 }
@@ -69,7 +71,7 @@ function autoMapField(fields, ...candidates) {
   return null
 }
 
-function getVal(fields, fieldName) {
+export function getVal(fields, fieldName) {
   if (!fieldName || !(fieldName in fields)) return null
   const v = fields[fieldName]
   if (typeof v === 'string') return v.trim() || null
@@ -81,7 +83,7 @@ function getVal(fields, fieldName) {
 // Resolve a linked-record (or plain text) company field to a local company id.
 // Linked record fields return an array of Airtable record IDs → look up by airtable_id first,
 // then fall back to a name-based LIKE search.
-function lookupCompany(fields, fieldName) {
+export function lookupCompany(fields, fieldName) {
   if (!fieldName || !(fieldName in fields)) return null
   const raw = fields[fieldName]
   const linkedId = Array.isArray(raw) ? raw[0] : null
@@ -119,7 +121,7 @@ function describeProjectReferences(projectLocalId) {
  * @param {string} table - SQLite table name
  * @param {Array} records - all Airtable records fetched during full sync
  */
-function purgeOrphans(table, records) {
+export function purgeOrphans(table, records) {
   const airtableIds = new Set(records.map(r => r.id))
   const rows = db.prepare(`SELECT id, airtable_id FROM ${table} WHERE airtable_id IS NOT NULL`).all()
   const toDelete = rows.filter(r => !airtableIds.has(r.airtable_id))
@@ -139,11 +141,11 @@ function purgeOrphans(table, records) {
 // est mappé est gelé depuis 2026 : il est vide sur tous les achats récents.
 const AIRTABLE_VENDORS_TABLE = 'tblsJKllughNYKSuR'
 // Champ lié « Fournisseur » de la table Achats (≠ « Fournisseur - LEGACY »).
-const ACHATS_VENDOR_LINK_FIELD = 'Fournisseur'
+export const ACHATS_VENDOR_LINK_FIELD = 'Fournisseur'
 
 // Rafraîchit le cache rec id → { name, qb_vendor_id }. Best effort : en cas d'échec on
 // garde le cache précédent (la résolution retombera dessus) plutôt que de casser le sync.
-async function refreshVendorLinkCache(baseId, accessToken) {
+export async function refreshVendorLinkCache(baseId, accessToken) {
   try {
     const records = await fetchAllRecords(baseId, AIRTABLE_VENDORS_TABLE, accessToken, 'fournisseurs')
     const up = db.prepare(`
@@ -167,12 +169,12 @@ async function refreshVendorLinkCache(baseId, accessToken) {
   }
 }
 
-function vendorLinkMap() {
+export function vendorLinkMap() {
   const rows = db.prepare('SELECT airtable_id, name, qb_vendor_id FROM airtable_vendor_links').all()
   return new Map(rows.map(r => [r.airtable_id, r]))
 }
 
-async function fetchAllRecords(baseId, tableId, accessToken, syncKey, recordIds = null) {
+export async function fetchAllRecords(baseId, tableId, accessToken, syncKey, recordIds = null) {
   const records = []
   if (recordIds) {
     // Incremental: fetch only specified records (batches of 50 to stay under URL limits)
@@ -207,7 +209,21 @@ async function fetchAllRecords(baseId, tableId, accessToken, syncKey, recordIds 
   return records
 }
 
+/**
+ * Entreprises et contacts : deux tables Airtable, deux miroirs du registre,
+ * donc deux fonctions depuis le 2026-09-03. Elles vivaient dans une seule
+ * `syncAirtable()`, ce qui empêchait d'en basculer une sans l'autre sur le
+ * moteur unique et réveillait les deux à chaque webhook.
+ *
+ * `syncAirtable()` reste, comme raccourci « les deux, dans l'ordre » : les
+ * contacts référencent les entreprises.
+ */
 export async function syncAirtable(changes = null) {
+  await syncCompanies(changes)
+  await syncContacts(changes)
+}
+
+export async function syncCompanies(changes = null) {
   const config = db.prepare('SELECT * FROM airtable_sync_config').get()
   if (!config?.base_id) { console.log('⚠️  Airtable sync config missing'); return }
 
@@ -215,7 +231,6 @@ export async function syncAirtable(changes = null) {
   try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
-  // Sync companies first
   if (config.companies_table_id) {
     if (changes?.[config.companies_table_id]?.destroyedIds?.length) {
       for (const id of changes[config.companies_table_id].destroyedIds)
@@ -260,7 +275,7 @@ export async function syncAirtable(changes = null) {
               .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
             emitCompany('updated', existing.id, null)
           } else {
-            const newId = uuid()
+            const newId = newRecordId()
             db.prepare('INSERT INTO companies (id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
               .run(newId, name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
             emitCompany('created', newId, null)
@@ -278,8 +293,16 @@ export async function syncAirtable(changes = null) {
     } catch (e) { console.error('❌ Airtable companies:', e.message) }
     } // end if (!changes || _companyIds?.length)
   }
+}
 
-  // Sync contacts
+export async function syncContacts(changes = null) {
+  const config = db.prepare('SELECT * FROM airtable_sync_config').get()
+  if (!config?.base_id) { console.log('⚠️  Airtable sync config missing'); return }
+
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+
   if (config.contacts_table_id) {
     if (changes?.[config.contacts_table_id]?.destroyedIds?.length) {
       for (const id of changes[config.contacts_table_id].destroyedIds)
@@ -321,7 +344,7 @@ export async function syncAirtable(changes = null) {
               .run(getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), existing.id)
           } else {
             db.prepare('INSERT INTO contacts (id, first_name, last_name, email, phone, mobile, company_id, language, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
-              .run(uuid(), getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), rec.id)
+              .run(newRecordId(), getVal(rec.fields, fieldMap?.first_name) || '', lastName, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.mobile), companyId, language, getVal(rec.fields, fieldMap?.notes), rec.id)
             contactsImported++
           }
         }
@@ -348,11 +371,6 @@ export async function syncOrders(changes = null) {
     for (const id of changes[config.orders_table_id].destroyedIds)
       db.prepare('DELETE FROM orders WHERE airtable_id=?').run(id)
   }
-  if (changes?.[config.items_table_id]?.destroyedIds?.length) {
-    for (const id of changes[config.items_table_id].destroyedIds)
-      db.prepare('DELETE FROM order_items WHERE airtable_id=?').run(id)
-  }
-
   let accessToken
   try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
@@ -460,7 +478,7 @@ export async function syncOrders(changes = null) {
         } else {
           const rawNum = fm?.order_number ? parseInt(String(rec.fields[fm.order_number] ?? '').replace(/[^0-9]/g, '')) : NaN
           const orderNumber = isNaN(rawNum) || rawNum === 0 ? maxNum() + 1 : rawNum
-          const newId = uuid()
+          const newId = newRecordId()
           db.prepare('INSERT INTO orders (id, order_number, company_id, project_id, status, priority, notes, address_id, airtable_id, is_subscription) VALUES (?,?,?,?,?,?,?,?,?,?)')
             .run(newId, orderNumber, companyId, projectId, status, priority, notes, addressId, rec.id, isSubscription)
           emitOrder('created', newId, null)
@@ -470,6 +488,9 @@ export async function syncOrders(changes = null) {
       }
     })(records)
     console.log(`📦 Orders: ${imported} importées, ${updated} mises à jour`)
+    // Horodatage : il était posé par la partie « items », en fin de fonction —
+    // depuis le découpage, chaque sync pose le sien.
+    db.prepare("UPDATE airtable_orders_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')").run()
     if (!changes) {
       purgeOrphans('orders', records)
       await syncDynamicFields('orders', 'orders', config.base_id, config.orders_table_id, fm, records)
@@ -508,9 +529,32 @@ export async function syncOrders(changes = null) {
     }
   } catch (e) { console.error('❌ Orders sync:', e.message) }
   } // end if (!changes || _orderIds?.length)
+}
 
-  // ── 2. Sync order items ───────────────────────────────────────────────────
-  if (!config.items_table_id) return
+// Colonne ERP → clé du field_map des lignes de commande : le sens de sync se
+// règle par clé de mapping, l'UPDATE ci-dessous raisonne par colonne.
+const ITEM_KEY_BY_COLUMN = {
+  product_id: 'product', qty: 'qty', unit_cost: 'unit_cost', item_type: 'item_type', notes: 'notes',
+}
+
+/**
+ * Items de commande — table Airtable distincte, miroir distinct
+ * (`order_items`), donc fonction distincte.
+ *
+ * Elle vivait dans `syncOrders`, ce qui donnait à DEUX miroirs du registre une
+ * seule fonction : impossible d'en basculer un sans l'autre sur le moteur
+ * unique, et un webhook sur la table des items réveillait le sync des
+ * commandes pour rien. Découpée le 2026-09-03 ; le routeur de webhooks fait
+ * pointer la table des items sur le miroir `order_items`.
+ */
+export async function syncOrderItems(changes = null) {
+  const config = db.prepare('SELECT * FROM airtable_orders_config').get()
+  if (!config?.base_id || !config?.items_table_id) return
+
+  let accessToken
+  try { accessToken = await getAccessToken() }
+  catch (e) { console.error('❌ Airtable token:', e.message); return }
+
   if (changes?.[config.items_table_id]?.destroyedIds?.length) {
     for (const id of changes[config.items_table_id].destroyedIds)
       db.prepare('DELETE FROM order_items WHERE airtable_id=?').run(id)
@@ -518,12 +562,20 @@ export async function syncOrders(changes = null) {
   const _itemIds = changes?.[config.items_table_id]?.recordIds
   if (changes && !_itemIds?.length) return
   try {
-    const records = await fetchAllRecords(config.base_id, config.items_table_id, accessToken, 'orders', _itemIds)
+    const records = await fetchAllRecords(config.base_id, config.items_table_id, accessToken, 'order_items', _itemIds)
     let fm = config.field_map_items ? JSON.parse(config.field_map_items) : null
     let imported = 0, updated = 0
+    // Sens de sync choisi par l'utilisateur (modale « Mapping Airtable » → onglet
+    // Lignes de commande). Une clé en 'push' (ERP → Airtable) ne doit PAS être
+    // ré-importée : la valeur ERP est la bonne, la réécrire depuis Airtable
+    // annulerait ce qu'on vient de pousser.
+    const pushOnly = key => fieldMapDirection('order_items', key) === 'push'
 
     db.transaction((recs) => {
       for (const rec of recs) {
+        // Garde anti-boucle : ce record est-il l'echo de notre propre write-back ?
+        if (consumeWritebackEcho(rec.id, rec.fields)) continue
+
         if (!fm && rec.fields) {
           fm = {
             order:     autoMapField(rec.fields, 'order', 'commande', 'bon de commande'),
@@ -570,12 +622,18 @@ export async function syncOrders(changes = null) {
 
         const existing = db.prepare('SELECT id FROM order_items WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare('UPDATE order_items SET product_id=?, qty=?, unit_cost=?, item_type=?, notes=? WHERE id=?')
-            .run(productId, qty, unitCost, itemType, notes, existing.id)
+          // Les colonnes en 'push' sont retirées du UPDATE (jamais de l'INSERT :
+          // une ligne qui arrive d'Airtable n'a pas encore de valeur ERP à protéger).
+          const sets = { product_id: productId, qty, unit_cost: unitCost, item_type: itemType, notes }
+          const cols = Object.keys(sets).filter(c => !pushOnly(ITEM_KEY_BY_COLUMN[c]))
+          if (cols.length) {
+            db.prepare(`UPDATE order_items SET ${cols.map(c => `${c}=?`).join(', ')} WHERE id=?`)
+              .run(...cols.map(c => sets[c]), existing.id)
+          }
           updated++
         } else {
           db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?)')
-            .run(uuid(), order.id, productId, qty, unitCost, itemType, notes, rec.id)
+            .run(newRecordId(), order.id, productId, qty, unitCost, itemType, notes, rec.id)
           imported++
         }
       }
@@ -601,7 +659,7 @@ export async function syncOrders(changes = null) {
   } catch (e) { console.error('❌ Order items sync:', e.message) }
 }
 
-async function downloadImage(url, destPath) {
+export async function downloadImage(url, destPath) {
   const res = await fetch(url)
   if (!res.ok) throw new Error(`Image download failed: ${res.status}`)
   await mkdir(path.dirname(destPath), { recursive: true })
@@ -609,6 +667,10 @@ async function downloadImage(url, destPath) {
   const { writeFile } = await import('fs/promises')
   await writeFile(destPath, buffer)
 }
+
+// Extensions retenues pour la pièce jointe « Image » d'une pièce : le champ
+// Airtable accepte n'importe quoi, mais une vignette doit être une image.
+const PIECE_IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'bmp']
 
 export async function syncPieces(changes = null) {
   const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='pieces'").get()
@@ -625,7 +687,7 @@ export async function syncPieces(changes = null) {
   try { accessToken = await getAccessToken() }
   catch (e) { console.error('❌ Airtable token:', e.message); return }
 
-  const imagesDir = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products')
+  const imagesDir = uploadsPath('products')
 
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'pieces', _recordIds)
@@ -634,6 +696,9 @@ export async function syncPieces(changes = null) {
 
     // Pre-compute image URLs (async downloads must happen before the sync transaction)
     const imageUrlMap = {}
+    const manualImageRecIds = new Set(db.prepare(
+      "SELECT airtable_id FROM products WHERE airtable_id IS NOT NULL AND image_url LIKE '/erp/api/product-images/local-%'"
+    ).all().map(r => r.airtable_id))
     for (const rec of records) {
       if (!fieldMap && rec.fields) {
         fieldMap = {
@@ -670,17 +735,26 @@ export async function syncPieces(changes = null) {
         probe('producible_qty', 'nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible')
         probe('supplier_link', 'lien fournisseur', "lien d'achat", 'url fournisseur', 'lien')
       }
-      if (fieldMap?.image) {
+      // Mêmes garde-fous que le moteur miroir (piecesPrepareImages) : on saute
+      // les produits dont l'image a été déposée à la main dans l'ERP, on ignore
+      // les pièces jointes qui ne sont pas des images (fiche technique PDF) et
+      // on n'enregistre pas d'URL locale si le téléchargement échoue.
+      if (fieldMap?.image && !manualImageRecIds.has(rec.id)) {
         const attachments = rec.fields[fieldMap.image]
         if (Array.isArray(attachments) && attachments.length > 0) {
-          const att = attachments[0]
-          const ext = att.filename?.split('.').pop()?.toLowerCase() || 'jpg'
-          const filename = `${rec.id}.${ext}`
-          const destPath = path.join(imagesDir, filename)
-          if (!existsSync(destPath)) {
-            try { await downloadImage(att.url, destPath) } catch (e) { console.error('⚠️  Image download:', e.message) }
+          const att = attachments.find(a => (a?.type
+            ? String(a.type).startsWith('image/')
+            : PIECE_IMAGE_EXT.includes(String(a?.filename || '').split('.').pop()?.toLowerCase())))
+          if (att) {
+            const ext = att.filename?.split('.').pop()?.toLowerCase() || 'jpg'
+            const filename = `${rec.id}.${ext}`
+            const destPath = path.join(imagesDir, filename)
+            let ok = true
+            if (!existsSync(destPath)) {
+              try { await downloadImage(att.url, destPath) } catch (e) { console.error('⚠️  Image download:', e.message); ok = false }
+            }
+            if (ok) imageUrlMap[rec.id] = `/erp/api/product-images/${filename}`
           }
-          imageUrlMap[rec.id] = `/erp/api/product-images/${filename}`
         }
       }
     }
@@ -736,7 +810,7 @@ export async function syncPieces(changes = null) {
         } else {
           db.prepare(`INSERT INTO products (id, name_fr, name_en, sku, type, unit_cost, price_cad, stock_qty, min_stock, supplier, procurement_type, weight_lbs, image_url, assembly_status, finished_min_stock, projected_available_qty, producible_qty, supplier_link, airtable_id)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, payload.assembly_status, payload.finished_min_stock, payload.projected_available_qty, payload.producible_qty, payload.supplier_link, rec.id)
+            .run(newRecordId(), payload.name_fr, payload.name_en, payload.sku, payload.type, payload.unit_cost, payload.price_cad, payload.stock_qty, payload.min_stock, payload.supplier, payload.procurement_type, payload.weight_lbs, payload.image_url, payload.assembly_status, payload.finished_min_stock, payload.projected_available_qty, payload.producible_qty, payload.supplier_link, rec.id)
           imported++
         }
       }
@@ -801,7 +875,9 @@ export async function syncAchats(changes = null) {
         supplier:       autoMapField(union, 'fournisseur - legacy', 'fournisseur legacy', 'fournisseur', 'supplier', 'vendor'),
         reference:      autoMapField(union, 'numéro de commande', 'numero de commande', 'référence', 'reference', 'ref', 'po', 'numéro'),
         order_date:     autoMapField(union, 'date de commande', 'date commande', 'date achat', 'order date', 'date'),
-        expected_date:  autoMapField(union, 'date prévue', 'date prevue', 'expected', 'livraison prévue'),
+        // Pas de `expected_date` : le champ « Date prévue » a été supprimé côté
+        // ERP (migration 029). L'auto-détection remettrait la clé dans le
+        // field_map persisté à chaque sync complet.
         received_date:  autoMapField(union, 'date de réception complète', 'date de réception', 'date réception', 'date reception', 'received date', 'reçu le'),
         qty_ordered:    autoMapField(union, 'quantité commandé', 'quantite commande', 'qté commandée', 'qty ordered', 'quantité commandée', 'qte commandee'),
         qty_received:   autoMapField(union, 'qté reçue', 'qty received', 'quantité reçue', 'qte recue'),
@@ -882,7 +958,6 @@ export async function syncAchats(changes = null) {
           supplier:       legacySupplier || linkedVendor?.name || null,
           reference:      getVal(rec.fields, fieldMap?.reference),
           order_date:     getVal(rec.fields, fieldMap?.order_date),
-          expected_date:  getVal(rec.fields, fieldMap?.expected_date),
           received_date:  receivedDate,
           qty_ordered:    qtyOrdered,
           qty_received:   qtyReceived,
@@ -893,12 +968,12 @@ export async function syncAchats(changes = null) {
 
         const existing = db.prepare('SELECT id FROM purchases WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, supplier_vendor_name=?, supplier_qb_vendor_id=?, reference=?, order_date=?, expected_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
+          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, supplier_vendor_name=?, supplier_qb_vendor_id=?, reference=?, order_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO purchases (id, airtable_id, product_id, supplier, supplier_vendor_name, supplier_qb_vendor_id, reference, order_date, expected_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), rec.id, payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.expected_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
+          db.prepare(`INSERT INTO purchases (id, airtable_id, product_id, supplier, supplier_vendor_name, supplier_qb_vendor_id, reference, order_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+            .run(newRecordId(), rec.id, payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
           imported++
         }
       }
@@ -999,7 +1074,7 @@ export async function syncSerials(changes = null) {
           updated++
         } else {
           db.prepare(`INSERT INTO serial_numbers (id, airtable_id, serial, product_id, company_id, order_item_id, address, manufacture_date, last_programmed_date, manufacture_value, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(uuid(), rec.id, serial, productId, companyId, orderItemId, address, manufacture_date, last_programmed_date, manufacture_value, status, notes)
+            .run(newRecordId(), rec.id, serial, productId, companyId, orderItemId, address, manufacture_date, last_programmed_date, manufacture_value, status, notes)
           imported++
         }
       }
@@ -1033,8 +1108,39 @@ export async function syncEnvois(changes = null) {
 
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'envois', _recordIds)
-    let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
+    // Les envois n'ont plus de field_map « cœur » : le mapping se règle
+    // exclusivement dans /champs/shipments (airtable_field_mappings) et se
+    // relit ici sous la forme d'un field_map (cf. services/airtableUiFieldMap.js).
+    const fieldMap = fieldMapFromUi('shipments', ENVOIS_FIELD_MAP_PLAN)
     let imported = 0, updated = 0, echoed = 0
+
+    // Colonnes scalaires réellement alimentées par Airtable : celles mappées
+    // dans /champs/shipments dont le sens n'est pas « ERP → Airtable ». Une
+    // colonne démappée (ou passée en push) n'est plus TOUCHÉE par l'import —
+    // avant, un UPDATE figé écrivait NULL dessus à chaque passe, ce qui aurait
+    // effacé la valeur ERP dès qu'un champ quitte le mapping.
+    const scalarColumns = ['tracking_number', 'carrier', 'status', 'shipped_at', 'notes', 'pays']
+      .map(key => ({ key, column: ENVOIS_FIELD_MAP_PLAN[key] }))
+      .filter(({ key, column }) => fieldMap[key] && dynamicFieldDirection('envois', column) !== 'push')
+    // Liens : toujours en COALESCE — un lien non résolu ne délie jamais l'envoi.
+    // Même filtre de sens que les scalaires : « Commande lié » est désormais
+    // bidirectionnel (cf. WRITEBACK_MODULES.envois.linkColumns), donc réglable
+    // en 'push' — auquel cas l'ERP fait foi et l'import n'y touche plus.
+    const linkColumns = [
+      { key: 'order', column: 'order_id' },
+      { key: 'address', column: 'address_id' },
+    ].filter(({ key, column }) => fieldMap[key] && dynamicFieldDirection('envois', column) !== 'push')
+
+    // SQL construit une fois par passe (le mapping ne change pas en cours de route).
+    const setSql = [
+      ...linkColumns.map(({ column }) => `${column}=COALESCE(?,${column})`),
+      ...scalarColumns.map(({ column }) => `${column}=?`),
+    ].join(', ')
+    const updateStmt = setSql ? db.prepare(`UPDATE shipments SET ${setSql} WHERE id=?`) : null
+    const insertCols = ['id', 'order_id', 'airtable_id', ...scalarColumns.map(c => c.column)]
+    const insertStmt = db.prepare(
+      `INSERT INTO shipments (${insertCols.join(', ')}) VALUES (${insertCols.map(() => '?').join(',')})`
+    )
 
     db.transaction((recs) => {
       for (const rec of recs) {
@@ -1042,20 +1148,6 @@ export async function syncEnvois(changes = null) {
         // (mêmes valeurs scalaires), ne pas le ré-importer — évite la boucle avec
         // le webhook déclenché par notre propre PATCH Airtable.
         if (consumeWritebackEcho(rec.id, rec.fields)) { echoed++; continue }
-
-        if (!fieldMap && rec.fields) {
-          fieldMap = {
-            order:           autoMapField(rec.fields, 'commande', 'order', 'numéro de commande', 'order number'),
-            tracking_number: autoMapField(rec.fields, 'numéro de suivi', 'numero de suivi', 'tracking number', 'tracking', 'suivi'),
-            carrier:         autoMapField(rec.fields, 'transporteur', 'carrier', 'livreur', 'expéditeur'),
-            status:          autoMapField(rec.fields, 'statut', 'status', 'état'),
-            shipped_at:      autoMapField(rec.fields, "date d'envoi", 'date envoi', 'shipped at', 'shipped date', 'expédié le'),
-            notes:           autoMapField(rec.fields, 'notes', 'commentaires'),
-            address:         autoMapField(rec.fields, 'adresse', 'adresse de livraison', 'shipping address', 'address', 'delivery address'),
-            pays:            autoMapField(rec.fields, 'pays', 'pays de livraison', 'country', 'destination country', 'pays destination'),
-            items:           autoMapField(rec.fields, 'items expédiés', 'items expedies', 'items à expédier', 'items a expedier', 'articles expédiés', 'articles expedies'),
-          }
-        }
 
         let orderId = null
         if (fieldMap?.order) {
@@ -1074,13 +1166,6 @@ export async function syncEnvois(changes = null) {
           }
         }
 
-        const tracking_number = getVal(rec.fields, fieldMap?.tracking_number)
-        const carrier         = getVal(rec.fields, fieldMap?.carrier)
-        const status          = getVal(rec.fields, fieldMap?.status)
-        const shipped_at      = getVal(rec.fields, fieldMap?.shipped_at)
-        const notes           = getVal(rec.fields, fieldMap?.notes)
-        const pays            = getVal(rec.fields, fieldMap?.pays)
-
         let addressId = null
         if (fieldMap?.address) {
           const raw = rec.fields[fieldMap.address]
@@ -1091,18 +1176,25 @@ export async function syncEnvois(changes = null) {
           }
         }
 
+        // Valeurs des colonnes mappées, dans l'ordre du SQL préparé ci-dessus.
+        const linkValues = linkColumns.map(({ column }) => column === 'order_id' ? orderId : addressId)
+        const scalarValues = scalarColumns.map(({ key, column }) => {
+          const v = getVal(rec.fields, fieldMap[key])
+          // Statut : le CHECK de la table n'accepte que « À envoyer »/« Envoyé »,
+          // et un envoi sans statut est un envoi à faire.
+          return column === 'status' ? (v || 'À envoyer') : v
+        })
+
         const existing = db.prepare('SELECT id FROM shipments WHERE airtable_id=?').get(rec.id)
         let shipmentId = null
         if (existing) {
-          db.prepare(`UPDATE shipments SET order_id=COALESCE(?,order_id), tracking_number=?, carrier=?, status=?, shipped_at=?, notes=?, address_id=COALESCE(?,address_id), pays=? WHERE id=?`)
-            .run(orderId, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays, existing.id)
+          if (updateStmt) updateStmt.run(...linkValues, ...scalarValues, existing.id)
           shipmentId = existing.id
           updated++
         } else {
           if (!orderId) continue
-          shipmentId = uuid()
-          db.prepare(`INSERT INTO shipments (id, order_id, airtable_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays) VALUES (?,?,?,?,?,?,?,?,?,?)`)
-            .run(shipmentId, orderId, rec.id, tracking_number, carrier, status || 'À envoyer', shipped_at, notes, addressId, pays)
+          shipmentId = newRecordId()
+          insertStmt.run(shipmentId, orderId, rec.id, ...scalarValues)
           imported++
         }
 
@@ -1434,7 +1526,7 @@ function upsertProjectRecord(rec, fmap, frozenSet, allowMissingCompany = false) 
     return 'updated'
   }
   db.prepare('INSERT INTO projects (id, name, company_id, status, type, value_cad, probability, monthly_cad, nb_greenhouses, close_date, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(uuid(), name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
+    .run(newRecordId(), name, companyId, status, type, valueCad, probability, monthlyCad, nbGreenhouses, closeDate, notes, rec.id)
   return 'imported'
 }
 
@@ -1648,23 +1740,23 @@ export async function syncProjets(changes = null) {
 }
 
 // ── helper used by multiple sync functions
-function lookupSerial(airtableId) {
+export function lookupSerial(airtableId) {
   if (!airtableId) return null
   return db.prepare('SELECT id FROM serial_numbers WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupProject(airtableId) {
+export function lookupProject(airtableId) {
   if (!airtableId) return null
   return db.prepare('SELECT id FROM projects WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupProduct(airtableId) {
+export function lookupProduct(airtableId) {
   if (!airtableId) return null
   return db.prepare('SELECT id FROM products WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function lookupContact(airtableId) {
+export function lookupContact(airtableId) {
   if (!airtableId) return null
   return db.prepare('SELECT id FROM contacts WHERE airtable_id=? LIMIT 1').get(airtableId)?.id || null
 }
-function firstLinked(fields, fieldName) {
+export function firstLinked(fields, fieldName) {
   if (!fieldName || !(fieldName in fields)) return null
   const v = fields[fieldName]
   return Array.isArray(v) ? (v[0] || null) : (typeof v === 'string' ? v : null)
@@ -1726,7 +1818,7 @@ export async function syncSoumissions(changes = null) {
           updated++
         } else {
           db.prepare('INSERT INTO soumissions (id, airtable_id, project_id, quote_url, pdf_url, purchase_price, subscription_price, currency, expiration_date) VALUES (?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), rec.id, projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, currency, expirationDate)
+            .run(newRecordId(), rec.id, projectId, quoteUrl, pdfUrl, purchasePrice, subscriptionPrice, currency, expirationDate)
           imported++
         }
         if (projectId) touchedProjects.add(projectId)
@@ -1777,18 +1869,16 @@ export async function syncRetours(changes = null) {
         const returnNumber = getVal(rec.fields, fm.return_number)
         const status = getVal(rec.fields, fm.status) || 'Ouvert'
         const problemStatus = getVal(rec.fields, fm.problem_status)
-        const processingStatus = getVal(rec.fields, fm.processing_status)
-        const trackingNumber = getVal(rec.fields, fm.tracking_number)
         const notes = getVal(rec.fields, fm.notes)
         const billedAt = getVal(rec.fields, fm.billed_at)
         const existing = db.prepare('SELECT id FROM returns WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE returns SET company_id=?, contact_id=?, return_number=?, status=?, problem_status=?, processing_status=?, tracking_number=?, notes=?, billed_at=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(companyId, contactId, returnNumber, status, problemStatus, processingStatus, trackingNumber, notes, billedAt, existing.id)
+          db.prepare(`UPDATE returns SET company_id=?, contact=?, n_de_retour=?, status=?, problem_status=?, notes=?, billed_at=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(companyId, contactId, returnNumber, status, problemStatus, notes, billedAt, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO returns (id, airtable_id, company_id, contact_id, return_number, status, problem_status, processing_status, tracking_number, notes, billed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), rec.id, companyId, contactId, returnNumber, status, problemStatus, processingStatus, trackingNumber, notes, billedAt)
+          db.prepare('INSERT INTO returns (id, airtable_id, company_id, contact, n_de_retour, status, problem_status, notes, billed_at) VALUES (?,?,?,?,?,?,?,?,?)')
+            .run(newRecordId(), rec.id, companyId, contactId, returnNumber, status, problemStatus, notes, billedAt)
           imported++
         }
       }
@@ -1845,7 +1935,7 @@ export async function syncRetourItems(changes = null) {
           updated++
         } else {
           db.prepare('INSERT INTO return_items (id, return_id, airtable_id, product_id, product_send_id, serial_id, company_id, problem_category, return_reason, return_reason_notes, action, received_at, received_by, analysis_notes, analyzed_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), retour.id, rec.id, productId, productSendId, serialId, companyId, problemCategory, returnReason, returnReasonNotes, action, receivedAt, receivedBy, analysisNotes, analyzedBy)
+            .run(newRecordId(), retour.id, rec.id, productId, productSendId, serialId, companyId, problemCategory, returnReason, returnReasonNotes, action, receivedAt, receivedBy, analysisNotes, analyzedBy)
           imported++
         }
       }
@@ -1895,7 +1985,7 @@ export async function syncAdresses(changes = null) {
           updated++
         } else {
           db.prepare('INSERT INTO adresses (id, airtable_id, company_id, contact_id, line1, city, province, postal_code, country, language, address_type) VALUES (?,?,?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), rec.id, companyId, contactId, line1, city, province, postalCode, country, language, addressType)
+            .run(newRecordId(), rec.id, companyId, contactId, line1, city, province, postalCode, country, language, addressType)
           imported++
         }
       }
@@ -1942,7 +2032,7 @@ export async function syncBomItems(changes = null) {
           updated++
         } else {
           db.prepare('INSERT INTO bom_items (id, airtable_id, product_id, component_id, qty_required, ref_des) VALUES (?,?,?,?,?,?)')
-            .run(uuid(), rec.id, productId, componentId, qtyRequired, refDes)
+            .run(newRecordId(), rec.id, productId, componentId, qtyRequired, refDes)
           imported++
         }
       }
@@ -1978,7 +2068,7 @@ export async function syncSerialStateChanges(changes = null) {
         const existing = db.prepare('SELECT id FROM serial_state_changes WHERE airtable_id=?').get(rec.id)
         if (!existing) {
           db.prepare('INSERT INTO serial_state_changes (id, airtable_id, serial_id, previous_status, new_status, changed_at) VALUES (?,?,?,?,?,?)')
-            .run(uuid(), rec.id, serialId, previousStatus, newStatus, changedAt)
+            .run(newRecordId(), rec.id, serialId, previousStatus, newStatus, changedAt)
           imported++
         }
       }
@@ -2028,7 +2118,7 @@ export async function syncStockMovements(changes = null) {
           updated++
         } else {
           db.prepare('INSERT INTO stock_movements (id, airtable_id, product_id, type, qty, reason, unit_cost, movement_value, created_at) VALUES (?,?,?,?,?,?,?,?,?)')
-            .run(uuid(), rec.id, productId, type, qty, atType || null, unitCost, movementValue, occurredAt)
+            .run(newRecordId(), rec.id, productId, type, qty, atType || null, unitCost, movementValue, occurredAt)
           imported++
         }
       }
@@ -2068,7 +2158,7 @@ export async function syncAssemblages(changes = null) {
           updated++
         } else {
           db.prepare('INSERT INTO assemblages (id, airtable_id, product_id, qty_produced, assembled_at, assembly_points) VALUES (?,?,?,?,?,?)')
-            .run(uuid(), rec.id, productId, qtyProduced, assembledAt, assemblyPoints)
+            .run(newRecordId(), rec.id, productId, qtyProduced, assembledAt, assemblyPoints)
           imported++
         }
       }
@@ -2209,7 +2299,7 @@ export async function syncEmployees(changes = null) {
             @birth_date, @hire_date, @matricule, @active, @gender, @address, @emergency_contact, @end_date, @office_key,
             @insurance_id, @nethris_username, @is_salesperson, @is_consultant, @accounting_department, @hours_per_week,
             @last_raise_date, @group_insurance, @address_verified, @banking_info, @issues, @peer_reviews
-          )`).run({ ...row, id: uuid(), airtable_id: rec.id })
+          )`).run({ ...row, id: newRecordId(), airtable_id: rec.id })
           imported++
         }
       }
@@ -2327,7 +2417,7 @@ export async function syncPaies(changes = null) {
             @total_with_charges_and_reimb, @timesheets_deadline, @includes_hourly, @includes_mileage,
             @includes_expense_reimb, @includes_paid_leave, @includes_holiday_hours,
             @includes_sales_commissions, @timesheets_sent
-          )`).run({ ...row, id: uuid(), airtable_id: rec.id })
+          )`).run({ ...row, id: newRecordId(), airtable_id: rec.id })
           imported++
         }
       }
@@ -2442,7 +2532,7 @@ export async function syncPaieItems(changes = null) {
             @id, @airtable_id, @paie_id, @paie_airtable_id, @employee_id, @employee_airtable_id,
             @start_date, @hourly_rate, @regular_hours, @holiday_hours, @vacation, @commission,
             @expense_reimb, @rsde_pct, @insurance_gains, @holiday_1_20, @paid_leave, @notes, @total_pay, @debited_date
-          )`).run({ ...row, id: uuid(), airtable_id: rec.id })
+          )`).run({ ...row, id: newRecordId(), airtable_id: rec.id })
           imported++
         }
       }
@@ -2453,3 +2543,40 @@ export async function syncPaieItems(changes = null) {
   } catch (e) { console.error('❌ Paie items sync:', e.message) }
 }
 
+
+// ── Carte des fonctions de sync historiques ─────────────────────────────────
+//
+// module (= id du miroir dans le registre) → fonction historique. UNE seule
+// carte, parce qu'il y en avait trois : celle du routeur de webhooks, la liste
+// du sync planifié dans index.js, et les routes manuelles de connectors.js. Les
+// trois divergeaient déjà — `paies`, `paie_items` et `employees` n'existaient
+// que dans deux d'entre elles, et un sync manuel contournait l'aiguillage vers
+// le moteur unique.
+//
+// `factures` n'y est pas : son sync complet a été débranché, seul le webhook de
+// liens subsiste (cf. airtableWebhooks.js).
+export const LEGACY_SYNCS = {
+  airtable: syncAirtable,
+  companies: syncCompanies,
+  contacts: syncContacts,
+  projets: syncProjets,
+  pieces: syncPieces,
+  orders: syncOrders,
+  order_items: syncOrderItems,
+  achats: syncAchats,
+  billets: syncBillets,
+  serials: syncSerials,
+  envois: syncEnvois,
+  soumissions: syncSoumissions,
+  retours: syncRetours,
+  retour_items: syncRetourItems,
+  adresses: syncAdresses,
+  bom: syncBomItems,
+  serial_changes: syncSerialStateChanges,
+  assemblages: syncAssemblages,
+  stock_movements: syncStockMovements,
+  instagram: syncInstagramProspects,
+  employees: syncEmployees,
+  paies: syncPaies,
+  paie_items: syncPaieItems,
+}

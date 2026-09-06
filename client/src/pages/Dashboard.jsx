@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown, EyeOff } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
@@ -12,7 +13,7 @@ import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
 import { ResizeHandle } from '../components/ResizeHandle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { DashboardOverview } from '../components/DashboardOverview.jsx'
-import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+import { fmtMoney as fmtMoneyBase, fmtNumber as fmtNumberBase } from '../utils/formatters.js'
 
 // Onglet « Vue globale » — la planche dense façon Power BI. Ce n'est pas une
 // section du dashboard (pas dans WIDGET_DEFS) : c'est une seconde lecture des
@@ -30,6 +31,7 @@ const WIDGET_DEFS = [
   { id: 'section_shipping_costs', label: 'Coûts d\'expédition',    group: 'Graphiques',    slug: 'couts-expedition' },
   { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques',    slug: 'carte-clients' },
   { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques',    slug: 'meilleurs-vendeurs' },
+  { id: 'section_productivity',  label: 'Productivité',           group: 'Opérations',    slug: 'productivite' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire', slug: 'valeur-inventaire' },
   { id: 'section_bank_accounts', label: 'Trésorerie & soldes bancaires', group: 'Comptabilité', slug: 'soldes-bancaires' },
   { id: 'section_deferred_revenue', label: 'Revenus perçus d\'avance', group: 'Comptabilité', slug: 'revenus-percus-avance' },
@@ -344,7 +346,6 @@ function GoalEditorModal({ isOpen, onClose, onSave }) {
             className="w-full rounded-lg border-slate-200 focus:border-brand-500 focus:ring-brand-500"
             value={form.target_qty}
             onChange={e => setForm({ ...form, target_qty: e.target.value })}
-            placeholder="ex: 50"
           />
         </div>
         <div className="grid grid-cols-2 gap-3">
@@ -1536,8 +1537,8 @@ const REPLACEMENT_COLS = [
     cellClass: 'text-slate-700', render: it => it.product_name || '—' },
   { key: 'qty',     label: 'Qté',          width: 60,  align: 'text-center',
     cellClass: 'text-slate-600', render: it => it.qty },
-  { key: 'unit',    label: 'Coût unit.',   width: 100, align: 'text-right',
-    cellClass: 'text-slate-600', render: it => fmtCad(it.unit_cost) },
+  // Pas de « Coût unit. » : le champ « Coût unitaire » des articles de commande
+  // a été retiré (2026-09-03), le coût d'une ligne se lit à son total.
   { key: 'total',   label: 'Total',        width: 100, align: 'text-right',
     cellClass: 'font-medium text-amber-700', render: it => fmtCad(it.total_cost) },
   { key: 'shipped', label: "Date d'envoi", width: 120, align: 'text-right',
@@ -1554,6 +1555,7 @@ function loadReplacementColWidths(userId) {
 }
 
 function ReplacementRateChart({ replacementRate }) {
+  const navigate = useNavigate()
   const [tooltip, setTooltip] = useState(null)
   const [showItems, setShowItems] = useState(false)
   const [selectedMonth, setSelectedMonth] = useState(null)
@@ -1814,7 +1816,15 @@ function ReplacementRateChart({ replacementRate }) {
                   </thead>
                   <tbody>
                     {filteredItems.map((it, idx) => (
-                      <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'}>
+                      <tr
+                        key={idx}
+                        // Une ligne = une commande : le clic ouvre la fiche en
+                        // panneau latéral (registre recordPeekRoutes).
+                        onClick={it.order_id ? () => navigate(`/orders/${it.order_id}`) : undefined}
+                        className={`${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} ${
+                          it.order_id ? 'cursor-pointer hover:bg-blue-50' : ''
+                        }`}
+                      >
                         {REPLACEMENT_COLS.map(c => {
                           const v = c.render(it)
                           return (
@@ -1850,6 +1860,11 @@ function ReplacementRateChart({ replacementRate }) {
   )
 }
 
+// Pill « Valeur inventaire » de la table products : exactement les pièces sans
+// numéro de série, mêmes filtres que le calcul serveur (routes/dashboard.js).
+// Si la vue disparaissait, `?vue=` inconnu retombe sur la vue habituelle.
+const PIECES_VALUATION_VIEW_ID = '997d024c-a474-4e01-98bb-74a9530d6b41'
+
 function InventoryValuationCard({ valuation }) {
   const pieces = valuation?.pieces
   const serialsByStatus = valuation?.serialsByStatus || []
@@ -1873,6 +1888,7 @@ function InventoryValuationCard({ valuation }) {
       sub: `${pieces?.count || 0} produits · valeur FIFO (vue « Valeur inventaire »)`,
       value: piecesTotal,
       color: 'bg-slate-500',
+      to: `/products?vue=${PIECES_VALUATION_VIEW_ID}`,
     },
     ...serialsByStatus.map(s => ({
       key: s.status,
@@ -1898,11 +1914,15 @@ function InventoryValuationCard({ valuation }) {
         {rows.map(r => {
           const width = Math.max((r.value / maxVal) * 100, 0.5)
           const pct = grandTotal ? Math.round((r.value / grandTotal) * 100) : 0
+          const Row = r.to ? Link : 'div'
           return (
-            <div key={r.key}>
+            <Row
+              key={r.key}
+              {...(r.to ? { to: r.to, title: 'Voir ces pièces dans l\'inventaire', className: 'block group' } : {})}
+            >
               <div className="flex items-baseline justify-between mb-1 gap-3">
                 <div className="min-w-0">
-                  <span className="text-sm font-medium text-slate-700">{r.label}</span>
+                  <span className={`text-sm font-medium text-slate-700 ${r.to ? 'group-hover:text-brand-700' : ''}`}>{r.label}</span>
                   <span className="text-xs text-slate-400 ml-2">{r.sub}</span>
                 </div>
                 <div className="flex items-baseline gap-3 shrink-0">
@@ -1911,9 +1931,9 @@ function InventoryValuationCard({ valuation }) {
                 </div>
               </div>
               <div className="h-2 bg-slate-100 rounded overflow-hidden">
-                <div className={`h-full ${r.color} rounded`} style={{ width: `${width}%` }} />
+                <div className={`h-full ${r.color} rounded ${r.to ? 'group-hover:brightness-125' : ''}`} style={{ width: `${width}%` }} />
               </div>
-            </div>
+            </Row>
           )
         })}
       </div>
@@ -1928,7 +1948,7 @@ const fmtCad = (n) => fmtMoneyBase(n, 'CAD', { fallback: '$0', zeroIsEmpty: true
 // niveau (Net MRR par mois, puis par catégorie) sont affichées dans les
 // en-têtes de groupe via `__sums` calculé par DataTable.
 function SubscriptionEventsPanel({ data }) {
-  if (!data) return <div className="text-slate-400 text-sm">Chargement...</div>
+  if (!data) return <div className="text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
   const months = data.months || []
   if (months.length === 0) {
     return <div className="text-slate-400 text-sm py-4">Aucun mouvement d'abonnement enregistré.</div>
@@ -1964,9 +1984,7 @@ function fmtCadCompact(n) {
   return fmtMoneyBase(n, 'CAD', Math.abs(n) >= 1000 ? { maximumFractionDigits: 0 } : {})
 }
 
-function fmtNumber(n) {
-  return new Intl.NumberFormat('fr-CA').format(n || 0)
-}
+const fmtNumber = n => fmtNumberBase(n, { nullIsZero: true })
 
 function dateToYmd(d) { return d.toISOString().slice(0, 10) }
 function ymdToDate(s) { return new Date(s + 'T00:00:00Z') }
@@ -2057,8 +2075,11 @@ export function BankAccountsPanel() {
     return <div className="text-sm text-slate-500">Aucun compte bancaire ou carte de crédit renvoyé par QuickBooks.</div>
   }
 
-  const banks = data.accounts.filter(a => a.type === 'Bank')
-  const cards = data.accounts.filter(a => a.type === 'Credit Card')
+  // Les comptes à 0,00 $ n'apprennent rien : ils sortent du détail (ils ne
+  // changent rien aux sous-totaux, qui viennent du serveur).
+  const shown = data.accounts.filter(a => Math.round((a.balance_cad ?? a.balance ?? 0) * 100) !== 0)
+  const banks = shown.filter(a => a.type === 'Bank')
+  const cards = shown.filter(a => a.type === 'Credit Card')
 
   const treasury = data.treasury ?? data.totals?.net ?? 0
   const creditLimit = data.credit_limit || 0
@@ -2133,7 +2154,7 @@ export function BankAccountsPanel() {
           className="flex items-center gap-1 -ml-1 rounded px-1 py-0.5 hover:bg-slate-50 hover:text-slate-800 transition-colors"
         >
           <ChevronDown size={14} className={`transition-transform ${detailOpen ? '' : '-rotate-90'}`} />
-          Détail des comptes ({data.accounts.length})
+          Détail des comptes ({shown.length})
         </button>
         <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
       </div>
@@ -2181,7 +2202,7 @@ export function DeferredRevenuePanel() {
   useEffect(() => { load() }, [])
 
   if (loading && !data) {
-    return <div className="h-24 flex items-center justify-center text-slate-400 text-sm">Chargement…</div>
+    return <div className="h-24 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
   }
   if (error) {
     return (
@@ -2411,7 +2432,7 @@ function TopProductsPanel() {
   }), { amount: 0, qty: 0 })
 
   if (!range.from || !range.to) {
-    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement…</div>
+    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
   }
 
   return (
@@ -2486,7 +2507,7 @@ function TopProductsPanel() {
 
       {/* Bar list */}
       {loading && top.length === 0 ? (
-        <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement…</div>
+        <div className="h-32 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
       ) : top.length === 0 ? (
         <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Aucun item vendu sur cette période.</div>
       ) : (
@@ -2527,6 +2548,136 @@ function TopProductsPanel() {
           })}
         </ul>
       )}
+    </div>
+  )
+}
+
+// ============================================================
+// Productivité — ventes QuickBooks ÷ heures travaillées aux Opérations
+// ============================================================
+
+function fmtMonthLabel(month) {
+  const [y, m] = month.split('-').map(Number)
+  return new Date(Date.UTC(y, m - 1, 1))
+    .toLocaleDateString('fr-CA', { month: 'short', year: '2-digit', timeZone: 'UTC' })
+}
+
+function ProductivityPanel() {
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [scope, setScope] = useState('sales')
+  const [months, setMonths] = useState(12)
+
+  const load = (opts = {}) => {
+    setLoading(true)
+    setError(null)
+    api.dashboard.productivity({ months, scope, ...opts })
+      .then(r => { setData(r); setLoading(false) })
+      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
+  }
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load() }, [scope, months])
+
+  if (loading && !data) {
+    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
+  }
+  if (error) {
+    return (
+      <div className="text-sm text-rose-600">
+        {error}
+        <button onClick={() => load()} className="ml-2 underline">Réessayer</button>
+      </div>
+    )
+  }
+  const rows = data?.months || []
+  if (!rows.length) return <div className="text-sm text-slate-500">Aucune donnée.</div>
+
+  const maxProd = Math.max(1, ...rows.map(r => Math.abs(r.productivity || 0)))
+
+  return (
+    <div data-testid="dashboard-productivity">
+      <div className="flex items-center gap-2 mb-3 text-xs">
+        <div className="flex rounded-md border border-slate-200 overflow-hidden">
+          {[{ id: 'sales', label: 'Ventes' }, { id: 'all', label: 'Tous revenus' }].map(o => (
+            <button
+              key={o.id}
+              onClick={() => setScope(o.id)}
+              className={`px-2 py-1 transition-colors ${scope === o.id ? 'bg-brand-50 text-brand-700 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex rounded-md border border-slate-200 overflow-hidden">
+          {[12, 24].map(m => (
+            <button
+              key={m}
+              onClick={() => setMonths(m)}
+              className={`px-2 py-1 transition-colors ${months === m ? 'bg-brand-50 text-brand-700 font-medium' : 'text-slate-500 hover:bg-slate-50'}`}
+            >
+              {m} mois
+            </button>
+          ))}
+        </div>
+        <button onClick={() => load({ refresh: 1 })} className="ml-auto text-brand-600 hover:underline">Rafraîchir</button>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="border-b border-slate-100">
+              <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">Mois</th>
+              <th className="px-3 py-2 text-right text-xs font-semibold text-slate-400 uppercase tracking-wide">Ventes</th>
+              <th className="px-3 py-2 text-right text-xs font-semibold text-slate-400 uppercase tracking-wide">Heures</th>
+              <th className="px-3 py-2 text-right text-xs font-semibold text-slate-400 uppercase tracking-wide">$ / h</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-50">
+            {rows.map(r => (
+              <tr
+                key={r.month}
+                className={`hover:bg-slate-50 transition-colors ${r.partial ? 'text-slate-400' : ''}`}
+                title={r.partial
+                  ? (r.is_current_month ? 'Mois en cours — ventes et heures partielles' : `Paie incomplète — ${r.coverage_pct} % du mois couvert`)
+                  : undefined}
+              >
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {fmtMonthLabel(r.month)}
+                  {r.partial && <span className="ml-1 text-amber-500">*</span>}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums">{fmtCadCompact(r.sales)}</td>
+                <td className="px-3 py-2 text-right tabular-nums">{r.hours ? fmtNumber(Math.round(r.hours)) : '—'}</td>
+                <td className="px-3 py-2 text-right tabular-nums w-40">
+                  <div className="flex items-center justify-end gap-2">
+                    <div className="flex-1 h-1.5 bg-slate-100 rounded overflow-hidden">
+                      <div
+                        className={`h-full rounded ${r.productivity < 0 ? 'bg-rose-400' : r.partial ? 'bg-slate-300' : 'bg-brand-500'}`}
+                        style={{ width: `${Math.min(100, Math.abs(r.productivity || 0) / maxProd * 100)}%` }}
+                      />
+                    </div>
+                    <span className={`font-semibold ${r.partial ? '' : 'text-slate-900'}`}>
+                      {r.productivity == null ? '—' : fmtCadCompact(r.productivity)}
+                    </span>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot>
+            <tr className="border-t border-slate-200 font-semibold text-slate-900">
+              <td className="px-3 py-2">Total · {data.totals.months} mois complets</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtCadCompact(data.totals.sales)}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{fmtNumber(Math.round(data.totals.hours))}</td>
+              <td className="px-3 py-2 text-right tabular-nums">{data.totals.productivity == null ? '—' : fmtCadCompact(data.totals.productivity)}</td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div className="mt-2 px-3 text-xs text-slate-400">
+        <span className="text-amber-500">*</span> mois incomplet, exclu du total
+      </div>
     </div>
   )
 }
@@ -2727,11 +2878,20 @@ export default function Dashboard() {
         />
       </CollapsibleCard>
     ),
+    section_productivity: (
+      <CollapsibleCard
+        {...cardProps('section_productivity', { testId: 'section-productivity' })}
+        title="Productivité"
+        description="Ventes du mois (QuickBooks) ÷ heures travaillées par les Opérations (paies, réparties au prorata des jours de chaque période)"
+      >
+        <ProductivityPanel />
+      </CollapsibleCard>
+    ),
     section_inventory_valuation: (
       <CollapsibleCard
         {...cardProps('section_inventory_valuation')}
         title="Valeur de l'inventaire"
-        description="Pièces en stock (valeur unitaire) + numéros de série en inventaire (valeur de fabrication) par statut"
+        description="Pièces en stock + numéros de série par statut, hors vendus et loués (en service chez le client)"
       >
         <InventoryValuationCard valuation={data?.inventory?.valuation} />
       </CollapsibleCard>
@@ -2811,7 +2971,7 @@ export default function Dashboard() {
         description="12 derniers mois — comparé au mois correspondant de l'année précédente · Bascule entre nombre de billets et temps de support"
         action={
           <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
-            Voir tickets <ArrowRight size={14} />
+            Voir les billets <ArrowRight size={14} />
           </Link>
         }
       >
@@ -2825,7 +2985,7 @@ export default function Dashboard() {
         description="Indicateurs de support — 16 dernières semaines"
         action={
           <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
-            Voir tickets <ArrowRight size={14} />
+            Voir les billets <ArrowRight size={14} />
           </Link>
         }
       >
@@ -2847,7 +3007,7 @@ export default function Dashboard() {
       <div className={`p-6 mx-auto ${isOverview ? 'max-w-[1700px]' : 'max-w-7xl'}`}>
         <div className="mb-4 flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Tableau de bord</h1>
+            <PageTitle>Tableau de bord</PageTitle>
             <p className="text-slate-500 text-sm mt-1">
               {isOverview ? 'Toute l\'activité sur une seule planche' : 'Vue d\'ensemble de votre activité'}
             </p>

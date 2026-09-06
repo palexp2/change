@@ -1,14 +1,16 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { postPaymentDeposit, previewPaymentDeposit, processRefund } from '../services/quickbooks.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { emitFacture, emitFacturePaymentsChanged } from '../services/realtimeEmitters.js'
 import { logSync } from '../services/syncLog.js'
 import { naiveLocalToUtcIso } from '../utils/datetime.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
-import { getActiveCustomColumns } from './custom-fields.js'
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
+import { parsePage } from '../utils/pagination.js'
 
 // Relation de lecture des paiements : la VUE `payments_v` si elle existe (elle
 // expose en plus les champs custom virtuels — formule/lookup/rollup), sinon la
@@ -43,10 +45,8 @@ const VALID_QB_SKIP_REASONS = new Set(['deja_poste_payout', 'saisi_manuellement_
 // Contrat de pagination identique aux autres listes : { data, total, page, limit }
 // avec support `limit=all` (utilisé par loadProgressive).
 router.get('/', (req, res) => {
-  const { page = 1, limit = 50, direction, method } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { direction, method } = req.query
+  const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50)
 
   // p.* : inclut les colonnes natives ET les champs personnalisés (colonnes
   // physiques cf_* + colonnes virtuelles exposées par la vue payments_v). La page
@@ -215,7 +215,7 @@ router.get('/direct-deposits/:id', (req, res) => {
 // Body : { qb_deposit_id } ou { qb_payment_id } (receive-payment QB). L'entité est
 // vérifiée dans QB avant d'être rattachée — un id inexistant est refusé.
 router.patch('/:id/qb-ref', async (req, res) => {
-  const p = db.prepare('SELECT id FROM payments WHERE id = ?').get(req.params.id)
+  const p = db.prepare('SELECT id, facture_id FROM payments WHERE id = ?').get(req.params.id)
   if (!p) return res.status(404).json({ error: 'Paiement introuvable' })
   const { qb_deposit_id, qb_payment_id } = req.body || {}
   if (!qb_deposit_id && !qb_payment_id) {
@@ -237,6 +237,7 @@ router.patch('/:id/qb-ref', async (req, res) => {
     WHERE id = ?
   `).run(qbId, req.params.id)
   const url = qbEntityUrl(qb_deposit_id ? 'deposit' : 'recvpayment', qbId)
+  emitFacturePaymentsChanged(p.facture_id, req.user?.id)
   res.json({ ok: true, [col]: qbId, qb_url: url })
 })
 
@@ -255,7 +256,13 @@ router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM payments WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Paiement introuvable' })
 
-  const customCols = getActiveCustomColumns('payments').map(c => c.column_name)
+  // Whitelist d'update : seules les colonnes custom ÉDITABLES (règle unique —
+  // services/customFieldWritability.js). Un champ Airtable en import seul est
+  // refusé en 400 explicite plutôt qu'ignoré en silence par buildPartialUpdate.
+  if (refusedAirtablePullKeys('payments', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+  }
+  const customCols = getWritableCustomColumns('payments').map(c => c.column_name)
   if (customCols.length === 0) {
     return res.status(400).json({ error: 'Aucun champ personnalisé à modifier sur les paiements' })
   }
@@ -466,7 +473,7 @@ router.post('/', async (req, res) => {
     }
   }
 
-  const id = randomUUID()
+  const id = newRecordId()
   // Atomique : l'INSERT du paiement et le recompute du solde de la facture
   // doivent réussir ou échouer ensemble. Sinon, si le recompute échoue après
   // l'INSERT, la ligne payment existe mais factures.balance_due reste périmé
@@ -532,6 +539,11 @@ router.post('/', async (req, res) => {
 
   const created = db.prepare('SELECT * FROM payments WHERE id = ?').get(id)
   if (qbResult?.qb_deposit_id) qbResult.qb_deposit_url = qbEntityUrl('deposit', qbResult.qb_deposit_id)
+  // Temps réel : le solde dû et le statut viennent de changer, et la liste des
+  // paiements de la fiche aussi. Émis après la pose QB pour que les refs QB
+  // soient déjà en base quand le client recharge.
+  emitFacturePaymentsChanged(facture_id, req.user?.id)
+  emitFacture('updated', facture_id, req.user?.id)
   res.status(201).json({ payment: created, qb: qbResult, qb_error: qbError, qb_skipped: !!skip_qb, qb_skip_reason: skipReason })
 })
 
@@ -539,7 +551,7 @@ router.post('/', async (req, res) => {
 // qui n'a ni Deposit, ni JE, ni SalesReceipt (échec précédent).
 router.post('/:id/retry-qb', async (req, res) => {
   const p = db.prepare(
-    'SELECT id, direction, qb_deposit_id, qb_journal_entry_id, qb_payment_id, qb_skipped FROM payments WHERE id = ?'
+    'SELECT id, facture_id, direction, qb_deposit_id, qb_journal_entry_id, qb_payment_id, qb_skipped FROM payments WHERE id = ?'
   ).get(req.params.id)
   if (!p) return res.status(404).json({ error: 'Paiement introuvable' })
   if (p.qb_skipped) {
@@ -558,6 +570,7 @@ router.post('/:id/retry-qb', async (req, res) => {
   }
   try {
     const r = p.direction === 'in' ? await postPaymentDeposit(p.id) : await processRefund(p.id)
+    emitFacturePaymentsChanged(p.facture_id, req.user?.id)
     res.json(r)
   } catch (err) {
     res.status(502).json({ error: err.message })
@@ -769,7 +782,11 @@ router.delete('/:id', (req, res) => {
   ).get(req.params.id)
   if (!p) return res.status(404).json({ error: 'Paiement introuvable' })
   db.prepare('DELETE FROM payments WHERE id = ?').run(req.params.id)
-  if (p.facture_id) recomputeFactureBalance(p.facture_id)
+  if (p.facture_id) {
+    recomputeFactureBalance(p.facture_id)
+    emitFacturePaymentsChanged(p.facture_id, req.user?.id)
+    emitFacture('updated', p.facture_id, req.user?.id)
+  }
   const qbId = p.qb_deposit_id || p.qb_journal_entry_id || p.qb_payment_id
   res.json({
     ok: true,

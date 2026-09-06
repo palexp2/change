@@ -7,6 +7,7 @@ import { Badge } from './Badge.jsx'
 import { METHOD_LABELS } from './FacturePaymentsSection.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
+import Spinner from './Spinner.jsx'
 
 // Sous-section « Dépôts directs » de la page Stripe Payouts : encaissements
 // reçus directement en banque (virement, chèque, Interac…) donc jamais inclus
@@ -59,7 +60,7 @@ export default function DirectDepositsSection() {
       )}
 
       {loading ? (
-        <div className="text-sm text-slate-400">Chargement…</div>
+        <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
       ) : (
         <div className="space-y-4">
           {candidates.length > 0 && (

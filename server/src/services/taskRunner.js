@@ -1,8 +1,8 @@
 import { spawn } from 'child_process'
-import { readFileSync, writeFileSync, appendFileSync, renameSync, existsSync, unlinkSync, readdirSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
+import { readFileSync, writeFileSync, appendFileSync, renameSync, existsSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { resolve, dirname } from 'path'
 import { fileURLToPath } from 'url'
-import { randomUUID } from 'crypto'
 import { broadcastAll } from './realtime.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import {
@@ -10,6 +10,7 @@ import {
   noteModelLimit, nextLimitExpiryAt, purgeExpiredLimits, fetchLimitScope,
   syncScopedModelLimit, agentModelState, preferredAgentModel, setPreferredAgentModel,
 } from './agentModel.js'
+import { execCommand, toollessSpec, streamSpec } from './agentEngine.js'
 
 // ─── Paths (must match what the running server already uses) ──────────────────
 // Resolves to the repo root /home/ec2-user/erp/ (versioned + backed up by WIP snapshots).
@@ -18,13 +19,28 @@ const TASKS_TMP     = TASKS_FILE + '.tmp'
 const DATA_DIR      = dirname(TASKS_FILE)
 const BACKLOG_FILE  = resolve(DATA_DIR, 'agent-backlog.json')
 const SETTINGS_FILE = resolve(DATA_DIR, 'agent-settings.json')
-const PID_FILE      = resolve(fileURLToPath(import.meta.url), '../../../../.agent-pid')
+// ─── Quatre files d'implémentation ────────────────────────────────────────────
+// Les tâches d'implémentation sont réparties ALÉATOIREMENT en EXEC_LANES files ;
+// chaque file avance une tâche à la fois, donc jusqu'à EXEC_LANES chantiers
+// tournent ensemble.
+//
+// ⚠️ Contrepartie assumée : ces exécutions partagent le MÊME arbre de travail,
+// sans isolation. Deux tâches qui touchent le même fichier peuvent se marcher
+// dessus, et un `pm2 restart erp-server` lancé par l'une secoue les autres (elles
+// y survivent — chaque exécution est détachée et son résultat est durable, voir
+// runDetachedExecution). La répartition au hasard mise sur des chantiers de zones
+// différentes ; c'est le choix de l'utilisateur, pas une garantie du code.
+export const EXEC_LANES = 4
+
+// Un fichier PID PAR file d'implémentation. La file 0 garde le nom historique
+// `.agent-pid` : c'est celui que deploy.sh connaît (il consulte maintenant les
+// quatre avant de redémarrer le serveur).
+const EPID_FILE     = lane => resolve(fileURLToPath(import.meta.url), `../../../../.agent-pid${lane ? `-${lane}` : ''}`)
 // Voie lecture seule : un fichier PID PAR tâche (plusieurs questions tournent en
 // parallèle, un fichier unique serait écrasé et le suivi viserait le mauvais
 // process). Volontairement distinct de .agent-pid, que deploy.sh surveille : une
 // question ne modifie rien, elle ne doit pas retarder un déploiement.
 const QPID_FILE     = id => resolve(fileURLToPath(import.meta.url), `../../../../.agent-qpid-${id}`)
-const CLAUDE_BIN    = '/home/ec2-user/.local/bin/claude'
 const CWD           = '/home/ec2-user/erp'
 
 // Per-execution durable artifacts (ignored by git). The detached exec Claude writes
@@ -56,11 +72,22 @@ const EXEC_TIMEOUT_MS    = 30 * 60_000  // hard kill an execution after 30 min
 // l'utilisateur, ce qui donne un cgroup v2 englobant TOUT le sous-arbre. Le
 // processus reste reparenté sur le user manager (donc toujours hors de portée du
 // treekill de pm2), et un seul `systemctl --user kill` suffit à tout nettoyer.
-const EXEC_MEMORY_MAX  = '3G'    // au-delà : OOM-kill de la seule exécution, pas de la box
-const EXEC_MEMORY_HIGH = '2500M' // throttling progressif avant le mur
-const EXEC_SWAP_MAX    = '1G'    // le swap est un filet, pas un terrain de jeu
-const EXEC_CPU_QUOTA   = '150%'  // laisse ~0,5 cœur à erp-server + nginx
-const EXEC_TASKS_MAX   = 256     // borne l'explosion de processus (l'incident : +350)
+//
+// ⚠️ Recalibré au passage à EXEC_LANES files parallèles : le plafond d'UNE exécution
+// (3 Go) tenait parce qu'il n'y en avait qu'une. À quatre, c'est le TOTAL qui doit
+// tenir dans la machine — d'où un budget global divisé par le nombre de files.
+// On garde ~2 Go au système, à erp-server et à nginx.
+const EXEC_MEMORY_BUDGET_MB = 6000
+const EXEC_SWAP_BUDGET_MB   = 1536
+const EXEC_MEMORY_MAX  = `${Math.floor(EXEC_MEMORY_BUDGET_MB / EXEC_LANES)}M`        // OOM-kill de la seule exécution fautive
+const EXEC_MEMORY_HIGH = `${Math.floor(EXEC_MEMORY_BUDGET_MB * 0.8 / EXEC_LANES)}M`  // throttling progressif avant le mur
+const EXEC_SWAP_MAX    = `${Math.floor(EXEC_SWAP_BUDGET_MB / EXEC_LANES)}M`          // le swap est un filet, pas un terrain de jeu
+// Plafond CPU laissé large (une exécution seule reste aussi rapide qu'avant), mais
+// pondération basse : quand les quatre files travaillent en même temps, elles
+// s'effacent devant erp-server et nginx plutôt que de rendre l'app inutilisable.
+const EXEC_CPU_QUOTA   = '150%'
+const EXEC_CPU_WEIGHT  = 30
+const EXEC_TASKS_MAX   = 128     // borne l'explosion de processus (l'incident : +350)
 
 /**
  * Nom d'unité systemd déterministe — reconstructible sans plomberie d'état.
@@ -172,13 +199,12 @@ export const DEFAULT_EXECUTION_PROMPT = [
   '{{brief}}',
   '\n\n=== RÈGLES IMPÉRATIVES (CLAUDE.md) ===\n',
   '- Respecte le CLAUDE.md à la racine du projet (lis-le si besoin).\n',
-  '- Definition of Done frontend: toute modif dans client/src/ DOIT être suivie de `cd /home/ec2-user/erp/client && npm run build` PUIS d\'un test Playwright réel dans e2e/tests/ exécuté contre http://localhost:3004/erp.\n',
+  '- Definition of Done frontend: toute modif dans client/src/ DOIT être suivie de `cd /home/ec2-user/erp/client && npm run build`.\n',
   '- Toute modif serveur (server/src/) DOIT être suivie de `pm2 restart erp-server`.\n',
-  '- Si un test E2E échoue: corrige et relance. Au MAXIMUM 3 tentatives de correction. Si après 3 tentatives le test échoue encore, ARRÊTE, n\'invente rien, et explique clairement le blocage (ce sera marqué « bloqué »).\n',
-  '- Nettoie tout record créé par tes tests E2E (hook after()), et restaure toute configuration existante que le test a écrasée — voir CLAUDE.md.\n\n',
+  '- Si le build ou le lint échoue: corrige et relance. Au MAXIMUM 3 tentatives de correction. Si après 3 tentatives ça échoue encore, ARRÊTE, n\'invente rien, et explique clairement le blocage (ce sera marqué « bloqué »).\n\n',
   'Si tu as besoin d\'une approbation humaine pour une sous-étape, crée une sous-tâche:\n',
   'curl -s -X POST http://localhost:3004/api/agent/tasks/internal -H \'Content-Type: application/json\' -H \'X-Agent-Secret: {{internalSecret}}\' -d \'{"description":"...","priority":0}\'\n\n',
-  'Termine par un rapport détaillé: ce que tu as changé, le résultat du build et des tests E2E (vert/rouge), ou la raison du blocage.\n',
+  'Termine par un rapport détaillé: ce que tu as changé, le résultat du build et du lint (vert/rouge), ou la raison du blocage.\n',
   SUMMARY_SECTION_INSTRUCTION,
 ].join('')
 
@@ -286,26 +312,39 @@ function renderTemplate(tpl, vars) {
 // d'aide envoyait « Tâche terminée » dans le DM Slack d'Antoine. Le recap des items
 // de la file de prompts est envoyé par le serveur (voir promptQueue.js), pas par le hook.
 
-// ─── Single global slot ───────────────────────────────────────────────────────
-// Exactly ONE Claude activity runs at a time (execution / conversation / generation),
-// because everything edits or reads the live working tree — no isolation.
-// Priority: execution > conversation > generation.
-let busy = false
-let currentTaskId = null
-let currentActivity = null     // 'execution' | 'conversation'
+// ─── Quatre postes d'implémentation (un par file) ─────────────────────────────
+// `_execSlots` : index de file (0..EXEC_LANES-1) → id de la tâche qui l'occupe.
+// Une tâche n'attend donc plus « le » poste libre, mais celui de SA file : c'est
+// ce qui rend les quatre files réellement indépendantes.
+const _execSlots = new Map()
+// La conversation (lecture seule, en process) garde son propre poste unique : elle
+// n'édite rien, elle n'a pas à disputer une file d'implémentation.
+let _convBusy = false
 let _currentProc = null
 const _replyQueue = []         // proposal ids awaiting a conversation reply
 
+/** File d'une tâche, bornée à l'intervalle valide. Défaut 0 (tâches d'avant les files). */
+export function execLaneOf(task) {
+  const n = Number(task?.exec_lane)
+  return Number.isInteger(n) && n >= 0 && n < EXEC_LANES ? n : 0
+}
+function randomExecLane() { return Math.floor(Math.random() * EXEC_LANES) }
+
 // ─── Voie lecture seule parallèle (tâches « question ») ───────────────────────
 // Une question n'a que Read/Glob/Grep : elle ne peut modifier ni fichier, ni DB,
-// ni redémarrer le serveur. Elle tourne donc HORS du slot global — jusqu'à
-// MAX_PARALLEL_QUESTIONS en même temps, y compris pendant une implémentation, ce
-// qui évite qu'une simple question attende la fin d'un chantier.
+// ni redémarrer le serveur. Elle tourne donc HORS des files d'implémentation —
+// jusqu'à MAX_PARALLEL_QUESTIONS en même temps, y compris pendant un chantier, ce
+// qui évite qu'une simple question attende la fin d'une implémentation.
 // Contrepartie assumée : une question lancée pendant une implémentation peut lire
-// l'arbre à mi-chemin d'une modification. Acceptable pour une réponse en lecture
-// seule ; c'est pourquoi l'implémentation, elle, reste strictement séquentielle.
+// l'arbre à mi-chemin d'une modification.
 const MAX_PARALLEL_QUESTIONS = 2
 const _questionRuns = new Set()   // ids des tâches question en cours
+
+// Tâches dont l'utilisateur a demandé l'arrêt manuel (bouton « Arrêter ») : le
+// process est tué tout de suite, mais finalize() tourne quelques secondes plus
+// tard (poll de monitorExecution) — sans ce marqueur, elle rapporterait un crash
+// ('blocked', process interrompu sans code de sortie) plutôt qu'un arrêt voulu.
+const _stopRequested = new Set()
 
 // In-memory stream buffer per task: taskId -> chunk[]
 const streamBuffers = new Map()
@@ -339,7 +378,7 @@ export function sendSteeringMessage(taskId, text) {
   return true
 }
 
-// Parse ONE line of Claude's stream-json output and push UI chunks (no-op if taskId null).
+// Parse ONE line of stream-json output and push UI chunks (no-op if taskId null).
 function streamLine(taskId, line) {
   if (!taskId || !line.trim()) return
   try {
@@ -402,6 +441,28 @@ function extractResultText(transcript) {
   return last
 }
 
+// Fichiers touchés par l'exécution (Write/Edit/MultiEdit), dans l'ordre. Capturé
+// depuis le transcript AVANT que cleanup() n'efface le log — sert de base à la
+// proposition de nettoyage quand une tâche interrompue est ensuite supprimée
+// (voir routes/agent.js DELETE /tasks/:id).
+function extractTouchedFiles(transcript) {
+  const files = []
+  for (const line of transcript.split('\n')) {
+    if (!line.includes('file_path')) continue
+    try {
+      const evt = JSON.parse(line)
+      if (evt.type !== 'assistant' || !evt.message?.content) continue
+      for (const block of evt.message.content) {
+        if (block.type !== 'tool_use') continue
+        if (!['Write', 'Edit', 'MultiEdit'].includes(block.name)) continue
+        const fp = block.input?.file_path
+        if (fp && !files.includes(fp)) files.push(fp)
+      }
+    } catch {}
+  }
+  return files
+}
+
 // Identifiant de session Claude d'une exécution, lu dans le transcript stream-json
 // (chaque événement le porte). Conservé sur la tâche pour qu'un item de la file
 // marqué « même contexte » puisse reprendre la session avec --resume.
@@ -417,19 +478,46 @@ function extractSessionId(transcript) {
 }
 
 // ─── File-backed stores (atomic write) ────────────────────────────────────────
+//
+// `agent-tasks.json` fait 2,4 Mo et la page /travaux le fait relire à chaque
+// requête : 15 ms de lecture + décodage utf8 à chaque fois, sur le thread unique
+// (13 % du temps occupé du serveur au profilage du 2026-09-03). On garde donc le
+// TEXTE du fichier, invalidé au moindre changement de mtime ou de taille.
+//
+// Le texte, pas l'objet : chaque appelant reçoit ainsi le sien, qu'il peut muter
+// (c'est le mode de travail de tout le fichier) sans polluer le cache.
+const _fileCache = new Map() // path -> { mtimeMs, size, text }
+
+function readTextCached(file) {
+  let st
+  try { st = statSync(file) } catch { return null }
+  const hit = _fileCache.get(file)
+  if (hit && hit.mtimeMs === st.mtimeMs && hit.size === st.size) return hit.text
+  let text
+  try { text = readFileSync(file, 'utf8') } catch { return null }
+  _fileCache.set(file, { mtimeMs: st.mtimeMs, size: st.size, text })
+  return text
+}
+
 function readJson(file, fallback) {
-  try { return JSON.parse(readFileSync(file, 'utf8')) } catch { return fallback }
+  const text = readTextCached(file)
+  if (text == null) return fallback
+  try { return JSON.parse(text) } catch { return fallback }
 }
 function writeJson(file, value) {
   const tmp = file + '.tmp'
   writeFileSync(tmp, JSON.stringify(value, null, 2) + '\n', 'utf8')
   renameSync(tmp, file)
+  // Une écriture dans la même milliseconde ET à taille égale passerait sous le
+  // radar du couple (mtime, taille) : on invalide explicitement.
+  _fileCache.delete(file)
 }
 
 function readTasks() { return readJson(TASKS_FILE, []) }
 function writeTasks(tasks) {
   writeFileSync(TASKS_TMP, JSON.stringify(tasks, null, 2) + '\n', 'utf8')
   renameSync(TASKS_TMP, TASKS_FILE)
+  _fileCache.delete(TASKS_FILE)
 }
 
 export function getSettings() {
@@ -442,6 +530,12 @@ export function getSettings() {
     queuePaused: false,
     queuePausedAt: null,
     queuePausedReason: null,
+    // Garde-fou de quota (quotaGuard.js) : `quotaPauseActive` = la pause en cours est
+    // la sienne (il la lèvera quand le quota remontera) ; `quotaPauseMuted` = la file
+    // a été reprise à la main malgré la pénurie, il se tait jusqu'au retour au-dessus
+    // du seuil.
+    quotaPauseActive: false,
+    quotaPauseMuted: false,
     generalPrompt: DEFAULT_GENERAL_PROMPT,
     instantPrompt: DEFAULT_INSTANT_PROMPT,
     conversationPrompt: DEFAULT_CONVERSATION_PROMPT,
@@ -496,7 +590,7 @@ function writeBacklog(items) { writeJson(BACKLOG_FILE, items); broadcastAll({ ty
 // porte sa proposition instantanée puis le lien vers la tâche d'implémentation.
 export function addBacklogItem(text, { context = '', author = '', preset = 'standard', mode = 'implement' } = {}) {
   const item = {
-    id: randomUUID(),
+    id: newRecordId(),
     text,
     context,                       // route de la page d'où vient le signalement
     author,                        // nom de l'utilisateur qui signale
@@ -540,9 +634,9 @@ export function generateInstantProposal(itemId) {
   })
 
   const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
-  const proc = spawn(CLAUDE_BIN, [
-    '-p', '--model', model, '--effort', effort, '--tools', '',
-  ], { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+  const spec = toollessSpec({ model, effort })
+  const proc = spawn(spec.bin, spec.args,
+    { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
 
   proc.stdin.write(prompt)
   proc.stdin.end()
@@ -578,9 +672,9 @@ export function runToollessClaude({ prompt, model: wanted = 'sonnet', effort = '
     // au lieu de faire échouer l'appel.
     const model = resolveModel(wanted) || wanted
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
-    const proc = spawn(CLAUDE_BIN, [
-      '-p', '--model', model, '--effort', effort, '--tools', '',
-    ], { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+    const spec = toollessSpec({ model, effort })
+    const proc = spawn(spec.bin, spec.args,
+      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
 
     proc.stdin.write(prompt)
     proc.stdin.end()
@@ -664,9 +758,9 @@ function runUserSummary(taskId) {
     ].join('')
 
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
-    const proc = spawn(CLAUDE_BIN, [
-      '-p', '--model', 'haiku', '--effort', 'low', '--tools', '',
-    ], { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+    const spec = toollessSpec({ model: 'haiku', effort: 'low' })
+    const proc = spawn(spec.bin, spec.args,
+      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
 
     proc.stdin.write(prompt)
     proc.stdin.end()
@@ -718,39 +812,67 @@ async function backfillUserSummaries() {
 }
 
 // ─── Approbation d'une suggestion → tâche d'implémentation ────────────────────
-export function approveBacklogItem(id, { comment = '' } = {}) {
+// Approbations en cours (id backlog → true) : le passage par `await import(...)`
+// ouvre une fenêtre entre la lecture de `processed` et son écriture — sans ce
+// verrou en mémoire, deux clics rapprochés (ou un double POST réseau) créeraient
+// deux prompts pour la même suggestion.
+const _approvingBacklog = new Set()
+
+/**
+ * Approbation d'une suggestion du backlog (bulle d'aide / FAB « Modifier le
+ * système ») : rejoint désormais la MÊME file que le reste de la section Agent
+ * (work_prompts, space='agent') au lieu de créer une tâche isolée directement en
+ * agent-tasks.json. C'est ce qui la rend visible dans « Ma file » (QueueTab
+ * space="agent", déjà intégré à /agent) et arrêtable comme n'importe quel autre
+ * item — avant ce changement, une suggestion approuvée exécutait bien mais
+ * disparaissait de toute vue de file d'attente.
+ * Import dynamique de promptQueue.js : ce module l'importe déjà (statiquement),
+ * un import statique dans l'autre sens créerait un cycle.
+ */
+export async function approveBacklogItem(id, { comment = '', userId = null } = {}) {
   const item = readBacklog().find(i => i.id === id)
   if (!item) return null
-  if (item.task_id) return { item, task: readTasks().find(t => t.id === item.task_id) || null }
-  const { model, effort } = presetFor(item.preset)
-  const now = new Date().toISOString()
-  const task = {
-    id: randomUUID(),
-    kind: 'suggestion',
-    mode: item.mode === 'question' ? 'question' : 'implement',
-    backlog_id: item.id,
-    title: item.text.length > 140 ? item.text.slice(0, 140) + '…' : item.text,
-    description: item.text,
-    context: item.context || '',
-    author: item.author || '',
-    model, effort,
-    status: 'approved',
-    priority: 0,
-    messages: [],
-    user_comment: comment || null,
-    agent_result: null,
-    user_summary: null,
-    created_at: now,
-    updated_at: now,
-    completed_at: null,
+  // `processed` (posé synchronement à la fin, avant tout `await`) est le VRAI garde-fou
+  // anti-double-approbation : `task_id` peut rester null tant que l'item attend son
+  // tour dans la file (l'ordonnanceur ne crée la tâche qu'au départ réel).
+  if (item.processed) {
+    const { getPrompt } = await import('./promptQueue.js')
+    const p = item.work_prompt_id ? getPrompt(item.work_prompt_id) : null
+    const task = p?.agent_task_id ? findAgentTask(p.agent_task_id) : (item.task_id ? readTasks().find(t => t.id === item.task_id) : null)
+    return { item, task }
   }
-  const tasks = readTasks()
-  tasks.push(task)
-  writeTasks(tasks)
-  const updatedItem = updateBacklogItem(id, { task_id: task.id, processed: true })
-  broadcastTask(task)
-  setImmediate(kick)
-  return { item: updatedItem, task }
+  if (_approvingBacklog.has(id)) return { item, task: null } // approbation déjà en vol — pas de doublon
+  _approvingBacklog.add(id)
+  try {
+    const { createPrompt, getPrompt, advanceQueue } = await import('./promptQueue.js')
+    const isQuestion = item.mode === 'question'
+    const promptText = [
+      item.text,
+      !isQuestion && item.instant_proposal
+        ? `\n\nCorrectif proposé et APPROUVÉ par l'utilisateur (implémente dans cet esprit):\n${item.instant_proposal}`
+        : '',
+      comment ? `\n\nCommentaire de l'utilisateur à l'approbation: ${comment}` : '',
+    ].join('')
+    const created = createPrompt({
+      title: item.text.length > 140 ? item.text.slice(0, 140) + '…' : item.text,
+      prompt: promptText,
+      mode: isQuestion ? 'question' : 'implement',
+      preset: PRESETS[item.preset] ? item.preset : 'standard',
+      space: 'agent',
+      // Qui approuve devient l'auteur affiché sur la carte — à défaut (approbation
+      // automatique du FAB, sans utilisateur explicite passé ici), on retombe sur
+      // rien plutôt que de deviner : `item.author` est un nom en texte libre, pas
+      // un id d'utilisateur, il ne peut pas remplir une colonne FK.
+      created_by: userId,
+    })
+    advanceQueue()
+    const fresh = getPrompt(created.id)
+    const task = fresh?.agent_task_id ? findAgentTask(fresh.agent_task_id) : null
+    const updatedItem = updateBacklogItem(id, { work_prompt_id: created.id, task_id: task?.id || null, processed: true })
+    return { item: updatedItem, task }
+  } finally {
+    _approvingBacklog.delete(id)
+  }
 }
 
 function updateTask(id, updates) {
@@ -765,12 +887,23 @@ function updateTask(id, updates) {
 
 function broadcastTask(task) { broadcastAll({ type: 'agent:task:updated', task }) }
 
-export function isRunnerBusy() { return busy }
+/** Vrai quand les QUATRE files d'implémentation sont occupées : plus rien ne peut démarrer. */
+export function isRunnerBusy() { return _execSlots.size >= EXEC_LANES }
 /** Nombre de questions en cours dans la voie lecture seule (0 à MAX_PARALLEL_QUESTIONS). */
 export function getRunningQuestionCount() { return _questionRuns.size }
 export function getMaxParallelQuestions() { return MAX_PARALLEL_QUESTIONS }
-export function getCurrentTaskId() { return currentTaskId }
-export function getCurrentActivity() { return currentActivity }
+/** Implémentations en cours (0 à EXEC_LANES) et nombre de files. */
+export function getRunningExecutionCount() { return _execSlots.size }
+export function getExecLaneCount() { return EXEC_LANES }
+/** Ids des implémentations en cours, une par file occupée. */
+export function getRunningTaskIds() { return [..._execSlots.values()] }
+// Conservé pour les appelants historiques (statut de l'ordonnanceur) : avec quatre
+// files, « la » tâche courante n'existe plus — on rend la première occupée.
+export function getCurrentTaskId() { return _execSlots.values().next().value || null }
+export function getCurrentActivity() {
+  if (_execSlots.size) return 'execution'
+  return _convBusy ? 'conversation' : null
+}
 
 // ─── Quotas Claude épuisés ────────────────────────────────────────────────────
 // « You've hit your session limit · resets 3:40am (UTC) » : ce n'est PAS un échec de
@@ -905,7 +1038,7 @@ async function handleLimitHit(taskId, limit, sessionId) {
   const fallback = resolveModel(wanted)
   if (scope === 'model' && fallback && fallback !== ranModel && hops < maxFallbacksFor(wanted)) {
     // Repli immédiat : la tâche redevient « approved » et kick() la relance aussitôt
-    // (releaseSlot enchaîne). Le modèle SOUHAITÉ reste inscrit tel quel — c'est
+    // (la libération du poste de sa file enchaîne). Le modèle SOUHAITÉ reste inscrit tel quel — c'est
     // resolveModel qui choisit au démarrage, donc fable reprend la main dès son retour.
     const retried = updateTask(taskId, {
       status: 'approved',
@@ -972,15 +1105,20 @@ function kick() {
     executeTask(q, { lane: 'question' })
   }
 
-  if (busy) return
+  // 2. Implémentation : UNE par file, donc jusqu'à EXEC_LANES en parallèle. Chaque
+  // tâche ne concourt qu'avec celles de sa propre file — une file occupée ne retient
+  // pas les trois autres. executeTask() prend le poste de façon synchrone, donc la
+  // boucle saute d'elle-même les tâches suivantes d'une même file.
+  for (const t of tasks.filter(x => x.status === 'approved' && x.mode !== 'question' && hasModel(x)).sort(byPriority)) {
+    if (_execSlots.size >= EXEC_LANES) break
+    const execLane = execLaneOf(t)
+    if (_execSlots.has(execLane)) continue
+    executeTask(t, { lane: 'exec', execLane })
+  }
 
-  // 2. Implémentation : une seule à la fois, elle édite l'arbre de travail réel.
-  const nextExec = tasks
-    .filter(t => t.status === 'approved' && t.mode !== 'question' && hasModel(t))
-    .sort(byPriority)[0]
-  if (nextExec) { executeTask(nextExec); return }
-
-  // 2. Conversation replies (the user is waiting live).
+  // 3. Conversation replies (the user is waiting live). Lecture seule et hors des
+  // files d'implémentation : une réponse n'attend plus la fin d'un chantier.
+  if (_convBusy) return
   while (_replyQueue.length) {
     const id = _replyQueue.shift()
     const t = readTasks().find(x => x.id === id)
@@ -988,10 +1126,14 @@ function kick() {
   }
 }
 
-function releaseSlot() {
-  busy = false
-  currentTaskId = null
-  currentActivity = null
+/** Rend le poste d'une file d'implémentation et regarde s'il y a une suite. */
+function releaseExecLane(execLane) {
+  _execSlots.delete(execLane)
+  setImmediate(kick)
+}
+
+function releaseConversation() {
+  _convBusy = false
   _currentProc = null
   setImmediate(kick)
 }
@@ -1003,10 +1145,9 @@ function releaseSlot() {
 function spawnClaude({ prompt, allowedTools, streamTaskId = null, timeoutMs }) {
   return new Promise((resolveP) => {
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
-    const proc = spawn(CLAUDE_BIN, [
-      '-p', '--output-format', 'stream-json', '--verbose',
-      '--allowedTools', allowedTools,
-    ], { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+    const spec = streamSpec({ allowedTools })
+    const proc = spawn(spec.bin, spec.args,
+      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
 
     _currentProc = proc
 
@@ -1049,15 +1190,19 @@ function spawnClaude({ prompt, allowedTools, streamTaskId = null, timeoutMs }) {
 // the child. monitorExecution() tails the log to stream live and finalizes the task off
 // the .code file — the same path used to reconnect after a restart. (taskId, optional pid
 // when reconnecting to an already-running orphan.)
-// `lane` : 'exec' (slot global, fichier PID unique), 'question' (voie parallèle
-// lecture seule, un fichier PID par tâche — voir QPID_FILE) ou 'recover'
-// (récupération d'une exécution orpheline dont le slot est déjà tenu par une AUTRE
-// tâche : on lit ses artefacts et on écrit son résultat, sans toucher au slot ni au
-// fichier PID, qui appartiennent à l'exécution en cours).
-export function monitorExecution(taskId, knownPid = null, { lane = 'exec' } = {}) {
+// `lane` : 'exec' (poste d'une des quatre files, fichier PID de la file),
+// 'question' (voie parallèle lecture seule, un fichier PID par tâche — voir
+// QPID_FILE) ou 'recover' (récupération d'une exécution orpheline dont le poste est
+// déjà tenu par une AUTRE tâche : on lit ses artefacts et on écrit son résultat,
+// sans toucher au poste ni au fichier PID, qui appartiennent à l'exécution en cours).
+// `execLane` : la file visée en lane 'exec' ; déduite de la tâche si absente.
+export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execLane = null } = {}) {
   const LOG = EXEC_LOG(taskId)
   const CODE = EXEC_CODE(taskId)
-  const pidFile = lane === 'question' ? QPID_FILE(taskId) : (lane === 'recover' ? null : PID_FILE)
+  const myLane = lane === 'exec'
+    ? (execLane ?? execLaneOf(readTasks().find(t => t.id === taskId)))
+    : null
+  const pidFile = lane === 'question' ? QPID_FILE(taskId) : (lane === 'recover' ? null : EPID_FILE(myLane))
   const startedAt = Date.now()
   let offset = 0
   let lineBuffer = ''
@@ -1090,8 +1235,12 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec' } = {}
     const text = extractAssistantText(raw)
     const sessionId = extractSessionId(raw)
 
+    const stoppedByUser = _stopRequested.delete(taskId)
     let status, agent_result
-    if (killedTimeout) {
+    if (stoppedByUser) {
+      status = 'stopped'
+      agent_result = (text ? text + '\n\n' : '') + '(arrêté manuellement par l\'utilisateur)'
+    } else if (killedTimeout) {
       status = 'blocked'
       agent_result = `(interrompu: dépassement du délai de ${Math.round(EXEC_TIMEOUT_MS / 60000)} min)\n\n${text}`
     } else if (code === 0) {
@@ -1104,6 +1253,9 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec' } = {}
       status = 'blocked'
       agent_result = (text ? text + '\n\n' : '') + `(exit code: ${code})`
     }
+    // Fichiers touchés : utile seulement pour une tâche qui n'a pas fini proprement
+    // (done = le rapport suffit) — sert de base au nettoyage si l'item est supprimé.
+    const touched_files = status !== 'done' ? extractTouchedFiles(raw) : []
 
     // Quota Claude épuisé : la tâche n'a pas échoué, elle n'a pas pu travailler. On la
     // remet en file, on met l'ordonnanceur en pause jusqu'à la réinitialisation, et on
@@ -1171,6 +1323,7 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec' } = {}
       status, agent_result, user_summary,
       pending_question,
       missed_user_message,
+      touched_files,
       session_id: sessionId || null,
       completed_at: new Date().toISOString(),
     })
@@ -1201,21 +1354,22 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec' } = {}
     try { unlinkSync(CODE) } catch {}
     try { unlinkSync(EXEC_PROMPT(taskId)) } catch {}
     try { unlinkSync(EXEC_INBOX(taskId)) } catch {}
-    // Le fichier PID de la voie exec est PARTAGÉ : on ne le supprime que s'il porte
-    // encore CETTE tâche. Sinon on effacerait le suivi d'une exécution qui vient de
-    // démarrer (ou, pour un lane 'recover', de celle qui tourne vraiment) — et le
-    // prochain redémarrage déclarerait « bloquée » une tâche parfaitement vivante.
+    // Le fichier PID d'une file est PARTAGÉ par les tâches successives de cette
+    // file : on ne le supprime que s'il porte encore CETTE tâche. Sinon on
+    // effacerait le suivi d'une exécution qui vient de démarrer (ou, pour un lane
+    // 'recover', de celle qui tourne vraiment) — et le prochain redémarrage
+    // déclarerait « bloquée » une tâche parfaitement vivante.
     if (pidFile && pidFileTaskId(pidFile) === taskId) { try { unlinkSync(pidFile) } catch {} }
     setTimeout(() => streamBuffers.delete(taskId), 120_000).unref?.()
     if (lane === 'recover') {
-      // Récupération hors slot : rien à libérer, rien à relancer ici.
+      // Récupération hors poste : rien à libérer, rien à relancer ici.
     } else if (lane === 'question') {
-      // Voie parallèle : rien à libérer côté slot global, on rend juste sa place
-      // dans la voie lecture seule et on regarde s'il y a une autre question.
+      // Voie parallèle : aucune file d'implémentation à rendre, on libère juste sa
+      // place dans la voie lecture seule et on regarde s'il y a une autre question.
       _questionRuns.delete(taskId)
       setImmediate(kick)
     } else {
-      releaseSlot()
+      releaseExecLane(myLane)
     }
   }
 
@@ -1279,6 +1433,7 @@ function killExecutionTree(taskId, lane, pid) {
 
 function runDetachedExecution(taskId, prompt, {
   model = null, effort = null, tools = EXEC_TOOLS, resumeSessionId = null, lane = 'exec',
+  execLane = 0,
 } = {}) {
   const LOG = EXEC_LOG(taskId)
   const CODE = EXEC_CODE(taskId)
@@ -1289,17 +1444,9 @@ function runDetachedExecution(taskId, prompt, {
   writeFileSync(PROMPT, prompt, 'utf8')
 
   const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
-  // Modèle/effort issus du préréglage choisi par l'utilisateur à la soumission.
-  const modelFlags = (model ? ` --model "${model}"` : '') + (effort ? ` --effort "${effort}"` : '')
-  // --resume : l'item de file marqué « même contexte » poursuit la session Claude de
-  // l'item précédent au lieu de repartir à zéro. Une session introuvable (purgée,
-  // machine redémarrée) fait échouer le démarrage → l'item repart proprement d'un
-  // contexte neuf, voir le repli dans promptQueue.startPrompt().
-  const resumeFlag = resumeSessionId ? ` --resume "${resumeSessionId}"` : ''
-  // Voie question : fichier PID par tâche ; voie exec : le fichier PID unique, celui
-  // que deploy.sh consulte pour attendre la fin d'une exécution.
-  const pidFile = lane === 'question' ? QPID_FILE(taskId) : PID_FILE
-
+  // Voie question : fichier PID par tâche ; voie exec : le fichier PID de SA file
+  // (les quatre sont consultés par deploy.sh avant de redémarrer le serveur).
+  const pidFile = lane === 'question' ? QPID_FILE(taskId) : EPID_FILE(execLane)
   // ⚠️ `setsid --fork` n'est PAS cosmétique : pm2 tourne en `treekill: true` (défaut) et
   // tue TOUT le sous-arbre du serveur à chaque `pm2 restart erp-server`. Sans la coupure
   // de lignée, chaque exécution mourait au premier redémarrage — y compris celui que
@@ -1310,18 +1457,18 @@ function runDetachedExecution(taskId, prompt, {
   //
   // Corollaire : le pid renvoyé par spawn() est celui de setsid, éphémère et inutile.
   // C'est donc le wrapper qui écrit SON pid dans le fichier PID, dès sa première ligne.
-  // claude reads the prompt from stdin (PROMPT file); stream-json → LOG; exit code → CODE.
-  // --settings : branche le hook de steering (voir EXEC_INBOX) sur CETTE exécution.
-  // Le hook est inerte sans ERP_AGENT_TASK_ID, donc sans effet ailleurs.
+  // Le CLI lit le prompt sur stdin (fichier PROMPT) ; stream-json → LOG ; code de
+  // sortie → CODE. --settings branche le hook de steering (voir EXEC_INBOX) sur CETTE
+  // exécution ; il est inerte sans ERP_AGENT_TASK_ID, donc sans effet ailleurs.
   // ⚠️ `$$` (pid du shell) doit être écrit DIFFÉREMMENT selon le lanceur : systemd
   // interprète `$` dans les lignes de commande et replie `$$` en un simple `$` —
   // le fichier PID contenait alors littéralement « $ », donc un pid illisible : à la
   // reprise après redémarrage, une exécution bien vivante était déclarée « bloquée ».
   // Sous systemd il faut donc `$$$$`, et `$$` sous le repli setsid (bash direct).
-  const cmd = `printf '%s\\n%s\\n' "__SHELL_PID__" "${taskId}" > "${pidFile}"; ` +
-    `"${CLAUDE_BIN}" -p --output-format stream-json --verbose${modelFlags}${resumeFlag} ` +
-    `--settings "${STEER_SETTINGS}" ` +
-    `--allowedTools "${tools}" < "${PROMPT}" > "${LOG}" 2>&1; echo $? > "${CODE}"`
+  const cmd = execCommand({
+    taskId, pidFile, promptFile: PROMPT, logFile: LOG, codeFile: CODE,
+    model, effort, tools, resumeSessionId, settingsFile: STEER_SETTINGS,
+  })
 
   // XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS explicites : systemd-run --user en a
   // besoin pour joindre le user manager, et un `pm2 resurrect` au boot peut démarrer
@@ -1339,12 +1486,20 @@ function runDetachedExecution(taskId, prompt, {
   // node --test, chromium…). --collect nettoie l'unité même en échec, sinon les
   // units failed s'accumulent et le même nom devient inutilisable.
   const unit = execUnitName(taskId, lane)
+  // ⚠️ `systemd-run --user` ne transmet PAS l'environnement de l'appelant (vérifié :
+  // une variable posée sur le spawn n'arrive jamais dans l'unité). Ce qui doit
+  // atteindre l'exécution est donc redit explicitement : le marqueur qui fait taire
+  // les hooks Slack, et l'identifiant de tâche dont dépend le hook de steering.
   const systemdArgs = [
     '--user', `--unit=${unit}`, '--collect', '--quiet',
+    '--setenv=HOME=/home/ec2-user',
+    '--setenv=ERP_AGENT_RUN=1',
+    `--setenv=ERP_AGENT_TASK_ID=${taskId}`,
     `--property=MemoryMax=${EXEC_MEMORY_MAX}`,
     `--property=MemoryHigh=${EXEC_MEMORY_HIGH}`,
     `--property=MemorySwapMax=${EXEC_SWAP_MAX}`,
     `--property=CPUQuota=${EXEC_CPU_QUOTA}`,
+    `--property=CPUWeight=${EXEC_CPU_WEIGHT}`,
     `--property=TasksMax=${EXEC_TASKS_MAX}`,
     `--property=WorkingDirectory=${CWD}`,
     'bash', '-c', cmd.replace('__SHELL_PID__', () => '$$$$'),
@@ -1378,19 +1533,19 @@ function runDetachedExecution(taskId, prompt, {
 
   // knownPid volontairement absent : le vrai pid arrive par le fichier, quelques
   // millisecondes plus tard (currentPid() le relit à chaque tour de poll).
-  monitorExecution(taskId, null, { lane })
+  monitorExecution(taskId, null, { lane, execLane })
 }
 
 // ─── Execution ────────────────────────────────────────────────────────────────
-// lane 'exec' : read-write, prend le slot global (une seule à la fois).
-// lane 'question' : lecture seule, hors slot, jusqu'à MAX_PARALLEL_QUESTIONS.
-function executeTask(next, { lane = 'exec' } = {}) {
+// lane 'exec' : read-write, prend le poste de SA file (une tâche par file, jusqu'à
+//   EXEC_LANES en parallèle).
+// lane 'question' : lecture seule, hors des files, jusqu'à MAX_PARALLEL_QUESTIONS.
+function executeTask(next, { lane = 'exec', execLane = null } = {}) {
+  const myLane = execLane ?? execLaneOf(next)
   if (lane === 'question') {
     _questionRuns.add(next.id)
   } else {
-    busy = true
-    currentTaskId = next.id
-    currentActivity = 'execution'
+    _execSlots.set(myLane, next.id)
   }
 
   // Modèle réellement utilisable : le modèle souhaité s'il a du quota, sinon son repli
@@ -1404,8 +1559,11 @@ function executeTask(next, { lane = 'exec' } = {}) {
 
   // started_at : horodate le passage en in_progress pour alimenter le compteur de
   // temps écoulé côté UI (timer live pendant l'exécution, durée totale une fois terminée).
+  // exec_lane persisté : c'est lui qui permet de retrouver le bon fichier PID (donc
+  // la bonne file) après un redémarrage du serveur.
   const task = updateTask(next.id, {
     status: 'in_progress', started_at: new Date().toISOString(), run_model: runModel,
+    ...(lane === 'question' ? null : { exec_lane: myLane }),
   })
   broadcastTask(task)
 
@@ -1462,7 +1620,7 @@ function executeTask(next, { lane = 'exec' } = {}) {
     model: runModel, effort: next.effort,
     tools: isQuestion ? READONLY_TOOLS : EXEC_TOOLS,
     resumeSessionId: next.resume_session_id || null,
-    lane,
+    lane, execLane: myLane,
   })
 }
 
@@ -1474,11 +1632,16 @@ export function enqueueAgentTask({
   title, description, kind = 'queue', mode = 'implement', model = preferredAgentModel(),
   effort = 'high', priority = 0, author = '', work_prompt_id = null,
   resume_session_id = null,
+  // File d'implémentation. La file de travaux impose celle de l'item (elle a été
+  // tirée au sort à sa création et ne bouge plus) ; les autres chemins (suggestion
+  // de la bulle d'aide, tâche manuelle) tirent au sort ici.
+  exec_lane = randomExecLane(),
 }) {
   const now = new Date().toISOString()
   const task = {
-    id: randomUUID(),
+    id: newRecordId(),
     kind,
+    exec_lane: execLaneOf({ exec_lane }),
     mode: mode === 'question' ? 'question' : 'implement',
     title: title || (description || '').slice(0, 140),
     description: description || '',
@@ -1549,11 +1712,32 @@ export function cancelPendingAgentTask(id) {
   return true
 }
 
+/**
+ * Arrêt d'une exécution EN COURS (statut 'in_progress') — bouton « Arrêter » de la
+ * carte. Tue le sous-arbre du process (même mécanisme que le hard-timeout) ; la
+ * tâche ne passe PAS à son statut final ici — c'est monitorExecution().finalize(),
+ * qui détecte la mort du process au prochain poll (≤2 s), qui le fait, en lisant
+ * `_stopRequested` pour rapporter 'stopped' plutôt qu'un crash ('blocked').
+ * Une tâche 'approved' (pas encore démarrée) n'a pas de process à tuer — c'est
+ * cancelPendingAgentTask() qu'il faut appeler dans ce cas.
+ */
+export function stopRunningTask(id) {
+  if (!id) return { ok: false, error: 'introuvable' }
+  const task = readTasks().find(t => t.id === id)
+  if (!task) return { ok: false, error: 'introuvable' }
+  if (task.status !== 'in_progress') return { ok: false, error: 'cette tâche ne tourne pas actuellement' }
+  const running = [..._execSlots.entries()].find(([, taskId]) => taskId === id)
+  const lane = running ? 'exec' : (_questionRuns.has(id) ? 'question' : null)
+  if (!lane) return { ok: false, error: 'cette tâche ne tourne pas actuellement' }
+  _stopRequested.add(id)
+  const pid = livePidForTask(id)
+  killExecutionTree(id, lane, pid)
+  return { ok: true }
+}
+
 // ─── Conversation reply (read-only) ───────────────────────────────────────────
 function conversationReply(task) {
-  busy = true
-  currentTaskId = task.id
-  currentActivity = 'conversation'
+  _convBusy = true
 
   const thread = (task.messages || [])
     .map(m => `${m.role === 'user' ? 'Humain' : 'Agent'}: ${m.text}`)
@@ -1576,7 +1760,7 @@ function conversationReply(task) {
         const updated = updateTask(task.id, { messages, status: fresh.status === 'pending' ? 'in_discussion' : fresh.status })
         if (updated) broadcastTask(updated)
       }
-      releaseSlot()
+      releaseConversation()
     })
 }
 
@@ -1592,12 +1776,12 @@ function pidFileTaskId(file) {
 
 /**
  * PID du wrapper d'une exécution, retrouvé dans la table des process — sans passer par
- * `.agent-pid`. Ce fichier est unique pour toute la voie exec : il peut avoir été
- * écrasé (démarrage d'une autre tâche) ou supprimé (suite de tests serveur, qui s'en
- * sert comme fixture) alors que le wrapper tourne toujours. Se fier à lui seul faisait
- * déclarer « bloquée » au démarrage suivant une exécution parfaitement vivante — et,
- * pire, libérait le slot : une seconde implémentation démarrait par-dessus la première,
- * dans le même arbre de travail.
+ * le fichier PID. Celui-ci est partagé par les tâches successives d'une même file : il
+ * peut avoir été écrasé (démarrage d'une autre tâche de la file) ou supprimé (suite de
+ * tests serveur, qui s'en sert comme fixture) alors que le wrapper tourne toujours. Se
+ * fier à lui seul faisait déclarer « bloquée » au démarrage suivant une exécution
+ * parfaitement vivante — et, pire, libérait son poste : une seconde implémentation
+ * démarrait par-dessus la première, dans la même file.
  */
 function livePidForTask(taskId) {
   let fallback = null
@@ -1624,27 +1808,31 @@ export function initTaskRunner() {
   // plus bas — elles tournent encore (ou viennent de finir, le .code fait foi).
   const reconnected = new Set()
 
-  if (existsSync(PID_FILE)) {
+  // Une file, un fichier PID : les quatre sont repris indépendamment (un
+  // redémarrage peut avoir laissé jusqu'à EXEC_LANES exécutions orphelines).
+  for (let execLane = 0; execLane < EXEC_LANES; execLane++) {
+    const pidFile = EPID_FILE(execLane)
+    if (!existsSync(pidFile)) continue
+    let taken = false
     try {
-      const [pidStr, taskId] = readFileSync(PID_FILE, 'utf8').trim().split('\n')
+      const [pidStr, taskId] = readFileSync(pidFile, 'utf8').trim().split('\n')
       const pid = parseInt(pidStr, 10)
       const t = taskId && readTasks().find(x => x.id === taskId)
       if (t && t.status === 'in_progress') {
-        console.log(`🤖 Agent: exécution orpheline détectée (PID ${pid}, tâche ${taskId}) — reprise du suivi…`)
-        busy = true
-        currentTaskId = taskId
-        currentActivity = 'execution'
+        console.log(`🤖 Agent: exécution orpheline détectée (PID ${pid}, tâche ${taskId}, file ${execLane}) — reprise du suivi…`)
+        _execSlots.set(execLane, taskId)
         reconnected.add(taskId)
-        monitorExecution(taskId, pid || null)
+        taken = true
+        monitorExecution(taskId, pid || null, { lane: 'exec', execLane })
       }
     } catch {}
-    if (!reconnected.size) {
+    if (!taken) {
       // Stale PID file (task already finalized / gone) → clean up its artifacts.
       try {
-        const taskId = readFileSync(PID_FILE, 'utf8').trim().split('\n')[1]
+        const taskId = readFileSync(pidFile, 'utf8').trim().split('\n')[1]
         if (taskId) { for (const f of [EXEC_LOG(taskId), EXEC_CODE(taskId), EXEC_PROMPT(taskId), EXEC_INBOX(taskId)]) { try { unlinkSync(f) } catch {} } }
       } catch {}
-      try { unlinkSync(PID_FILE) } catch {}
+      try { unlinkSync(pidFile) } catch {}
     }
   }
 
@@ -1669,26 +1857,27 @@ export function initTaskRunner() {
     }
   }
 
-  // Reprise SANS fichier PID : le .agent-pid a pu être écrasé/supprimé pendant
+  // Reprise SANS fichier PID : celui de la file a pu être écrasé/supprimé pendant
   // l'exécution. Avant de déclarer quoi que ce soit bloqué, on cherche les preuves
   // durables — le .code écrit par le wrapper, ou le wrapper lui-même dans la table
-  // des process. Une exécution vivante garde le slot ; une exécution déjà finie est
-  // finalisée sur son code de sortie (donc « terminée » si elle a réussi).
+  // des process. Une exécution vivante garde le poste de sa file ; une exécution
+  // déjà finie est finalisée sur son code de sortie (donc « terminée » si elle a
+  // réussi). Poste déjà pris (une autre tâche de la même file a été reprise plus
+  // haut) → simple récupération du résultat, hors poste.
   for (const t of readTasks()) {
     if (t.status !== 'in_progress' || reconnected.has(t.id)) continue
     const pid = livePidForTask(t.id)
     if (!pid && !existsSync(EXEC_CODE(t.id))) continue
     reconnected.add(t.id)
-    if (!busy) {
-      console.log(`🤖 Agent: exécution ${pid ? 'vivante' : 'terminée'} retrouvée sans fichier PID (tâche ${t.id}) — reprise du suivi…`)
-      busy = true
-      currentTaskId = t.id
-      currentActivity = 'execution'
-      monitorExecution(t.id, pid || null)
+    const execLane = execLaneOf(t)
+    if (!_execSlots.has(execLane)) {
+      console.log(`🤖 Agent: exécution ${pid ? 'vivante' : 'terminée'} retrouvée sans fichier PID (tâche ${t.id}, file ${execLane}) — reprise du suivi…`)
+      _execSlots.set(execLane, t.id)
+      monitorExecution(t.id, pid || null, { lane: 'exec', execLane })
     } else {
-      // Le slot est déjà tenu par une autre exécution : on récupère seulement le
-      // résultat de celle-ci, sans toucher au slot ni au fichier PID.
-      console.log(`🤖 Agent: résultat récupéré hors slot pour la tâche ${t.id}`)
+      // Le poste de cette file est déjà tenu par une autre exécution : on récupère
+      // seulement le résultat de celle-ci, sans toucher au poste ni au fichier PID.
+      console.log(`🤖 Agent: résultat récupéré hors poste pour la tâche ${t.id}`)
       monitorExecution(t.id, pid || null, { lane: 'recover' })
     }
   }

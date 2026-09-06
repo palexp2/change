@@ -1,7 +1,12 @@
-import { useState } from 'react'
-import { ExternalLink, Check, Zap, Phone, ImageOff } from 'lucide-react'
+import { useState, useMemo } from 'react'
+import { Link } from 'react-router-dom'
+import { ExternalLink, Check, Zap, Phone, ImageOff, Paperclip } from 'lucide-react'
+import { useRecordLinks } from './useRecordLinks.js'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
+import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { formatDurationSeconds, normalizeDurationFormat } from './duration.js'
+import { formatDecimals } from './decimalPrefs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import api from './api.js'
@@ -19,14 +24,7 @@ export function formatCurrency(value, decimals = 2, currency = 'CAD') {
   const n = Number(value)
   if (!Number.isFinite(n)) return null
   const d = Number.isInteger(decimals) ? Math.max(0, Math.min(5, decimals)) : 2
-  const opts = { style: 'currency', minimumFractionDigits: d, maximumFractionDigits: d }
-  const code = String(currency || 'CAD').trim().toUpperCase()
-  try {
-    return n.toLocaleString('fr-CA', { ...opts, currency: code })
-  } catch {
-    // Code inconnu d'Intl (donnée héritée / invalide) → repli CAD plutôt que crash.
-    return n.toLocaleString('fr-CA', { ...opts, currency: 'CAD' })
-  }
+  return fmtMoney(n, String(currency || 'CAD').trim(), { decimals: d })
 }
 
 // Code de devise (ISO 4217) d'un champ de type currency, lu depuis sa config
@@ -147,6 +145,12 @@ function ImageUnavailable({ href }) {
 // placeholder discret plutôt qu'une image cassée ou l'URL en toutes lettres.
 // stopPropagation pour ne pas déclencher la navigation de ligne ni l'entrée en
 // mode édition de la cellule (même pattern que UrlValue).
+// La hauteur est DÉFINIE (`h-7`) et non un simple plafond (`max-h-7`) : un SVG
+// n'a pas de dimensions en pixels, seulement un ratio. Avec hauteur ET largeur en
+// `auto`, le navigateur retombe sur la largeur du bloc conteneur — ici un
+// `inline-block` qui se dimensionne sur son contenu, donc quelques pixels : les
+// vignettes SVG (toute la gamme JWT) sortaient en carrés de 2 px. Hauteur figée,
+// la largeur se déduit du ratio, pour le vectoriel comme pour le matriciel.
 function ImageThumb({ href }) {
   // Mémorise la source EN ÉCHEC (pas un simple booléen) pour que le placeholder
   // se réinitialise tout seul quand la valeur de la cellule change.
@@ -167,7 +171,7 @@ function ImageThumb({ href }) {
         loading="lazy"
         data-testid="cf-image-thumb"
         onError={() => setFailedSrc(href)}
-        className="max-h-7 max-w-[7rem] w-auto rounded border border-slate-200 object-contain bg-white"
+        className="h-7 max-w-[7rem] w-auto rounded border border-slate-200 object-contain bg-white"
       />
     </a>
   )
@@ -316,6 +320,249 @@ export function CustomFieldError({ detail }) {
 // Parse la config des choix d'un champ single_select / multi_select. `options`
 // est stocké en JSON (string) côté serveur : { choices:[{id,label,color}], … }.
 // Tolère un objet déjà parsé. Retourne le tableau de choix (vide si absent).
+// Champ lien Airtable. Un champ « linked record » d'Airtable est stocké côté
+// ERP en type 'text' (la colonne porte l'id du record lié) : `custom_fields.kind
+// = 'link'` désigne une TOUTE AUTRE notion — une vraie relation ERP, avec champ
+// inverse. Le mapping marque donc ces champs `airtable_link_hint` (cf.
+// routes/connectors.js). Sans ça la page des champs les nommait « Texte », alors
+// que la colonne « Champ Airtable » affiche déjà leur table cible (« → adresses »).
+export function isAirtableLinkField(field) {
+  let opts = field?.options
+  if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { return false } }
+  return !!opts?.airtable_link_hint
+}
+
+// ── Champs lien Airtable ────────────────────────────────────────────────────
+//
+// Un champ « linked record » d'Airtable arrive dans l'ERP sous forme
+// d'identifiants : record IDs Airtable bruts (`recXXXX, recYYYY`) quand le
+// mapping n'a pas de table cible, ids ERP quand il en a une (la sync traduit
+// alors à l'import — cf. convertValue, airtableAutoSync.js). Affichés tels
+// quels, ces champs ne disaient rien à personne.
+//
+// On les rend donc comme ce qu'ils sont : des liens vers les fiches visées. La
+// réconciliation des deux identités (id Boréal ↔ record ID Airtable) se fait
+// côté serveur, par le miroir local (server/src/services/recordLinks.js).
+
+// Extrait la liste d'identifiants d'une valeur de champ lien : tableau JSON,
+// liste séparée par des virgules, ou identifiant seul.
+// `splitCommas` : découper une chaîne simple sur les virgules. Vrai pour des
+// identifiants (`recA, recB`), FAUX pour des libellés — « Bouchard, Ferme du
+// Nord » est un seul nom d'entreprise, pas deux.
+export function parseLinkedKeys(value, { splitCommas = true } = {}) {
+  if (value == null || value === '') return []
+  let items = value
+  if (typeof value === 'string') {
+    const raw = value.trim()
+    if (raw.startsWith('[')) {
+      try { items = JSON.parse(raw) } catch { items = splitCommas ? raw.split(',') : [raw] }
+    } else {
+      items = splitCommas ? raw.split(',') : [raw]
+    }
+  }
+  if (!Array.isArray(items)) items = [items]
+  return items.map(v => String(v ?? '').trim()).filter(Boolean)
+}
+
+// Rendu d'une valeur de champ lien : une pastille par enregistrement visé,
+// cliquable vers sa fiche. Les enregistrements dont la table Airtable n'est pas
+// miroitée dans l'ERP (Boîtes, Mois, Change log…) restent en pastille inerte —
+// mieux qu'un lien mort, et sans perdre l'information qu'il y a bien un lien.
+// `byLabel` : la colonne porte le NOM de la fiche visée et non son identifiant
+// (cas d'un champ natif qu'on a demandé à afficher en « Lien vers … »). Le
+// serveur cherche alors aussi par libellé dans la table cible.
+export function LinkedRecordsValue({ field, value, byLabel = false, detail = false }) {
+  const keys = useMemo(() => parseLinkedKeys(value, { splitCommas: !byLabel }), [value, byLabel])
+  const resolved = useRecordLinks(keys, field?.record_link_target || null, byLabel)
+  if (!keys.length) return <span className="text-slate-400">—</span>
+  const title = resolved.map((r, i) => (r ? [r.label, r.sub].filter(Boolean).join(' · ') : keys[i])).join(', ')
+  // Dans une FICHE, un champ lien s'affiche comme le lien d'entreprise en haut de
+  // la fiche commande : la même pastille, celle de <LinkedRecordField>, en
+  // lecture seule. Un seul rendu de lien pour toutes les fiches — avant, un champ
+  // lien Airtable sortait en pastille grise minuscule à côté de pastilles pleine
+  // taille, dans la même carte. La cellule de tableau, elle, garde sa pastille
+  // compacte : sa hauteur de ligne est fixe (lignes virtualisées).
+  if (detail) {
+    return (
+      <div className="flex flex-wrap items-center gap-1.5" title={title} data-testid="cf-linked-records">
+        {keys.map((key, i) => {
+          const rec = resolved[i]
+          const label = rec === undefined
+            ? '…'
+            : (rec?.label || (byLabel || key.length <= 12 ? key : `${key.slice(0, 8)}…`))
+          return (
+            <LinkedRecordField
+              key={key}
+              value={key}
+              options={[{ id: key, name: label }]}
+              labelFn={o => o.name}
+              getHref={rec?.url ? () => rec.url : undefined}
+              disabled
+              allowClear={false}
+            />
+          )
+        })}
+      </div>
+    )
+  }
+  // Une seule ligne, sans retour à la ligne : la hauteur de ligne d'une cellule
+  // de DataTable est fixe (lignes virtualisées) — même règle que multi_select.
+  return (
+    <div className="flex items-center gap-1 overflow-hidden" title={title} data-testid="cf-linked-records">
+      {keys.map((key, i) => {
+        const rec = resolved[i]
+        if (rec === undefined) {
+          // Résolution en cours — placeholder de la largeur d'une pastille.
+          return (
+            <span key={key} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-400">
+              …
+            </span>
+          )
+        }
+        if (!rec || !rec.label) {
+          // Rien derrière la clé. Un libellé se lit très bien tel quel : on le
+          // laisse en texte plutôt que de le tronquer en pastille grise.
+          return (
+            <span
+              key={key}
+              data-testid="cf-linked-unresolved"
+              title={byLabel
+                ? `${key} — aucune fiche de cette table ne porte ce nom`
+                : `${key} — aucune fiche trouvée derrière cet identifiant`}
+              className={byLabel
+                ? 'truncate text-slate-600'
+                : 'shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500 whitespace-nowrap'}
+            >
+              {byLabel || key.length <= 12 ? key : `${key.slice(0, 8)}…`}
+            </span>
+          )
+        }
+        const chip = (
+          <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] whitespace-nowrap">
+            {rec.label}
+          </span>
+        )
+        if (!rec.url) return <span key={key} className="shrink-0 text-slate-600">{chip}</span>
+        return (
+          <Link
+            key={key}
+            to={rec.url}
+            onClick={e => e.stopPropagation()}
+            data-testid="cf-linked-record-link"
+            className="shrink-0 text-brand-600 hover:underline"
+          >
+            {chip}
+          </Link>
+        )
+      })}
+    </div>
+  )
+}
+
+// ── Champs « Attachement » ──────────────────────────────────────────────────
+//
+// La cellule porte un tableau JSON de descripteurs de fichiers, écrit par la
+// route dédiée (server/src/routes/custom-field-files.js) :
+//   [{ id, name, size, type }]
+// Les octets ne transitent jamais par la valeur : ils se servent par URL, d'où
+// attachmentFileUrl() ci-dessous.
+
+export function parseAttachments(value) {
+  if (Array.isArray(value)) return value.filter(f => f && typeof f.id === 'string')
+  if (value == null || value === '') return []
+  const str = String(value).trim()
+  if (!str.startsWith('[')) return []
+  try {
+    const arr = JSON.parse(str)
+    return Array.isArray(arr) ? arr.filter(f => f && typeof f.id === 'string') : []
+  } catch { return [] }
+}
+
+// URL de service d'un fichier. Le token passe en query param : un <img src> ou
+// un <a href> ne peut pas porter d'en-tête Authorization (cf. CLAUDE.md,
+// middleware requireAuth). `download` force la sauvegarde plutôt que l'affichage.
+export function attachmentFileUrl(fieldId, recordId, fileId, { download = false } = {}) {
+  if (!fieldId || !recordId || !fileId) return null
+  const token = localStorage.getItem('erp_token') || ''
+  const qs = new URLSearchParams({ token })
+  if (download) qs.set('download', '1')
+  return `/erp/api/custom-field-files/${encodeURIComponent(fieldId)}/${encodeURIComponent(recordId)}/${encodeURIComponent(fileId)}?${qs}`
+}
+
+const ATTACHMENT_IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico|heic|heif)$/i
+export function isImageAttachment(file) {
+  return !!(file && (String(file.type || '').startsWith('image/') || ATTACHMENT_IMAGE_RE.test(file.name || '')))
+}
+
+// Taille lisible — « 1,2 Mo ». Retourne null si la taille est inconnue.
+export function formatFileSize(bytes) {
+  const n = Number(bytes)
+  if (!Number.isFinite(n) || n < 0) return null
+  if (n < 1024) return `${n} o`
+  if (n < 1024 * 1024) return `${fmtNumber(n / 1024, { maximumFractionDigits: 0 })} ko`
+  return `${fmtNumber(n / (1024 * 1024), { maximumFractionDigits: 1 })} Mo`
+}
+
+// Une pièce jointe : vignette pour une image, pastille « trombone + nom » sinon.
+// Le clic ouvre le fichier dans un nouvel onglet (jamais la fiche de la ligne).
+export function AttachmentChip({ href, file, compact = false }) {
+  const [failed, setFailed] = useState(false)
+  const title = [file.name, formatFileSize(file.size)].filter(Boolean).join(' · ')
+  if (isImageAttachment(file) && !failed) {
+    // Hauteur définie plutôt que plafonnée, même raison que ImageThumb : sinon
+    // une pièce jointe SVG (sans dimensions en pixels) se réduit à quelques px.
+    return (
+      <a href={href} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title={title} className="inline-block shrink-0">
+        <img
+          src={href}
+          alt={file.name || ''}
+          loading="lazy"
+          data-testid="cf-attachment-thumb"
+          onError={() => setFailed(true)}
+          className={`${compact ? 'h-7' : 'h-14'} max-w-[7rem] w-auto rounded border border-slate-200 object-contain bg-white`}
+        />
+      </a>
+    )
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={e => e.stopPropagation()}
+      title={title}
+      data-testid="cf-attachment-chip"
+      className="inline-flex shrink-0 items-center gap-1 max-w-[12rem] rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-brand-300 hover:text-brand-700"
+    >
+      <Paperclip size={11} className="shrink-0 opacity-70" />
+      <span className="truncate">{file.name || 'fichier'}</span>
+    </a>
+  )
+}
+
+// Rendu lecture seule d'un champ Attachement (cellule de tableau, fiche).
+// `field` doit porter son `id` et `row` son `id` : sans eux on ne sait pas
+// construire l'URL du fichier, on retombe alors sur un simple décompte.
+export function AttachmentsValue({ field, value, row, compact = true }) {
+  const files = parseAttachments(value)
+  if (!files.length) return <span className="text-slate-400">—</span>
+  const recordId = row?.id
+  if (!field?.id || !recordId) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
+        <Paperclip size={11} className="opacity-70" />{files.length}
+      </span>
+    )
+  }
+  return (
+    <div className="flex items-center gap-1 overflow-hidden" data-testid="cf-attachments">
+      {files.map(f => (
+        <AttachmentChip key={f.id} file={f} compact={compact} href={attachmentFileUrl(field.id, recordId, f.id)} />
+      ))}
+    </div>
+  )
+}
+
 export function parseSelectChoices(field) {
   if (!field?.options) return []
   let opts = field.options
@@ -368,16 +615,94 @@ function colorForChoice(choices, label) {
 
 // Miroir client de ALLOWED_TABLES (server/src/routes/custom-fields.js) : tables
 // pour lesquelles DataTable affiche le « + » d'ajout de champ custom en mode
-// auto-géré. Tenir les deux listes alignées.
+// auto-géré. Tenir les deux listes alignées. Ce sont des VRAIES tables SQL —
+// les clés de vue DataTable qui portent un autre nom passent par
+// sqlTableForView ci-dessous. 'company_serials' (jointure embarquée de la fiche
+// entreprise, sans table propre) n'y figure pas : pas de champ custom possible.
 export const CUSTOM_FIELD_TABLES = new Set([
   'projects', 'factures',
   'companies', 'contacts', 'products', 'orders', 'tickets', 'tasks',
   'shipments', 'employees', 'purchases', 'achats_fournisseurs',
   'returns', 'sale_receipts', 'serial_numbers', 'interactions',
-  'order_items', 'abonnements', 'retours', 'return_items', 'adresses',
-  'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items', 'company_serials',
+  'order_items', 'subscriptions', 'return_items', 'adresses',
+  'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items',
   'payments', 'serial_state_changes',
 ])
+
+// Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom.
+// Les vues/pills/colonnes visibles restent stockées sous la clé de vue ; les
+// champs custom (custom_fields) et leurs routes sont indexés par vraie table
+// SQL. Miroir serveur : VIEW_KEY_TO_SQL_TABLE (server/src/routes/views.js).
+const VIEW_KEY_TO_SQL_TABLE = {
+  retours: 'returns',
+  abonnements: 'subscriptions',
+  // Articles d'un envoi (EnvoisDetail) : ce sont des order_items, mais avec
+  // leurs propres vues/colonnes visibles, séparées du tableau Articles de la
+  // fiche commande.
+  shipment_items: 'order_items',
+  // Envois d'une commande (OrderDetail) : ce sont des shipments, mais avec
+  // leurs propres vues/colonnes visibles, séparées de la page /envois.
+  order_envois: 'shipments',
+  // Envois expédiés à une adresse (AdresseDetail) : mêmes shipments, vues et
+  // colonnes visibles propres à la fiche adresse.
+  adresse_envois: 'shipments',
+  // Articles d'un retour (RetourDetail) : lignes `return_items`, dont la clé de
+  // vue est francisée comme le reste du domaine retours.
+  retour_items: 'return_items',
+}
+export function sqlTableForView(viewKey) {
+  return VIEW_KEY_TO_SQL_TABLE[viewKey] || viewKey
+}
+
+// ── Clé de CHAMPS d'une clé de vue ──────────────────────────────────────────
+//
+// Un tableau encastré dans une fiche (les Envois d'une entreprise, les Commandes
+// d'une entreprise…) porte sa propre clé de vue : ses colonnes visibles, ses
+// largeurs et son tri lui appartiennent, et changer la vue du tableau encastré
+// ne doit pas toucher celle de la page dédiée — c'est voulu.
+//
+// Mais ce sont les MÊMES enregistrements, donc les mêmes CHAMPS : un envoi n'a
+// pas un jeu de champs « vu depuis l'entreprise » et un autre « vu depuis
+// /envois ». La définition des champs (libellé, type, suppression) est donc
+// toujours celle de la table canonique — une seule page /champs, un seul
+// stockage. Sans cette table de correspondance, « Configurer les champs » depuis
+// une fiche ouvrait une page vide-ish propre à la clé encastrée, et un renommage
+// n'y valait que là.
+//
+// Ce que la clé de vue garde : vues/pills, colonnes visibles, largeurs, tri.
+// Ce que la clé de champs porte : /champs/:table, libellés, types, suppressions.
+const VIEW_KEY_TO_FIELD_KEY = {
+  // Fiche entreprise
+  company_contacts:    'contacts',
+  company_orders:      'orders',
+  company_tickets:     'tickets',
+  company_factures:    'factures',
+  company_abonnements: 'abonnements',
+  company_envois:      'shipments',
+  company_tasks:       'tasks',
+  company_achats:      'achats_fournisseurs',
+  company_retours:     'retours',
+  company_serials:     'serial_numbers',
+  // Fiche projet
+  project_factures:    'factures',
+  project_soumissions: 'soumissions',
+  // Fiche contact
+  contact_tasks:       'tasks',
+  // Fiche produit (pièce)
+  product_achats:      'purchases',
+  // Fiches commande / adresse / envoi
+  order_envois:        'shipments',
+  adresse_envois:      'shipments',
+  shipment_items:      'order_items',
+  // Fiche retour : les articles n'ont pas de page dédiée, la table canonique de
+  // leurs champs est donc `return_items` (/champs/return_items). Conséquence
+  // voulue : les 46 champs Airtable de la table sont PROPOSÉS dans le sélecteur
+  // de champs sans s'afficher d'office (cf. columnsWithOwnCf, DataTable.jsx).
+  retour_items:        'return_items',
+}
+export function fieldKeyForView(viewKey) {
+  return VIEW_KEY_TO_FIELD_KEY[viewKey] || viewKey
+}
 
 // Colonne DataTable dérivée d'un champ custom — mapping partagé entre les pages
 // câblées manuellement (Pipeline, Factures) et le mode auto-géré de DataTable.
@@ -386,22 +711,58 @@ export function customFieldToColumn(f) {
     id: f.column_name,
     label: f.name,
     field: f.column_name,
+    // Texte d'aide → « ? » survolable dans l'en-tête de colonne (DataTable).
+    ...(f.description ? { description: f.description } : {}),
     type: customFieldColumnType(f),
+    // Type RÉEL du champ, pour l'affichage seul (icône de type dans le panneau
+    // « Champs »). `type` ci-dessus est le type de colonne DataTable, volontairement
+    // grossier (une devise et une formule numérique y sont toutes deux 'number') :
+    // il pilote filtre/tri/édition et ne doit pas changer.
+    // Champ lien Airtable : son type stocké est 'text' (la colonne porte des
+    // identifiants), mais c'est un lien — icône et libellé doivent le dire.
+    fieldType: isAirtableLinkField(f) ? 'link' : (f.kind && f.kind !== 'data' ? f.kind : f.type),
+    // Champ lien : la cellule ne s'édite pas au clavier mais par associations /
+    // dissociations — pastilles avec « × » + liste recherchable de la table
+    // cible (cf. components/LinkCellEditor.jsx). `record_link_target` peut rester
+    // nul (table Airtable non miroitée) : l'éditeur déduit alors la table des
+    // liens déjà posés, et à défaut ne permet que de dissocier. Un LOOKUP qui
+    // rapatrie un lien (`record_link`) porte la métadonnée sans être éditable
+    // pour autant — c'est un calcul.
+    ...((isAirtableLinkField(f) || f.record_link)
+      ? {
+        linkMulti: isAirtableLinkField(f),
+        linkTarget: f.record_link_target || null,
+        linkIdentity: f.record_link_identity || null,
+      }
+      : {}),
     // Select : on expose les choix au filtre (FilterRow) et à l'éditeur inline.
     ...((f.type === 'single_select' || f.type === 'multi_select')
       ? { options: parseSelectChoices(f), selectChoices: parseSelectChoices(f) }
       : {}),
     // Durée : format d'affichage (h:mm / h:mm:ss) pour DynamicCell.
     ...(f.type === 'duration' ? { durationFormat: durationFormatOf(f) } : {}),
+    // Nombre : décimales du champ → la barre de totaux (somme, moyenne…) suit le
+    // même réglage que les cellules.
+    ...(Number.isInteger(f.decimals) ? { decimals: f.decimals } : {}),
     // Bouton : action sur la ligne, pas une valeur → ni groupable, ni triable,
     // ni filtrable, ni éditable.
-    groupable: f.type !== 'button',
-    sortable: f.type !== 'button',
-    filterable: f.type !== 'button',
-    // Seuls les champs kind='data' sont éditables (mode tableur de DataTable,
-    // actif uniquement si la page fournit onCellEdit). Les champs virtuels
-    // (formula/lookup/auto/button) sont calculés à la lecture → lecture seule.
-    editable: f.type !== 'button' && (!f.kind || f.kind === 'data'),
+    // Bouton : action sur la ligne. Attachement : une liste de fichiers, dont
+    // ni le tri ni le regroupement ni le filtre texte ne veulent rien dire.
+    groupable: f.type !== 'button' && f.type !== 'attachment',
+    sortable: f.type !== 'button' && f.type !== 'attachment',
+    filterable: f.type !== 'button' && f.type !== 'attachment',
+    // Seuls les champs kind='data' ÉDITABLES sont éditables (mode tableur de
+    // DataTable, actif uniquement si la page fournit onCellEdit). Les champs
+    // virtuels (formula/lookup/auto/button) sont calculés à la lecture →
+    // lecture seule. `writable` vient du serveur (règle d'éditabilité unique,
+    // services/customFieldWritability.js) : un champ Airtable en import seul
+    // est en lecture seule — l'écriture serait écrasée au prochain sync.
+    // Attachement : la valeur ne se tape pas — les fichiers se déposent depuis
+    // la fiche (panneau latéral), qui écrit la cellule par sa route dédiée.
+    editable: f.type !== 'button' && f.type !== 'attachment' && (!f.kind || f.kind === 'data') && f.writable !== false,
+    // Flag pour l'UI (toast explicatif au double-clic) : la cellule est en
+    // lecture seule PARCE QUE le champ est importé d'Airtable en sens 'pull'.
+    ...(f.writable === false ? { airtablePullReadonly: true } : {}),
     render: row => renderCustomFieldValue(f, row[f.column_name], row),
   }
 }
@@ -413,6 +774,9 @@ export function customFieldColumnType(f) {
   // Bouton : action sur la ligne, pas une valeur — type dédié non éditable et
   // non filtrable/triable/groupable (cf. mapping de colonne dans les pages).
   if (f.type === 'button') return 'button'
+  // Attachement : type dédié, ni triable ni filtrable — la cellule liste des
+  // fichiers, pas une valeur comparable.
+  if (f.type === 'attachment') return 'attachment'
   if (f.result_type === 'date') return 'date'
   if (f.type === 'duration') return 'duration'
   // Checkbox → 'boolean' : aligne le filtre (opérateurs is_true/is_false) et
@@ -493,13 +857,18 @@ export function ButtonFieldCell({ field, row }) {
 // Rendu lecture seule d'une valeur de champ custom selon son type/résultat.
 // `field` = ligne custom_fields { type, result_type, decimals, view_error, options }.
 // `row`   = la ligne complète (nécessaire pour les boutons : action sur le record).
-export function renderCustomFieldValue(field, value, row) {
+// `detail` = rendu pour une FICHE (et non une cellule de tableau) : les champs
+// lien y prennent la pastille pleine taille commune à toutes les fiches.
+export function renderCustomFieldValue(field, value, row, { detail = false } = {}) {
   // Bouton : action sur la ligne, pas une valeur — rendu en premier (pas de
   // notion de valeur vide). Nécessite `row.id` pour cibler le record.
   if (field.type === 'button') return <ButtonFieldCell field={field} row={row} />
   // La VUE n'a pas pu calculer ce champ (colonne source disparue, etc.) — on
   // affiche #ERROR pour toute la colonne plutôt qu'un « — » trompeur.
   if (field?.view_error) return <CustomFieldError detail={field.view_error} />
+  // Attachement : vignettes / pastilles de fichiers, cliquables. Rendu avant le
+  // test « valeur vide » pour garder un « — » cohérent (AttachmentsValue s'en charge).
+  if (field.type === 'attachment') return <AttachmentsValue field={field} value={value} row={row} />
   // checkbox : case stylée lecture seule (cochée = ✓ sur fond brand, décochée =
   // case vide). Rendu AVANT le test « valeur vide » : NULL/0 = décoché légitime,
   // pas un « — ».
@@ -535,6 +904,13 @@ export function renderCustomFieldValue(field, value, row) {
     )
   }
   if (value == null || value === '') return <span className="text-slate-400">—</span>
+  // Valeur = identifiant(s) d'enregistrement → liens vers les fiches visées.
+  // Deux cas : un champ lien Airtable, ou un champ que le serveur signale comme
+  // référence (`record_link`) — typiquement un LOOKUP qui rapatrie un champ lien
+  // ou une colonne FK : la valeur copiée reste un id, donc elle reste navigable.
+  if (isAirtableLinkField(field) || field.record_link) {
+    return <LinkedRecordsValue field={field} value={value} detail={detail} />
+  }
   if (field.type === 'duration') {
     const n = Number(value)
     if (!Number.isFinite(n)) return <span className="text-slate-400">—</span>
@@ -551,13 +927,26 @@ export function renderCustomFieldValue(field, value, row) {
     const formatted = formatCurrency(value, field.decimals ?? 2, currencyCodeOf(field))
     return <span className="tabular-nums text-slate-700">{formatted != null ? formatted : value}</span>
   }
+  // Nombre : nombre de décimales FIXE, celui du champ (réglage du modal de champ,
+  // ou précision Airtable publiée par le serveur). Un champ nombre sans réglage
+  // suit le défaut que le modal affiche (2) — avant, la cellule rendait la
+  // valeur brute (« 1.26666666666667 ») quel que soit le réglage. Les champs
+  // calculés à résultat numérique ne sont formatés que s'ils portent un réglage.
+  if (field.type === 'number' || field.result_type === 'number') {
+    const d = Number.isInteger(field.decimals) ? Math.max(0, Math.min(5, field.decimals)) : (field.type === 'number' ? 2 : null)
+    const formatted = formatDecimals(value, d)
+    if (formatted != null) return <span className="tabular-nums text-slate-700">{formatted}</span>
+  }
   // Champ URL / texte dont la valeur est une image → vignette (fallback lien si
   // le chargement échoue). Couvre le champ « Image » (attachments Airtable) qui
   // affichait auparavant l'URL brute au lieu de l'image.
-  if ((field.type === 'url' || field.type === 'text') && isImageUrl(value)) {
+  if ((field.type === 'url' || field.type === 'text' || field.result_type === 'url') && isImageUrl(value)) {
     return <ImageValue value={value} />
   }
-  if (field.type === 'url') return <UrlValue value={value} />
+  // Champ URL, ou champ calculé (formule/lookup/rollup) dont le type d'affichage
+  // choisi est « URL » : lien cliquable si la valeur est une adresse valide,
+  // texte simple sinon (UrlValue s'en charge).
+  if (field.type === 'url' || field.result_type === 'url') return <UrlValue value={value} />
   if (field.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodeOf(field)} />
   return <span className="text-slate-700">{value}</span>
 }

@@ -23,8 +23,8 @@
 //     (voir plus bas) trouve une dépense QB très probablement la même, sous un
 //     AUTRE nom de fournisseur ou hors de la fenêtre attendue → à confirmer ;
 //   - `missing` : aucune trace, même après le rapprochement approfondi.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { normalizeVendorKey, strippedVendorKey, LEGAL_SUFFIXES } from './vendorProfiles.js'
 
 // ── Charges attendues ────────────────────────────────────────────────────────
@@ -493,7 +493,7 @@ export function linkSubscriptionVendorAlias(sub, qbVendorName) {
       db.prepare('UPDATE vendor_profiles SET deleted_at = NULL WHERE id = ?').run(existing.id)
       profile = existing
     } else {
-      const id = randomUUID()
+      const id = newRecordId()
       db.prepare('INSERT INTO vendor_profiles (id, name, aliases) VALUES (?,?,?)').run(id, name, '[]')
       profile = { id, name, aliases: '[]' }
     }

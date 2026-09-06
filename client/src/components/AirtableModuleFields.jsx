@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { RefreshCw, Trash2, Plus, X } from 'lucide-react'
+import { RefreshCw, Trash2, Plus, Sparkles, AlertCircle } from 'lucide-react'
 import api from '../lib/api.js'
+import { AirtableTypeIcon, airtableTypeLabel } from '../lib/airtableFieldIcons.jsx'
 import { invalidate } from '../lib/prefetch.js'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { useConfirm } from './ConfirmProvider.jsx'
@@ -9,7 +10,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
 import { DIRECTIONS } from './AirtableCoreMapModal.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import Spinner from './Spinner.jsx'
 
 // Contrôle des champs Airtable d'un module : pour chaque colonne ERP, son nom
 // d'affichage, son type et le champ Airtable qui l'alimente (ou rien = pas
@@ -29,8 +30,29 @@ const TYPE_COMPAT = {
   single_select: new Set(['single_select']),
   multi_select:  new Set(['multi_select']),
   checkbox:      new Set(['checkbox']),
-  link:          new Set(['link']),
+  // Un champ « enregistrement lié » Airtable atterrit dans une colonne TEXTE
+  // (elle garde les record IDs, rendus en pastilles cliquables) — c'est l'état
+  // des ~80 champs lien déjà importés. 'link' reste pour les colonnes déclarées
+  // Lien côté ERP (« Entreprise » / « Vendeur » d'un projet).
+  link:          new Set(['link', 'text', 'long_text']),
+  attachment:    new Set(['attachment', 'text', 'long_text']),
 }
+// Le champ Airtable de type `at` peut-il alimenter une colonne ERP de type `erp` ?
+// Même relation que `typesCompatible` côté serveur — et dans le même SENS : la
+// lire à l'envers excluait de la liste les champs lien et pièce jointe, seuls
+// types dont la colonne d'accueil n'a pas le même nom de type qu'eux.
+function typesCompatible(at, erp) {
+  return TYPE_COMPAT[at]?.has(erp) || false
+}
+// Types de champs Airtable calculés côté Airtable : l'API refuse toute écriture
+// dessus (422). Ils sortent donc de la liste quand la colonne ERP ne peut être
+// que POUSSÉE (champ calculé de Boréal). Aligné sur AIRTABLE_READONLY_TYPES
+// dans server/src/routes/connectors.js.
+const AIRTABLE_READONLY_TYPES = new Set([
+  'formula', 'rollup', 'count', 'autoNumber', 'lookup', 'multipleLookupValues',
+  'createdTime', 'lastModifiedTime', 'createdBy', 'lastModifiedBy',
+  'button', 'externalSyncSource', 'aiText',
+])
 export const TYPE_OPTIONS = [
   { value: 'text', label: 'Texte' },
   { value: 'long_text', label: 'Texte long' },
@@ -84,25 +106,264 @@ export function NameCell({ value, onSave, disabled }) {
   )
 }
 
-// Picker de mapping Airtable inline. Affiche soit le mapping courant avec
-// bouton ×, soit un bouton « Mapper » qui ouvre le picker.
-export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId }) {
-  const [editing, setEditing] = useState(false)
-  const [atFieldName, setAtFieldName] = useState('')
-  const [target, setTarget] = useState(erpColumn.target_table || '')
+// Une entrée de la liste des champs Airtable : icône du type + nom. L'icône
+// remplace l'ancien « (multipleRecordLinks) » collé derrière le nom — le type se
+// reconnaît d'un coup d'œil et le nom récupère la largeur de la cellule. Le type
+// exact reste lisible au survol de l'icône. Un champ disparu d'Airtable n'a pas
+// de type : il garde sa mention rouge, c'est une anomalie à corriger.
+function AirtableFieldOption({ option: o }) {
+  return (
+    <span className="flex items-center gap-1.5 min-w-0">
+      {o.missing ? (
+        <AlertCircle size={12} className="flex-shrink-0 text-red-500" />
+      ) : (
+        <span className="flex-shrink-0 flex" title={airtableTypeLabel(o.type) || undefined}>
+          <AirtableTypeIcon type={o.type} />
+        </span>
+      )}
+      <span className="truncate">{o.name}</span>
+      {o.missing && (
+        <span className="flex-shrink-0 text-[10px] text-red-600">introuvable</span>
+      )}
+      {/* Un champ Airtable peut alimenter plusieurs colonnes Boréal : on ne le
+          retire plus de la liste, on dit qui le lit déjà. */}
+      {!o.missing && o.also?.length > 0 && (
+        <span className="flex-shrink-0 text-[10px] text-slate-500" title={`Alimente déjà : ${o.also.join(', ')}`}>
+          → {o.also.join(', ')}
+        </span>
+      )}
+    </span>
+  )
+}
+
+// Cellule « Champ Airtable » — LE rendu unique de la colonne de mapping du
+// tableau des champs (/champs/:table), quel que soit le système qui alimente la
+// colonne derrière : mapping dynamique (airtable_field_mappings) ou clé du
+// field_map « cœur » du module. L'utilisateur ne doit voir aucune différence
+// entre les deux : même liste déroulante recherchable, et le choix s'enregistre
+// tout de suite dans les deux cas.
+//
+// Il n'y a PAS d'étape « Mapper » : la liste est toujours là, avec une position
+// vide en tête (« — Non mappé — ») pour couper l'import. Un mapping se pose, se
+// change et se retire par le même geste — comme n'importe quel autre champ de
+// la page. Même forme que CoreFieldPicker (AirtableCoreMapModal).
+//
+// Le composant ne sait RIEN de cette distinction — tout arrive en props :
+//   options       [{ name, type?, missing? }] champs Airtable proposables
+//   mappedIssue   pourquoi le champ mappé n'est pas dans `options`
+//                 { level: 'error' | 'info', note, typeLabel? } — la cellule
+//                 n'a pas à savoir ce qui rend un champ incompatible
+//   mapped        nom du champ Airtable actuellement mappé (null = aucun)
+//   onPick        (name, target?) => Promise — enregistre (peut lever)
+//   onUnmap       () => Promise — coupe le mapping
+//   canUnmap      false pour un champ requis (pas de position vide, mention
+//                 « requis » et infobulle honnête)
+//   suggestion    nom détecté automatiquement, proposé en un clic
+//   requireTarget la colonne ERP est un lien : une table cible est demandée
+//                 avant l'enregistrement (defaultTargetFor la pré-remplit)
+export function AirtableFieldCell({
+  mapped, targetTable, options, suggestion, saving, mappedIssue,
+  requireTarget, targetOptions, defaultTargetFor, canUnmap = true, unmapTitle,
+  onPick, onUnmap, testId,
+}) {
+  const [pending, setPending] = useState(null)        // nom choisi, en attente de la table cible
+  const [target, setTarget] = useState(targetTable || '')
   const [err, setErr] = useState(null)
 
+  useEffect(() => { setTarget(targetTable || '') }, [targetTable])
+
+  // Le champ mappé reste toujours visible dans la liste, même s'il n'est pas
+  // dans les candidats — sinon la cellule se serait affichée « non mappée »
+  // alors qu'elle l'est. Deux raisons très différentes de ne pas y être, et
+  // c'est l'appelant qui tranche (`mappedIssue`) : le champ a disparu d'Airtable
+  // (`error` — l'import est cassé) ou son type ne figure pas dans les types
+  // compatibles alors qu'il existe et s'importe très bien (`info`). Marquer le
+  // second « introuvable dans Airtable » était faux.
+  const opts = useMemo(() => {
+    const list = options || []
+    if (mapped && !list.some(o => o.name === mapped)) {
+      return [...list, {
+        name: mapped,
+        type: mappedIssue?.typeLabel || null,
+        missing: mappedIssue?.level !== 'info',
+      }]
+    }
+    return list
+  }, [options, mapped, mappedIssue])
+
+  const noCandidates = !opts.length
+
+  async function commit(name, tgt) {
+    setErr(null)
+    try {
+      await onPick(name, tgt || null)
+      setPending(null)
+    } catch (e) {
+      setErr(e.message || 'Erreur')
+    }
+  }
+
+  async function unmap() {
+    setErr(null)
+    setPending(null)
+    try { await onUnmap() } catch (e) { setErr(e.message || 'Erreur') }
+  }
+
+  function pick(name) {
+    // Position vide = « ne pas mapper » : on coupe le mapping tout de suite.
+    if (!name) {
+      if (mapped) unmap()
+      else { setPending(null); setErr(null) }
+      return
+    }
+    if (requireTarget) {
+      setPending(name)
+      setTarget(defaultTargetFor?.(name) || targetTable || '')
+      return
+    }
+    if (name === mapped) return
+    commit(name)
+  }
+
+  return (
+    <div className="text-xs space-y-1">
+      <div className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">
+          <SearchableSelect
+            testId={testId}
+            // Même gabarit que le <select> de la colonne « Type » de la même
+            // ligne : la liste vit dans un tableau compact, pas dans un
+            // formulaire (.input serait deux fois trop haut). Teinte de marque
+            // quand c'est mappé — l'œil retrouve les champs importés d'un coup.
+            className={`w-full rounded border px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 ${
+              mapped
+                ? 'border-brand-200 bg-brand-50/60 font-medium'
+                : 'border-slate-200 bg-white hover:border-slate-300'
+            }`}
+            value={pending ?? (mapped || '')}
+            options={opts}
+            getOptionValue={o => o.name}
+            // Le type ne s'écrit plus entre parenthèses : il se lit à l'icône
+            // (voir lib/airtableFieldIcons.jsx). Le libellé texte reste le nom
+            // seul — c'est lui qui sert d'infobulle ; la recherche, elle, passe
+            // par `filterOption` pour continuer d'accepter le type.
+            getOptionLabel={o => o.missing
+              ? `${o.name} (introuvable dans Airtable)`
+              : o.name}
+            renderOption={o => <AirtableFieldOption option={o} />}
+            renderValue={o => <AirtableFieldOption option={o} />}
+            filterOption={(o, q) =>
+              o.name.toLowerCase().includes(q)
+              || airtableTypeLabel(o.type).toLowerCase().includes(q)}
+            getOptionKey={o => o.name}
+            onChange={pick}
+            emptyOption={canUnmap ? '— Non mappé —' : undefined}
+            placeholder={noCandidates ? 'Aucun champ compatible' : '— Non mappé —'}
+            searchPlaceholder="Rechercher un champ…"
+            disabled={saving || noCandidates}
+          />
+        </div>
+        {!canUnmap && unmapTitle && (
+          <span className="text-[10px] text-slate-400 cursor-help flex-shrink-0" title={unmapTitle}>requis</span>
+        )}
+      </div>
+      {/* Colonne lien : la table ERP cible est demandée avant l'enregistrement. */}
+      {requireTarget && pending !== null && (
+        <div className="space-y-1.5 bg-slate-50 p-2 rounded border border-slate-200">
+          <SearchableSelect
+            testId={testId ? `${testId}-target` : 'mapping-target-table'}
+            value={target}
+            options={targetOptions || []}
+            getOptionValue={t => t}
+            getOptionLabel={t => t}
+            getOptionKey={t => t}
+            onChange={setTarget}
+            emptyOption="— Table ERP cible —"
+            searchPlaceholder="Rechercher une table…"
+            disabled={saving}
+          />
+          <div className="flex justify-end gap-1">
+            <button
+              onClick={() => { setPending(null); setTarget(targetTable || ''); setErr(null) }}
+              className="text-[11px] px-2 py-0.5 text-slate-600 hover:bg-slate-200 rounded"
+            >
+              Annuler
+            </button>
+            <button
+              onClick={() => commit(pending, target)}
+              disabled={saving || !pending}
+              className="text-[11px] px-2 py-0.5 bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50"
+            >
+              {saving ? '…' : 'OK'}
+            </button>
+          </div>
+        </div>
+      )}
+      {mapped && mappedIssue?.note && (
+        <div className={`text-[11px] ${mappedIssue.level === 'error' ? 'text-red-600' : 'text-amber-600'}`}>
+          {mappedIssue.note}
+          {mappedIssue.action && (
+            <button
+              type="button"
+              onClick={() => commit(mapped, targetTable)}
+              disabled={saving}
+              className="ml-1 underline hover:no-underline disabled:opacity-50"
+            >
+              {mappedIssue.action}
+            </button>
+          )}
+        </div>
+      )}
+      {!mapped && suggestion && (
+        <button
+          type="button"
+          onClick={() => commit(suggestion)}
+          disabled={saving}
+          className="max-w-full text-[11px] text-brand-600 hover:text-brand-800 inline-flex items-center gap-1 disabled:opacity-50"
+          title={`Champ Airtable détecté automatiquement par nom : ${suggestion}`}
+        >
+          <Sparkles size={11} className="flex-shrink-0" />
+          <span className="truncate">Suggestion : {suggestion}</span>
+        </button>
+      )}
+      {err && <div className="text-[11px] text-red-600">{err}</div>}
+    </div>
+  )
+}
+
+// Mapping dynamique (airtable_field_mappings) d'une colonne ERP : prépare les
+// options et l'enregistrement, le rendu est celui d'AirtableFieldCell — commun
+// aux champs « cœur ».
+export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId }) {
   const isLink = erpColumn.field_type === 'link'
 
-  // Champs Airtable candidats : type compat avec la colonne, pas déjà mappés
-  // ailleurs (sauf si ce sont déjà nos mappés).
+  // Champs Airtable candidats : ceux dont le type est compatible avec la
+  // colonne. Un champ DÉJÀ mappé reste candidat — il peut alimenter plusieurs
+  // colonnes Boréal ; la liste dit seulement lesquelles il nourrit déjà.
   const candidates = useMemo(() => {
-    const compatTypes = TYPE_COMPAT[erpColumn.field_type] || new Set()
     return airtableFields.filter(f =>
-      compatTypes.has(f.erp_field_type)
-      && (!f.current_mapping || f.airtable_field_name === erpColumn.mapped_airtable_field)
+      typesCompatible(f.erp_field_type, erpColumn.field_type)
+      // Colonne poussée seulement (champ calculé de Boréal) : la cible doit être
+      // un champ Airtable écrivable, sinon le PATCH échouerait à chaque envoi.
+      && !(erpColumn.push_only && AIRTABLE_READONLY_TYPES.has(f.airtable_field_type))
     )
   }, [airtableFields, erpColumn])
+
+  const options = useMemo(
+    () => candidates.map(c => ({
+      name: c.airtable_field_name,
+      type: c.airtable_field_type,
+      // Ce que ce champ alimente déjà : la synchronisation de base du module
+      // (clé du field_map) et/ou d'autres colonnes ERP.
+      also: [
+        ...(c.core_key ? ['sync de base'] : []),
+        ...(c.current_mappings || [])
+          .filter(m => m.column_name !== erpColumn.column_name)
+          .map(m => m.column_name),
+      ],
+    })),
+    [candidates, erpColumn.column_name]
+  )
 
   const linkTargets = useMemo(() => {
     const set = new Set(Object.values(tableMap || {}))
@@ -110,256 +371,82 @@ export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, sav
     return [...set].sort()
   }, [tableMap])
 
-  const selected = candidates.find(c => c.airtable_field_name === atFieldName)
-  // Pré-remplit target depuis linkedTableId si on choisit un champ lien
-  useEffect(() => {
-    if (!isLink || !selected) return
-    if (target) return
-    const auto = tableMap?.[selected.linked_table_id]
-    if (auto) setTarget(auto)
-  }, [selected, isLink, tableMap, target])
-
-  async function save() {
-    setErr(null)
-    if (!atFieldName) { setErr('Choisis un champ Airtable'); return }
-    const f = candidates.find(c => c.airtable_field_name === atFieldName)
-    if (!f) { setErr('Champ introuvable'); return }
-    if (isLink && !target) { setErr('Choisis une table cible'); return }
-    try {
-      await onSave({
-        airtable_field_id: f.airtable_field_id,
-        airtable_field_name: f.airtable_field_name,
-        airtable_field_type: f.airtable_field_type,
-        column_name: erpColumn.column_name,
-        link_target_table: isLink ? target : null,
-      })
-      setEditing(false)
-    } catch (e) {
-      setErr(e.message || 'Erreur')
+  // Le champ mappé ne figure pas dans les candidats : deux cas très différents.
+  // S'il a réellement disparu de la table Airtable, l'import est cassé et il
+  // faut le dire. S'il est simplement d'un type que TYPE_COMPAT ne connaît pas
+  // (type Airtable exotique déjà importé), tout fonctionne : rien à signaler. On
+  // ne remonte alors que son vrai type Airtable, pour que la liste ne
+  // l'étiquette pas « introuvable ».
+  const mappedIssue = useMemo(() => {
+    const name = erpColumn.mapped_airtable_field
+    if (!name) return null
+    // Partage dormant : le champ existe et alimente déjà la sync de base du
+    // module, mais ce second mapping n'a jamais été revendiqué — le sync ne le
+    // sert donc pas. Un clic l'active (ré-enregistre la def avec le partage).
+    if (erpColumn.core_dormant) {
+      return { level: 'warn', note: 'Déjà lu par la sync de base — import inactif.', action: 'Activer' }
     }
-  }
-
-  async function unmap() {
-    if (!erpColumn.mapped_airtable_field) return
-    setErr(null)
-    try {
-      await onSave({
-        airtable_field_id: erpColumn.airtable_field_id,
-        airtable_field_name: erpColumn.mapped_airtable_field,
-        airtable_field_type: 'singleLineText', // peu importe pour unmap
-        column_name: null,
-      })
-    } catch (e) {
-      setErr(e.message || 'Erreur')
+    if (candidates.some(c => c.airtable_field_name === name)) return null
+    const f = (airtableFields || []).find(x => x.airtable_field_name === name)
+    if (!f) {
+      return { level: 'error', note: 'Champ absent de la table Airtable — le sync ne remplira rien.' }
     }
-  }
-
-  if (erpColumn.mapped_airtable_field && !editing) {
-    return (
-      <div className="flex items-center gap-1 text-xs">
-        <span className="px-1.5 py-0.5 rounded bg-brand-50 text-brand-700 font-medium truncate">
-          {erpColumn.mapped_airtable_field}
-        </span>
-        {erpColumn.target_table && (
-          <span className="text-[10px] text-slate-600">→ {erpColumn.target_table}</span>
-        )}
-        <button
-          onClick={unmap}
-          disabled={savingId === erpColumn.column_name}
-          className="text-slate-600 hover:text-red-600 p-0.5"
-          title="Déconnecter le mapping"
-        >
-          <X size={12} />
-        </button>
-      </div>
-    )
-  }
-
-  if (!editing) {
-    const noCandidates = candidates.length === 0
-    return (
-      <button
-        onClick={() => { setAtFieldName(''); setTarget(erpColumn.target_table || ''); setEditing(true) }}
-        disabled={noCandidates}
-        className="text-xs px-1.5 py-0.5 rounded text-slate-600 hover:text-brand-700 hover:bg-brand-50 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-        title={noCandidates ? 'Aucun champ Airtable compatible' : 'Mapper un champ Airtable'}
-      >
-        <Plus size={12} /> {noCandidates ? 'Aucun champ compat.' : 'Mapper'}
-      </button>
-    )
-  }
+    return { level: 'info', typeLabel: f.airtable_field_type }
+  }, [erpColumn, candidates, airtableFields])
 
   return (
-    <div className="space-y-1.5 bg-slate-50 p-2 rounded border border-slate-200">
-      <SearchableSelect
-        testId="mapping-airtable-field"
-        value={atFieldName}
-        options={candidates}
-        getOptionValue={c => c.airtable_field_name}
-        getOptionLabel={c => `${c.airtable_field_name} (${c.airtable_field_type})`}
-        getOptionKey={c => c.airtable_field_name}
-        onChange={setAtFieldName}
-        emptyOption="— Champ Airtable —"
-        placeholder="— Champ Airtable —"
-        searchPlaceholder="Rechercher un champ…"
-      />
-      {isLink && (
-        <SearchableSelect
-          testId="mapping-target-table"
-          value={target}
-          options={linkTargets}
-          getOptionValue={t => t}
-          getOptionLabel={t => t}
-          getOptionKey={t => t}
-          onChange={setTarget}
-          emptyOption="— Table ERP cible —"
-          placeholder="— Table ERP cible —"
-          searchPlaceholder="Rechercher une table…"
-        />
-      )}
-      {err && <div className="text-[11px] text-red-600">{err}</div>}
-      <div className="flex justify-end gap-1">
-        <button onClick={() => { setEditing(false); setErr(null) }} className="text-[11px] px-2 py-0.5 text-slate-600 hover:bg-slate-200 rounded">Annuler</button>
-        <button onClick={save} disabled={savingId === erpColumn.column_name} className="text-[11px] px-2 py-0.5 bg-brand-600 text-white rounded hover:bg-brand-700 disabled:opacity-50">
-          {savingId === erpColumn.column_name ? '…' : 'OK'}
-        </button>
-      </div>
-    </div>
+    <AirtableFieldCell
+      testId="mapping-airtable-field"
+      mapped={erpColumn.mapped_airtable_field || null}
+      targetTable={erpColumn.target_table || null}
+      options={options}
+      mappedIssue={mappedIssue}
+      saving={savingId === erpColumn.column_name}
+      requireTarget={isLink}
+      targetOptions={linkTargets}
+      defaultTargetFor={name => {
+        const f = candidates.find(c => c.airtable_field_name === name)
+        return f && tableMap?.[f.linked_table_id]
+      }}
+      onPick={async (name, target) => {
+        // Réactivation d'un mapping déjà posé : le champ peut ne plus figurer
+        // parmi les candidats (son type est devenu incompatible avec celui de la
+        // colonne). On laisse alors le serveur trancher — son refus dit ce qui
+        // cloche, là où « champ introuvable » serait un cul-de-sac.
+        const f = candidates.find(c => c.airtable_field_name === name)
+          || (airtableFields || []).find(c => c.airtable_field_name === name)
+        if (!f) throw new Error('Champ introuvable')
+        if (isLink && !target) throw new Error('Choisis une table cible')
+        await onSave({
+          airtable_field_id: f.airtable_field_id,
+          airtable_field_name: f.airtable_field_name,
+          airtable_field_type: f.airtable_field_type,
+          column_name: erpColumn.column_name,
+          link_target_table: isLink ? target : null,
+          // Table Airtable visée par un champ lien : le serveur la garde en
+          // indice d'affichage (de quelle table sont les record IDs stockés).
+          linked_table_id: f.linked_table_id || null,
+        })
+      }}
+      onUnmap={async () => {
+        if (!erpColumn.mapped_airtable_field) return
+        await onSave({
+          airtable_field_id: erpColumn.airtable_field_id,
+          airtable_field_name: erpColumn.mapped_airtable_field,
+          airtable_field_type: 'singleLineText', // peu importe pour unmap
+          // Le démappage vise LA COLONNE : le même champ Airtable peut en
+          // alimenter d'autres, qui ne doivent pas sauter avec.
+          column_name: erpColumn.column_name,
+          unmap: true,
+        })
+      }}
+    />
   )
 }
 
-// Section header : config base/table + sync trigger. Identique à l'ancien
-// AirtableSyncButton mais inline en page (pas en modal).
-export function AirtableConfigSection({ onSynced }) {
-  const [config, setConfig] = useState(null)
-  const [bases, setBases] = useState([])
-  const [tables, setTables] = useState([])
-  const [baseId, setBaseId] = useState('')
-  const [tableId, setTableId] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState(null)
-  const { status: syncStatus } = useSyncStatus(3000)
-  const syncing = !!syncStatus?.projets?.running
-
-  useEffect(() => {
-    api.connectors.list().then(d => {
-      const cfg = d.projets_sync || {}
-      setConfig(cfg)
-      if (cfg.base_id) setBaseId(cfg.base_id)
-      if (cfg.projects_table_id) setTableId(cfg.projects_table_id)
-    }).catch(() => {})
-    api.airtable.bases().then(b => setBases(b || [])).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    if (!baseId) { setTables([]); return }
-    api.airtable.tables(baseId).then(t => setTables(t || [])).catch(() => setTables([]))
-  }, [baseId])
-
-  const wasSyncing = useRef(false)
-  useEffect(() => {
-    if (syncing) { wasSyncing.current = true; return }
-    if (wasSyncing.current) {
-      wasSyncing.current = false
-      api.connectors.list().then(d => setConfig(d.projets_sync || {})).catch(() => {})
-      onSynced?.()
-    }
-  }, [syncing, onSynced])
-
-  async function handleSave() {
-    setSaving(true); setError(null)
-    try {
-      await api.airtable.saveConfig('projets', {
-        base_id: baseId, projects_table_id: tableId, field_map_projects: {},
-      })
-      const d = await api.connectors.list()
-      setConfig(d.projets_sync || {})
-    } catch (e) { setError(e.message || 'Erreur') }
-    finally { setSaving(false) }
-  }
-
-  async function handleSync() {
-    if (!baseId || !tableId) return
-    setError(null)
-    try { await api.airtable.sync('projets') } catch (e) { setError(e.message || 'Erreur sync') }
-  }
-
-  const configured = !!(config?.base_id && config?.projects_table_id)
-
-  return (
-    <div className="bg-white border border-slate-200 rounded-lg p-4 mb-4">
-      <div className="flex items-center justify-between mb-3">
-        <div>
-          <h2 className="text-sm font-semibold text-slate-800">Source Airtable</h2>
-          <div className="text-xs text-slate-600 flex items-center gap-2 mt-0.5">
-            {configured ? (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                <span>{config.last_synced_at ? `Dernière sync : ${fmtDate(config.last_synced_at)}` : 'Configurée'}</span>
-              </>
-            ) : (
-              <>
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
-                <span className="text-amber-600">Non configurée</span>
-              </>
-            )}
-            {syncing && <span className="text-amber-600 font-medium animate-pulse">Synchronisation en cours…</span>}
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <button onClick={handleSave} disabled={saving || !baseId || !tableId} className="btn-secondary btn-sm">
-            {saving ? 'Enregistrement…' : 'Enregistrer'}
-          </button>
-          <button onClick={handleSync} disabled={syncing || !configured} className="btn-primary btn-sm flex items-center gap-1.5">
-            <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-            {syncing ? 'Synchronisation…' : 'Synchroniser'}
-          </button>
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label className="block text-xs text-slate-600 mb-1">Base</label>
-          <SearchableSelect
-            testId="projets-base-select"
-            className="input"
-            size="sm"
-            value={baseId}
-            options={bases}
-            getOptionValue={b => b.id}
-            getOptionLabel={b => b.name}
-            onChange={v => { setBaseId(v); setTableId('') }}
-            emptyOption="— Sélectionner —"
-            placeholder="Choisir une base…"
-            searchPlaceholder="Rechercher une base…"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-slate-600 mb-1">Table projets</label>
-          <SearchableSelect
-            testId="projets-table-select"
-            className="input"
-            size="sm"
-            value={tableId}
-            options={tables}
-            getOptionValue={t => t.id}
-            getOptionLabel={t => t.name}
-            onChange={setTableId}
-            emptyOption="— Sélectionner —"
-            placeholder="Choisir une table…"
-            searchPlaceholder="Rechercher une table…"
-            disabled={!baseId}
-          />
-        </div>
-      </div>
-      {error && <p className="text-xs text-red-600 mt-2">{error}</p>}
-    </div>
-  )
-}
-
-// Bandeau de statut source pour les modules autres que projets. La config
-// base/table de ces modules vit dans Connecteurs → Airtable ; ici on se contente
-// d'afficher l'état + un bouton de sync, et un lien vers la config si non
-// configurée.
+// Bandeau de statut source, pour tous les modules — projets inclus. La config
+// base/table vit dans Connecteurs → Airtable ; ici on se contente d'afficher
+// l'état + un bouton de sync, et un lien vers la config si non configurée.
 export function ModuleSourceStatus({ data, onSynced }) {
   const { status: syncStatus } = useSyncStatus(3000)
   const syncing = !!(data?.sync_key && syncStatus?.[data.sync_key]?.running)
@@ -543,14 +630,9 @@ export function AirtableModuleFields({ module: moduleProp }) {
       <div className="space-y-4">
         <p className="text-sm text-slate-600">
           {cols.length} champ{cols.length !== 1 ? 's' : ''}
-          {data && (
-            <> · <span className="text-brand-600 font-medium">{cols.filter(c => c.mapped).length} mappé{cols.filter(c => c.mapped).length !== 1 ? 's' : ''} depuis Airtable</span></>
-          )}
         </p>
 
-        {module === 'projets'
-          ? <AirtableConfigSection onSynced={reload} />
-          : <ModuleSourceStatus data={data} onSynced={reload} />}
+        <ModuleSourceStatus data={data} onSynced={reload} />
 
         <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
@@ -558,7 +640,6 @@ export function AirtableModuleFields({ module: moduleProp }) {
               type="text"
               value={filter}
               onChange={e => setFilter(e.target.value)}
-              placeholder="Rechercher un champ…"
               className="input text-sm w-64"
             />
             <div className="flex items-center gap-3">
@@ -577,7 +658,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
             </div>
           </div>
           {data === null ? (
-            <p className="text-sm text-slate-600 px-4 py-8 text-center">Chargement…</p>
+            <p className="text-sm text-slate-600 px-4 py-8 text-center"><Spinner size="xs" label="Chargement…" /></p>
           ) : filteredCols.length === 0 ? (
             <p className="text-sm text-slate-600 px-4 py-8 text-center">Aucun champ</p>
           ) : (
@@ -666,7 +747,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
 
         {data && data.hardcoded.length > 0 && (
           <div className="mt-4 text-xs text-slate-600">
-            <p className="font-medium mb-1">{data.hardcoded.length} champ{data.hardcoded.length !== 1 ? 's' : ''} géré{data.hardcoded.length !== 1 ? 's' : ''} en code (non éditable{data.hardcoded.length !== 1 ? 's' : ''} ici) :</p>
+            <p className="font-medium mb-1">{data.hardcoded.length} champ{data.hardcoded.length !== 1 ? 's' : ''} déjà lu{data.hardcoded.length !== 1 ? 's' : ''} par la synchronisation de base (mappables en plus) :</p>
             <p className="text-slate-600">{data.hardcoded.join(', ')}</p>
           </div>
         )}

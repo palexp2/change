@@ -93,6 +93,58 @@ export function applyDelta(tableName, delta) {
   if (mutated) notify(tableName)
 }
 
+/**
+ * Fusionne quelques colonnes dans un record DÉJÀ en cache (mise à jour poussée
+ * en direct par le WebSocket — édition d'un collègue, écriture d'une API
+ * externe comme le miroir Airtable). Rend la liste des colonnes réellement
+ * changées, ou null si rien n'a bougé.
+ *
+ * Deux prudences, qui sont la raison d'être de cette fonction plutôt que d'un
+ * `applyDelta` avec une ligne partielle :
+ *  - un record ABSENT du cache n'est pas créé : la ligne serait incomplète
+ *    (charge utile partielle), et le delta poll l'apportera entière ;
+ *  - une clé ABSENTE du record n'est pas ajoutée : les charges utiles temps
+ *    réel des routes portent des champs joints (`company_name`, `items_count`)
+ *    qui ne sont pas des colonnes de la table — les injecter changerait la
+ *    forme des lignes du cache jusqu'au prochain bootstrap.
+ */
+export function patchRecord(tableName, id, values) {
+  if (!id || !values) return null
+  const s = ensureStore(tableName)
+  const cur = s.data.get(id)
+  if (!cur) return null
+  const changed = []
+  for (const k of Object.keys(values)) {
+    if (k === 'id' || !(k in cur)) continue
+    if (cur[k] === values[k]) continue
+    changed.push(k)
+  }
+  if (!changed.length) return null
+  const next = { ...cur }
+  for (const k of changed) next[k] = values[k]
+  s.data.set(id, next)
+  notify(tableName)
+  return changed
+}
+
+/**
+ * Ajoute au cache un record créé ailleurs (miroir Airtable, autre onglet), pour
+ * qu'il apparaisse dans les listes sans attendre le delta poll.
+ *
+ * Deux gardes : la table doit avoir déjà été hydratée (sinon on créerait un
+ * cache d'une seule ligne, que les pages prendraient pour la table entière), et
+ * un record déjà connu n'est pas remplacé — la charge utile d'un `created` est
+ * complète, mais celle qu'on a peut être plus récente.
+ */
+export function insertRecord(tableName, row) {
+  if (!row?.id || !isTableHydrated(tableName)) return false
+  const s = ensureStore(tableName)
+  if (s.data.has(row.id)) return false
+  s.data.set(row.id, { ...row })
+  notify(tableName)
+  return true
+}
+
 export function getRecord(tableName, id) {
   if (!id) return null
   return ensureStore(tableName).data.get(id) || null

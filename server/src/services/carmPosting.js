@@ -13,8 +13,8 @@
 //      mûres pour la facture fournisseur ; il ne fabrique aucune écriture par
 //      lui-même — la double-entrée (dépense vers 21000, factures depuis 21000)
 //      s'en charge.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { classifyCarmLine, postingSkipReason } from './carmRules.js'
 import { getCarmConfig } from './carmAccount.js'
 import { daysBetween } from '../utils/datetime.js'
@@ -272,7 +272,7 @@ export function recomputeCarmAllocations() {
       if (Math.abs(h.amount - w.amount) > 0.0049) { upd.run(w.amount, h.id); changed++ }
       want.delete(key)
     }
-    for (const w of want.values()) { ins.run(randomUUID(), w.payment_txn_id, w.charge_txn_id, w.amount, w.method); changed++ }
+    for (const w of want.values()) { ins.run(newRecordId(), w.payment_txn_id, w.charge_txn_id, w.amount, w.method); changed++ }
   })
   tx()
   return changed

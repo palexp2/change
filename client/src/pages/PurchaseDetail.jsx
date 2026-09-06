@@ -1,11 +1,11 @@
 import { useState, useEffect } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
+import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, ShoppingBag, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, PURCHASE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
-import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -13,25 +13,38 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { Field } from '../components/Field.jsx'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
 const STATUS_OPTIONS = ['Commandé', 'Reçu partiellement', 'Reçu', 'Annulé']
 
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-function FieldShell({ label, saving, children }) {
+const SHELL_LABEL = 'text-xs font-medium text-slate-400 uppercase tracking-wide mb-0.5'
+
+// Champ de la table `purchases` : passe par <Field>, donc par le portier des
+// champs supprimés — le bloc disparaît d'ici dès qu'on supprime le champ dans
+// /champs/purchases. `id` est l'identifiant du champ, pas un libellé.
+function FieldShell({ id, label, saving, children }) {
+  return (
+    <Field table="purchases" id={id} label={label} saving={saving} labelClassName={SHELL_LABEL}>
+      {children}
+    </Field>
+  )
+}
+
+// Valeur CALCULÉE (pas une colonne de la table) : rien à garder ni à renommer.
+function DerivedShell({ label, children }) {
   return (
     <div>
-      <div className="flex items-center gap-2 mb-0.5">
-        <div className="text-xs font-medium text-slate-400 uppercase tracking-wide">{label}</div>
-        {saving && <div className="h-2 w-2 rounded-full bg-brand-400 animate-pulse" title="Enregistrement…" />}
-      </div>
+      <div className={SHELL_LABEL}>{label}</div>
       {children}
     </div>
   )
 }
 
-function EditableText({ value, saving, onCommit, type = 'text', placeholder }) {
+function EditableText({ value, saving, onCommit, type = 'text' }) {
   const [local, setLocal] = useState(value ?? '')
   useEffect(() => { setLocal(value ?? '') }, [value])
   const commit = () => {
@@ -47,7 +60,6 @@ function EditableText({ value, saving, onCommit, type = 'text', placeholder }) {
       onChange={e => setLocal(e.target.value)}
       onBlur={commit}
       onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-      placeholder={placeholder}
       disabled={saving}
     />
   )
@@ -131,9 +143,17 @@ function EditableTextarea({ value, saving, onCommit }) {
   )
 }
 
-export default function PurchaseDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
+// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
+// après suppression du record.
+export default function PurchaseDetail({ recordId, embedded = true, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
+  const leaveRecord = () => { if (embedded) onClose?.(); else navigate('/purchases') }
   const { record: purchase, setRecord: setPurchase, loading, loadError, reload: load } =
     useDetailRecord(() => api.purchases.get(id), [id], { clearOnError: true })
   const [companies, setCompanies] = useState([])
@@ -149,7 +169,7 @@ export default function PurchaseDetail() {
 
   useRealtimeChannel(id ? `purchase:${id}` : null, (msg) => {
     if (msg.type === 'purchase:updated') setPurchase(p => p ? { ...p, ...msg.payload } : p)
-    else if (msg.type === 'purchase:deleted') navigate('/purchases')
+    else if (msg.type === 'purchase:deleted') leaveRecord()
   })
 
   async function saveField(key, value) {
@@ -170,7 +190,7 @@ export default function PurchaseDetail() {
     setDeleting(true)
     try {
       await api.purchases.delete(id)
-      navigate('/purchases')
+      leaveRecord()
     } catch (e) {
       addToast({ message: `Erreur lors de la suppression : ${e.message}`, type: 'error' })
       setDeleting(false)
@@ -178,39 +198,44 @@ export default function PurchaseDetail() {
   }
 
   if (loading) {
-    return <Layout><Spinner center /></Layout>
+    return shell(<Spinner center />)
   }
   if (loadError && !purchase) {
-    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
+    return shell(<DetailLoadError message={loadError} onRetry={load} />)
   }
   if (!purchase) {
-    return <Layout><div className="p-6 text-slate-500">Achat introuvable.</div></Layout>
+    return shell(<div className="p-6 text-slate-500">Achat introuvable.</div>)
   }
 
   const subtotal = (Number(purchase.qty_ordered) || 0) * (Number(purchase.unit_cost) || 0)
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-2xl mx-auto">
+  return shell(
+      <div className={embedded ? 'p-6' : 'p-6 max-w-2xl mx-auto'}>
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate(-1)} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate(-1)} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
               <ShoppingBag size={20} className="text-slate-400" />
-              <h1 className="text-2xl font-bold text-slate-900">
+              <PageTitle>
                 {purchase.reference || <span className="text-slate-400 font-normal">Sans référence</span>}
-              </h1>
+              </PageTitle>
               {purchase.status && <Badge color={STATUS_COLORS[purchase.status] || 'gray'}>{purchase.status}</Badge>}
             </div>
             {purchase.product_name && (
-              <div className="text-sm text-slate-500 mt-1">
-                {purchase.product_id
-                  ? <Link to={`/products/${purchase.product_id}`} className="text-brand-600 hover:underline">{purchase.product_name}</Link>
-                  : purchase.product_name
-                }
-                {purchase.sku && <span className="ml-1 font-mono text-slate-400">({purchase.sku})</span>}
+              <div className="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                <LinkedRecordField
+                  name="product_id"
+                  value={purchase.product_id || purchase.product_name}
+                  options={[{ id: purchase.product_id || purchase.product_name, name: purchase.product_name }]}
+                  getHref={purchase.product_id ? p => `/products/${p.id}` : undefined}
+                  disabled
+                  allowClear={false}
+                />
+                {purchase.sku && <span className="font-mono text-slate-400">({purchase.sku})</span>}
               </div>
             )}
           </div>
@@ -218,67 +243,55 @@ export default function PurchaseDetail() {
 
         <div className="card p-5 space-y-5">
           <div className="grid grid-cols-2 gap-5">
-            <FieldShell label="Référence PO" saving={fieldSaving.reference}>
-              <EditableText value={purchase.reference} saving={fieldSaving.reference} onCommit={v => saveField('reference', v)} placeholder="PO-…" />
+            <FieldShell id="reference" label="Référence PO" saving={fieldSaving.reference}>
+              <EditableText value={purchase.reference} saving={fieldSaving.reference} onCommit={v => saveField('reference', v)} />
             </FieldShell>
-            <FieldShell label="Statut" saving={fieldSaving.status}>
+            <FieldShell id="status" label="Statut" saving={fieldSaving.status}>
               <EditableSelect value={purchase.status} options={STATUS_OPTIONS} saving={fieldSaving.status} onCommit={v => saveField('status', v)} />
             </FieldShell>
-            <FieldShell label="Fournisseur" saving={fieldSaving.supplier_company_id || fieldSaving.supplier}>
-              {/* Règle FK (CLAUDE.md) : toujours offrir une affordance de sélection
-                  (picker recherchable) + une affordance de navigation (lien) quand lié. */}
+            <FieldShell id="supplier" label="Fournisseur" saving={fieldSaving.supplier_company_id || fieldSaving.supplier}>
+              {/* Règle FK (CLAUDE.md) : sélection (picker recherchable) ET
+                  navigation (lien) — les deux dans la MÊME pastille de lien que
+                  partout ailleurs, plutôt qu'une liste doublée d'un lien. */}
               <div className="space-y-1.5">
-                <SearchableSelect
-                  testId="purchase-supplier-company"
+                <LinkedRecordField
+                  name="supplier_company_id"
                   value={purchase.supplier_company_id || ''}
                   options={companies}
-                  getOptionValue={c => c.id}
-                  getOptionLabel={c => c.name}
-                  emptyOption="Aucune entreprise liée"
-                  placeholder="Lier une entreprise…"
-                  className={inp}
-                  size="sm"
-                  disabled={fieldSaving.supplier_company_id}
+                  getHref={c => `/companies/${c.id}`}
+                  saving={!!fieldSaving.supplier_company_id}
                   onChange={v => saveField('supplier_company_id', v || null)}
                 />
-                {purchase.supplier_company_id ? (
-                  <div className="text-sm">
-                    <Link to={`/companies/${purchase.supplier_company_id}`} className="text-brand-600 hover:underline">
-                      {purchase.supplier_company_name || purchase.supplier || 'Voir la fiche entreprise'}
-                    </Link>
-                  </div>
-                ) : (
-                  <EditableText value={purchase.supplier} saving={fieldSaving.supplier} onCommit={v => saveField('supplier', v)} placeholder="Fournisseur (texte libre)" />
+                {!purchase.supplier_company_id && (
+                  <EditableText value={purchase.supplier} saving={fieldSaving.supplier} onCommit={v => saveField('supplier', v)} />
                 )}
               </div>
             </FieldShell>
-            <FieldShell label="Emplacement" saving={fieldSaving.emplacement}>
+            <FieldShell id="emplacement" label="Emplacement" saving={fieldSaving.emplacement}>
               <EditableText value={purchase.emplacement} saving={fieldSaving.emplacement} onCommit={v => saveField('emplacement', v)} />
             </FieldShell>
-            <FieldShell label="Qté commandée" saving={fieldSaving.qty_ordered}>
+            <FieldShell id="qty_ordered" label="Qté commandée" saving={fieldSaving.qty_ordered}>
               <EditableNumber value={purchase.qty_ordered} saving={fieldSaving.qty_ordered} onCommit={v => saveField('qty_ordered', v)} />
             </FieldShell>
-            <FieldShell label="Qté reçue" saving={fieldSaving.qty_received}>
+            <FieldShell id="qty_received" label="Qté reçue" saving={fieldSaving.qty_received}>
               <EditableNumber value={purchase.qty_received} saving={fieldSaving.qty_received} onCommit={v => saveField('qty_received', v)} />
             </FieldShell>
-            <FieldShell label="Coût unitaire" saving={fieldSaving.unit_cost}>
+            <FieldShell id="unit_cost" label="Coût unitaire" saving={fieldSaving.unit_cost}>
               <EditableNumber value={purchase.unit_cost} saving={fieldSaving.unit_cost} onCommit={v => saveField('unit_cost', v)} step="0.01" />
             </FieldShell>
-            <FieldShell label="Total">
+            <DerivedShell label="Total">
               <div className="text-sm text-slate-900 py-1">{fmtCad(subtotal)}</div>
-            </FieldShell>
-            <FieldShell label="Date commande" saving={fieldSaving.order_date}>
+            </DerivedShell>
+            <FieldShell id="order_date" label="Date commande" saving={fieldSaving.order_date}>
               <EditableDate value={purchase.order_date} saving={fieldSaving.order_date} onCommit={v => saveField('order_date', v)} />
             </FieldShell>
-            <FieldShell label="Date prévue" saving={fieldSaving.expected_date}>
-              <EditableDate value={purchase.expected_date} saving={fieldSaving.expected_date} onCommit={v => saveField('expected_date', v)} />
-            </FieldShell>
-            <FieldShell label="Date réception" saving={fieldSaving.received_date}>
+            <FieldShell id="received_date" label="Date réception" saving={fieldSaving.received_date}>
               <EditableDate value={purchase.received_date} saving={fieldSaving.received_date} onCommit={v => saveField('received_date', v)} />
             </FieldShell>
+            <CustomDetailFields table="purchases" record={purchase} labelClassName={SHELL_LABEL} />
           </div>
           <div className="border-t border-slate-100 pt-4">
-            <FieldShell label="Notes" saving={fieldSaving.notes}>
+            <FieldShell id="notes" label="Notes" saving={fieldSaving.notes}>
               <EditableTextarea value={purchase.notes} saving={fieldSaving.notes} onCommit={v => saveField('notes', v)} />
             </FieldShell>
           </div>
@@ -299,6 +312,5 @@ export default function PurchaseDetail() {
           </button>
         </div>
       </div>
-    </Layout>
   )
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
-import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, Globe } from 'lucide-react'
+import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, Globe, File } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { api } from '../lib/api.js'
 import { getIsOffline } from '../lib/serverStatus.js'
@@ -41,13 +41,17 @@ function readPersisted() {
   try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || 'null') || {} } catch { return {} }
 }
 
-export function FeedbackFab() {
+// `contextRecord` : libellé de ce qui est affiché à l'écran, joint au contexte
+// de la demande. Utile sur les pages publiques montées hors Layout (formulaire
+// de découverte : /d/:token), dont la route seule — un jeton opaque — ne dit pas
+// à l'agent de quelle page il s'agit.
+export function FeedbackFab({ contextRecord = '' }) {
   const location = useLocation()
   const { addToast } = useToast()
   const [open, setOpen] = useState(() => !!readPersisted().open)
   const [text, setText] = useState(() => readPersisted().text || '')
   // mode : 'implement' (l'agent code un correctif) ou 'question' (l'agent répond
-  // sans rien modifier — la réponse apparaît sur la carte de la page Agent).
+  // sans rien modifier — la réponse apparaît sur la carte de la page Travaux).
   const [mode, setMode] = useState(() => readPersisted().mode === 'question' ? 'question' : 'implement')
   // Descriptif de l'élément de la page cliqué en étape 1 ('' = demande générale).
   const [element, setElement] = useState(() => readPersisted().element || '')
@@ -130,6 +134,7 @@ export function FeedbackFab() {
     sendingRef.current = true
     const context = buildPageContext({
       pathname: location.pathname, search: location.search, element, appWide,
+      record: contextRecord,
     })
     // Fermeture IMMÉDIATE, sans attendre le serveur : le dépôt dans la file ne
     // peut rien apprendre qui change la fenêtre, et l'aller-retour (réponse, puis
@@ -141,17 +146,14 @@ export function FeedbackFab() {
     setOpen(false)
     reset()
     try {
-      // Dépose un prompt dans la file de la section Travaux — le contexte (page +
+      // Dépose un prompt dans la file de la page Travaux — le contexte (page +
       // élément ciblé) est inclus dans le prompt, c'est lui que l'agent recevra.
       // Le serveur relance l'ordonnanceur : la tâche part tout de suite si rien
       // ne tourne, sinon elle attend son tour en fin de file.
       const created = await api.travaux.createPrompt({
         prompt: `${trimmed}\n\nContexte (ERP) : ${context}`,
         mode,
-        // Les demandes de modification du système appartiennent à la section Agent :
-        // elles doivent apparaître dans sa file (/agent/travaux), pas dans celle de
-        // l'Espace finance.
-        space: 'agent',
+        space: 'finance',
         // Le serveur dépose l'item devant la file quand priority est vrai.
         priority: placement === 'first',
       })
@@ -160,7 +162,7 @@ export function FeedbackFab() {
       addToast({
         message: created?.status === 'running'
           ? 'Demande envoyée — l\'agent s\'y met tout de suite'
-          : draft.placement === 'first' ? 'Ajoutée en tête de la file de l\'Agent' : 'Ajoutée à la file de l\'Agent',
+          : draft.placement === 'first' ? 'Ajoutée en tête de la file de Travaux' : 'Ajoutée à la file de Travaux',
         type: 'success',
       })
     } catch {
@@ -202,11 +204,17 @@ export function FeedbackFab() {
       {/* Bandeau flottant de l'étape « cliquer sur un élément » (partagé). */}
       {picking && <PickerBanner onSkip={skipPicking} onCancel={cancelPicking} />}
 
+      {/* z 95 : au-dessus de la pile des panneaux latéraux (RecordPeekDrawer
+          empile à 50 + profondeur×2), sinon la fenêtre s'ouvrait DERRIÈRE un
+          panneau empilé — invisible, et le clic suivant tombait sur le voile du
+          panneau du dessus, qui se refermait. Reste sous l'overlay hors-ligne et
+          les toasts (100), le FAB (9989) et le bandeau de ciblage (9991). */}
       <Modal
         isOpen={open}
         onClose={close}
         title="Modifier le système"
         size="sm"
+        zIndex={95}
       >
         {/* Bouton Envoyer requis : c'est une création de record (exception
             admise à la règle autosave). Ni écran de confirmation, ni attente :
@@ -215,7 +223,7 @@ export function FeedbackFab() {
         <form onSubmit={submit} className="space-y-4">
           {/* Choix du mode : demande d'implémentation vs simple question.
               Une question n'implémente rien — l'agent répond dans le compte-rendu
-              de la carte (page Agent). */}
+              de la carte (page Travaux). */}
           <div className="grid grid-cols-2 gap-1 p-1 bg-slate-100 rounded-lg" role="radiogroup" aria-label="Type de demande">
             <button
               type="button"
@@ -285,11 +293,6 @@ export function FeedbackFab() {
             rows={5}
             autoFocus
             className="input w-full resize-y"
-            placeholder={isQuestion
-              ? 'Ex. : Comment le total d\'une facture est-il calculé quand il y a un rabais ?'
-              : (element
-                ? 'Ex. : Rendre ce bouton plus visible et l\'aligner à droite…'
-                : 'Ex. : Le filtre par date ne garde pas ma sélection quand je change de page…')}
           />
           {/* Placement dans la file — bouton discret, sous le champ : la
               demande part à la fin de la file par défaut, un clic la met au
@@ -302,27 +305,40 @@ export function FeedbackFab() {
             />
           </div>
           <div className="flex items-center justify-between gap-3 pt-1">
-            {/* Portée de la demande : par défaut la page courante est jointe en
-                contexte ; le bouton bascule vers « toute l'application » quand
-                la demande n'est pas propre à cette page. */}
-            <button
-              type="button"
-              data-testid="feedback-scope-toggle"
-              onClick={() => setAppWide(v => !v)}
-              title={appWide
-                ? 'La demande concerne toute l\'application — cliquer pour la relier à la page courante'
-                : 'La demande concerne cette page — cliquer pour l\'appliquer à toute l\'application'}
-              className={`inline-flex items-center gap-1.5 text-xs font-medium truncate transition-colors min-w-0 ${appWide ? 'text-brand-600' : 'text-slate-400 hover:text-slate-600'}`}
+            {/* Portée de la demande : les DEUX options sont affichées côte à
+                côte. Avant, un seul libellé basculait au clic — la portée
+                « toute l'application » restait invisible tant qu'on ne cliquait
+                pas dessus, donc personne ne savait qu'elle existait. */}
+            <div
+              className="flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg min-w-0"
+              role="radiogroup"
+              aria-label="Portée de la demande"
             >
-              {appWide ? (
-                <>
-                  <Globe size={12} className="flex-shrink-0" />
-                  <span className="truncate">Toute l'application</span>
-                </>
-              ) : (
+              <button
+                type="button"
+                data-testid="feedback-scope-page"
+                role="radio"
+                aria-checked={!appWide}
+                onClick={() => setAppWide(false)}
+                title="La demande concerne la page courante"
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium min-w-0 transition-colors ${!appWide ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                <File size={12} className="flex-shrink-0" />
                 <span className="font-mono truncate">{location.pathname}{location.search}</span>
-              )}
-            </button>
+              </button>
+              <button
+                type="button"
+                data-testid="feedback-scope-app"
+                role="radio"
+                aria-checked={appWide}
+                onClick={() => setAppWide(true)}
+                title="La demande concerne toute l'application, pas seulement cette page"
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${appWide ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+              >
+                <Globe size={12} className="flex-shrink-0" />
+                Toute l'app
+              </button>
+            </div>
             <div className="flex gap-3 flex-shrink-0">
               <button type="button" onClick={close} className="btn-secondary">Annuler</button>
               <button

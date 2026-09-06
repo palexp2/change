@@ -1,0 +1,7 @@
+{
+  "table": "month_close_acks",
+  "dropped_at": "2026-09-02T19:26:22.991Z",
+  "ddl": "CREATE TABLE month_close_acks (\n      id TEXT PRIMARY KEY,\n      month TEXT NOT NULL,\n      item_key TEXT NOT NULL,\n      state TEXT NOT NULL CHECK(state IN ('done','na')),\n      note TEXT,\n      acked_by TEXT REFERENCES users(id),\n      acked_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      deleted_at TEXT\n    )",
+  "row_count": 0,
+  "rows": []
+}

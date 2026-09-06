@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   periodKeyFor, periodLabel, isoWeek, weekStart, weekKeyToDay, describeWeek, weekOptions,
-  periodRange, previousPeriodKey, periodDueDate, dueInfo, catchUpPeriods, isValidPeriodKey,
+  periodRange, previousPeriodKey, shiftPeriodKey, periodDueDate, dueInfo, catchUpPeriods, isValidPeriodKey,
   slotFromKey, biweeklyOccurrences,
 } from './recurringWork.js'
 
@@ -135,6 +135,13 @@ test('dueInfo : à venir → bientôt → en retard, et rien une fois coché', (
   assert.equal(at('2026-08-26').days_until_due, -1)
   assert.equal(at('2026-08-26', true).due_status, null, 'cochée = plus aucune alerte')
   assert.equal(dueInfo({ cadence: 'mensuel', periodKey: '2026-08', dueDay: null, done: false, today: '2026-08-26' }).due_status, null)
+})
+
+test('shiftPeriodKey : recule de n périodes (period_offset), 0 = inchangé', () => {
+  assert.equal(shiftPeriodKey('mensuel', '2026-09', 0), '2026-09')
+  assert.equal(shiftPeriodKey('mensuel', '2026-09', 1), '2026-08')
+  assert.equal(shiftPeriodKey('mensuel', '2026-09', 3), '2026-06')
+  assert.equal(shiftPeriodKey('mensuel', '2026-01', 1), '2025-12', 'change d\'année')
 })
 
 // ── Rattrapage de la période précédente ───────────────────────────────────────

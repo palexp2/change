@@ -18,8 +18,8 @@
 //
 // Les lignes corrigées à la main dans l'ERP (source = 'manuel') ne sont jamais
 // écrasées par un ré-import — elles sont signalées dans le rapport.
-import { randomUUID } from 'crypto'
 import xlsx from 'xlsx'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { getDriveClient } from '../connectors/google.js'
 
@@ -162,7 +162,7 @@ export async function importRdHours(month, { googleAccountEmail = null, contract
         db.prepare(`
           INSERT INTO rd_month_hours (id, month, employee_name, employee_id, hours, day_hours, file_total_hours, contractor, source, drive_file_id)
           VALUES (?,?,?,?,?,?,?,?,'import',?)
-        `).run(randomUUID(), month, sheetName, matchEmployeeId(sheetName), hours, dayHours, fileTotal, contractor, file.id)
+        `).run(newRecordId(), month, sheetName, matchEmployeeId(sheetName), hours, dayHours, fileTotal, contractor, file.id)
       }
       imported.push({ name: sheetName, hours, day_hours: dayHours, file_total: fileTotal, contractor: !!contractor })
     }

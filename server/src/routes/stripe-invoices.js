@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import {
@@ -10,6 +10,7 @@ import {
 } from '../services/stripeInvoices.js'
 import { sendEmail } from '../services/gmail.js'
 import { checkForeignKeys } from '../utils/fkExists.js'
+import { TAX_REGIMES, isCanada, suggestTaxRegime } from '../services/taxes.js'
 import { logSync } from '../services/syncLog.js'
 import { APP_URL } from '../config/appUrl.js'
 
@@ -83,6 +84,7 @@ router.post('/', async (req, res) => {
     shipping_province, shipping_country,
     send_email, due_days,
     email_to, email_subject, email_message,
+    tax_regime, tax_exempt_reason,
   } = req.body || {}
 
   if (!company_id) return res.status(400).json({ error: 'company_id requis' })
@@ -106,18 +108,36 @@ router.post('/', async (req, res) => {
     cleanItems.push({ product_id: it.product_id || null, qty, unit_price, description })
   }
 
-  const id = randomUUID()
+  // Régime de taxe : celui choisi par l'utilisateur, sinon celui que suggère la
+  // province. Une facture canadienne sans taxe est possible (client autochtone
+  // livré sur réserve, export) mais jamais par accident : elle exige une raison.
+  const country = shipping_country || 'Canada'
+  let regime = tax_regime || suggestTaxRegime({ province: shipping_province, country })
+  if (!TAX_REGIMES[regime]) {
+    return res.status(400).json({ error: `Régime de taxe inconnu : ${regime}`, code: 'unknown_tax_regime' })
+  }
+  const exemptReason = String(tax_exempt_reason || '').trim()
+  if (isCanada(country) && TAX_REGIMES[regime].rates.length === 0 && !exemptReason) {
+    return res.status(400).json({
+      error: "Une facture pour un client au Canada doit porter des taxes. Pour facturer sans taxe (client autochtone livré sur réserve, export…), indiquez le motif d'exonération.",
+      code: 'taxes_required',
+    })
+  }
+
+  const id = newRecordId()
   const days = Number.isFinite(Number(due_days)) && Number(due_days) > 0 ? Math.floor(Number(due_days)) : 30
   db.prepare(`
     INSERT INTO pending_invoices
       (id, company_id, soumission_id, currency, items_json,
-       shipping_province, shipping_country, due_days, status, created_by)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+       shipping_province, shipping_country, due_days, status, created_by,
+       tax_regime, tax_exempt_reason)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, company_id, soumission_id || null, 'CAD',
     JSON.stringify(cleanItems),
-    shipping_province, shipping_country || 'Canada',
-    days, 'draft', req.user.id
+    shipping_province, country,
+    days, 'draft', req.user.id,
+    regime, exemptReason || null
   )
 
   let emailedTo = null, emailedFrom = null, emailMessageId = null
@@ -322,8 +342,8 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
   const totalLabel = buildPendingTotalLabel(pending)
   const dueDateLabel = pending.due_days ? `${pending.due_days} jours après émission` : null
 
-  const interactionId = randomUUID()
-  const emailRowId = randomUUID()
+  const interactionId = newRecordId()
+  const emailRowId = newRecordId()
   const ts = new Date().toISOString()
   const subject = (overrides?.subject && String(overrides.subject).trim()) || `Facture Orisha — ${totalLabel}`
 

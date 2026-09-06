@@ -36,6 +36,15 @@ export function fmtDate(d) {
 // NE PAS utiliser `new Date().toISOString().slice(0, 10)` pour ça : ça renvoie l'UTC,
 // donc à 23:00 EST le jour J, on obtient J+1 — les défauts de formulaires (date
 // d'écriture comptable, date de paiement, etc.) partent au lendemain.
+// Jour court en français (« 2 sept. ») — pour les mentions au fil du texte, où
+// une date complète prend toute la place pour rien. Midi local en interne : une
+// date métier « YYYY-MM-DD » ne doit jamais reculer d'un jour selon le fuseau.
+export function fmtDayShort(d) {
+  const s = String(d || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return '—'
+  return new Date(`${s}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
+}
+
 export function localISODate(d = new Date()) {
   const y = d.getFullYear()
   const m = String(d.getMonth() + 1).padStart(2, '0')
@@ -52,6 +61,18 @@ export function fmtDateTime(d) {
   const dt = new Date(d)
   if (isNaN(dt)) return '—'
   return `${ymdLocal(dt)} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`
+}
+
+// Heure seule au format HH:MM (24h). Utile quand le jour est déjà porté par un
+// séparateur (fil d'interactions) : répéter la date sur chaque entrée est du bruit.
+// Renvoie '' si la valeur n'a pas de composante horaire.
+export function fmtTime(d) {
+  if (!d) return ''
+  const s = typeof d === 'string' ? d : ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return ''
+  const dt = new Date(d)
+  if (isNaN(dt)) return ''
+  return `${pad(dt.getHours())}:${pad(dt.getMinutes())}`
 }
 
 // Formats de date proposés à l'utilisateur pour l'affichage d'un champ date

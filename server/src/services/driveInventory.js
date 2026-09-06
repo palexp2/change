@@ -20,8 +20,8 @@
 // La DÉCISION (importer / garder dans Drive / archiver) appartient à
 // l'utilisateur : un re-scan rafraîchit métadonnées, contenu et statut, jamais la
 // décision ni sa note.
-import { randomUUID } from 'crypto'
 import xlsx from 'xlsx'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { getDriveClient } from '../connectors/google.js'
 import { logSync } from './syncLog.js'
@@ -549,7 +549,7 @@ export async function scanDriveInventory({ accountEmail = null, maxFiles = SCAN_
       counts[r.cls.status] = (counts[r.cls.status] || 0) + 1
       const owner = ownerOf(f, sharedDriveNames)
       upsert.run(
-        randomUUID(), f.id, f.name || null, f.mimeType || null, kindOfMime(f.mimeType),
+        newRecordId(), f.id, f.name || null, f.mimeType || null, kindOfMime(f.mimeType),
         owner.email, owner.name,
         f.webViewLink || null, f.parents?.[0] || null, r.folderName,
         f.createdTime || null, f.modifiedTime || null,
@@ -565,7 +565,7 @@ export async function scanDriveInventory({ accountEmail = null, maxFiles = SCAN_
       const itemId = findItem.get(f.id)?.id
       if (!itemId) continue
       for (const t of r.tabDetails) {
-        upsertTab.run(randomUUID(), itemId, t.tab_name, t.tab_index, t.rows_count, t.cols_count,
+        upsertTab.run(newRecordId(), itemId, t.tab_name, t.tab_index, t.rows_count, t.cols_count,
           JSON.stringify(t.header), JSON.stringify(t.sample), JSON.stringify(t.sections || []),
           t.nature, t.cls.status, t.cls.reason, t.cls.syncTarget)
       }

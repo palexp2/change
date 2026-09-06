@@ -20,8 +20,8 @@
 //    changements de réponse alertent. Une note de 5 sans commentaire n'appelle
 //    aucune action, donc aucun message.
 
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { generateBase62Token } from '../utils/shortToken.js'
 import { sendSms, toE164 } from './sms.js'
 import { sendSlack } from './slack.js'
@@ -204,7 +204,7 @@ export async function sendTicketSurvey(ticketId, { userId = null, phoneOverride 
          created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
     `).run(
-      uuidv4(), ticketId, elig.contact_id, token, language, phone, expiryIso(ts),
+      newRecordId(), ticketId, elig.contact_id, token, language, phone, expiryIso(ts),
       result.ok ? 'sent' : 'failed', result.ok ? null : result.error, result.messageId || null,
       result.ok ? ts : null, userId, ts, ts
     )

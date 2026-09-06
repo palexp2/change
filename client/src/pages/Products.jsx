@@ -1,123 +1,39 @@
-import { useState, useMemo, useCallback } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useState, useMemo } from 'react'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
+import { useToast } from '../contexts/ToastContext.jsx'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import ProductDetail from './ProductDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
-function ProductForm({ initial = {}, onSave, onClose }) {
-  const [form, setForm] = useState({
-    sku: '', name_fr: '', name_en: '', type: '', unit_cost: '', price_cad: '',
-    stock_qty: 0, min_stock: 0, order_qty: 0, supplier: '', procurement_type: '',
-    weight_lbs: '', notes: '', active: true, ...initial
-  })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
-    const trimmed = {
-      ...form,
-      sku: form.sku.trim(),
-      name_fr: form.name_fr.trim(),
-      name_en: form.name_en.trim(),
-      type: form.type.trim(),
-      supplier: form.supplier.trim(),
-      notes: form.notes.trim(),
-    }
-    if (!trimmed.name_fr) {
-      setError('Le nom (FR) est requis.')
-      return
-    }
-    setSaving(true)
-    try {
-      await onSave(trimmed)
-      onClose()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="label">SKU</label>
-          <input value={form.sku} onChange={e => setForm(f => ({ ...f, sku: e.target.value }))} className="input" placeholder="ABC-001" />
-        </div>
-        <div>
-          <label className="label">Type</label>
-          <input value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="input" placeholder="Capteur, Valve..." />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Nom (FR) *</label>
-          <input value={form.name_fr} onChange={e => setForm(f => ({ ...f, name_fr: e.target.value }))} className="input" required />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Nom (EN)</label>
-          <input value={form.name_en} onChange={e => setForm(f => ({ ...f, name_en: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Coût unitaire (CAD)</label>
-          <input type="number" min="0" step="0.01" value={form.unit_cost} onChange={e => setForm(f => ({ ...f, unit_cost: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Prix de vente (CAD)</label>
-          <input type="number" min="0" step="0.01" value={form.price_cad} onChange={e => setForm(f => ({ ...f, price_cad: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Qté en stock</label>
-          <input type="number" min="0" value={form.stock_qty} onChange={e => setForm(f => ({ ...f, stock_qty: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Stock minimum</label>
-          <input type="number" min="0" value={form.min_stock} onChange={e => setForm(f => ({ ...f, min_stock: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Qté à commander</label>
-          <input type="number" min="0" value={form.order_qty} onChange={e => setForm(f => ({ ...f, order_qty: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Fournisseur</label>
-          <input value={form.supplier} onChange={e => setForm(f => ({ ...f, supplier: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Approvisionnement</label>
-          <select value={form.procurement_type} onChange={e => setForm(f => ({ ...f, procurement_type: e.target.value }))} className="select">
-            <option value="">—</option>
-            {PROCUREMENT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="label">Poids (lbs)</label>
-          <input type="number" min="0" step="0.01" value={form.weight_lbs} onChange={e => setForm(f => ({ ...f, weight_lbs: e.target.value }))} className="input" />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Notes</label>
-          <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={3} />
-        </div>
-      </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
-      </div>
-    </form>
-  )
-}
+// Champs proposés par le formulaire « Nouveau produit » — liste calquée sur ce
+// que POST /api/products persiste (voir RecordForm.jsx pour la configuration).
+const PRODUCT_FORM_FIELDS = [
+  { field: 'sku', label: 'SKU' },
+  { field: 'type', label: 'Type' },
+  { field: 'name_fr', label: 'Nom (FR)', span: 2, locked: true, required: true },
+  { field: 'name_en', label: 'Nom (EN)', span: 2 },
+  { field: 'unit_cost', label: 'Coût unitaire (CAD)', type: 'currency', min: '0' },
+  { field: 'price_cad', label: 'Prix de vente (CAD)', type: 'currency', min: '0' },
+  { field: 'stock_qty', label: 'Qté en stock', type: 'number', min: '0', defaultValue: 0 },
+  { field: 'min_stock', label: 'Stock minimum', type: 'number', min: '0', defaultValue: 0 },
+  { field: 'order_qty', label: 'Qté à commander', type: 'number', min: '0', defaultValue: 0 },
+  { field: 'supplier', label: 'Fournisseur' },
+  { field: 'procurement_type', label: 'Approvisionnement', type: 'select', options: PROCUREMENT_TYPES },
+  { field: 'weight_lbs', label: 'Poids (lbs)', type: 'number', min: '0', step: '0.01' },
+  { field: 'notes', label: 'Notes', type: 'textarea', span: 2 },
+]
 
 function StockAdjustModal({ product, onSave, onClose }) {
   const [form, setForm] = useState({ type: 'in', qty: '', reason: '' })
@@ -155,7 +71,7 @@ function StockAdjustModal({ product, onSave, onClose }) {
       </div>
       <div>
         <label className="label">Raison</label>
-        <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} className="input" placeholder="Réception commande, inventaire..." />
+        <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} className="input" />
       </div>
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
@@ -166,21 +82,12 @@ function StockAdjustModal({ product, onSave, onClose }) {
 }
 
 export default function Products() {
-  const navigate = useNavigate()
   const [showModal, setShowModal] = useState(false)
   const [stockProduct, setStockProduct] = useState(null)
   const undoableDelete = useUndoableDelete()
+  const { addToast } = useToast()
 
-  // Ouverture du side-peek demandée par la fiche plein écran (« revenir au
-  // panneau latéral ») — l'id voyage via location.state.peekId. Consommée une
-  // fois le drawer ouvert, et le state d'historique est nettoyé pour qu'un
-  // refresh ne rouvre pas le drawer. Même pattern que Companies.jsx.
-  const location = useLocation()
-  const [peekOpenId, setPeekOpenId] = useState(() => location.state?.peekId ?? null)
-  const consumePeekOpen = useCallback(() => {
-    setPeekOpenId(null)
-    navigate(location.pathname + location.search, { replace: true, state: null })
-  }, [navigate, location.pathname, location.search])
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   // Cache global (lib/dataStore) : hydraté au login par /api/bootstrap, mis à
   // jour par delta polling toutes les 10s. La page filtre l'état "inactif"
@@ -198,7 +105,7 @@ export default function Products() {
           render: row => row.image_url
             ? <TableThumb src={row.image_url} className="border border-slate-200" />
             : <span className="text-slate-300">—</span>,
-        }
+      }
       : meta
   )), [])
 
@@ -213,7 +120,7 @@ export default function Products() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Inventaire</h1>
+            <PageTitle>Inventaire</PageTitle>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowModal(true)} className="btn-primary">
@@ -235,24 +142,44 @@ export default function Products() {
             width: 720,
             openId: peekOpenId,
             onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} />,
-          }}
+            render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} /> }}
           searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
           onBulkDelete={async (ids) => {
-            await undoableDelete({
-              table: 'products',
-              ids,
-              deleteFn: () => Promise.all(ids.map(id => api.products.delete(id))),
-              label: `${ids.length} produit${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
-              onChange: syncStore,
-            })
+            // Le serveur refuse (409) toute pièce citée par un BOM, un envoi ou
+            // un achat : on supprime ce qui peut l'être et on signale le reste,
+            // au lieu de tout perdre sur le premier refus.
+            const results = await Promise.allSettled(ids.map(id => api.products.delete(id)))
+            const done = ids.filter((_, i) => results[i].status === 'fulfilled')
+            const blocked = ids.length - done.length
+            if (done.length) {
+              await undoableDelete({
+                table: 'products',
+                ids: done,
+                deleteFn: () => Promise.resolve(), // déjà supprimé ci-dessus
+                label: `${done.length} produit${done.length > 1 ? 's' : ''} supprimé${done.length > 1 ? 's' : ''}`,
+                onChange: syncStore,
+              })
+            }
+            if (blocked) {
+              addToast({
+                type: 'error',
+                duration: 6000,
+                message: `${blocked} pièce${blocked > 1 ? 's' : ''} liée${blocked > 1 ? 's' : ''} à un BOM, un envoi ou un achat — conservée${blocked > 1 ? 's' : ''}`,
+              })
+            }
           }}
           emptyState={{ icon: Package, title: 'Aucun produit', description: "Aucun produit n'est encore au catalogue. Ajoute un produit pour le vendre et l'assembler.", cta: { label: 'Nouveau produit', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau produit" size="lg">
-        <ProductForm onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <RecordForm
+          table="products"
+          fields={PRODUCT_FORM_FIELDS}
+          columns={2}
+          onSubmit={handleCreate}
+          onClose={() => setShowModal(false)}
+        />
       </Modal>
 
 

@@ -26,20 +26,25 @@ import {
   ListOrdered, Link2, CheckCircle2, AlertTriangle, RefreshCw, ChevronDown, Send,
   Hourglass, GripVertical, Plug, HelpCircle, CircleStop, PauseCircle, PlayCircle,
   Lightbulb, MessageSquare, ChevronLeft, ChevronRight, CalendarDays, Paperclip,
-  Settings2,
+  Settings2, Square, Wand2, Star, FileText, RotateCw, Power, Settings, Users,
 } from 'lucide-react'
 import api from '../lib/api.js'
+import { useReorderDnd } from '../lib/useReorderDnd.js'
+import { useAuth } from '../lib/auth.jsx'
 import { Layout } from '../components/Layout.jsx'
-import { ClaudeUsageStrip } from '../components/ClaudeUsage.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
+import { Modal } from '../components/Modal.jsx'
+import { ClaudeUsageStrip, ClaudeModelControl } from '../components/ClaudeUsage.jsx'
 import { PageLink } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import Spinner from '../components/Spinner.jsx'
 // Briques partagées avec le panneau rapide (accessible depuis toute l'app) :
 // lecture temps réel de la file, pastille d'état, choix d'une question, réponse.
 // Une seule implémentation, deux points d'entrée — voir lib/travauxQueue.jsx.
 import {
   inputCls, btnCls, btnPrimary,
   isAsking, pillStateOf, firstLine, shortDate,
-  StatusPill, QuestionChoices, ReplyBox, PlacementToggle, useTravauxPrompts,
+  StatusPill, QuestionChoices, ReplyBox, useTravauxPrompts, CreatorChip,
 } from '../lib/travauxQueue.jsx'
 
 // « Auto » : le calibre est jugé côté serveur à partir de la demande (comme le
@@ -198,7 +203,6 @@ function SteerBox({ onSend, executing, autoFocus }) {
         data-testid="travaux-steer-input"
         className={`${inputCls} w-full`}
         rows={2}
-        placeholder="Dire quelque chose à Claude pendant qu'il travaille…"
         value={text}
         onChange={e => setText(e.target.value)}
         onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }}
@@ -215,86 +219,6 @@ function SteerBox({ onSend, executing, autoFocus }) {
       </div>
     </div>
   )
-}
-
-/**
- * Réordonnancement d'une liste : glisser-déposer + flèches d'un cran, partagés
- * par la file de prompts et le carnet d'idées.
- *
- * `siblingsOf(id)` renvoie les ids entre lesquels l'item peut se déplacer (le
- * groupe pour la file, la liste entière pour les idées) — un drop hors de ces
- * voisins est ignoré. `applyOrder(nextIds, id)` persiste le nouvel ordre.
- * Les flèches restent indispensables : un drag seul rendrait la liste
- * inaccessible sans souris.
- */
-function useReorderDnd({ siblingsOf, applyOrder }) {
-  const [dragId, setDragId] = useState(null)
-  const [dragOver, setDragOver] = useState({ id: null, side: null })
-  const dragIdRef = useRef(null)
-  const sideOf = (e) => {
-    const r = e.currentTarget.getBoundingClientRect()
-    return (e.clientY - r.top) < r.height / 2 ? 'before' : 'after'
-  }
-  const resetDrag = useCallback(() => {
-    dragIdRef.current = null
-    setDragId(null)
-    setDragOver({ id: null, side: null })
-  }, [])
-  const move = useCallback((id, delta) => {
-    const list = siblingsOf(id) || []
-    const i = list.indexOf(id)
-    const j = i + delta
-    if (i < 0 || j < 0 || j >= list.length) return
-    const next = [...list]
-    ;[next[i], next[j]] = [next[j], next[i]]
-    applyOrder(next, id)
-  }, [siblingsOf, applyOrder])
-
-  return {
-    dragId,
-    dragOverId: dragOver.id,
-    dragOverSide: dragOver.side,
-    // Rien à réordonner quand l'item est seul de son groupe : pas de poignée.
-    canMove: (id) => (siblingsOf(id)?.length || 0) > 1,
-    isFirst: (id) => siblingsOf(id)?.[0] === id,
-    isLast: (id) => siblingsOf(id)?.slice(-1)[0] === id,
-    move,
-    dragStart: (e, id, card) => {
-      dragIdRef.current = id
-      setDragId(id)
-      if (e.dataTransfer) {
-        e.dataTransfer.effectAllowed = 'move'
-        try { e.dataTransfer.setData('text/plain', id) } catch { /* Safari */ }
-        // Fantôme = la carte entière, pas la poignée seule.
-        if (card) { try { e.dataTransfer.setDragImage(card, 24, 24) } catch { /* vieux navigateurs */ } }
-      }
-    },
-    dragOver: (e, id) => {
-      const src = dragIdRef.current
-      if (!src || src === id || !(siblingsOf(src) || []).includes(id)) return
-      e.preventDefault()
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-      const side = sideOf(e)
-      setDragOver(prev => (prev.id === id && prev.side === side ? prev : { id, side }))
-    },
-    drop: (e, targetId) => {
-      e.preventDefault()
-      const sourceId = dragIdRef.current
-      // Le côté est recalculé ici : React groupe les setState du dragOver, donc
-      // l'état peut être périmé au moment du drop (surtout en test synchrone).
-      const side = sideOf(e)
-      resetDrag()
-      const siblings = siblingsOf(sourceId) || []
-      if (!sourceId || sourceId === targetId || !siblings.includes(targetId)) return
-      const next = siblings.filter(id => id !== sourceId)
-      let idx = next.indexOf(targetId)
-      if (idx === -1) return
-      if (side === 'after') idx += 1
-      next.splice(idx, 0, sourceId)
-      applyOrder(next, sourceId)
-    },
-    dragEnd: resetDrag,
-  }
 }
 
 /**
@@ -346,11 +270,17 @@ const THREAD_TAIL = 3
 
 const SPACE_LABEL = { finance: 'Espace finance', agent: 'Agent' }
 
-function PromptRow({ p, onPatch, onDelete, onFirst, onReply, onSteer, dnd, space }) {
+function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onReply, onSteer, dnd, space }) {
   const state = pillStateOf(p)
   const asking = state === 'asking'
   const executing = state === 'running'
   const waiting = state === 'waiting'
+  const [stopping, setStopping] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  // Item interrompu (arrêté ou bloqué) qui a déjà touché des fichiers : la
+  // suppression doit pouvoir proposer un nettoyage plutôt que de juste faire
+  // disparaître la carte en laissant le code à moitié fait derrière elle.
+  const cleanupEligible = p.status === 'blocked' && (p.touched_files?.length > 0)
   const finished = ['done', 'blocked', 'cancelled'].includes(p.status)
   // Façon boîte mail : une conversation terminée jamais ouverte reste « à lire »
   // jusqu'au premier dépliage — voir le PATCH { seen: true } plus bas.
@@ -451,13 +381,13 @@ function PromptRow({ p, onPatch, onDelete, onFirst, onReply, onSteer, dnd, space
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 min-w-0">
             <StatusPill p={p} />
+            <CreatorChip name={p.created_by_name} />
             {editable ? (
               <input
                 className="flex-1 min-w-0 bg-transparent text-sm font-medium text-slate-800 border-0 p-0 focus:outline-none placeholder:text-slate-300"
                 value={draft.title}
                 onChange={e => edit('title', e.target.value)}
                 onBlur={flush}
-                placeholder="Titre — vide = automatique"
                 // Titre auto : aucune mention à l'écran — il se présente comme n'importe
                 // quel titre (demande utilisateur). L'indication ne reste que sur un
                 // titre figé, pour retrouver le chemin du mode automatique.
@@ -567,11 +497,32 @@ function PromptRow({ p, onPatch, onDelete, onFirst, onReply, onSteer, dnd, space
           {p.status === 'paused' && (
             <button className={iconBtn} onClick={() => onPatch(p.id, { status: 'queued' })} title="Remettre en file"><Play size={14} /></button>
           )}
+          {executing && (
+            <button
+              className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-stop"
+              disabled={stopping}
+              onClick={async () => { setStopping(true); try { await onStop(p.id) } finally { setStopping(false) } }}
+              title="Arrêter cette exécution — le process est tué tout de suite"
+            >{stopping ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}</button>
+          )}
           {!executing && (
-            <button className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-delete" onClick={() => onDelete(p.id)} title="Retirer"><Trash2 size={14} /></button>
+            <button
+              className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-delete"
+              onClick={() => (cleanupEligible ? setConfirmDelete(true) : onDelete(p.id))}
+              title="Retirer"
+            ><Trash2 size={14} /></button>
           )}
         </div>
       </div>
+
+      {confirmDelete && (
+        <CleanupDeleteModal
+          p={p}
+          onClose={() => setConfirmDelete(false)}
+          onDeleteOnly={() => { setConfirmDelete(false); onDelete(p.id) }}
+          onDeleteAndCleanup={() => { setConfirmDelete(false); onCleanupDelete(p) }}
+        />
+      )}
 
       {open && (
         <div className="border-t border-slate-100 px-3 py-3 space-y-3">
@@ -609,8 +560,8 @@ function PromptRow({ p, onPatch, onDelete, onFirst, onReply, onSteer, dnd, space
             <p className="text-xs text-amber-600 inline-flex items-center gap-1">
               <Hourglass size={11} />
               {p.wait_rank > 1
-                ? `Pas encore démarrée — ${p.wait_rank - 1} tâche${p.wait_rank > 2 ? 's' : ''} à finir avant celle-ci. Le prompt et l'ordre restent modifiables.`
-                : 'Pas encore démarrée — elle part dès que le poste se libère. Le prompt et l\'ordre restent modifiables.'}
+                ? `Pas encore démarrée — ${p.wait_rank - 1} tâche${p.wait_rank > 2 ? 's' : ''} à finir avant celle-ci dans sa file. Le prompt et l'ordre restent modifiables.`
+                : 'Pas encore démarrée — elle part dès que sa file se libère. Le prompt et l\'ordre restent modifiables.'}
             </p>
           )}
 
@@ -647,104 +598,113 @@ function PromptRow({ p, onPatch, onDelete, onFirst, onReply, onSteer, dnd, space
   )
 }
 
-/** Composeur replié : un champ d'une ligne, qui s'ouvre au clic. */
-function NewPromptComposer({ agentEnabled, onCreate }) {
-  const [open, setOpen] = useState(false)
-  // Préréglage « auto » par défaut : le calibre est jugé du prompt côté serveur.
-  const [form, setForm] = useState({ prompt: '', mode: 'implement', preset: 'auto', priority: false })
-  const [saving, setSaving] = useState(false)
-  const ref = useRef(null)
-
-  const start = () => { setOpen(true); setTimeout(() => ref.current?.focus(), 30) }
-  // Création : pas d'autosave possible (aucun id avant l'envoi) — voir CLAUDE.md.
-  // `status` distingue les deux dépôts : « queued » part tout seul quand son tour
-  // vient, « paused » est rangé de côté et n'ira nulle part sans un geste de plus.
-  const add = async (status = 'queued') => {
-    if (!form.prompt.trim()) return
-    setSaving(status)
-    try {
-      await onCreate({ ...form, status, ...(status === 'paused' ? { priority: false } : {}) })
-      setForm({ prompt: '', mode: 'implement', preset: 'auto', priority: false })
-      setOpen(false)
-    } finally { setSaving(false) }
-  }
-
-  if (!open) {
-    return (
-      <button
-        className="w-full flex items-center gap-2 rounded-xl border border-dashed border-slate-300 bg-white px-3.5 py-2.5 text-sm text-slate-500 hover:border-brand-400 hover:text-brand-700 mb-3"
-        onClick={start}
-        data-testid="travaux-new-prompt"
-      >
-        <Plus size={15} /> Nouveau prompt…
-        {!agentEnabled && (
-          <span className="ml-auto inline-flex items-center gap-1 text-xs text-amber-700">
-            <AlertTriangle size={12} /> Agent désactivé
-          </span>
-        )}
-      </button>
-    )
-  }
-
+/**
+ * Suppression d'un item interrompu (arrêté ou bloqué) qui a déjà touché des
+ * fichiers : proposé à la place d'une suppression directe, pour ne pas laisser
+ * du code à moitié fait dans l'arbre sans que personne ne le sache. « Nettoyer »
+ * ajoute une tâche de revue des fichiers touchés à la file, puis supprime l'item.
+ */
+function CleanupDeleteModal({ p, onClose, onDeleteOnly, onDeleteAndCleanup }) {
+  const files = p.touched_files || []
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-4 mb-3">
-      <div className="flex items-center justify-between gap-3 mb-3">
-        <div className="text-sm font-semibold text-slate-800">Nouveau prompt</div>
-        <div className="text-xs text-slate-500">
-          {agentEnabled
-            ? <span className="inline-flex items-center gap-1 text-emerald-700"><CheckCircle2 size={12} /> Agent actif</span>
-            : <span className="inline-flex items-center gap-1 text-amber-700"><AlertTriangle size={12} /> Agent désactivé — rien ne s'exécutera</span>}
+    <Modal isOpen onClose={onClose} title="Supprimer cet item interrompu" size="sm">
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">
+          Cette tâche a été {p.agent_status === 'stopped' ? 'arrêtée' : 'bloquée'} avant la fin, après avoir déjà modifié {files.length} fichier{files.length > 1 ? 's' : ''} :
+        </p>
+        <ul className="text-xs font-mono text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2 max-h-32 overflow-y-auto space-y-0.5">
+          {files.map(f => <li key={f} className="truncate">{f}</li>)}
+        </ul>
+        <p className="text-sm text-slate-600">
+          Supprimer l'item ne touche pas à ces fichiers — le code laissé à moitié fait reste dans l'arbre.
+        </p>
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <button className={btnCls} onClick={onClose}>Annuler</button>
+          <button className={btnCls} onClick={onDeleteOnly}>Supprimer seulement</button>
+          <button className={btnPrimary} onClick={onDeleteAndCleanup}>
+            <Wand2 size={14} /> Nettoyer puis supprimer
+          </button>
         </div>
       </div>
-      <textarea
-        ref={ref}
-        className={`${inputCls} w-full`}
-        rows={4}
-        placeholder="Décris la tâche comme tu me l'écrirais dans le terminal…"
-        value={form.prompt}
-        onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))}
-      />
-      <div className="flex items-center gap-3 mt-3 flex-wrap">
-        {/* Pas de champ titre à la création : il est déduit du prompt côté serveur
-            (heuristique immédiate, puis titre modèle en quelques secondes). Il
-            reste modifiable après coup sur la carte. */}
-        {/* Pas de sélecteur de calibre à la création : il vaut toujours « auto »,
-            le calibre est jugé côté serveur d'après la demande. Il reste
-            modifiable après coup sur la carte (PresetSelect) pour le figer. */}
-        <select className={inputCls} value={form.mode} onChange={e => setForm(f => ({ ...f, mode: e.target.value }))}>
-          <option value="implement">Implémenter</option>
-          <option value="question">Question (lecture seule, en parallèle)</option>
-        </select>
-        {/* Début ou fin de la file, décidé dès la création — même effet que le
-            bouton « Passer en premier » d'une carte, sans avoir à le cliquer
-            après coup. Contrôle partagé avec le panneau rapide et le FAB. */}
-        <PlacementToggle
-          testId="travaux-new-priority"
-          value={form.priority ? 'first' : 'last'}
-          onChange={v => setForm(f => ({ ...f, priority: v === 'first' }))}
-        />
-        <button className={btnCls} onClick={() => setOpen(false)}>Annuler</button>
-        {/* Déposer sans lancer : la demande est écrite tant qu'elle est fraîche,
-            mais elle attend dans « De côté & idées » — utile quand la file du jour
-            est déjà pleine, ou quand la demande doit mûrir avant de partir. */}
-        <button
-          className={btnCls} data-testid="travaux-new-aside"
-          onClick={() => add('paused')} disabled={!!saving || !form.prompt.trim()}
-          title="Déposer la demande sans la mettre en file — elle attendra dans « De côté & idées », rien ne démarrera"
-        >
-          {saving === 'paused' ? <Loader2 size={14} className="animate-spin" /> : <PauseCircle size={14} />} Mettre de côté
-        </button>
-        <button className={btnPrimary} data-testid="travaux-new-submit" onClick={() => add('queued')} disabled={!!saving || !form.prompt.trim()}>
-          {saving === 'queued' ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Ajouter à la file
-        </button>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
-// Combien de conversations terminées on rend d'emblée : au-delà, un bouton. Le fil
-// complet de chacune est de toute façon replié, mais rendre 200 cartes coûte cher.
+// Combien de conversations terminées on rend d'emblée : au-delà, la suite arrive
+// en défilant. Le fil complet de chacune est de toute façon replié, mais rendre
+// 200 cartes coûte cher.
 const HISTORY_PAGE = 15
+
+/**
+ * Fin de liste des conversations : la tranche suivante se charge d'elle-même dès
+ * que ce repère approche du bas de l'écran — plus besoin de cliquer « afficher
+ * plus » à chaque fois pour descendre dans l'historique. Le repère reste un
+ * bouton : si l'`IntersectionObserver` n'est pas disponible (ou si la liste tient
+ * déjà à l'écran sans jamais défiler), un clic fait le même travail.
+ */
+function AutoLoadMore({ remaining, onLoadMore }) {
+  const ref = useRef(null)
+  // L'observateur est recréé à chaque tranche ; passer par une ref évite de le
+  // recréer aussi à chaque re-rendu du parent (la callback est une lambda).
+  const cb = useRef(onLoadMore)
+  cb.current = onLoadMore
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof IntersectionObserver === 'undefined') return
+    // 400 px d'avance : la tranche est déjà là quand le repère atteint le bas.
+    const io = new IntersectionObserver(
+      entries => { if (entries.some(e => e.isIntersecting)) cb.current() },
+      { rootMargin: '400px 0px' })
+    io.observe(el)
+    return () => io.disconnect()
+  }, [remaining])
+  return (
+    <button
+      ref={ref}
+      type="button"
+      className={`${btnCls} w-full justify-center text-slate-400`}
+      data-testid="travaux-load-more"
+      onClick={() => cb.current()}
+    >
+      <Loader2 size={14} className="animate-spin" /> {remaining} restantes
+    </button>
+  )
+}
+
+// Vue « Conversations » : chacun fait le ménage dans SES tâches terminées — les
+// conversations sont donc regroupées par créateur, la section de l'utilisateur
+// connecté ouverte, celles des collègues repliées. Les replis manuels sont retenus
+// par utilisateur (localStorage), comme les cartes du tableau de bord.
+const conversationCollapseKey = userId => `travaux_conversations_collapsed_${userId || 'anon'}`
+function loadGroupCollapse(userId) {
+  try { return JSON.parse(localStorage.getItem(conversationCollapseKey(userId))) || {} } catch { return {} }
+}
+
+// Sélecteur de personne : la file est commune, mais on y vient d'abord pour SES
+// prompts, SES questions et SES travaux — le filtre s'ouvre donc sur l'utilisateur
+// connecté, « Tout le monde » rendant la vue d'ensemble d'avant. Il porte sur les
+// deux vues (File et Conversations) et le choix est retenu par utilisateur
+// (localStorage), comme les replis de sections.
+const PERSON_ALL = '__all__'
+const NO_CREATOR = '__none__'
+const personFilterKey = userId => `travaux_person_filter_${userId || 'anon'}`
+function loadPersonFilter(userId) {
+  try { return localStorage.getItem(personFilterKey(userId)) || userId || PERSON_ALL } catch { return userId || PERSON_ALL }
+}
+
+/**
+ * Rappel sous une liste vide : ce n'est peut-être pas qu'il n'y a rien, c'est que
+ * le filtre de personne masque le reste. Un clic remet « Tout le monde ».
+ */
+function PersonFilterNote({ hidden, onShowAll }) {
+  if (!hidden) return null
+  return (
+    <div className="mt-2 text-xs text-slate-500" data-testid="travaux-person-filter-note">
+      {hidden} item{hidden > 1 ? 's' : ''} d'autres personnes {hidden > 1 ? 'sont masqués' : 'est masqué'} par le filtre —{' '}
+      <button type="button" className="underline hover:text-slate-700" onClick={onShowAll}>voir tout le monde</button>.
+    </div>
+  )
+}
 
 /**
  * Actions d'une carte de file (modifier, retirer, passer en premier, répondre,
@@ -773,6 +733,39 @@ function usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPr
     try { await api.travaux.deletePrompt(id); load() }
     catch (e) { toast.error(e.message); undropPrompt?.(id); load() }
   }, [load, dropPrompt, undropPrompt, toast])
+  // Arrêt d'une exécution en cours (bouton « Arrêter ») : le process est tué tout
+  // de suite côté serveur ; la carte reflète le vrai statut ('blocked' +
+  // agent_status 'stopped') dès que le poll détecte la mort du process — un
+  // rechargement après coup (pas d'optimistic ici) suffit à l'afficher.
+  const stop = useCallback(async (id) => {
+    try { await api.travaux.stopPrompt(id); load() }
+    catch (e) { toast.error(e.message) }
+  }, [load, toast])
+  // Suppression d'un item interrompu (arrêté ou bloqué) qui a déjà touché des
+  // fichiers : au lieu de juste faire disparaître la carte en laissant le code
+  // à moitié fait, on ajoute d'abord une tâche de nettoyage à LA MÊME file (revue
+  // des fichiers touchés, retire/termine ce qui a été laissé en plan) puis on
+  // supprime l'item d'origine. Jamais de revert git direct : d'autres chantiers
+  // WIP non liés partagent souvent les mêmes fichiers (pas de branche par tâche).
+  const removeWithCleanup = useCallback(async (p) => {
+    try {
+      const files = (p.touched_files || []).map(f => `- ${f}`).join('\n')
+      await api.travaux.createPrompt({
+        title: `Nettoyage — ${p.title}`,
+        prompt: [
+          `La tâche « ${p.title} » a été interrompue avant la fin et a déjà modifié ces fichiers :\n${files}`,
+          `\n\nDemande d'origine :\n${p.prompt}`,
+          '\n\nRévise chacun de ces fichiers : termine proprement ou retire ce qui a été laissé à moitié fait par cette tâche interrompue. N\'introduis rien de nouveau au-delà de ce nettoyage. Si un fichier n\'a en fait pas été touché, ou que la modification semble déjà correcte/intentionnelle, laisse-le tel quel.',
+        ].join(''),
+        mode: 'implement',
+        space: p.space,
+      })
+      dropPrompt?.(p.id)
+      await api.travaux.deletePrompt(p.id)
+      load()
+      toast.success('Tâche de nettoyage ajoutée à la file — l\'item interrompu a été supprimé')
+    } catch (e) { toast.error(e.message); load() }
+  }, [load, dropPrompt, toast])
   // Un clic sur « Passer en premier » = la carte est en tête, tout de suite. Attendre
   // le serveur PUIS le rechargement de la file laissait le bouton sans effet visible
   // pendant près d'une seconde — même symptôme que la corbeille, même remède :
@@ -814,16 +807,40 @@ function usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPr
     } catch (e) { toast.error(e.message); throw e }
   }, [load, toast])
 
-  return useMemo(() => ({ patch, remove, first, reply, steer }), [patch, remove, first, reply, steer])
+  return useMemo(() => ({ patch, remove, stop, removeWithCleanup, first, reply, steer }),
+    [patch, remove, stop, removeWithCleanup, first, reply, steer])
 }
 
-// `noComposer` : masque le dépôt « Nouveau prompt… ». Utilisé par l'encart de
-// /agent, qui n'affiche que la file — le dépôt s'y fait par le FAB « Modifier le
-// système » ou sur la page /agent/travaux.
-export function QueueTab({ toast, space, noComposer }) {
+export function QueueTab({ toast, space }) {
+  const { user } = useAuth()
   const [view, setView] = useState('file')
   const [search, setSearch] = useState('')
   const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE)
+  // Pagination PAR SECTION de créateur : une limite globale ferait qu'ouvrir une
+  // grosse section masque les conversations des autres.
+  const [groupLimits, setGroupLimits] = useState({})
+  const [groupCollapse, setGroupCollapse] = useState(() => loadGroupCollapse(user?.id))
+  const [person, setPerson] = useState(() => loadPersonFilter(user?.id))
+  const choosePerson = useCallback((value) => {
+    setPerson(value)
+    try { localStorage.setItem(personFilterKey(user?.id), value) } catch { /* stockage plein/bloqué : le choix vit en mémoire */ }
+  }, [user?.id])
+  // Défaut : ma section ouverte, celles des autres repliées — et la section de la
+  // personne explicitement choisie au filtre, sinon la filtrer sur un collègue ne
+  // laisserait qu'un en-tête replié. Un choix manuel prime.
+  const collapsedByDefault = useCallback(
+    key => key !== user?.id && key !== person,
+    [user?.id, person])
+  const isGroupCollapsed = useCallback(
+    key => groupCollapse[key] ?? collapsedByDefault(key),
+    [groupCollapse, collapsedByDefault])
+  const toggleGroup = useCallback(key => {
+    setGroupCollapse(prev => {
+      const next = { ...prev, [key]: !(prev[key] ?? collapsedByDefault(key)) }
+      try { localStorage.setItem(conversationCollapseKey(user?.id), JSON.stringify(next)) } catch { /* stockage plein/bloqué : l'état vit en mémoire */ }
+      return next
+    })
+  }, [user?.id, collapsedByDefault])
 
   // On charge les DEUX files (pas de filtre `space` côté serveur). La vue « File »
   // ne montre que celle de la page (les deux ordres sont indépendants), mais la vue
@@ -835,19 +852,26 @@ export function QueueTab({ toast, space, noComposer }) {
   // panneau rapide accessible depuis toute l'app).
   const onLoadError = useCallback(e => toast.error(e.message), [toast])
   const { data, setData, loading, load, flushStale, dropPrompt, undropPrompt, liftPrompt, unliftPrompt } = useTravauxPrompts({ onError: onLoadError })
-
   // « running » côté DB couvre deux réalités : l'item que Claude traite vraiment et
   // celui qui attend son tour chez l'ordonnanceur. On les sépare pour l'affichage,
   // en gardant les vrais « en cours » en tête de liste.
   // Un item qui attend une réponse sort de l'historique et passe tout en haut : c'est
   // le seul état où le travail est arrêté par nous, pas par l'agent.
+  // Filtre de personne : appliqué en amont de tout le reste (file, questions,
+  // conversations, items de l'autre file), pour que « Antoine » veuille dire la
+  // même chose partout sur l'onglet.
+  const byPerson = useCallback(
+    p => person === PERSON_ALL || (p.created_by || NO_CREATOR) === person,
+    [person])
+
   const { asking, executing, waiting, queuedList, pausedList, history } = useMemo(() => {
     // Vue « File » : seulement la file de cette page (l'ordre lui est propre).
     // Vue « Conversations » : les deux files, pour qu'un travail terminé soit
     // toujours retrouvable là où l'utilisateur le cherche.
     // Ligne sans `space` (fixture, ancienne réponse en cache) : on la garde dans la
     // file courante plutôt que de la faire disparaître.
-    const mine = data.prompts.filter(p => !p.space || p.space === space)
+    const visible = data.prompts.filter(byPerson)
+    const mine = visible.filter(p => !p.space || p.space === space)
     const running = mine.filter(p => p.status === 'running')
     return {
       asking: mine.filter(isAsking),
@@ -859,12 +883,12 @@ export function QueueTab({ toast, space, noComposer }) {
       // L'ordre du serveur (position dans la file, puis date de création) n'a aucun
       // sens ici : une tâche qui vient de finir se retrouvait enfouie au milieu de
       // l'historique — hors des 15 premières affichées, donc introuvable.
-      history: data.prompts
+      history: visible
         .filter(p => ['done', 'blocked', 'cancelled'].includes(p.status) && !isAsking(p))
         .sort((a, b) => String(b.completed_at || b.started_at || b.created_at || '')
           .localeCompare(String(a.completed_at || a.started_at || a.created_at || ''))),
     }
-  }, [data.prompts, space])
+  }, [data.prompts, space, byPerson])
 
   const matches = useCallback((p) => {
     const q = search.trim().toLowerCase()
@@ -880,26 +904,58 @@ export function QueueTab({ toast, space, noComposer }) {
   const otherActive = useMemo(() => {
     const rank = p => (p.run_state === 'executing' ? 0 : isAsking(p) ? 1 : 2)
     return data.prompts
+      .filter(byPerson)
       .filter(p => p.space && p.space !== space && (p.status === 'running' || isAsking(p)))
       .sort((a, b) => rank(a) - rank(b))
-  }, [data.prompts, space])
+  }, [data.prompts, space, byPerson])
+
+  // Les personnes proposées viennent des items eux-mêmes : pas d'appel de plus, et
+  // la liste ne montre que des gens qui ont réellement quelque chose ici. On force
+  // deux présences : l'utilisateur connecté (le défaut doit exister même sans le
+  // moindre item) et la personne actuellement choisie (sinon supprimer son dernier
+  // item viderait le sélecteur en laissant la page filtrée sur du vide).
+  const people = useMemo(() => {
+    const map = new Map()
+    const add = (id, name) => {
+      const e = map.get(id)
+      if (!e) map.set(id, { id, name: name || (id === NO_CREATOR ? 'Sans créateur' : 'Sans nom') })
+      else if (name && e.name === 'Sans nom') e.name = name
+    }
+    if (user?.id) add(user.id, user.name)
+    for (const p of data.prompts) add(p.created_by || NO_CREATOR, p.created_by_name)
+    if (person !== PERSON_ALL) add(person)
+    const rank = e => (e.id === user?.id ? 0 : e.id === NO_CREATOR ? 2 : 1)
+    return [...map.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+  }, [data.prompts, person, user?.id, user?.name])
+
+  // Combien d'items le filtre met de côté : sans ce chiffre, une file vide parce
+  // qu'on regarde la sienne ressemble à une file vide tout court.
+  const hiddenByPerson = useMemo(
+    () => (person === PERSON_ALL ? 0 : data.prompts.filter(p => !byPerson(p)).length),
+    [data.prompts, person, byPerson])
 
   const fileList = useMemo(
     () => [...asking, ...executing, ...otherActive, ...waiting, ...queuedList, ...pausedList].filter(matches),
     [asking, executing, otherActive, waiting, queuedList, pausedList, matches])
   const historyList = useMemo(() => history.filter(matches), [history, matches])
 
-  const create = async (form) => {
-    try {
-      await api.travaux.createPrompt({ ...form, space })
-      // Dépôt « de côté » : le dire, sinon l'item semble s'être évaporé (il n'est
-      // pas dans la file, il attend dans l'autre onglet).
-      if (form.status === 'paused') toast.success('Mis de côté — retrouve-le dans l\'onglet « De côté & idées »')
-      load()
-    } catch (e) { toast.error(e.message); throw e }
-  }
+  // Conversations regroupées par créateur (hors recherche : une recherche reste une
+  // liste plate, tous résultats visibles). Ordre : ma section d'abord, puis les plus
+  // fournies ; les items sans créateur (anciens enregistrements) ferment la marche.
+  const historyGroups = useMemo(() => {
+    const map = new Map()
+    for (const p of history) {
+      const key = p.created_by || NO_CREATOR
+      let g = map.get(key)
+      if (!g) { g = { key, name: p.created_by_name || 'Sans créateur', items: [], unread: 0 }; map.set(key, g) }
+      g.items.push(p)
+      if (!p.seen_at) g.unread++
+    }
+    const rank = g => (g.key === user?.id ? 0 : g.key === NO_CREATOR ? 2 : 1)
+    return [...map.values()].sort((a, b) => rank(a) - rank(b) || b.items.length - a.items.length)
+  }, [history, user?.id])
 
-  const { patch, remove, first, reply, steer } = usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPrompt, toast, queuePaused: data.queue_paused })
+  const { patch, remove, stop, removeWithCleanup, first, reply, steer } = usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPrompt, toast, queuePaused: data.queue_paused })
 
   // ── Priorité : réordonner la file ──────────────────────────────────────────
   // Seule une exécution RÉELLEMENT en cours est intouchable. Les items « en
@@ -912,13 +968,32 @@ export function QueueTab({ toast, space, noComposer }) {
     queued: [...waiting, ...queuedList].map(p => p.id),
     paused: pausedList.map(p => p.id),
   }), [waiting, queuedList, pausedList])
+  // Mêmes groupes, filtre de personne mis à part : les positions envoyées au serveur
+  // couvrent TOUTE la file, sinon réordonner en ne voyant que ses items renumérote
+  // les siens et laisse ceux des collègues s'intercaler n'importe où.
+  const fullGroupIds = useMemo(() => {
+    const mine = data.prompts.filter(p => !p.space || p.space === space)
+    const pending = mine.filter(p => p.status === 'running' && p.run_state !== 'executing')
+    return {
+      executing: mine.filter(p => p.status === 'running' && p.run_state === 'executing').map(p => p.id),
+      queued: [...pending, ...mine.filter(p => p.status === 'queued')].map(p => p.id),
+      paused: mine.filter(p => p.status === 'paused').map(p => p.id),
+    }
+  }, [data.prompts, space])
   const groupOf = useCallback((id) => (
     groupIds.queued.includes(id) ? 'queued' : groupIds.paused.includes(id) ? 'paused' : null
   ), [groupIds])
 
   const applyOrder = useCallback(async (group, ids) => {
     if (ids.every((id, i) => id === groupIds[group][i])) return
-    const ordered = group === 'queued' ? [...ids, ...groupIds.paused] : [...groupIds.queued, ...ids]
+    // Les items visibles reprennent LEURS emplacements dans le groupe complet, dans
+    // le nouvel ordre : ceux que le filtre de personne masque ne bougent pas.
+    const moving = new Set(ids)
+    let k = 0
+    const reordered = fullGroupIds[group].map(id => (moving.has(id) ? ids[k++] : id))
+    const ordered = group === 'queued'
+      ? [...reordered, ...fullGroupIds.paused]
+      : [...fullGroupIds.queued, ...reordered]
     const slots = new Set(ordered)
     // Optimiste : la carte bouge tout de suite, le serveur confirme derrière. Les
     // items déplaçables reprennent leurs propres emplacements dans le tableau,
@@ -929,28 +1004,15 @@ export function QueueTab({ toast, space, noComposer }) {
       return { ...d, prompts: d.prompts.map(p => (slots.has(p.id) ? moved[i++] : p)) }
     })
     try {
-      await api.travaux.reorderPrompts(executing.map(p => p.id).concat(ordered))
+      await api.travaux.reorderPrompts(fullGroupIds.executing.concat(ordered))
     } catch (e) { toast.error(e.message) }
     load()
-  }, [groupIds, executing, load, setData, toast])
+  }, [groupIds, fullGroupIds, load, setData, toast])
 
   const siblingsOf = useCallback((id) => groupIds[groupOf(id)] || null, [groupIds, groupOf])
   const applyGroupOrder = useCallback((ids, id) => applyOrder(groupOf(id), ids), [applyOrder, groupOf])
   const dnd = useReorderDnd({ siblingsOf, applyOrder: applyGroupOrder })
-  const advance = async () => {
-    try {
-      const { started, startedCount, reason } = await api.travaux.advanceQueue()
-      if (startedCount > 1) toast.success(`${startedCount} items démarrés`)
-      else if (started) toast.success(`« ${started.title} » démarré`)
-      else if (reason === 'queue-paused') toast.error('La file est en pause — reprends-la avec le bouton en haut de page')
-      else if (reason === 'agent-disabled') toast.error("L'agent est désactivé — activez-le sur la page Agent")
-      else if (reason === 'busy') toast.info('Tout ce qui pouvait démarrer tourne déjà')
-      else toast.info('Rien à lancer : la file est vide')
-      load()
-    } catch (e) { toast.error(e.message) }
-  }
-
-  const rowProps = { onPatch: patch, onDelete: remove, onFirst: first, onReply: reply, onSteer: steer, space }
+  const rowProps = { onPatch: patch, onDelete: remove, onStop: stop, onCleanupDelete: removeWithCleanup, onFirst: first, onReply: reply, onSteer: steer, space }
   const seg = (active) => `inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition ${
     active ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`
 
@@ -973,8 +1035,6 @@ export function QueueTab({ toast, space, noComposer }) {
           </div>
         </div>
       )}
-
-      {!noComposer && <NewPromptComposer agentEnabled={data.agent_enabled} onCreate={create} />}
 
       {/* Barre de navigation : deux vues, comptées, et une recherche. Elle colle en
           haut pour rester accessible sans remonter toute la liste. */}
@@ -1000,38 +1060,48 @@ export function QueueTab({ toast, space, noComposer }) {
 
           <div className="flex-1" />
 
+          {/* Qui ? Par défaut soi-même — la file est commune, le suivi est personnel. */}
+          <label className="inline-flex items-center gap-1.5 text-slate-500" title="Ne voir que les prompts, questions et travaux d'une personne">
+            <Users size={14} className="shrink-0" />
+            <span className="sr-only">Personne</span>
+            <select
+              className={inputCls}
+              data-testid="travaux-person-filter"
+              value={person}
+              onChange={e => choosePerson(e.target.value)}
+            >
+              <option value={PERSON_ALL}>Tout le monde</option>
+              {people.map(o => (
+                <option key={o.id} value={o.id}>{o.id === user?.id ? `${o.name} (moi)` : o.name}</option>
+              ))}
+            </select>
+          </label>
+
           <input
             className={`${inputCls} w-44`}
-            placeholder="Rechercher…"
             value={search}
             onChange={e => setSearch(e.target.value)}
             data-testid="travaux-search"
           />
-          {view === 'file' && (
-            <>
-              {/* Les questions étant en lecture seule, elles tournent à plusieurs et en
-                  même temps qu'un chantier : le bouton reste actif tant qu'il reste
-                  quelque chose de démarrable. */}
-              {data.running_questions > 0 && (
-                <span className="text-xs text-slate-500">
-                  {data.running_questions}/{data.max_parallel_questions} question{data.running_questions > 1 ? 's' : ''} en parallèle
-                </span>
-              )}
-              <button
-                className={btnCls}
-                onClick={advance}
-                disabled={data.queue_paused || !queuedList.length}
-                title={data.queue_paused ? 'File en pause — reprends-la avec le bouton en haut de page' : undefined}
-              >
-                <Play size={14} /> Lancer la file
-              </button>
-            </>
+          {/* Quatre files avancent de front : sans ce compteur, une file immobile
+              ressemble à une panne alors que les trois autres travaillent. */}
+          {view === 'file' && data.running_implementations > 0 && (
+            <span className="text-xs text-slate-500">
+              {data.running_implementations}/{data.exec_lanes} en cours
+            </span>
+          )}
+          {/* Les questions étant en lecture seule, elles tournent à plusieurs et en
+              même temps qu'un chantier : on dit combien occupent l'exécuteur. */}
+          {view === 'file' && data.running_questions > 0 && (
+            <span className="text-xs text-slate-500">
+              {data.running_questions}/{data.max_parallel_questions} question{data.running_questions > 1 ? 's' : ''} en parallèle
+            </span>
           )}
         </div>
       </div>
 
       {loading ? (
-        <div className="text-sm text-slate-500 flex items-center gap-2 mt-3"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
+        <div className="text-sm text-slate-500 flex items-center gap-2 mt-3"><Spinner size="xs" label="Chargement…" /></div>
       ) : search.trim() ? (
         // Une recherche cherche dans les deux sections à la fois : peu importe
         // l'onglet affiché, on ne veut jamais rater un résultat rangé dans l'autre.
@@ -1047,6 +1117,7 @@ export function QueueTab({ toast, space, noComposer }) {
               {!fileList.length && (
                 <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-4 text-center">
                   Aucun item ne correspond à cette recherche.
+                  <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
                 </div>
               )}
             </div>
@@ -1060,13 +1131,14 @@ export function QueueTab({ toast, space, noComposer }) {
               {!historyList.length && (
                 <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-4 text-center">
                   Aucune conversation ne correspond à cette recherche.
+                  <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
                 </div>
               )}
               {historyList.length > historyLimit && (
-                <button className={`${btnCls} w-full justify-center`} onClick={() => setHistoryLimit(n => n + HISTORY_PAGE)}>
-                  Afficher {Math.min(HISTORY_PAGE, historyList.length - historyLimit)} conversations de plus
-                  <span className="text-slate-400">· {historyList.length - historyLimit} restantes</span>
-                </button>
+                <AutoLoadMore
+                  remaining={historyList.length - historyLimit}
+                  onLoadMore={() => setHistoryLimit(n => n + HISTORY_PAGE)}
+                />
               )}
             </div>
           </div>
@@ -1085,28 +1157,56 @@ export function QueueTab({ toast, space, noComposer }) {
           {!fileList.length && (
             <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-6 text-center">
               File vide. Ajoute un prompt ci-dessus — il partira tout seul.
+              <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
             </div>
-          )}
-          {groupIds.queued.length > 1 && (
-            <p className="text-xs text-slate-400 pt-1">
-              L'ordre de la liste = l'ordre de départ. Glisse une carte par sa poignée, ou utilise les flèches.
-              Tant qu'un item n'a pas démarré, son prompt et sa place restent modifiables — même s'il est déjà remis à l'agent.
-            </p>
           )}
         </div>
       ) : (
-        <div className="space-y-1.5 mt-1">
-          {historyList.slice(0, historyLimit).map(p => <PromptRow key={p.id} p={p} {...rowProps} />)}
-          {!historyList.length && (
+        <div className="space-y-3 mt-1">
+          {/* Une section par créateur : chacun ouvre la sienne pour faire son ménage,
+              celles des collègues restent repliées (avec compteur et « à lire »). */}
+          {historyGroups.map(g => {
+            const collapsed = isGroupCollapsed(g.key)
+            const limit = groupLimits[g.key] || HISTORY_PAGE
+            return (
+              <div key={g.key} data-testid="travaux-creator-group" data-group-collapsed={collapsed ? '1' : '0'}>
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-left text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+                  aria-expanded={!collapsed}
+                  data-testid="travaux-creator-group-toggle"
+                  onClick={() => toggleGroup(g.key)}
+                >
+                  <ChevronDown size={16} className={`shrink-0 text-slate-400 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
+                  <CreatorChip name={g.key === '__none__' ? '' : g.name} />
+                  <span className="truncate">{g.name}</span>
+                  <span className="text-slate-400 font-normal shrink-0">({g.items.length})</span>
+                  {collapsed && g.unread > 0 && (
+                    <span
+                      className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 text-xs font-semibold"
+                      data-testid="travaux-creator-group-unread"
+                    >{g.unread} à lire</span>
+                  )}
+                </button>
+                {!collapsed && (
+                  <div className="space-y-1.5 mt-1">
+                    {g.items.slice(0, limit).map(p => <PromptRow key={p.id} p={p} {...rowProps} />)}
+                    {g.items.length > limit && (
+                      <AutoLoadMore
+                        remaining={g.items.length - limit}
+                        onLoadMore={() => setGroupLimits(l => ({ ...l, [g.key]: (l[g.key] || HISTORY_PAGE) + HISTORY_PAGE }))}
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          {!history.length && (
             <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-6 text-center">
               Aucune tâche terminée pour l'instant.
+              <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
             </div>
-          )}
-          {historyList.length > historyLimit && (
-            <button className={`${btnCls} w-full justify-center`} onClick={() => setHistoryLimit(n => n + HISTORY_PAGE)}>
-              Afficher {Math.min(HISTORY_PAGE, historyList.length - historyLimit)} conversations de plus
-              <span className="text-slate-400">· {historyList.length - historyLimit} restantes</span>
-            </button>
           )}
         </div>
       )}
@@ -1214,7 +1314,6 @@ function SuggestionChat({ s }) {
               className={`${inputCls} flex-1 text-sm`}
               data-testid="suggestion-chat-input"
               rows={2}
-              placeholder="Dis-m'en plus… (⌘/Ctrl + Entrée pour envoyer)"
               value={text}
               onChange={e => setText(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) send() }}
@@ -1438,7 +1537,7 @@ function SuggestionsTab({ toast, space }) {
       </p>
 
       {loading ? (
-        <div className="text-sm text-slate-500 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
+        <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
       ) : visible.length ? (
         <div className="space-y-6" data-testid="suggestions-by-area">
           {groupSuggestionsByArea(visible).map(({ area: a, label, items }) => (
@@ -1519,8 +1618,8 @@ function SetAsideSection({ toast, space }) {
   }, [actions, toast])
 
   const rowProps = {
-    onPatch: patch, onDelete: actions.remove, onFirst: actions.first,
-    onReply: actions.reply, onSteer: actions.steer, space,
+    onPatch: patch, onDelete: actions.remove, onStop: actions.stop, onCleanupDelete: actions.removeWithCleanup,
+    onFirst: actions.first, onReply: actions.reply, onSteer: actions.steer, space,
   }
 
   return (
@@ -1535,7 +1634,7 @@ function SetAsideSection({ toast, space }) {
       </p>
 
       {loading ? (
-        <div className="text-sm text-slate-500 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
+        <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
       ) : aside.length ? (
         <div className="space-y-1.5" data-testid="travaux-aside-list" onBlur={flushStale}>
           {aside.map(p => <PromptRow key={p.id} p={p} {...rowProps} />)}
@@ -1678,7 +1777,7 @@ function IdeaCard({ idea, onPatch, onDelete, onPromote, dnd, toast }) {
   return (
     <div
       ref={cardRef}
-      className={`group relative rounded-xl border border-slate-200 bg-white p-3.5 ${dnd.dragId === idea.id ? 'opacity-50' : ''}`}
+      className={`group relative rounded-xl border bg-white p-3.5 ${idea.priority ? 'border-amber-300' : 'border-slate-200'} ${dnd.dragId === idea.id ? 'opacity-50' : ''}`}
       data-idea-id={idea.id}
       onDragOver={movable ? e => dnd.dragOver(e, idea.id) : undefined}
       onDrop={movable ? e => dnd.drop(e, idea.id) : undefined}
@@ -1704,18 +1803,30 @@ function IdeaCard({ idea, onPatch, onDelete, onPromote, dnd, toast }) {
             disabled={dnd.isLast(idea.id)} onClick={() => dnd.move(idea.id, 1)}><ChevronDown size={14} /></button>
         </div>
         <Lightbulb size={15} className="text-amber-400 mt-1.5 shrink-0" />
+        <button
+          type="button"
+          data-testid="idea-priority"
+          aria-pressed={!!idea.priority}
+          title={idea.priority ? 'Retirer la priorité' : 'Marquer comme prioritaire'}
+          className={`shrink-0 mt-1.5 p-0.5 rounded-md -ml-1.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 transition-opacity ${
+            idea.priority
+              ? 'text-amber-500 opacity-100'
+              : 'text-slate-300 hover:text-slate-500 opacity-0 group-hover:opacity-100 focus:opacity-100'
+          }`}
+          onClick={() => onPatch(idea.id, { priority: idea.priority ? 0 : 1 })}
+        >
+          <Star size={14} className={idea.priority ? 'fill-amber-500' : ''} />
+        </button>
         <div className="flex-1 min-w-0">
           <input
             className="w-full bg-transparent text-sm font-medium text-slate-800 border-0 p-0 focus:outline-none"
             value={draft.title}
-            placeholder="Titre de l'idée"
             onChange={e => edit('title', e.target.value)}
             onBlur={flush}
           />
           <textarea
             className="w-full mt-1.5 bg-transparent text-sm text-slate-600 border-0 p-0 focus:outline-none resize-y placeholder:text-slate-300"
             rows={draft.notes ? 3 : 1}
-            placeholder="Développer l'idée…"
             value={draft.notes}
             onChange={e => edit('notes', e.target.value)}
             onBlur={flush}
@@ -1723,7 +1834,6 @@ function IdeaCard({ idea, onPatch, onDelete, onPromote, dnd, toast }) {
           <div className="flex items-center gap-2 mt-1 flex-wrap">
             <input
               className="w-40 text-xs text-slate-500 bg-transparent border-0 p-0 focus:outline-none placeholder:text-slate-300"
-              placeholder="thème…"
               value={draft.tag}
               onChange={e => edit('tag', e.target.value)}
               onBlur={flush}
@@ -1822,7 +1932,6 @@ function IdeasTab({ toast, space }) {
         <div className="text-sm font-semibold text-slate-800 mb-3">Nouvelle idée</div>
         <input
           className={`${inputCls} w-full`}
-          placeholder="L'idée en une ligne…"
           value={form.title}
           onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
           onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) add() }}
@@ -1831,7 +1940,6 @@ function IdeasTab({ toast, space }) {
         <textarea
           className={`${inputCls} w-full mt-2`}
           rows={2}
-          placeholder="Développer (facultatif) — pourquoi, pistes, ce que ça changerait…"
           value={form.notes}
           onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
         />
@@ -1846,7 +1954,7 @@ function IdeasTab({ toast, space }) {
       </div>
 
       {loading ? (
-        <div className="text-sm text-slate-500 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
+        <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
       ) : ideas.length ? (
         <div className="space-y-2.5">
           {ideas.map(idea => (
@@ -1925,7 +2033,6 @@ function WeekPicker({ weeks, value, onChange, testid = 'recurring-week' }) {
             <input
               autoFocus
               className={`${inputCls} w-full mb-1`}
-              placeholder="Rechercher une semaine…"
               value={q}
               onChange={e => setQ(e.target.value)}
             />
@@ -2148,7 +2255,9 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
       data-done={t.done ? '1' : '0'}
       className={`group relative flex items-start gap-3 px-3 py-2.5 rounded-lg transition-all duration-300 ${
         open ? 'bg-slate-50' : 'hover:bg-slate-50'
-      } ${t.done ? 'opacity-60' : ''} ${fading ? 'opacity-0 translate-x-2' : ''}`}
+      } ${t.done ? 'opacity-60' : ''} ${fading ? 'opacity-0 translate-x-2' : ''} ${
+        t.priority && !t.done ? 'border-l-2 border-amber-400' : ''
+      }`}
     >
       {t.occurrences?.length ? (
         <OccurrenceChecks t={t} onToggle={onToggle} />
@@ -2177,6 +2286,13 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
           {/* Le « quand » et l'échéance restent lisibles EN TOUT TEMPS : ils
               étaient masqués au survol pour laisser passer l'ancienne barre de
               réglages, donc lire une ligne de près la vidait de ses repères. */}
+          {/* Un travail « à faire une fois le mois terminé » (period_offset)
+              coche une période différente de celle du mois affiché en en-tête
+              de section : sans ce badge, rien ne dit à quel mois se rapporte
+              la case à cocher. */}
+          {t.period_offset > 0 && (
+            <span className="shrink-0 text-xs text-slate-400" data-testid="recurring-period-label">pour {t.period_label}</span>
+          )}
           {draft.day_hint && (
             <span className="shrink-0 text-xs text-slate-500">{draft.day_hint}</span>
           )}
@@ -2190,7 +2306,6 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
         </div>
         <AutoGrowNote
           className="mt-0.5 text-[13px] leading-relaxed text-slate-600 placeholder:text-slate-300"
-          placeholder="note…"
           data-testid="recurring-note"
           value={draft.notes}
           onChange={e => edit('notes', e.target.value)}
@@ -2205,6 +2320,20 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
           survol, au focus clavier, et reste allumé tant que le panneau est
           ouvert — sinon sortir la souris de la ligne pour aller dans le panneau
           l'éteindrait. */}
+      <button
+        type="button"
+        data-testid="recurring-priority"
+        aria-pressed={!!t.priority}
+        title={t.priority ? 'Retirer la priorité' : 'Marquer comme prioritaire'}
+        className={`shrink-0 mt-0.5 p-1 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 transition-opacity ${
+          t.priority
+            ? 'text-amber-500 opacity-100'
+            : 'text-slate-300 hover:text-slate-500 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus:opacity-100'
+        }`}
+        onClick={() => onPatch(t.id, { priority: t.priority ? 0 : 1 })}
+      >
+        <Star size={15} className={t.priority ? 'fill-amber-500' : ''} />
+      </button>
       <div className="relative shrink-0 mt-0.5" ref={box}>
         <button
           type="button"
@@ -2231,7 +2360,6 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
               <span className="block text-[11px] font-medium text-slate-500 mb-0.5">Quand</span>
               <input
                 className="w-full text-sm text-slate-700 rounded-md border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-300 placeholder:text-slate-400"
-                placeholder="ex. mardi matin"
                 value={draft.day_hint}
                 onChange={e => edit('day_hint', e.target.value)}
                 onBlur={flush}
@@ -2245,7 +2373,6 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
                 <input
                   type="number" min="1" max="31"
                   className="w-full text-sm text-slate-700 rounded-md border border-slate-200 bg-white px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-100 focus:border-brand-300 placeholder:text-slate-400"
-                  placeholder="–"
                   data-testid="recurring-due-day"
                   value={draft.due_day}
                   onChange={e => edit('due_day', e.target.value)}
@@ -2426,9 +2553,10 @@ function RecurringTab({ toast }) {
   const groups = useMemo(() => {
     const by = {}
     for (const t of tasks) (by[t.cadence] ||= []).push(t)
-    // En retard d'abord, puis « bientôt dû », puis l'ordre habituel : ce qui
-    // presse doit être en haut de sa section, pas noyé au milieu.
-    const rank = t => (t.due_status === 'overdue' ? 0 : t.due_status === 'due_soon' ? 1 : 2)
+    // En retard d'abord (urgence réelle), puis prioritaire (épinglé à la main),
+    // puis « bientôt dû », puis l'ordre habituel : ce qui presse doit être en
+    // haut de sa section, pas noyé au milieu.
+    const rank = t => (t.due_status === 'overdue' ? 0 : t.priority ? 1 : t.due_status === 'due_soon' ? 2 : 3)
     return Object.keys(CADENCE_LABELS).filter(c => by[c]?.length).map(c => ({
       cadence: c,
       period_label: by[c][0]?.period_label,
@@ -2486,7 +2614,7 @@ function RecurringTab({ toast }) {
       </div>
 
       {loading ? (
-        <div className="text-sm text-slate-500 flex items-center gap-2"><Loader2 size={14} className="animate-spin" /> Chargement…</div>
+        <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
       ) : (
         <div className="space-y-5">
           {groups.map(g => (
@@ -2503,7 +2631,7 @@ function RecurringTab({ toast }) {
                   </div>
                   {g.catchUp.map(({ t, period }) => (
                     <CatchUpRow key={`${t.id}:${period.period_key}`} t={t} period={period}
-                      currentLabel={g.period_label} onToggle={toggle} />
+                      currentLabel={t.period_label} onToggle={toggle} />
                   ))}
                 </div>
               )}
@@ -2550,7 +2678,6 @@ function RecurringTab({ toast }) {
       <div className="flex items-center gap-2 mt-5">
         <input
           className={`${inputCls} flex-1`}
-          placeholder="Ajouter un travail…"
           value={form.label}
           onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
           onKeyDown={e => { if (e.key === 'Enter') add() }}
@@ -2619,8 +2746,8 @@ function QueuePauseControl({ toast }) {
       toast.success(next
         ? 'File en pause — la tâche en cours finit, aucune autre ne démarre'
         : out.startedCount ? 'File reprise — le travail suivant démarre' : 'File reprise')
-      // La liste (bandeau, bouton « Lancer la file ») se remet à jour comme si le
-      // serveur avait diffusé : la reprise passe par la même route pour tout le monde.
+      // La liste (bandeau compris) se remet à jour comme si le serveur avait
+      // diffusé : la reprise passe par la même route pour tout le monde.
       window.dispatchEvent(new CustomEvent('travaux:prompts:updated'))
     } catch (e) { toast.error(e.message) }
     finally { setBusy(false) }
@@ -2649,6 +2776,325 @@ function QueuePauseControl({ toast }) {
   )
 }
 
+// ─── Réglages de l'agent (prompts éditables + instructions projet) ────────────
+// Anciennement portés par la page /agent (supprimée) — la file de prompts et les
+// réglages qui la pilotent vivent maintenant au même endroit.
+
+/**
+ * Éditeur de prompt générique (préambule + modèles d'activité). Tout ce que le
+ * modèle reçoit en prompt est éditable ici. Les modèles d'activité acceptent des
+ * jetons {{placeholder}} remplacés à l'exécution par le serveur.
+ */
+function PromptEditorPanel({ testid, title, description, value, defaultValue, placeholders = [], rows = 8, onSave }) {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState(value || '')
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+
+  // Resynchronise si la valeur change ailleurs (WS settings:updated / chargement).
+  useEffect(() => { setText(value || '') }, [value])
+
+  const dirty = text !== (value || '')
+  // « Personnalisé » = la valeur enregistrée diffère du modèle d'usine.
+  const customized = defaultValue != null && (value || '') !== defaultValue
+
+  // Autosave on blur (règle « autosave partout » du CLAUDE.md — pas de bouton Enregistrer).
+  async function persist(next) {
+    setSaving(true)
+    try {
+      await onSave(next)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } finally { setSaving(false) }
+  }
+  async function save() { if (dirty && !saving) await persist(text) }
+  async function resetDefault() {
+    if (defaultValue == null || saving) return
+    setText(defaultValue)
+    await persist(defaultValue)
+  }
+
+  return (
+    <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
+        <FileText size={15} className="text-brand-500" />
+        <span className="text-sm font-medium text-slate-700 flex-1">{title}</span>
+        {customized && !open && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">Personnalisé</span>}
+        {saving
+          ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+          : saved
+            ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
+            : dirty && open && <span className="text-[11px] text-slate-400">Modifié</span>}
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-slate-400">{description}</p>
+          {placeholders.length > 0 && (
+            <div className="rounded-lg bg-slate-50 border border-slate-200 p-2.5 space-y-1">
+              <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wider">Variables disponibles</p>
+              <div className="flex flex-col gap-0.5">
+                {placeholders.map(([token, desc]) => (
+                  <div key={token} className="flex items-baseline gap-2 text-xs">
+                    <code className="text-brand-600 bg-brand-50 px-1 rounded font-mono whitespace-nowrap">{token}</code>
+                    <span className="text-slate-500">{desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          <textarea
+            value={text}
+            onChange={e => setText(e.target.value)}
+            onBlur={save}
+            data-testid={testid ? `prompt-textarea-${testid}` : undefined}
+            rows={rows}
+            className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 font-mono leading-relaxed resize-y focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
+          />
+          {customized && (
+            <button
+              onClick={resetDefault}
+              data-testid={testid ? `prompt-reset-${testid}` : undefined}
+              className="inline-flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-700 transition-colors"
+            >
+              <RotateCw size={12} /> Réinitialiser le modèle par défaut
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Instructions projet (CLAUDE.md) — éditable, admin only ───────────────────
+function ClaudeMdPanel() {
+  const [open, setOpen] = useState(false)
+  const [text, setText] = useState('')
+  const [original, setOriginal] = useState('')
+  // `true` initialement : sans ça, il existe un frame entre l'ouverture du
+  // panneau et le lancement du fetch (useEffect post-paint) où le textarea est
+  // rendu vide — un test/utilisateur rapide peut lire un contenu vide.
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
+  const [saving, setSaving] = useState(false)
+  const [saved, setSaved] = useState(false)
+  const fetchedRef = useRef(false)
+
+  // Chargement paresseux : on ne lit le fichier qu'au premier dépliage.
+  useEffect(() => {
+    if (!open || fetchedRef.current) return
+    fetchedRef.current = true
+    setLoading(true)
+    ;(async () => {
+      try {
+        const r = await api.agent.readClaudeMd()
+        setText(r.content || '')
+        setOriginal(r.content || '')
+      } catch (e) {
+        setError(e.message || 'Erreur de chargement')
+      } finally {
+        setLoading(false)
+      }
+    })()
+  }, [open])
+
+  const dirty = text !== original
+
+  // Autosave on blur (règle « autosave partout » — pas de bouton Enregistrer).
+  async function save() {
+    if (!dirty || saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      await api.agent.saveClaudeMd(text)
+      setOriginal(text)
+      setSaved(true)
+      setTimeout(() => setSaved(false), 2000)
+    } catch (e) {
+      setError(e.message || 'Erreur d\'enregistrement')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="mb-6 bg-white border border-slate-200 rounded-xl p-3.5 shadow-sm">
+      <button onClick={() => setOpen(o => !o)} className="w-full flex items-center gap-2 text-left">
+        <FileText size={15} className="text-brand-500" />
+        <span className="text-sm font-medium text-slate-700 flex-1">Instructions projet (CLAUDE.md)</span>
+        {saving
+          ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+          : saved
+            ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
+            : dirty && open && <span className="text-[11px] text-slate-400">Modifié</span>}
+        {open ? <ChevronUp size={14} className="text-slate-400" /> : <ChevronDown size={14} className="text-slate-400" />}
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs text-slate-400">
+            Le contexte et les règles du projet, lus à chaque activité de l'agent. Enregistré automatiquement à la sortie du champ.
+          </p>
+          <div className="flex items-start gap-2 px-3 py-2 rounded-md bg-amber-50 border border-amber-200 text-amber-800 text-[11px]">
+            <AlertTriangle size={13} className="flex-shrink-0 mt-0.5" />
+            <span>
+              Ce fichier est versionné : un déploiement (<code>git pull</code>) peut écraser des modifications non committées. Pense à committer après une édition importante.
+            </span>
+          </div>
+          {error && (
+            <div className="px-3 py-2 rounded-md bg-red-50 border border-red-200 text-red-700 text-[11px]" data-testid="claude-md-error">{error}</div>
+          )}
+          {loading ? (
+            <div className="flex items-center gap-2 text-slate-400 text-sm py-6"><Spinner size="xs" label="Chargement…" /></div>
+          ) : (
+            <textarea
+              value={text}
+              onChange={e => setText(e.target.value)}
+              onBlur={save}
+              data-testid="claude-md-textarea"
+              rows={24}
+              className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-900 placeholder-slate-400 font-mono leading-relaxed resize-y focus:outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-500/20"
+            />
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Bouton « Réglages » + frein d'urgence ON/OFF de l'agent — anciennement le
+ * header de la page /agent. Les prompts (préambule, propositions, exécution…)
+ * et les instructions projet (CLAUDE.md, admin) s'éditent dans la modale.
+ */
+function AgentSettingsControl({ toast }) {
+  const { user } = useAuth()
+  const [settings, setSettings] = useState({ enabled: false })
+  const [promptDefaults, setPromptDefaults] = useState({})
+  const [open, setOpen] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const s = await api.agent.getSettings()
+      setSettings(s)
+      if (s.defaults) setPromptDefaults(s.defaults)
+    } catch { /* silencieux : le bouton reste utilisable, réessaiera au prochain montage */ }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    function onSettings(e) { setSettings(e.detail) }
+    window.addEventListener('agent:settings:updated', onSettings)
+    return () => window.removeEventListener('agent:settings:updated', onSettings)
+  }, [])
+
+  async function savePromptField(key, value) {
+    try {
+      const s = await api.agent.saveSettings({ [key]: value })
+      setSettings(prev => ({ ...prev, ...s }))
+    } catch { toast.error('Erreur enregistrement du prompt') }
+  }
+
+  async function toggleAgent() {
+    try {
+      const s = await api.agent.saveSettings({ enabled: !settings.enabled })
+      setSettings(s)
+      toast.success(s.enabled ? 'Agent activé' : 'Agent en pause')
+    } catch { toast.error('Erreur') }
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        data-testid="agent-settings-button"
+        className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors bg-white hover:bg-slate-50 border border-slate-200 text-slate-600"
+        title="Réglages de l'agent (prompts, instructions projet)"
+      >
+        <Settings size={15} />
+        <span className="hidden sm:inline">Réglages</span>
+      </button>
+      <button
+        onClick={toggleAgent}
+        className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${settings.enabled ? 'bg-emerald-600 hover:bg-emerald-500 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'}`}
+        title="Frein d'urgence : OFF = l'agent ne génère ni ne code"
+      >
+        <Power size={15} />
+        <span className="hidden sm:inline">{settings.enabled ? 'ON' : 'OFF'}</span>
+      </button>
+
+      <Modal isOpen={open} onClose={() => setOpen(false)} title="Réglages de l'agent" size="xl">
+        <PromptEditorPanel
+          testid="general"
+          title="Prompt général"
+          description="Préambule injecté en tête de CHAQUE activité de l'agent (proposition instantanée, discussion, exécution). C'est le {{general}} des modèles ci-dessous. Enregistré automatiquement à la sortie du champ."
+          value={settings.generalPrompt}
+          defaultValue={promptDefaults.generalPrompt}
+          rows={8}
+          onSave={v => savePromptField('generalPrompt', v)}
+        />
+        <PromptEditorPanel
+          testid="instant"
+          title="Prompt — proposition instantanée"
+          description="Le prompt envoyé dès qu'une suggestion est soumise (bulle d'aide ou file de travaux) pour proposer un correctif immédiat, sans lecture du code."
+          value={settings.instantPrompt}
+          defaultValue={promptDefaults.instantPrompt}
+          rows={12}
+          placeholders={[
+            ['{{general}}', 'le prompt général'],
+            ['{{text}}', 'le texte de la suggestion'],
+            ['{{context}}', 'la page d\'où vient le signalement'],
+          ]}
+          onSave={v => savePromptField('instantPrompt', v)}
+        />
+        <PromptEditorPanel
+          testid="conversation"
+          title="Prompt — discussion d'une proposition"
+          description="Le prompt envoyé quand tu discutes d'une sous-tâche dans le fil (réponse en lecture seule, sans coder)."
+          value={settings.conversationPrompt}
+          defaultValue={promptDefaults.conversationPrompt}
+          rows={14}
+          placeholders={[
+            ['{{general}}', 'le prompt général'],
+            ['{{proposal}}', 'titre de la proposition discutée'],
+            ['{{why}}', 'ligne « Pourquoi » (si renseignée)'],
+            ['{{zone}}', 'ligne « Zone visée » (si renseignée)'],
+            ['{{thread}}', 'le fil de discussion humain / agent'],
+          ]}
+          onSave={v => savePromptField('conversationPrompt', v)}
+        />
+        <PromptEditorPanel
+          testid="execution"
+          title="Prompt — exécution (codage)"
+          description="Le prompt envoyé quand un correctif est approuvé et que l'agent code réellement (lecture/écriture du repo)."
+          value={settings.executionPrompt}
+          defaultValue={promptDefaults.executionPrompt}
+          rows={16}
+          placeholders={[
+            ['{{general}}', 'le prompt général'],
+            ['{{brief}}', 'le brief de la tâche (signalement, correctif approuvé, commentaire)'],
+            ['{{internalSecret}}', 'secret d\'auth pour créer des sous-tâches via l\'API'],
+          ]}
+          onSave={v => savePromptField('executionPrompt', v)}
+        />
+        <PromptEditorPanel
+          testid="question"
+          title="Prompt — question (réponse sans implémentation)"
+          description="Le prompt envoyé quand la demande soumise est une question : l'agent explore le code en lecture seule et répond dans le compte-rendu de la carte, sans rien implémenter."
+          value={settings.questionPrompt}
+          defaultValue={promptDefaults.questionPrompt}
+          rows={12}
+          placeholders={[
+            ['{{general}}', 'le prompt général'],
+            ['{{brief}}', 'la question de l\'utilisateur (avec auteur et page d\'origine)'],
+          ]}
+          onSave={v => savePromptField('questionPrompt', v)}
+        />
+        {user?.role === 'admin' && <ClaudeMdPanel />}
+      </Modal>
+    </>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -2661,27 +3107,13 @@ const TABS = [
 // mène. Les liens existants (?onglet=idees) restent valides — une clé d'URL déjà
 // partagée ne doit jamais mourir.
 const TAB_ALIASES = { 'de-cote': 'idees' }
-// La même page sert deux sections : Espace finance (/travaux) et Agent
-// (/agent/travaux). Chacune a SA file de prompts (listes distinctes en DB, un seul
-// exécuteur partagé) ; les suggestions et les idées, elles, sont les mêmes partout —
-// seul l'endroit où « Ajouter » / « Passer à l'action » dépose l'item change. Les
-// travaux récurrents restent propres à l'Espace finance.
-const SPACE_CONFIG = {
-  finance: {
-    title: 'Travaux',
-    intro: "Ta file de prompts pour l'agent, ses recommandations, ce que tu as mis de côté avec ton carnet d'idées, et les travaux récurrents à cocher.",
-    tabs: TABS,
-  },
-  agent: {
-    title: "Travaux de l'agent",
-    intro: "La file de prompts de la section Agent — distincte de celle de l'Espace finance, mais exécutée par le même agent (une implémentation à la fois, toutes files confondues). Les suggestions et le carnet d'idées sont partagés entre les deux sections ; les items mis de côté restent, eux, propres à chaque file.",
-    tabs: TABS.filter(t => t.key !== 'recurrents'),
-  },
-}
+// `space` distingue encore les files en DB (une section « Agent » distincte a
+// existé par le passé, cf. FeedbackFab et l'historique des tâches) — mais une
+// seule section vit désormais côté nav : cette page est LE point d'entrée.
+const SPACE_TITLE = 'Travaux'
 
 export default function Travaux({ space = 'finance' }) {
   const { addToast } = useToast()
-  const cfg = SPACE_CONFIG[space] || SPACE_CONFIG.finance
   // Adaptateur : les onglets appellent toast.error/success/info, le provider
   // expose addToast({ message, type }).
   const toast = useMemo(() => ({
@@ -2695,28 +3127,29 @@ export default function Travaux({ space = 'finance' }) {
   const [params, setParams] = useSearchParams()
   const raw = params.get('onglet')
   const asked = TAB_ALIASES[raw] || raw
-  const tab = cfg.tabs.some(x => x.key === asked) ? asked : 'file'
+  const tab = TABS.some(x => x.key === asked) ? asked : 'file'
   const select = (key) => setParams({ onglet: key }, { replace: true })
 
   return (
     <Layout>
       <div className="p-6 max-w-5xl" data-travaux-space={space}>
-        <h1 className="text-2xl font-bold text-slate-900">{cfg.title}</h1>
-        <p className="text-sm text-slate-500 mt-1 mb-4">
-          {cfg.intro}
-        </p>
+        <PageTitle>{SPACE_TITLE}</PageTitle>
 
-        {/* Consommation de Claude + frein d'urgence, à la même hauteur : on voit ce
-            qu'il reste de quota et on coupe d'un clic si on veut en garder pour la
-            journée de quelqu'un d'autre. Le bouton reste là même si la lecture de
-            l'utilisation échoue (le bandeau, lui, s'efface silencieusement). */}
-        <div className="flex flex-wrap items-center gap-2 mb-5">
+        {/* Consommation de Claude + commandes, à la même hauteur : le bandeau ne
+            porte que des mesures, les boutons (modèle, pause, réglages) sont à
+            côté. On voit ce qu'il reste de quota et on coupe d'un clic si on veut
+            en garder pour la journée de quelqu'un d'autre. Les boutons restent là
+            même si la lecture de l'utilisation échoue (le bandeau, lui, s'efface
+            silencieusement). */}
+        <div className="flex flex-wrap items-center gap-2 mt-4 mb-5">
           <ClaudeUsageStrip className="mb-0 flex-1 min-w-[300px]" />
+          <ClaudeModelControl />
           <QueuePauseControl toast={toast} />
+          <AgentSettingsControl toast={toast} />
         </div>
 
         <div className="flex items-center gap-1 border-b border-slate-200 mb-5">
-          {cfg.tabs.map(t => (
+          {TABS.map(t => (
             <button
               key={t.key}
               className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border-b-2 -mb-px ${

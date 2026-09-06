@@ -23,6 +23,7 @@ export function stripEmailHtml(html) {
     removeCidImages(doc)
     const hasQuoted = removeQuotedHtml(doc)
     const hasSignature = removeSignatureHtml(doc)
+    trimTrailingBlanks(doc.body)
     const stripped = (doc.body ? doc.body.innerHTML : doc.documentElement.innerHTML).trim()
     return { html: stripped, hasQuoted, hasSignature, hasHidden: hasQuoted || hasSignature }
   } catch {
@@ -33,6 +34,30 @@ export function stripEmailHtml(html) {
 function removeCidImages(doc) {
   const imgs = doc.querySelectorAll('img[src^="cid:" i]')
   for (const img of imgs) img.remove()
+}
+
+// Les clients de messagerie referment un message sur des blocs vides
+// (`<div><br></div>`, `<p>&nbsp;</p>`, et ce que laisse le retrait de la
+// signature). Invisibles dans un client mail, ils comptent dans la hauteur
+// d'une iframe dimensionnée sur son contenu : l'aperçu se terminait sur
+// plusieurs dizaines de pixels de blanc.
+const VOID_KEEP = new Set(['IMG', 'VIDEO', 'IFRAME', 'HR', 'TABLE', 'OBJECT', 'EMBED', 'SVG'])
+
+function trimTrailingBlanks(el) {
+  if (!el) return
+  let last = el.lastChild
+  while (last) {
+    const blank = last.nodeType === Node.TEXT_NODE
+      ? !last.textContent.replace(/\u00a0/g, ' ').trim()
+      : last.nodeType === Node.ELEMENT_NODE
+        && !VOID_KEEP.has(last.tagName)
+        && !last.textContent.replace(/\u00a0/g, ' ').trim()
+        && !last.querySelector('img, video, iframe, hr, table, object, embed, svg')
+    if (!blank) break
+    const prev = last.previousSibling
+    last.remove()
+    last = prev
+  }
 }
 
 export function stripEmailText(text) {

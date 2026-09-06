@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Barcode, History } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { ArrowLeft, History } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
@@ -10,23 +10,36 @@ import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import WeatherPanel from '../components/WeatherPanel.jsx'
+import { Field } from '../components/Field.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
-function Field({ label, children }) {
+// Champ de la table `serial_numbers` : passe par <Field>, donc par le portier
+// des champs supprimés (le bloc disparaît dès qu'on supprime le champ dans
+// /champs/serial_numbers).
+function SerialField({ id, label, children }) {
   return (
-    <div>
-      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-0.5">{label}</div>
+    <Field table="serial_numbers" id={id} label={label} labelClassName="text-xs font-medium text-slate-400 uppercase tracking-wide mb-0.5">
       <div className="text-sm text-slate-900">{children || <span className="text-slate-400">—</span>}</div>
-    </div>
+    </Field>
   )
 }
 
-export default function SerialDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
+// sans le chrome de page (Layout, bouton retour). En route normale l'id vient
+// de l'URL.
+export default function SerialDetail({ recordId, embedded = true }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const [history, setHistory] = useState([])
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
 
-  const { record: serial, loading, loadError, reload: load } = useDetailRecord(() => {
+  const { record: serial, setRecord: setSerial, loading, loadError, reload: load } = useDetailRecord(() => {
     // L'historique part en parallèle du record principal (échec silencieux).
     api.serials.history(id)
       .then(r => setHistory(r.data || []))
@@ -34,36 +47,39 @@ export default function SerialDetail() {
     return api.serials.get(id)
   }, [id], { clearOnError: true })
 
-  if (loading) {
-    return <Layout><Spinner center /></Layout>
-  }
-  if (loadError && !serial) {
-    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  }
-  if (!serial) {
-    return <Layout><div className="p-6 text-slate-500">Numéro de série introuvable.</div></Layout>
-  }
+  // Modifié ailleurs (Airtable, un collègue) → la fiche suit sans rechargement.
+  useRealtimeChannel(id ? `serial_number:${id}` : null, (msg) => {
+    if (msg.type === 'serial_number:updated') setSerial(s => (s ? { ...s, ...msg.payload } : s))
+  })
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-2xl mx-auto">
+  if (loading) return shell(<Spinner center />)
+  if (loadError && !serial) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!serial) return shell(<div className="p-6 text-slate-500">Numéro de série introuvable.</div>)
+
+  return shell(
+      <div className={embedded ? 'p-6' : 'p-6 max-w-2xl mx-auto'}>
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate(-1)} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate(-1)} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
             <div className="flex items-center gap-3">
-              <Barcode size={20} className="text-slate-400" />
-              <h1 className="text-2xl font-bold text-slate-900 font-mono">{serial.serial}</h1>
+              <PageTitle titleClassName="text-2xl font-bold text-slate-900 font-mono">{serial.serial}</PageTitle>
               {serial.status && <Badge color="blue">{serial.status}</Badge>}
             </div>
             {serial.product_name && (
-              <div className="text-sm text-slate-500 mt-1">
-                {serial.product_id
-                  ? <Link to={`/products/${serial.product_id}`} className="text-brand-600 hover:underline">{serial.product_name}</Link>
-                  : serial.product_name
-                }
-                {serial.sku && <span className="ml-1 font-mono text-slate-400">({serial.sku})</span>}
+              <div className="text-sm text-slate-500 mt-1 flex items-center gap-1.5 flex-wrap">
+                <LinkedRecordField
+                  name="product_id"
+                  value={serial.product_id || serial.product_name}
+                  options={[{ id: serial.product_id || serial.product_name, name: serial.product_name }]}
+                  getHref={serial.product_id ? p => `/products/${p.id}` : undefined}
+                  disabled
+                  allowClear={false}
+                />
+                {serial.sku && <span className="font-mono text-slate-400">({serial.sku})</span>}
               </div>
             )}
           </div>
@@ -71,29 +87,37 @@ export default function SerialDetail() {
 
         <div className="card p-5 space-y-5">
           <div className="grid grid-cols-2 gap-5">
-            <Field label="Entreprise">
-              {serial.company_id
-                ? <Link to={`/companies/${serial.company_id}`} className="text-brand-600 hover:underline">{serial.company_name}</Link>
-                : serial.company_name
-              }
-            </Field>
-            <Field label="Statut">{serial.status}</Field>
-            <Field label="Adresse">{serial.address}</Field>
-            <Field label="Valeur fabrication">{fmtCad(serial.manufacture_value)}</Field>
-            <Field label="Date fabrication">{fmtDate(serial.manufacture_date)}</Field>
-            <Field label="Dernière programmation">{fmtDate(serial.last_programmed_date)}</Field>
+            <SerialField id="company_name" label="Entreprise">
+              {serial.company_name
+                ? <LinkedRecordField
+                  name="company_id"
+                  value={serial.company_id || serial.company_name}
+                  options={[{ id: serial.company_id || serial.company_name, name: serial.company_name }]}
+                  getHref={serial.company_id ? c => `/companies/${c.id}` : undefined}
+                  disabled
+                  allowClear={false}
+                />
+                : null}
+            </SerialField>
+            <SerialField id="status" label="Statut">{serial.status}</SerialField>
+            <SerialField id="address" label="Adresse">{serial.address}</SerialField>
+            <SerialField id="manufacture_value" label="Valeur fabrication">{fmtCad(serial.manufacture_value)}</SerialField>
+            <SerialField id="manufacture_date" label="Date fabrication">{fmtDate(serial.manufacture_date)}</SerialField>
+            <SerialField id="last_programmed_date" label="Dernière programmation">{fmtDate(serial.last_programmed_date)}</SerialField>
+            <CustomDetailFields table="serial_numbers" record={serial} labelClassName="text-xs font-medium text-slate-400 uppercase tracking-wide mb-0.5" />
           </div>
           {serial.permissions && Object.keys(serial.permissions).length > 0 && (
             <div className="border-t border-slate-100 pt-4">
-              <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-2">Permissions</div>
-              <CentralControllerPermissions permissions={serial.permissions} />
+              <SerialField id="permissions" label="Permissions">
+                <CentralControllerPermissions permissions={serial.permissions} />
+              </SerialField>
             </div>
           )}
           {serial.notes && (
             <div className="border-t border-slate-100 pt-4">
-              <Field label="Notes">
+              <SerialField id="notes" label="Notes">
                 <p className="whitespace-pre-wrap text-slate-600">{serial.notes}</p>
-              </Field>
+              </SerialField>
             </div>
           )}
           <div className="border-t border-slate-100 pt-4 flex gap-8 text-xs text-slate-400">
@@ -132,6 +156,5 @@ export default function SerialDetail() {
           )}
         </div>
       </div>
-    </Layout>
   )
 }

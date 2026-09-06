@@ -235,7 +235,6 @@ export function GlobalSearch({ open, onClose }) {
             value={query}
             onChange={handleChange}
             onKeyDown={handleKeyDown}
-            placeholder="Rechercher ou aller à une page…"
             className="flex-1 text-sm outline-none text-slate-900 placeholder-slate-400"
           />
           {loading && (

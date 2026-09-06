@@ -20,6 +20,7 @@
 //   3. Reporter est un état, pas un oubli : la facture sort de la cédule avec
 //      une raison écrite et, si on veut, une date de retour.
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import {
   getTreasuryConfig, expandRecurring, variableOccurrence, TREASURY_BANK_ACCOUNT,
 } from './treasury.js'
@@ -31,7 +32,6 @@ import { summarizeAccount } from './bankReconcileSummary.js'
 import { findVendorProfile } from './vendorProfiles.js'
 import { ensureCardDues, listOpenCardDues } from './cardDues.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
-import { v4 as uuid } from 'uuid'
 
 const r2 = n => Math.round(Number(n) * 100) / 100
 const dayOnly = v => String(v || '').slice(0, 10)
@@ -243,7 +243,7 @@ export function setVendorParticularites(achatId, particularites) {
       db.prepare(`UPDATE vendor_profiles SET deleted_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(archived.id)
       profile = { id: archived.id, name: vendor }
     } else {
-      const id = uuid()
+      const id = newRecordId()
       db.prepare('INSERT INTO vendor_profiles (id, name) VALUES (?,?)').run(id, vendor)
       profile = { id, name: vendor }
     }

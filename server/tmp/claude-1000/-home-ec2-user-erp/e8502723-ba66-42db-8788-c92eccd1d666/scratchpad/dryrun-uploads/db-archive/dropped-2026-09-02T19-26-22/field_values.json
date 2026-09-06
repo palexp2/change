@@ -1,0 +1,7 @@
+{
+  "table": "field_values",
+  "dropped_at": "2026-09-02T19:26:22.989Z",
+  "ddl": "CREATE TABLE \"field_values\" (\n      id TEXT PRIMARY KEY,\n      entity_type TEXT NOT NULL,\n      record_id TEXT NOT NULL,\n      field_def_id TEXT NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,\n      value_text TEXT,\n      value_number REAL,\n      value_date TEXT,\n      value_json TEXT,\n      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      UNIQUE(entity_type, record_id, field_def_id)\n    )",
+  "row_count": 0,
+  "rows": []
+}

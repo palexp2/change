@@ -1,9 +1,11 @@
 // Dettes à long terme — cédules de remboursement (BDC, DEC, Ville de Québec…)
 // et comptabilisation des versements dans QB (Dr dette · Dr intérêts · Cr banque).
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { Plus, Upload, CheckCircle2, Landmark, ExternalLink, Calculator, Unlink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
@@ -15,6 +17,7 @@ const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-l
 const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
 
 import { fmtMoney } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 const today = () => localISODate()
 
@@ -61,13 +64,17 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
   return (
     <Modal isOpen onClose={onClose} title={isNew ? 'Nouvelle dette' : form.label} size="lg">
       <div className="grid grid-cols-2 gap-3">
-        {field('label', 'Nom *', { placeholder: 'ex. Prêt BDC', autoFocus: isNew })}
-        {field('lender', 'Prêteur', { placeholder: 'ex. BDC' })}
-        {field('loan_number', 'No de prêt', { placeholder: 'ex. 173280-03' })}
+        {field('label', 'Nom *', { autoFocus: isNew })}
+        {field('lender', 'Prêteur')}
+        {field('loan_number', 'No de prêt')}
         {field('principal', 'Montant du prêt', { type: 'number', step: '0.01' })}
-        {field('qb_debt_acctnum', 'No de compte de dette QB', { placeholder: 'ex. 27100' })}
-        {field('qb_interest_acctnum', "No de compte d'intérêts QB", { placeholder: 'ex. 79200' })}
-        {field('qb_bank_acctnum', 'No de compte de banque QB', { placeholder: 'ex. 10000' })}
+        {field('qb_debt_acctnum', 'No de compte de dette QB')}
+        {field('qb_interest_acctnum', "No de compte d'intérêts QB")}
+        {field('qb_bank_acctnum', 'No de compte de banque QB')}
+        {/* Ce qui apparaît au relevé quand le versement sort (« BDC »,
+            « VILLE DE QUEBEC ») : sans lui, aucun versement n'est reconnu au
+            compte et la colonne « passé à la banque » reste muette. */}
+        {field('bank_label_pattern', 'Libellé au relevé bancaire')}
         {!isNew && (
           <div>
             <label className={labelCls}>Statut</label>
@@ -164,8 +171,7 @@ function ImportModal({ debt, onClose, onImported }) {
         <span className="font-mono mx-1">date capital intérêt [solde]</span>
         (ex. <span className="font-mono">2026-07-23  6 806,00 $  1 852,52 $  247 872,00 $</span>).
       </p>
-      <textarea className={`${inputCls} font-mono`} rows={12} value={text} onChange={e => setText(e.target.value)}
-        placeholder={'2026-07-23\t6806,00\t1852,52\t247872,00\n2026-08-23\t6806,00\t1863,12\t241066,00'} autoFocus />
+      <textarea className={`${inputCls} font-mono`} rows={12} value={text} onChange={e => setText(e.target.value)} autoFocus />
       <div className="flex items-center justify-between mt-2 text-xs">
         <label className="flex items-center gap-1.5 text-slate-600">
           <input type="checkbox" checked={replace} onChange={e => setReplace(e.target.checked)} />
@@ -269,8 +275,8 @@ function GenerateModal({ debt, onClose, onGenerated }) {
           <input className={inputCls} type="date" value={form.first_payment_date || ''} data-testid="gen-first_payment_date"
             onChange={e => set('first_payment_date', e.target.value)} />
         </div>
-        {num('payment_amount', 'Montant du versement', { step: '0.01', placeholder: 'ou nombre de versements' })}
-        {num('n_payments', 'Nombre de versements', { step: '1', min: '1', placeholder: 'si montant inconnu' })}
+        {num('payment_amount', 'Montant du versement', { step: '0.01' })}
+        {num('n_payments', 'Nombre de versements', { step: '1', min: '1' })}
       </div>
 
       <div className="mt-3 border border-slate-200 rounded-lg overflow-hidden" data-testid="gen-preview">
@@ -430,6 +436,27 @@ function PublishModal({ debt, payment, onClose, onPublished }) {
 
 // `qbMissing` = versements dont la transaction QB a été supprimée dans
 // QuickBooks : rien n'est comptabilisé, on n'affiche donc pas « Publié ».
+// « Passé à la banque », lu au relevé. Muet tant que le versement n'est pas dû
+// (rien à signaler d'avance) ; ambre quand la date est passée depuis plus de
+// trois jours sans que rien ne paraisse au compte.
+function BankSeen({ payment: p }) {
+  if (p.bank_txn_date) {
+    return (
+      <Link to="/rapprochement" className="block text-[11px] text-slate-500 hover:text-slate-700 underline underline-offset-2"
+        title="Débit vu au relevé bancaire">
+        Passé le {fmtDate(p.bank_txn_date)}
+      </Link>
+    )
+  }
+  // Fenêtre de recherche du serveur (120 jours) : au-delà, l'absence ne prouve
+  // rien — le relevé n'est pas remonté jusque-là. Et rien avant l'échéance +
+  // 3 jours, le temps que le prélèvement paraisse.
+  const d = p.payment_date
+  const iso = ms => new Date(Date.now() - ms).toISOString().slice(0, 10)
+  if (!d || d > iso(3 * 864e5) || d < iso(120 * 864e5)) return null
+  return <span className="block text-[11px] text-amber-700">Pas encore vu à la banque</span>
+}
+
 function paymentStatus(p, qbMissing) {
   const txnLabel = `${p.qb_txn_type === 'purchase' ? 'Dépense' : 'JE'} #${p.qb_txn_id}`
   if (p.qb_txn_id && qbMissing?.has(p.id)) return { label: `Non comptabilisé · ${txnLabel} supprimée dans QB`, color: 'red', missing: true }
@@ -525,7 +552,7 @@ export default function DettesLT() {
   return (
     <Layout>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-xl font-semibold text-slate-800">Dettes à long terme</h1>
+        <PageTitle>Dettes à long terme</PageTitle>
         <button onClick={() => setCreating(true)}
           className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg">
           <Plus size={15} /> Nouvelle dette
@@ -535,7 +562,7 @@ export default function DettesLT() {
       <div className="flex gap-4 items-start">
         {/* Liste des dettes */}
         <div className="w-72 shrink-0 space-y-2">
-          {debts === null && <div className="text-sm text-slate-400 p-3">Chargement…</div>}
+          {debts === null && <div className="text-sm text-slate-400 p-3"><Spinner size="xs" label="Chargement…" /></div>}
           {debts?.length === 0 && <div className="text-sm text-slate-400 p-3">Aucune dette — en créer une pour commencer.</div>}
           {debts?.map(d => (
             <button key={d.id} onClick={() => setSelectedId(d.id)}
@@ -631,6 +658,11 @@ export default function DettesLT() {
                         <td className="px-2 py-2 text-right tabular-nums font-medium">{fmtMoney(p.principal + p.interest, debt.currency)}</td>
                         <td className="px-2 py-2 text-right tabular-nums text-slate-500">{fmtMoney(p.balance_after, debt.currency)}</td>
                         <td className="px-2 py-2" data-testid={`payment-status-${p.id}`}>
+                          {/* Sorti du compte ? C'est une question distincte de
+                              « l'écriture existe dans QuickBooks » : un
+                              versement peut être comptabilisé des jours avant
+                              que la banque ne le montre. */}
+                          <BankSeen payment={p} />
                           {p.qb_txn_url && !st.missing ? (
                             <a href={p.qb_txn_url} target="_blank" rel="noreferrer" title="Ouvrir dans QuickBooks"
                               className="inline-flex items-center gap-1 group">

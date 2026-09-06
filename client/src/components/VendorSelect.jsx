@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
+import { ExternalLink } from 'lucide-react'
 import { api } from '../lib/api.js'
 
 /**
@@ -87,12 +89,18 @@ export function VendorSelect({ value = '', vendorId = null, onChange, required =
         onChange={handleInputChange}
         onFocus={() => runSearch(query)}
         className="input"
-        placeholder="Nom du fournisseur…"
         required={required}
         autoComplete="off"
       />
       {vendorId && (
-        <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-brand-500 pointer-events-none">lié</span>
+        <Link
+          to={`/companies/${vendorId}`}
+          onClick={e => e.stopPropagation()}
+          className="absolute right-2 top-1/2 -translate-y-1/2 text-brand-600 hover:text-brand-700"
+          title="Ouvrir la fiche fournisseur"
+        >
+          <ExternalLink size={13} />
+        </Link>
       )}
       {open && (results.length > 0 || (!exactMatch && query.length > 0)) && (
         <ul className="absolute z-50 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-52 overflow-y-auto text-sm">

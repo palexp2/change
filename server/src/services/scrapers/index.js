@@ -1,5 +1,5 @@
-import { v4 as uuid } from 'uuid'
 import { join } from 'path'
+import { newRecordId } from '../../utils/recordId.js'
 import db from '../../db/database.js'
 import { decryptCredentials } from '../../utils/encryption.js'
 import { logSync } from '../syncLog.js'
@@ -13,7 +13,9 @@ import wix from './wix.js'
 import bell from './bell.js'
 import digikey from './digikey.js'
 import simplex from './simplex.js'
+import fedex from './fedex.js'
 import { nowIso } from '../../utils/datetime.js'
+import { uploadsPath } from '../../config/uploads.js'
 
 // ── Collecteurs de portails fournisseurs ──────────────────────────────────────
 // Un collecteur = un module qui sait, pour UN fournisseur, se connecter à son
@@ -21,7 +23,7 @@ import { nowIso } from '../../utils/datetime.js'
 // (session, 2FA, dédup, ingestion, journalisation, artefacts de diagnostic) est
 // mutualisé ici : ajouter un fournisseur = écrire `login` + `collect`.
 
-export const SCRAPERS = { amazon, wix, bell, digikey, simplex }
+export const SCRAPERS = { amazon, wix, bell, digikey, simplex, fedex }
 export const VENDOR_LABELS = Object.fromEntries(
   Object.entries(SCRAPERS).map(([k, v]) => [k, v.label])
 )
@@ -29,10 +31,10 @@ export const VENDOR_LABELS = Object.fromEntries(
 // Domaine dont un import de session doit porter les cookies, par collecteur.
 export const VENDOR_DOMAINS = {
   amazon: 'amazon.', wix: 'wix.com', bell: 'bell.ca', digikey: 'digikey.ca',
-  simplex: 'simplexwireless.com',
+  simplex: 'simplexwireless.com', fedex: 'fedex.com',
 }
 
-const artifactsRoot = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'scrapers')
+const artifactsRoot = uploadsPath('scrapers')
 const OTP_TIMEOUT_MS = Number(process.env.SCRAPER_OTP_TIMEOUT_MS || 10 * 60 * 1000)
 
 // Une tournée par compte à la fois : deux passes simultanées se voleraient la
@@ -106,7 +108,7 @@ async function execute({ accountId, trigger, userId }) {
   const scraper = SCRAPERS[account.vendor]
   if (!scraper) throw new Error(`Aucun collecteur pour « ${account.vendor} »`)
 
-  const runId = uuid()
+  const runId = newRecordId()
   const t0 = Date.now()
   const dir = join(artifactsRoot, runId)
   const logLines = []
@@ -205,7 +207,7 @@ async function execute({ accountId, trigger, userId }) {
             (id, account_id, vendor, external_id, doc_date, amount, currency, source_url,
              filename, content_sha256, sale_receipt_id, run_id, status)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(uuid(), accountId, account.vendor, key, date, amount, currency, url,
+        `).run(newRecordId(), accountId, account.vendor, key, date, amount, currency, url,
           filename || null, res.hash, res.id || null, runId, res.status)
         if (res.status === 'imported') { imported++; log(`✅ ${key} importée`) }
         else { skipped++; log(`↩️ ${key} déjà en base (même contenu)`) }

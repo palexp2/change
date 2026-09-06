@@ -4,6 +4,7 @@ import { X, BookOpen, Plus, ShoppingCart, ExternalLink } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -17,6 +18,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtCad, formatBytes } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 const NO_TAX = '__none__'
 
@@ -77,16 +79,45 @@ function emptyForm(type) {
 }
 
 function AchatModal({ achat, initialType, onClose, onSaved }) {
+  const isEdit = !!achat?.id
   const [form, setForm] = useState(achat
     ? { ...achat, amount_cad: achat.amount_cad ?? '', tax_cad: achat.tax_cad ?? '', amount_paid_cad: achat.amount_paid_cad ?? '' }
     : emptyForm(initialType))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const { addToast } = useToast()
 
   const isBill = form.type === 'bill'
-  const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
 
-  async function handleSubmit(e) {
+  // Édition d'un achat existant : autosave champ par champ (règle autosave).
+  // total_cad est recalculé à chaque sauvegarde à partir du formulaire courant,
+  // comme au submit de création — nécessaire dès qu'amount_cad ou tax_cad bouge.
+  async function saveField(patch) {
+    if (!isEdit) return
+    setSaving(true)
+    setError('')
+    try {
+      const merged = { ...form, ...patch }
+      const amt = parseFloat(merged.amount_cad) || 0
+      const tax = parseFloat(merged.tax_cad) || 0
+      await api.achatsFournisseurs.update(achat.id, { ...patch, total_cad: amt + tax })
+    } catch (err) {
+      addToast({ message: `Sauvegarde échouée : ${err.message}`, type: 'error' })
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const f = (k) => (e) => setForm(p => ({ ...p, [k]: e.target.value }))
+  const fBlur = (k) => (e) => saveField({ [k]: e.target.value })
+  const fSelect = (k) => (e) => {
+    const v = e.target.value
+    setForm(p => ({ ...p, [k]: v }))
+    saveField({ [k]: v })
+  }
+
+  async function handleCreate(e) {
     e.preventDefault()
     setSaving(true)
     setError('')
@@ -101,8 +132,7 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
         amount_paid_cad: parseFloat(form.amount_paid_cad) || 0,
         vendor_id: form.vendor_id || null,
       }
-      if (achat) await api.achatsFournisseurs.update(achat.id, payload)
-      else       await api.achatsFournisseurs.create(payload)
+      await api.achatsFournisseurs.create(payload)
       onSaved()
     } catch (err) {
       setError(err.message)
@@ -112,8 +142,13 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {error && <p className="text-red-600 text-sm">{error}</p>}
+    <form onSubmit={isEdit ? (e => e.preventDefault()) : handleCreate} className="space-y-4">
+      <div className="flex items-center justify-between">
+        {error && <p className="text-red-600 text-sm">{error}</p>}
+        {isEdit && saving && (
+          <span className="ml-auto inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" title="Sauvegarde…" />
+        )}
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -121,13 +156,16 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
           <VendorSelect
             value={form.vendor || ''}
             vendorId={form.vendor_id}
-            onChange={({ vendor, vendor_id }) => setForm(p => ({ ...p, vendor, vendor_id }))}
+            onChange={({ vendor, vendor_id }) => {
+              setForm(p => ({ ...p, vendor, vendor_id }))
+              if (isEdit) saveField({ vendor, vendor_id: vendor_id || null })
+            }}
             required={isBill}
           />
         </div>
         <div>
           <label className="label">Statut</label>
-          <select value={form.status} onChange={f('status')} className="input">
+          <select value={form.status} onChange={isEdit ? fSelect('status') : f('status')} className="input">
             {(isBill ? BILL_STATUS : PURCHASE_STATUS).map(s => <option key={s}>{s}</option>)}
           </select>
         </div>
@@ -137,34 +175,34 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
         <div className="grid grid-cols-2 gap-4">
           <div>
             <label className="label"># Facture (interne)</label>
-            <input type="text" value={form.bill_number || ''} onChange={f('bill_number')} className="input" />
+            <input type="text" value={form.bill_number || ''} onChange={f('bill_number')} onBlur={isEdit ? fBlur('bill_number') : undefined} className="input" />
           </div>
           <div>
             <label className="label"># Facture fournisseur</label>
-            <input type="text" value={form.vendor_invoice_number || ''} onChange={f('vendor_invoice_number')} className="input" />
+            <input type="text" value={form.vendor_invoice_number || ''} onChange={f('vendor_invoice_number')} onBlur={isEdit ? fBlur('vendor_invoice_number') : undefined} className="input" />
           </div>
         </div>
       ) : (
         <div>
           <label className="label">Description *</label>
-          <input type="text" value={form.description || ''} onChange={f('description')} className="input" required />
+          <input type="text" value={form.description || ''} onChange={f('description')} onBlur={isEdit ? fBlur('description') : undefined} className="input" required />
         </div>
       )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Date *</label>
-          <input type="date" value={form.date_achat} onChange={f('date_achat')} className="input" required />
+          <input type="date" value={form.date_achat} onChange={isEdit ? fSelect('date_achat') : f('date_achat')} className="input" required />
         </div>
         {isBill ? (
           <div>
             <label className="label">Date d'échéance</label>
-            <input type="date" value={form.due_date || ''} onChange={f('due_date')} className="input" />
+            <input type="date" value={form.due_date || ''} onChange={isEdit ? fSelect('due_date') : f('due_date')} className="input" />
           </div>
         ) : (
           <div>
             <label className="label">Référence</label>
-            <input type="text" value={form.reference || ''} onChange={f('reference')} className="input" />
+            <input type="text" value={form.reference || ''} onChange={f('reference')} onBlur={isEdit ? fBlur('reference') : undefined} className="input" />
           </div>
         )}
       </div>
@@ -172,7 +210,7 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label className="label">Catégorie</label>
-          <select value={form.category || ''} onChange={f('category')} className="input">
+          <select value={form.category || ''} onChange={isEdit ? fSelect('category') : f('category')} className="input">
             <option value="">— Choisir —</option>
             {CATEGORIES.map(c => <option key={c}>{c}</option>)}
           </select>
@@ -180,7 +218,7 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
         {!isBill && (
           <div>
             <label className="label">Mode de paiement</label>
-            <select value={form.payment_method || ''} onChange={f('payment_method')} className="input">
+            <select value={form.payment_method || ''} onChange={isEdit ? fSelect('payment_method') : f('payment_method')} className="input">
               <option value="">— Choisir —</option>
               {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
             </select>
@@ -191,23 +229,23 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
       <div className={`grid ${isBill ? 'grid-cols-3' : 'grid-cols-2'} gap-4`}>
         <div>
           <label className="label">Montant avant taxes</label>
-          <input type="number" step="0.01" min="0" value={form.amount_cad} onChange={f('amount_cad')} className="input" />
+          <input type="number" step="0.01" min="0" value={form.amount_cad} onChange={f('amount_cad')} onBlur={isEdit ? fBlur('amount_cad') : undefined} className="input" />
         </div>
         <div>
           <label className="label">Taxes (CAD)</label>
-          <input type="number" step="0.01" min="0" value={form.tax_cad} onChange={f('tax_cad')} className="input" />
+          <input type="number" step="0.01" min="0" value={form.tax_cad} onChange={f('tax_cad')} onBlur={isEdit ? fBlur('tax_cad') : undefined} className="input" />
         </div>
         {isBill && (
           <div>
             <label className="label">Montant payé</label>
-            <input type="number" step="0.01" min="0" value={form.amount_paid_cad} onChange={f('amount_paid_cad')} className="input" />
+            <input type="number" step="0.01" min="0" value={form.amount_paid_cad} onChange={f('amount_paid_cad')} onBlur={isEdit ? fBlur('amount_paid_cad') : undefined} className="input" />
           </div>
         )}
       </div>
 
       <div>
         <label className="label">Notes</label>
-        <textarea value={form.notes || ''} onChange={f('notes')} className="input" rows={2} />
+        <textarea value={form.notes || ''} onChange={f('notes')} onBlur={isEdit ? fBlur('notes') : undefined} className="input" rows={2} />
       </div>
 
       <LineItemsTable lines={form.lines} />
@@ -221,10 +259,12 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
       )}
 
       <div className="flex justify-end gap-2 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">
-          {saving ? 'Enregistrement…' : 'Enregistrer'}
-        </button>
+        <button type="button" onClick={onClose} className="btn-secondary">{isEdit ? 'Fermer' : 'Annuler'}</button>
+        {!isEdit && (
+          <button type="submit" disabled={saving} className="btn-primary">
+            {saving ? 'Enregistrement…' : 'Enregistrer'}
+          </button>
+        )}
       </div>
     </form>
   )
@@ -379,7 +419,6 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
               value={form.expense_account_id || ''}
               options={expenseOptions}
               onChange={onChangeField('expense_account_id')}
-              placeholder="— Sélectionner —"
             />
           </div>
 
@@ -393,7 +432,6 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
                 value={form.payment_account_id || ''}
                 options={paymentOptions}
                 onChange={onChangeField('payment_account_id')}
-                placeholder="— Sélectionner —"
               />
             </div>
           )}
@@ -407,7 +445,6 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
               value={form.tax_code_id || NO_TAX}
               options={taxCodeOptions}
               onChange={onChangeField('tax_code_id')}
-              placeholder="— Aucune taxe —"
             />
           </div>
 
@@ -514,7 +551,7 @@ function QBAttachmentsSection({ achatId }) {
       </div>
       {msg && <p className="text-xs text-slate-600 mb-2">{msg}</p>}
       {loading ? (
-        <p className="text-xs text-slate-400">Chargement…</p>
+        <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>
       ) : items.length === 0 ? (
         <p className="text-xs text-slate-400">Aucune pièce jointe.</p>
       ) : (
@@ -642,7 +679,7 @@ export default function AchatsFournisseurs() {
         <VendorTabs active="achats" />
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Achats fournisseurs</h1>
+            <PageTitle>Achats fournisseurs</PageTitle>
             <p className="text-sm text-slate-500 mt-1">Dépenses et factures fournisseurs</p>
           </div>
           <div className="flex items-center gap-2">
@@ -698,6 +735,7 @@ export default function AchatsFournisseurs() {
         onClose={() => { setCreating(null); setEditing(null) }}
         title={modalTitle}
         width={640}
+        peekKey="achats"
       >
         <div className="px-5 py-4">
           <AchatModal

@@ -1,0 +1,13 @@
+{
+ "table": "projects",
+ "columns": [
+  "cf_budget"
+ ],
+ "purged_at": "2026-09-03T15:22:26.907Z",
+ "rows": [
+  {
+   "id": "p1",
+   "cf_budget": 1234
+  }
+ ]
+}

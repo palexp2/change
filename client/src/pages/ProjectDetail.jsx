@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { useParams, useNavigate, useLocation, Link } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText, PanelRight } from 'lucide-react'
 import { api } from '../lib/api.js'
 
 function pdfUrl(id, download = false) {
@@ -11,26 +11,35 @@ function pdfUrl(id, download = false) {
   const qs = params.toString()
   return `/erp/api/documents/soumissions/${id}/pdf${qs ? `?${qs}` : ''}`
 }
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import FactureDetail from './FactureDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import SectionNav, { SECTION_NAV_INSET } from '../components/SectionNav.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { InlineText, InlineTextarea, InlineNumber, InlineDate } from '../components/InlineFields.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+import { fmtMoney, fmtNumber } from '../utils/formatters.js'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 
-const fmtCad = (n) => fmtMoneyBase(n, 'CAD', { maximumFractionDigits: 0 })
-const fmtCurrency = (n, currency = 'CAD') => fmtMoneyBase(n, currency, { maximumFractionDigits: 0 })
-const fmtMoney = (n) => fmtMoneyBase(n)
+const fmtCad = (n) => fmtMoney(n, 'CAD', { maximumFractionDigits: 0 })
+const fmtCurrency = (n, currency = 'CAD') => fmtMoney(n, currency, { maximumFractionDigits: 0 })
 const STATUS_LABELS = { 'legacy': 'Archivé' }
+
+// Types de projet : même liste que la colonne du tableau (source unique) — un
+// type saisi ailleurs qui n'y figure pas reste proposé (voir typeOptions).
+const PROJECT_TYPES = TABLE_COLUMN_META.projects.find(c => c.id === 'type')?.options || []
 
 // ── Create soumission modal ───────────────────────────────────────────────────
 
@@ -44,7 +53,8 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   const [form, setForm] = useState({
     language: project.contact_language || 'French',
     currency: 'CAD',
-    notes: '',
+    // Pas de « Notes » à la création : la soumission naît sans note, elle
+    // s'ajoute au besoin depuis la fiche de la soumission.
     discount_pct: 0,
     discount_amount: 0,
   })
@@ -93,7 +103,7 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   const discAmt = parseFloat(form.discount_amount) || 0
   const totalDiscount = Math.min(subtotal, subtotal * discPct / 100 + discAmt)
   const netTotal = Math.max(0, subtotal - totalDiscount)
-  const fmtP = (n) => fmtMoneyBase(n || 0, form.currency, { locale: form.currency === 'USD' ? 'en-US' : 'fr-CA' })
+  const fmtP = (n) => fmtMoney(n || 0, form.currency, { locale: form.currency === 'USD' ? 'en-US' : 'fr-CA' })
 
   const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400'
 
@@ -103,7 +113,6 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
       // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
       const result = await api.documents.soumissions.create({
         ...form,
-        notes: (form.notes || '').trim(),
         project_id: project.id,
         company_id: project.company_id || null,
         items: items
@@ -140,7 +149,6 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
 
       {step === 1 && (
         <div className="space-y-4">
-          <p className="text-sm text-slate-500">Le numéro (QTE-Z-…) et la date d'expiration (30 jours) seront générés automatiquement.</p>
           <div className="flex gap-4">
             <div>
               <label className="block text-xs font-medium text-slate-600 mb-1">Langue du client</label>
@@ -158,11 +166,6 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
                 <option value="USD">USD</option>
               </select>
             </div>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1">Notes</label>
-            <textarea className="w-full border rounded-lg px-3 py-2 text-sm" rows={3}
-              value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} />
           </div>
           <div className="flex justify-end">
             <button onClick={() => setStep(2)} className="bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700">
@@ -195,7 +198,6 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
                         options={catalog}
                         labelFn={p => isFr ? p.name_fr : (p.name_en || p.name_fr)}
                         getHref={p => `/products/${p.id}`}
-                        placeholder="Personnalisé"
                         onChange={v => selectProduct(idx, v)}
                       />
                     </td>
@@ -286,28 +288,106 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
 
 // ── Main component ────────────────────────────────────────────────────────────
 
-export default function ProjectDetail() {
-  const { id } = useParams()
+const SECTION_LABELS = {
+  info: 'Informations',
+  soumissions: 'Soumissions',
+  factures: 'Factures',
+  commissions: 'Commissions',
+}
+
+// Taux Airtable stocké en fraction (0,025 = 2,5 %).
+const fmtPct = (n) => (n === null || n === undefined || Number.isNaN(Number(n)))
+  ? '—'
+  : `${fmtNumber(Number(n) * 100, { maximumFractionDigits: 2 })} %`
+
+// Les sous-tableaux étant empilés, chacun est borné en hauteur selon son nombre
+// de lignes (32 px/ligne + l'en-tête collant) pour éviter les grands vides sous
+// une table de deux lignes. Même règle que la fiche entreprise.
+function stackedTableHeight(rows) {
+  if (!rows) return '190px'
+  return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
+}
+
+// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
+function Section({ id, label, count, action, registerRef, children }) {
+  return (
+    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
+          {label}
+          {count > 0 && (
+            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
+          )}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+// `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
+// (RecordPeekDrawer) de la liste des projets : pas de Layout, pas de bouton
+// retour ni de titre (le drawer fournit le sien). `onClose` ferme le drawer
+// (utilisé quand le projet est supprimé pendant que le drawer est ouvert).
+export default function ProjectDetail({ recordId, embedded = true, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const location = useLocation()
   const { addToast } = useToast()
-  const [tab, setTab] = useState(location.state?.tab || 'info')
+  const confirm = useConfirm()
+  const [deleting, setDeleting] = useState(false)
+  // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
+  // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
+  // position de défilement (scroll-spy), cf. useEffect plus bas.
+  const [activeSection, setActiveSection] = useState('info')
   const [soumissions, setSoumissions] = useState([])
   const [factures, setFactures] = useState([])
+  // Commissions : lues en direct dans Airtable (table hors miroir), donc elles
+  // peuvent échouer indépendamment du reste de la fiche — d'où leur propre état
+  // d'erreur, affiché à la place du tableau.
+  const [commissions, setCommissions] = useState([])
+  const [commissionsError, setCommissionsError] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showPdf, setShowPdf] = useState(null) // { id, title }
   const [vendeurOptions, setVendeurOptions] = useState([])
-  const [savingVendeur, setSavingVendeur] = useState(false)
   const [companies, setCompanies] = useState([])
-  const [savingCompany, setSavingCompany] = useState(false)
+  // { [colonne]: true } pendant l'aller-retour serveur d'UN champ — chaque champ
+  // affiche son propre témoin d'enregistrement.
+  const [fieldSaving, setFieldSaving] = useState({})
   const disabledCols = useDisabledColumns('projects')
 
   const { record: project, setRecord: setProject, loading, loadError, reload: load } =
     useDetailRecord(() => api.projects.get(id), [id], { clearOnError: true })
 
+  // Suppression du projet : soft delete côté serveur (deleted_at), donc le
+  // record sort des listes sans perdre l'historique. Le drawer se ferme (ou on
+  // retourne au pipeline) sans attendre l'événement realtime.
+  async function handleDelete() {
+    const label = project?.name || 'ce projet'
+    const ok = await confirm({
+      title: 'Supprimer ce projet ?',
+      message: `« ${label} » sera retiré du pipeline et des listes. Les soumissions et factures liées ne sont pas supprimées.`,
+      confirmLabel: 'Supprimer',
+      danger: true,
+    })
+    if (!ok) return
+    setDeleting(true)
+    try {
+      await api.projects.delete(id)
+      addToast({ message: 'Projet supprimé', type: 'success' })
+      if (embedded) onClose?.()
+      else navigate('/pipeline')
+    } catch (e) {
+      addToast({ message: `Erreur lors de la suppression : ${e.message}`, type: 'error' })
+      setDeleting(false)
+    }
+  }
+
   useRealtimeChannel(id ? `project:${id}` : null, (msg) => {
     if (msg.type === 'project:updated') setProject(p => p ? { ...p, ...msg.payload } : p)
-    else if (msg.type === 'project:deleted') navigate('/pipeline')
+    else if (msg.type === 'project:deleted') { if (embedded) onClose?.(); else navigate('/pipeline') }
   })
 
   useEffect(() => {
@@ -334,30 +414,45 @@ export default function ProjectDetail() {
     return [{ id: project.company_id, name: project.company_name || 'Entreprise liée' }, ...companies]
   }, [companies, project?.company_id, project?.company_name])
 
-  // Autosave du lien Entreprise (règle CLAUDE.md : pas de bouton Enregistrer).
-  // La réponse du PUT ramène company_name, donc l'entête et le champ restent
-  // cohérents sans recharger la fiche.
-  async function saveCompany(companyId) {
-    setSavingCompany(true)
-    try {
-      const updated = await api.projects.update(id, { company_id: companyId || null })
-      setProject(p => ({ ...p, ...updated, orders: p.orders }))
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSavingCompany(false)
+  // Types proposés par le sélecteur. Un type déjà posé sur le projet mais absent
+  // de la liste (import Airtable, ancien libellé) reste proposé — sinon le
+  // champ paraîtrait vide et un simple coup d'œil l'effacerait.
+  const typeOptions = useMemo(() => {
+    const opts = PROJECT_TYPES.map(t => ({ value: t, label: t }))
+    if (project?.type && !PROJECT_TYPES.includes(project.type)) {
+      opts.unshift({ value: project.type, label: project.type })
     }
-  }
+    return opts
+  }, [project?.type])
 
-  async function saveVendeur(ref) {
-    setSavingVendeur(true)
+  // Autosave champ par champ (règle CLAUDE.md : pas de bouton Enregistrer).
+  // La valeur part au blur / au changement ; la réponse du PUT ramène les
+  // colonnes recalculées (company_name, vendeur_label…), donc l'entête et les
+  // champs restent cohérents sans recharger la fiche. En cas d'échec, la valeur
+  // précédente est remise à l'écran — l'utilisateur ne repart pas avec une
+  // valeur qui n'a pas été enregistrée.
+  //
+  // Marche aussi pour les colonnes cf_ des champs personnalisés : PUT
+  // /api/projects/:id accepte les champs custom éditables.
+  async function saveField(key, value) {
+    if (!project) return
+    const previous = project[key]
+    const next = value === '' ? null : value
+    if ((previous ?? '') === (next ?? '')) return
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    setProject(p => (p ? { ...p, [key]: next } : p))
     try {
-      const updated = await api.projects.update(id, { vendeur_ref: ref || null })
+      const updated = await api.projects.update(id, { [key]: next })
       setProject(p => ({ ...p, ...updated, orders: p.orders }))
     } catch (e) {
+      setProject(p => (p ? { ...p, [key]: previous } : p))
       addToast({ message: e.message, type: 'error' })
     } finally {
-      setSavingVendeur(false)
+      setFieldSaving(s => {
+        const rest = { ...s }
+        delete rest[key]
+        return rest
+      })
     }
   }
 
@@ -371,6 +466,13 @@ export default function ProjectDetail() {
     api.factures.list({ project_id: id, limit: 'all' })
       .then(r => setFactures(r.data || []))
       .catch(() => {})
+  }
+
+  const loadCommissions = () => {
+    setCommissionsError(null)
+    api.projects.commissions(id)
+      .then(r => setCommissions(r.data || []))
+      .catch(e => { setCommissions([]); setCommissionsError(e.message) })
   }
 
   // Colonnes DataTable pour les soumissions liées. Construites ici (et non au
@@ -441,181 +543,439 @@ export default function ProjectDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  const commissionColumns = useMemo(() => {
+    const RENDERS = {
+      at_id: row => <span className="font-mono text-xs text-slate-500">{row.at_id}</span>,
+      // Bénéficiaire = employé ou partenaire : lien vers sa fiche quand
+      // l'enregistrement existe dans Boréal (règle des champs référence).
+      beneficiary_label: row => row.beneficiary_label
+        ? (row.beneficiary_href
+          ? <Link to={row.beneficiary_href} className="text-brand-600 hover:underline">{row.beneficiary_label}</Link>
+          : <span className="text-slate-700">{row.beneficiary_label}</span>)
+        : <span className="text-slate-300">—</span>,
+      rate: row => <span className="text-slate-600">{fmtPct(row.rate)}</span>,
+      amount: row => <span className="font-medium text-slate-900">{fmtMoney(row.amount)}</span>,
+      paid_invoices: row => <span className="text-slate-600">{fmtMoney(row.paid_invoices)}</span>,
+      close_date: row => <span className="text-slate-500">{fmtDate(row.close_date)}</span>,
+    }
+    return TABLE_COLUMN_META.project_commissions.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+  }, [])
+
+  const commissionsTotal = useMemo(
+    () => commissions.reduce((s, c) => s + (Number(c.amount) || 0), 0),
+    [commissions])
+
+  // Toutes les sections étant visibles simultanément, tout est chargé au montage
+  // (plus de chargement paresseux à la sélection d'un onglet).
   useEffect(() => {
-    if (tab === 'soumissions') loadSoumissions()
-    if (tab === 'factures') loadFactures()
+    loadSoumissions()
+    loadFactures()
+    loadCommissions()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, id])
+  }, [id])
 
-  if (loading) {
-    return (
-      <Layout>
-        <Spinner center />
-      </Layout>
-    )
+  // ── Sections empilées + scroll-spy ──────────────────────────────────────────
+  // Le sélecteur latéral n'affiche plus/ne masque plus les sections : tout est
+  // rendu à la suite et l'entrée surlignée suit le défilement.
+  const sections = useMemo(() => ['info', 'soumissions', 'factures', 'commissions'], [])
+
+  const sectionEls = useRef(new Map())
+  const spyMutedUntil = useRef(0)
+  // Callbacks de ref mémoïsés par section : sinon React les rejouerait
+  // (null puis el) à chaque rendu.
+  const sectionRefCbs = useRef(new Map())
+  const registerSection = (key) => {
+    if (!sectionRefCbs.current.has(key)) {
+      sectionRefCbs.current.set(key, (el) => {
+        if (el) sectionEls.current.set(key, el)
+        else sectionEls.current.delete(key)
+      })
+    }
+    return sectionRefCbs.current.get(key)
   }
-  if (loadError && !project) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!project) return <Layout><div className="p-6 text-slate-500">Projet introuvable.</div></Layout>
 
-  const TABS = [
-    { key: 'info', label: 'Informations' },
-    { key: 'soumissions', label: `Soumissions${soumissions.length ? ` (${soumissions.length})` : ''}` },
-    { key: 'factures', label: `Factures${factures.length ? ` (${factures.length})` : ''}` },
-  ]
+  // Le conteneur de défilement diffère selon le contexte : <main> en pleine page,
+  // le panneau du side-peek en mode embedded. On le retrouve en remontant le DOM.
+  function scrollParentOf(el) {
+    let p = el?.parentElement
+    while (p) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY)) return p
+      p = p.parentElement
+    }
+    return document.scrollingElement
+  }
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-4xl mx-auto">
+  // Hauteur visible du conteneur de défilement (l'écran en pleine page).
+  function viewportHeightOf(root) {
+    if (!root || root === document.scrollingElement) return window.innerHeight
+    return root.clientHeight || window.innerHeight
+  }
+
+  useEffect(() => {
+    if (loading || !project) return
+    const first = sectionEls.current.get(sections[0])
+    const root = scrollParentOf(first)
+    if (!root) return
+    const target = root === document.scrollingElement ? window : root
+    let raf = 0
+    const compute = () => {
+      raf = 0
+      if (Date.now() < spyMutedUntil.current) return
+      const rootTop = root === document.scrollingElement ? 0 : root.getBoundingClientRect().top
+      // Sonde à mi-hauteur : même repère que goToSection(), qui centre la section
+      // visée. Sinon le surlignage retomberait sur la section précédente juste
+      // après le clic.
+      const probe = rootTop + viewportHeightOf(root) / 2
+      let current = sections[0]
+      for (const key of sections) {
+        const el = sectionEls.current.get(key)
+        if (!el) continue
+        if (el.getBoundingClientRect().top <= probe) current = key
+      }
+      // Bas de page : la dernière section est forcément « celle où on est rendu »,
+      // même si son haut n'a pas franchi la ligne de sonde.
+      // Le test ne vaut que si la fiche défile vraiment : au montage, tant que
+      // les sous-tableaux ne sont pas peints, le contenu tient dans le panneau
+      // et ce raccourci surlignait « Factures » alors qu'on est tout en haut.
+      const scrollable = root.scrollHeight > root.clientHeight + 4
+      if (scrollable && root.scrollHeight - root.scrollTop - root.clientHeight < 6) current = sections[sections.length - 1]
+      setActiveSection(prev => (prev === current ? prev : current))
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute) }
+    target.addEventListener('scroll', onScroll, { passive: true })
+    compute()
+    return () => {
+      target.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+    // Les longueurs des sous-tableaux sont dans les dépendances pour recalculer
+    // le surlignage quand les sections grandissent après leur chargement.
+  }, [loading, project, sections, soumissions.length, factures.length, commissions.length])
+
+  function goToSection(key) {
+    setActiveSection(key)
+    const el = sectionEls.current.get(key)
+    if (!el) return
+    // On coupe le scroll-spy pendant l'animation, sinon les sections traversées
+    // feraient sauter le surlignage.
+    spyMutedUntil.current = Date.now() + 900
+    const root = scrollParentOf(el)
+    const height = el.getBoundingClientRect().height
+    if (!root || root === document.scrollingElement) {
+      // Une section plus haute que l'écran est calée en haut : la centrer
+      // pousserait son titre hors du champ.
+      const fits = height < window.innerHeight
+      el.scrollIntoView({ behavior: 'smooth', block: fits ? 'center' : 'start' })
+      return
+    }
+    const viewport = viewportHeightOf(root)
+    // Marge haute qui centre la section dans la zone visible (8 px si elle est
+    // trop haute pour tenir).
+    const offset = height < viewport ? Math.max(SECTION_NAV_INSET, (viewport - height) / 2) : SECTION_NAV_INSET
+    const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
+    root.scrollTo({ top: Math.max(0, root.scrollTop + delta - offset), behavior: 'smooth' })
+  }
+
+  // Arrivée depuis une soumission (« ← Projet ») : on ouvrait auparavant l'onglet
+  // demandé ; on défile maintenant jusqu'à la section correspondante.
+  const requestedSection = location.state?.tab
+  const scrolledToRequested = useRef(false)
+  useEffect(() => {
+    if (loading || !project) return
+    if (!requestedSection || scrolledToRequested.current) return
+    if (!sections.includes(requestedSection)) return
+    scrolledToRequested.current = true
+    // Laisse un tick au navigateur pour poser les sous-tableaux avant de mesurer.
+    const t = setTimeout(() => goToSection(requestedSection), 60)
+    return () => clearTimeout(t)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, project, requestedSection, sections])
+
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
+
+  if (loading) return shell(<Spinner center />)
+  if (loadError && !project) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!project) return shell(<div className="p-6 text-slate-500">Projet introuvable.</div>)
+
+  const sectionCounts = {
+    soumissions: soumissions.length || undefined,
+    factures: factures.length || undefined,
+    commissions: commissions.length || undefined,
+  }
+
+  return shell(
+    <>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-5xl mx-auto'}>
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/pipeline')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate('/pipeline')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">{project.name}</h1>
-            </div>
+            {!embedded && (
+              <div className="flex items-center gap-3 flex-wrap">
+                <PageTitle>{project.name}</PageTitle>
+              </div>
+            )}
             <div className="text-sm text-slate-500 mt-1">
               {project.company_name && project.company_id && (
-                <Link to={`/companies/${project.company_id}`} className="text-brand-600 hover:underline mr-2">
-                  {project.company_name}
-                </Link>
+                <LinkedRecordField
+                  name="company_id"
+                  value={project.company_id}
+                  options={[{ id: project.company_id, name: project.company_name }]}
+                  getHref={c => `/companies/${c.id}`}
+                  disabled
+                  allowClear={false}
+                />
               )}
             </div>
           </div>
-        </div>
-
-        {/* Tabs */}
-        <div className="flex gap-1 mb-6 border-b border-slate-200">
-          {TABS.map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                tab === t.key ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>
-              {t.label}
+          {!embedded && (
+            /* Chemin inverse du panneau latéral : retourne à la
+               liste avec ce projet ouvert en panneau latéral. */
+            <button
+              onClick={() => navigate('/pipeline', { state: { peekId: id } })}
+              className="mt-1 p-1.5 text-slate-400 hover:text-brand-600 hover:bg-slate-100 rounded-lg"
+              title="Revenir à la liste avec ce projet en panneau latéral"
+              aria-label="Ouvrir en panneau latéral"
+              data-testid="project-open-as-peek"
+            >
+              <PanelRight size={16} />
             </button>
-          ))}
+          )}
         </div>
 
-        {/* Info Tab */}
-        {tab === 'info' && (
-          <div className="card p-6">
-            <dl className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-x-6 gap-y-4 text-sm">
-              {/* Entreprise : champ référence à part entière (picker recherchable
-                  + lien vers la fiche), et non plus seulement un sous-titre —
-                  sans lui, un projet sans entreprise n'affichait rien et il n'y
-                  avait aucun moyen d'en lier une depuis la fiche. */}
-              <div data-testid="project-company-field">
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Entreprise</dt>
-                <dd>
-                  <LinkedRecordField
-                    name="project_company_id"
-                    value={project.company_id}
-                    options={companyOptions}
-                    labelFn={c => c.name}
-                    getHref={c => `/companies/${c.id}`}
-                    placeholder="Entreprise"
-                    saving={savingCompany}
-                    onChange={saveCompany}
-                  />
-                </dd>
-              </div>
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Type</dt>
-                <dd className="text-slate-900">{project.type || '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Probabilité</dt>
-                <dd className="font-semibold text-slate-900">{project.probability != null ? `${project.probability}%` : '—'}</dd>
-              </div>
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Date de clôture</dt>
-                <dd className="text-slate-700">{fmtDate(project.close_date)}</dd>
-              </div>
-              {project.orders?.length > 0 && (
-                <div className="col-span-2 md:col-span-3">
-                  <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Commandes</dt>
-                  <dd className="flex flex-wrap gap-2">
-                    {project.orders.map(o => (
-                      <Link key={o.id} to={`/orders/${o.id}`}
-                        className="inline-flex items-center gap-1 font-mono text-xs text-brand-600 hover:underline bg-brand-50 px-2 py-1 rounded">
-                        #{o.order_number}
-                        {o.status && <span className="text-slate-500 font-sans">· {o.status}</span>}
-                      </Link>
-                    ))}
-                  </dd>
-                </div>
-              )}
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1 flex items-center gap-1">
-                  Vendeur
-                  {savingVendeur && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
-                </dt>
-                <dd>
-                  <VendeurPicker
-                    value={project.vendeur_ref || ''}
-                    options={vendeurOptions}
-                    onChange={saveVendeur}
-                    disabled={savingVendeur}
-                  />
-                </dd>
-              </div>
-              {project.nom_du_vendeur && !disabledCols?.has('nom_du_vendeur') && (
-                <div>
-                  <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Vendeur AT</dt>
-                  <dd className="text-slate-700">{project.nom_du_vendeur}</dd>
-                </div>
-              )}
-              {project.refusal_reason && (
-                <div className="col-span-2 md:col-span-3">
-                  <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Raison du refus</dt>
-                  <dd className="text-slate-700">{project.refusal_reason}</dd>
-                </div>
-              )}
-              {project.notes && (
-                <div className="col-span-2 md:col-span-3">
-                  <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Notes</dt>
-                  <dd className="text-slate-700 whitespace-pre-wrap">{project.notes}</dd>
-                </div>
-              )}
-            </dl>
-          </div>
-        )}
+        {/* Sélecteur de section (barre du haut, collante) + sections empilées */}
+        <SectionNav
+          sections={sections}
+          labels={SECTION_LABELS}
+          counts={sectionCounts}
+          active={activeSection}
+          onSelect={goToSection}
+          embedded={embedded}
+          testId="project-section-nav"
+        />
 
-        {/* Soumissions Tab */}
-        {tab === 'soumissions' && (
-          <div>
-            <div className="flex justify-end mb-3">
-              <button
-                onClick={() => setShowCreate(true)}
-                className="flex items-center gap-2 bg-brand-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-brand-700"
-              >
-                <Plus size={15} /> Nouvelle soumission
-              </button>
-            </div>
+        {/* Sections */}
+        <div className="min-w-0">
 
-            <DataTable
-              table="project_soumissions"
-              columns={soumissionColumns}
-              data={soumissions}
-              searchFields={['at_id', 'title', 'status', 'currency']}
-              height="calc(100vh - 320px)"
-              onRowClick={row => { if (row.status !== 'legacy' && row.id) navigate(`/soumissions/${row.id}`) }}
-            />
-          </div>
-        )}
+        <Section id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
+          {/* Même carte de champs que la fiche d'envoi : l'ordre des champs et
+              ceux qu'on garde se règlent depuis la fiche elle-même
+              (« Personnaliser les champs » : bouton dans l'en-tête du panneau
+              latéral). Deux colonnes comme la fiche entreprise — le sélecteur de
+              section mange la largeur, une troisième colonne écraserait les
+              champs.
+              Tous les champs s'éditent sur place, avec autosave (règle de design
+              CLAUDE.md). Restent en lecture seule ce qui n'est pas une valeur
+              saisissable : les commandes liées (des liens vers d'autres fiches)
+              et les champs alimentés par Airtable en sens « import ».
+              Les champs personnalisés rejoignent la carte tout seuls, et sont
+              modifiables (PUT /api/projects accepte les colonnes cf_
+              éditables). */}
+          <DetailFieldGrid
+            entityType="projects"
+            record={project}
+            onSaveCustom={saveField}
+            savingKeys={fieldSaving}
+            className="card p-6"
+            testId="project-fields"
+          >
+            <DetailField id="name" label="Nom du projet" span2 saving={!!fieldSaving.name}>
+              <InlineText
+                value={project.name}
+                required
+                saving={!!fieldSaving.name}
+                onSave={v => saveField('name', v.trim())}
+                testId="project-field-name"
+              />
+            </DetailField>
+            {/* Entreprise : champ référence à part entière (picker recherchable
+                + lien vers la fiche), et non plus seulement un sous-titre —
+                sans lui, un projet sans entreprise n'affichait rien et il n'y
+                avait aucun moyen d'en lier une depuis la fiche. */}
+            <DetailField id="company_name" label="Entreprise" saving={!!fieldSaving.company_id} testId="project-company-field">
+              <LinkedRecordField
+                name="project_company_id"
+                value={project.company_id}
+                options={companyOptions}
+                labelFn={c => c.name}
+                getHref={c => `/companies/${c.id}`}
+                saving={!!fieldSaving.company_id}
+                onChange={v => saveField('company_id', v || '')}
+              />
+            </DetailField>
+            <DetailField id="type" label="Type" saving={!!fieldSaving.type}>
+              <SearchableSelect
+                value={project.type || ''}
+                options={typeOptions}
+                emptyOption="—"
+                onChange={v => saveField('type', v)}
+                className="input text-sm w-full"
+                size="sm"
+                disabled={!!fieldSaving.type}
+                testId="project-field-type"
+              />
+            </DetailField>
+            <DetailField id="probability" label="Probabilité" saving={!!fieldSaving.probability}>
+              <InlineNumber
+                value={project.probability}
+                min={0}
+                max={100}
+                step={5}
+                suffix="%"
+                saving={!!fieldSaving.probability}
+                onSave={v => saveField('probability', v)}
+                testId="project-field-probability"
+              />
+            </DetailField>
+            <DetailField id="close_date" label="Date de clôture" saving={!!fieldSaving.close_date}>
+              <InlineDate
+                value={project.close_date}
+                saving={!!fieldSaving.close_date}
+                onSave={v => saveField('close_date', v)}
+                testId="project-field-close-date"
+              />
+            </DetailField>
+            {project.orders?.length > 0 && (
+              <DetailField id="orders" label="Commandes" span2>
+                <div className="flex flex-wrap gap-2">
+                  {project.orders.map(o => (
+                    <Link key={o.id} to={`/orders/${o.id}`}
+                      className="inline-flex items-center gap-1 font-mono text-xs text-brand-600 hover:underline bg-brand-50 px-2 py-1 rounded">
+                      #{o.order_number}
+                      {o.status && <span className="text-slate-500 font-sans">· {o.status}</span>}
+                    </Link>
+                  ))}
+                </div>
+              </DetailField>
+            )}
+            <DetailField id="vendeur_label" label="Vendeur" saving={!!fieldSaving.vendeur_ref}>
+              <VendeurPicker
+                value={project.vendeur_ref || ''}
+                options={vendeurOptions}
+                // Vendeur importé d'Airtable dont le nom ne correspond à aucun
+                // employé ni entreprise : le serveur renvoie le nom brut dans
+                // `vendeur_label` — on l'affiche plutôt que « Aucun ».
+                fallbackLabel={project.vendeur_label || ''}
+                onChange={v => saveField('vendeur_ref', v || '')}
+                disabled={!!fieldSaving.vendeur_ref}
+              />
+            </DetailField>
+            {/* « Vendeur AT » : miroir d'un champ Airtable dont l'import est
+                coupé — le serveur refuse toute écriture dessus, il reste donc
+                affiché tel quel (et masqué tant que l'import est désactivé). */}
+            {project.nom_du_vendeur && !disabledCols?.has('nom_du_vendeur') && (
+              <DetailField id="nom_du_vendeur" label="Vendeur AT">
+                <div className="text-sm text-slate-700">{project.nom_du_vendeur}</div>
+              </DetailField>
+            )}
+            {/* « Raison du refus » n'est plus déclarée ici : le champ natif a
+                été détruit au profit du champ personnalisé homonyme
+                (`raison_du_refus`, liste de choix miroir d'Airtable), que la
+                carte ajoute d'elle-même — la migration 025 lui a gardé sa place
+                dans la disposition de la fiche. */}
+            {/* Notes s'affiche même vide : sans ça, il n'y avait aucun endroit
+                pour la SAISIR depuis la fiche. */}
+            <DetailField id="notes" label="Notes" span2 saving={!!fieldSaving.notes}>
+              <InlineTextarea
+                value={project.notes}
+                saving={!!fieldSaving.notes}
+                onSave={v => saveField('notes', v)}
+                testId="project-field-notes"
+              />
+            </DetailField>
+          </DetailFieldGrid>
+        </Section>
 
-        {/* Factures Tab */}
-        {tab === 'factures' && (
+        <Section
+          id="soumissions"
+          label={SECTION_LABELS.soumissions}
+          count={sectionCounts.soumissions}
+          registerRef={registerSection('soumissions')}
+          action={
+            <button
+              onClick={() => setShowCreate(true)}
+              className="btn-primary btn-sm"
+            >
+              <Plus size={14} /> Nouvelle soumission
+            </button>
+          }
+        >
+          <DataTable
+            table="project_soumissions"
+            columns={soumissionColumns}
+            data={soumissions}
+            searchFields={['at_id', 'title', 'status', 'currency']}
+            height={stackedTableHeight(soumissions.length)}
+            onRowClick={row => { if (row.status !== 'legacy' && row.id) navigate(`/soumissions/${row.id}`) }}
+          />
+        </Section>
+
+        <Section
+          id="factures"
+          label={SECTION_LABELS.factures}
+          count={sectionCounts.factures}
+          registerRef={registerSection('factures')}
+        >
           <DataTable
             table="project_factures"
             columns={factureColumns}
             data={factures}
             searchFields={['document_number', 'status', 'total_amount', 'balance_due']}
-            height="calc(100vh - 320px)"
-            onRowClick={row => { if (row.id) navigate(`/factures/${row.id}`) }}
+            height={stackedTableHeight(factures.length)}
+            peek={{
+              title: row => row.document_number || `Facture #${row.id}`,
+              subtitle: () => project?.name,
+              to: row => `/factures/${row.id}`,
+              width: 780,
+              render: (row, { close }) => <FactureDetail recordId={row.id} embedded onClose={close} />,
+            }}
           />
-        )}
+        </Section>
+
+        <Section
+          id="commissions"
+          label={SECTION_LABELS.commissions}
+          count={sectionCounts.commissions}
+          registerRef={registerSection('commissions')}
+          action={commissions.length > 0
+            ? <span className="text-sm font-semibold text-slate-700">{fmtMoney(commissionsTotal)}</span>
+            : null}
+        >
+          {commissionsError ? (
+            <div className="card p-4 text-sm text-slate-500 flex items-center justify-between gap-3">
+              <span>Commissions indisponibles.</span>
+              <button onClick={loadCommissions} className="btn-secondary btn-sm">Réessayer</button>
+            </div>
+          ) : (
+            <DataTable
+              table="project_commissions"
+              columns={commissionColumns}
+              data={commissions}
+              searchFields={['at_id', 'beneficiary_label']}
+              height={stackedTableHeight(commissions.length)}
+            />
+          )}
+        </Section>
+
+        <div className="flex justify-start mt-5">
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700 hover:underline disabled:opacity-50"
+            data-testid="project-delete"
+          >
+            <Trash2 size={14} />
+            {deleting ? 'Suppression…' : 'Supprimer ce projet'}
+          </button>
+        </div>
+
+        </div>
       </div>
 
       {showCreate && (
@@ -650,17 +1010,18 @@ export default function ProjectDetail() {
           </div>
         </div>
       )}
-    </Layout>
+    </>
   )
 }
 
 // Picker pour le champ Vendeur d'un projet — fusionne employés salesperson
 // actifs et entreprises avec is_vendeur_orisha=1. Recherche live, kind affiché
 // pour distinguer un employé d'une entreprise partenaire.
-function VendeurPicker({ value, options, onChange, disabled }) {
+function VendeurPicker({ value, options, onChange, disabled, fallbackLabel }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const selected = options.find(o => o.ref === value)
+    || (value && fallbackLabel ? { ref: value, label: fallbackLabel, kind: null } : null)
   const q = query.trim().toLowerCase()
   const filtered = q
     ? options.filter(o => o.label.toLowerCase().includes(q))
@@ -678,7 +1039,7 @@ function VendeurPicker({ value, options, onChange, disabled }) {
           {selected ? selected.label : '— Aucun —'}
         </span>
         <span className="text-xs text-slate-400 flex-shrink-0">
-          {selected ? (selected.kind === 'employee' ? 'Employé' : 'Partenaire') : '▾'}
+          {!selected ? '▾' : selected.kind === 'employee' ? 'Employé' : selected.kind === 'company' ? 'Partenaire' : ''}
         </span>
       </button>
       {open && (
@@ -690,7 +1051,6 @@ function VendeurPicker({ value, options, onChange, disabled }) {
                 autoFocus
                 value={query}
                 onChange={e => setQuery(e.target.value)}
-                placeholder="Rechercher…"
                 className="w-full text-sm focus:outline-none"
               />
             </div>

@@ -1,4 +1,5 @@
-import crypto, { randomUUID } from 'crypto'
+import crypto from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 
 // Synthétise une clé stable pour les lignes ad-hoc (sans il_xxx fourni par
@@ -95,7 +96,7 @@ export function upsertFromInvoiceLines(factureId, invoiceId, lines) {
         updated++
       } else {
         insertStmt.run(
-          randomUUID(), factureId, invoiceId, n.stripe_line_id, n.stripe_price_id,
+          newRecordId(), factureId, invoiceId, n.stripe_line_id, n.stripe_price_id,
           n.stripe_product_id, n.description, n.quantity, n.unit_amount, n.amount, n.currency,
           n.period_start, n.period_end, n.proration
         )

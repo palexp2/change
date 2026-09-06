@@ -17,8 +17,8 @@
 // comme comptabilisés, rattachés à leur dépense QB).
 //
 // Idempotent et non destructif : rien n'est recréé ni écrasé si la ligne existe.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { generateSchedule } from './ltDebtSchedule.js'
 
 export const DEC_DEBT_ID = 'ltdebt_dec'
@@ -135,7 +135,7 @@ function seedDebt(def) {
     `)
     rows.forEach((r, i) => {
       const qbId = def.booked[r.payment_date] || null
-      insert.run(randomUUID(), def.id, i + 1, r.payment_date, r.principal, r.interest,
+      insert.run(newRecordId(), def.id, i + 1, r.payment_date, r.principal, r.interest,
         r.balance_after, qbId, qbId ? 'purchase' : null, qbId ? stamp : null,
         qbId ? 'Versement passé à la main dans QuickBooks avant la bascule vers l’ERP' : null)
     })
@@ -165,8 +165,27 @@ function seedRecurring(def) {
   db.prepare(`
     INSERT INTO recurring_outflows (id, label, amount, frequency, day_of_month, active, notes, starts_on, ends_on, amount_entered_at)
     VALUES (?,?,?,'monthly',?,1,?,?,?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-  `).run(randomUUID(), def.label, def.amount, def.day_of_month, def.notes, def.starts_on, def.ends_on)
+  `).run(newRecordId(), def.label, def.amount, def.day_of_month, def.notes, def.starts_on, def.ends_on)
   return true
+}
+
+// Libellés tels qu'ils PARAISSENT au relevé BNC (vérifiés sur les mouvements
+// de mai à août 2026) : « Dpa Entreprise Bdc », « COMPTE DIVERS / VILLE DE
+// QUEBEC ». Ils servent à reconnaître le versement quand l'argent sort — ce
+// que « l'écriture existe dans QuickBooks » ne dit pas. Posés une seule fois,
+// sur une dette qui n'en a pas : l'utilisateur peut ensuite les corriger.
+const BANK_LABELS = { BDC: 'BDC', 'Ville de Québec': 'VILLE DE QUEBEC' }
+
+function seedBankLabels() {
+  const rows = db.prepare("SELECT id, label, lender FROM lt_debts WHERE bank_label_pattern IS NULL AND deleted_at IS NULL").all()
+  const done = []
+  for (const r of rows) {
+    const hit = Object.entries(BANK_LABELS).find(([k]) => `${r.label} ${r.lender || ''}`.toLowerCase().includes(k.toLowerCase()))
+    if (!hit) continue
+    db.prepare('UPDATE lt_debts SET bank_label_pattern=? WHERE id=?').run(hit[1], r.id)
+    done.push(r.label)
+  }
+  return done
 }
 
 export function seedLtDebts() {
@@ -178,6 +197,8 @@ export function seedLtDebts() {
   for (const def of RECURRING) {
     if (seedRecurring(def)) created.push(`récurrente « ${def.label} »`)
   }
+  const labelled = seedBankLabels()
+  if (labelled.length) created.push(`libellés bancaires (${labelled.join(', ')})`)
   if (created.length) console.log(`[lt-debts] seed : ${created.join(', ')}`)
   return created
 }

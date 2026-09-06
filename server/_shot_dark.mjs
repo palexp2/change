@@ -1,0 +1,17 @@
+import { chromium } from 'playwright-core'
+const b = await chromium.launch({ executablePath: process.env.HOME + '/.cache/ms-playwright/chromium-1217/chrome-linux/chrome' })
+const ctx = await b.newContext({ viewport: { width: 1500, height: 1100 } })
+await ctx.addInitScript(t => { localStorage.setItem('erp_token', t); localStorage.setItem('erp.theme', 'dark') }, process.env.TOK)
+const p = await ctx.newPage()
+await p.goto('http://localhost:3004/erp/companies/3b49d28b-270c-4996-836a-ac042bd4796c', { waitUntil: 'networkidle' })
+await p.waitForTimeout(4000)
+console.log('dark class?', await p.evaluate(() => document.documentElement.className + '|' + document.body.className))
+const sec = p.locator('section[data-section="interactions"]')
+await sec.scrollIntoViewIfNeeded()
+await p.waitForTimeout(2500)
+await p.screenshot({ path: '/tmp/dark.png' })
+// ouvre le détail de la première entrée
+await p.locator('section[data-section="interactions"] .group').first().click()
+await p.waitForTimeout(2000)
+await p.screenshot({ path: '/tmp/modal.png' })
+await b.close()

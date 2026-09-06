@@ -58,7 +58,6 @@ function LeafEditor({ node, onChange, onRemove, fieldsForPicker }) {
           value={node.value ?? ''}
           onChange={e => onChange({ ...node, value: e.target.value })}
           className="input text-xs w-32"
-          placeholder="valeur"
         />
       )}
       <button

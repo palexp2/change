@@ -51,19 +51,12 @@ export const NAV_SUBSECTIONS = {
     ],
   },
   '/rapprochement': { kind: 'accounts', param: 'compte' },
-  // Bac à sable « Tests – Antoine » : l'import MAPAQ (la page elle-même) et la
-  // prospection tirée du Registre des entreprises du Québec, chacune sur sa
-  // propre route.
+  // Bac à sable « Tests – Antoine » : l'import MAPAQ (la page elle-même).
   '/tests-antoine': {
     kind: 'routes', items: [
       { to: '/tests-antoine', label: 'Import MAPAQ (serres)' },
-      { to: '/tests-antoine/prospects-req', label: 'Prospects REQ' },
     ],
   },
-
-  // L'entrée « Agent » (bas de la sidebar) est volontairement sans sous-menu :
-  // un clic ouvre directement la page Agent, qui porte elle-même le lien vers
-  // ses travaux (/agent/travaux).
 
   // ── Groupe Comptabilité ───────────────────────────────────────────────────
   '/factures':        { kind: 'views', param: 'vue', table: 'factures' },
@@ -79,6 +72,10 @@ export const NAV_SUBSECTIONS = {
   '/journal-entries': { kind: 'views', param: 'vue', table: 'journal_entries' },
   '/stock-movement':  { kind: 'views', param: 'vue', table: 'stock_movements' },
   '/comptabilite/regles-serials': { kind: 'views', param: 'vue', table: 'serial_missing_valuations' },
+
+  // Les Paramètres n'ont volontairement PAS de sous-menu : la roue dentée mène
+  // à la page, où les sections s'affichent dans sa colonne de gauche. Le menu de
+  // gauche reste court.
 }
 
 export function getSubsections(route) {
@@ -97,16 +94,22 @@ function link(route, param, value, label) {
  * Sous-sections prêtes à afficher pour une route : `[{ to, label }]`.
  * Renvoie [] si la route n'en a pas (ou si le chargement échoue — un sous-menu
  * est un raccourci, jamais un point de blocage).
+ *
+ * `isAdmin` : les sous-sections marquées `adminOnly` sont retirées pour les
+ * autres rôles (cf. Paramètres). Le cache est donc indexé par rôle.
  */
-export async function resolveSubsections(route) {
+export async function resolveSubsections(route, { isAdmin = false } = {}) {
   const desc = getSubsections(route)
   if (!desc) return []
-  if (cache.has(route)) return cache.get(route)
+  const cacheKey = `${route}|${isAdmin ? 'admin' : 'user'}`
+  if (cache.has(cacheKey)) return cache.get(cacheKey)
 
   let items = []
   try {
     if (desc.kind === 'routes') {
-      items = desc.items.map(i => ({ to: i.to, label: i.label }))
+      items = desc.items
+        .filter(i => !i.adminOnly || isAdmin)
+        .map(i => ({ to: i.to, label: i.label }))
     } else if (desc.kind === 'tabs') {
       items = desc.items.map(i => link(route, desc.param, i.value, i.label))
     } else if (desc.kind === 'views') {
@@ -121,6 +124,6 @@ export async function resolveSubsections(route) {
   }
   // Les listes vides ne sont pas mises en cache : une vue créée juste après
   // apparaîtra au survol suivant.
-  if (items.length) cache.set(route, items)
+  if (items.length) cache.set(cacheKey, items)
   return items
 }

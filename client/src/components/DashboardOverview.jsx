@@ -1,8 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
-import { BarChart3, Table2, ArrowUpRight, ArrowDownRight, AlertTriangle, RefreshCw } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { BarChart3, Table2, ArrowUpRight, ArrowDownRight, AlertTriangle, RefreshCw, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import api from '../lib/api.js'
-import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+import { fmtMoney as fmtMoneyBase, fmtNumber } from '../utils/formatters.js'
 
 /* ── Vue globale du tableau de bord ────────────────────────────────────────
    Le pendant « Power BI » des sections du dashboard : une planche dense où
@@ -26,14 +26,12 @@ const fmtMoney = (n) => fmtMoneyBase(n, 'CAD', { maximumFractionDigits: 0 })
 function fmtMoneyCompact(n) {
   if (n == null || Number.isNaN(n)) return '—'
   if (Math.abs(n) >= 10000) {
-    return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', notation: 'compact', maximumFractionDigits: 1 }).format(n)
+    return fmtMoneyBase(n, 'CAD', { notation: 'compact', maximumFractionDigits: 1 })
   }
   return fmtMoney(n)
 }
 
-function fmtInt(n) {
-  return new Intl.NumberFormat('fr-CA').format(Math.round(n || 0))
-}
+const fmtInt = n => fmtNumber(Math.round(n || 0))
 
 function fmtPct(n, digits = 1) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -90,6 +88,8 @@ function barPath(x, y, w, h, { down = false, r = 3 } = {}) {
   return `M${x},${y + h} L${x},${y + rr} Q${x},${y} ${x + rr},${y} L${x + w - rr},${y} Q${x + w},${y} ${x + w},${y + rr} L${x + w},${y + h} Z`
 }
 
+/* Infobulle. Deux formes : une valeur unique (`value` + `label`), ou une
+   ventilation par série (`rows`) quand le graphique en porte plusieurs. */
 function ChartTooltip({ hover }) {
   if (!hover) return null
   return (
@@ -97,10 +97,49 @@ function ChartTooltip({ hover }) {
       className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-[calc(100%+6px)] whitespace-nowrap rounded-md px-2 py-1 text-[11px] leading-tight shadow-lg text-fixed-white"
       style={{ left: `${hover.xPct}%`, top: `${hover.yPct}%`, background: 'rgba(15,23,42,0.94)' }}
     >
-      <div className="font-semibold">{hover.value}</div>
-      <div className="opacity-70">{hover.label}</div>
+      {hover.rows ? (
+        <>
+          <div className="font-semibold">{hover.label}</div>
+          {hover.rows.map(r => (
+            <div key={r.label} className="mt-0.5 flex items-center gap-2">
+              <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${r.dot}`} />
+              <span className="opacity-70">{r.label}</span>
+              <span className="ml-auto tabular-nums">{r.value}</span>
+            </div>
+          ))}
+        </>
+      ) : (
+        <>
+          <div className="font-semibold">{hover.value}</div>
+          <div className="opacity-70">{hover.label}</div>
+        </>
+      )}
+      {hover.hint && <div className="mt-0.5 opacity-60">{hover.hint}</div>}
     </div>
   )
+}
+
+/* Barres cliquables — une barre mène à la liste des records qu'elle agrège,
+   avec un filtre temporaire (chip « Effacer » sur la page de destination).
+   `linkFor(point)` renvoie l'URL, ou null quand la barre n'a rien à montrer
+   (période vide). Les attributs sont posés sur le <g> de la barre pour que la
+   zone de survol pleine hauteur serve aussi de cible de clic. */
+const CLICK_HINT = 'Cliquer pour voir les enregistrements'
+
+function barGroupProps({ href, point, navigate, chartId }) {
+  if (!href) return { 'data-testid': chartId ? `overview-bar-${chartId}-${point.key}` : undefined }
+  return {
+    'data-testid': chartId ? `overview-bar-${chartId}-${point.key}` : undefined,
+    'data-clickable': 'true',
+    role: 'button',
+    tabIndex: 0,
+    'aria-label': `${point.label} — voir les enregistrements`,
+    className: 'cursor-pointer outline-none',
+    onClick: () => navigate(href),
+    onKeyDown: (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); navigate(href) }
+    },
+  }
 }
 
 function EmptyPlot({ label = 'Pas encore de données' }) {
@@ -118,8 +157,9 @@ function labelAt(i, n, every) {
    `vw` = largeur du viewBox : les cartes larges (la bande héros) en prennent
    une plus grande pour que le texte ne soit pas agrandi par la mise à
    l'échelle uniforme du SVG. */
-function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW }) {
+function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW, linkFor, chartId }) {
   const [hover, setHover] = useState(null)
+  const navigate = useNavigate()
   const t = TONES[tone] || TONES.brand
   if (!points?.length) return <EmptyPlot />
 
@@ -146,9 +186,11 @@ function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEvery = 2, 
           const x = PAD_L + i * band + (band - barW) / 2
           const y = yOf(p.value)
           const h = PAD_T + PLOT_H - y
+          const href = linkFor?.(p) || null
           return (
             <g key={p.key}
-              onMouseEnter={() => setHover({ xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (y / CH) * 100, value: format(p.value), label: p.label })}
+              {...barGroupProps({ href, point: p, navigate, chartId })}
+              onMouseEnter={() => setHover({ xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (y / CH) * 100, value: format(p.value), label: p.label, hint: href ? CLICK_HINT : null })}
               onMouseLeave={() => setHover(null)}
             >
               <rect x={PAD_L + i * band} y={0} width={band} height={CH} fill="transparent" />
@@ -236,8 +278,9 @@ function MiniLine({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw 
 }
 
 /* Colonnes divergentes — la couleur porte le signe (hausse / baisse). */
-function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw = CW }) {
+function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw = CW, linkFor, chartId }) {
   const [hover, setHover] = useState(null)
+  const navigate = useNavigate()
   if (!points?.length) return <EmptyPlot />
 
   const plotW = vw - PAD_L - PAD_R
@@ -264,9 +307,11 @@ function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw
           const x = PAD_L + i * band + (band - barW) / 2
           const h = Math.abs(yOf(v) - zeroY)
           const y = v >= 0 ? zeroY - h : zeroY
+          const href = linkFor?.(p) || null
           return (
             <g key={p.key}
-              onMouseEnter={() => setHover({ xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (Math.min(y, zeroY) / CH) * 100, value: format(v), label: p.label })}
+              {...barGroupProps({ href, point: p, navigate, chartId })}
+              onMouseEnter={() => setHover({ xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100, yPct: (Math.min(y, zeroY) / CH) * 100, value: format(v), label: p.label, hint: href ? CLICK_HINT : null })}
               onMouseLeave={() => setHover(null)}
             >
               <rect x={PAD_L + i * band} y={0} width={band} height={CH} fill="transparent" />
@@ -286,6 +331,131 @@ function DivergingColumns({ points, format = fmtMoneyCompact, labelEvery = 2, vw
       </svg>
       <ChartTooltip hover={hover} />
     </div>
+  )
+}
+
+/* Colonnes groupées — l'exception à la règle « une série par graphique » :
+   quand deux séries se lisent l'une CONTRE l'autre (ici les deux comptes de
+   revenus du grand livre), les juxtaposer est le seul moyen de comparer.
+   Elles partagent alors une échelle unique, et une légende nomme les teintes.
+   L'axe descend sous zéro dès qu'une série est négative (mois où les
+   remboursements dépassent les ventes). */
+function GroupedColumns({ points, series, format = fmtMoneyCompact, labelEvery = 2, vw = CW, linkFor, chartId }) {
+  const [hover, setHover] = useState(null)
+  const navigate = useNavigate()
+  if (!points?.length || !series?.length) return <EmptyPlot />
+
+  const plotW = vw - PAD_L - PAD_R
+  const all = points.flatMap(p => series.map(s => Number(p[s.key]) || 0))
+  const rawMin = Math.min(0, ...all)
+  const scale = axisScale(Math.max(...all, 0))
+  const top = scale.top
+  const bottom = rawMin < 0 ? -niceCeil(-rawMin) : 0
+  const span = (top - bottom) || 1
+  const yOf = v => PAD_T + PLOT_H - ((v - bottom) / span) * PLOT_H
+  const zeroY = yOf(0)
+  // Graduations candidates, de haut en bas ; on écarte celles qui viendraient
+  // télescoper une voisine (typique : une pointe négative minuscule dont la
+  // borne basse colle à la ligne du zéro).
+  const ticks = []
+  for (const v of (bottom < 0 ? [top, scale.half, 0, bottom] : [top, scale.half, 0])) {
+    if (ticks.some(t => Math.abs(yOf(t) - yOf(v)) < 11)) continue
+    ticks.push(v)
+  }
+
+  const n = points.length
+  const band = plotW / n
+  const gap = 1.5
+  const groupW = Math.max(3, Math.min(22, band - 4))
+  const barW = Math.max(1.5, (groupW - gap * (series.length - 1)) / series.length)
+
+  return (
+    <div className="relative">
+      <div className="mb-1 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        {series.map(s => (
+          <span key={s.key} className="flex items-center gap-1 text-[10px] text-slate-500">
+            <span className={`inline-block h-1.5 w-1.5 rounded-full ${(TONES[s.tone] || TONES.brand).bar}`} />
+            {s.label}
+          </span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${vw} ${CH}`} className="w-full" style={{ height: 'auto' }} role="img">
+        {ticks.map(v => (
+          <g key={v}>
+            <line x1={PAD_L} x2={vw - PAD_R} y1={yOf(v)} y2={yOf(v)} className={v === 0 ? 'stroke-slate-300' : 'stroke-slate-200'} strokeWidth={v === 0 ? 0.8 : 0.6} />
+            <text x={PAD_L - 4} y={yOf(v) + 2.6} textAnchor="end" fontSize="7" className="fill-slate-400 tabular-nums">{format(v)}</text>
+          </g>
+        ))}
+        {points.map((p, i) => {
+          const href = linkFor?.(p) || null
+          const groupX = PAD_L + i * band + (band - groupW) / 2
+          const highest = Math.min(...series.map(s => yOf(Math.max(0, Number(p[s.key]) || 0))))
+          return (
+            <g key={p.key}
+              {...barGroupProps({ href, point: p, navigate, chartId })}
+              onMouseEnter={() => setHover({
+                xPct: ((PAD_L + (i + 0.5) * band) / vw) * 100,
+                yPct: (highest / CH) * 100,
+                label: p.label,
+                rows: series.map(s => ({
+                  label: s.label,
+                  value: format(Number(p[s.key]) || 0),
+                  dot: (TONES[s.tone] || TONES.brand).bar,
+                })),
+                hint: href ? CLICK_HINT : null,
+              })}
+              onMouseLeave={() => setHover(null)}
+            >
+              <rect x={PAD_L + i * band} y={0} width={band} height={CH} fill="transparent" />
+              {series.map((s, j) => {
+                const v = Number(p[s.key]) || 0
+                const h = Math.abs(yOf(v) - zeroY)
+                if (h <= 0.5) return null
+                const x = groupX + j * (barW + gap)
+                const t = TONES[s.tone] || TONES.brand
+                return v >= 0
+                  ? <path key={s.key} d={barPath(x, zeroY - h, barW, h, { r: 2 })} className={`${t.fill} ${hover?.label === p.label ? 'opacity-100' : 'opacity-90'}`} />
+                  : <path key={s.key} d={barPath(x, zeroY, barW, h, { down: true, r: 2 })} className={`${t.fill} ${hover?.label === p.label ? 'opacity-100' : 'opacity-90'}`} />
+              })}
+              {labelAt(i, n, labelEvery) && (
+                <text x={PAD_L + (i + 0.5) * band} y={CH - 5} textAnchor="middle" fontSize="7" className="fill-slate-400">
+                  {p.short ?? p.label}
+                </text>
+              )}
+            </g>
+          )
+        })}
+      </svg>
+      <ChartTooltip hover={hover} />
+    </div>
+  )
+}
+
+/* Jumeau tableau des colonnes groupées : une colonne par série, plus le total. */
+function SeriesTable({ points, series, format, periodLabel = 'Période' }) {
+  return (
+    <table className="w-full text-xs">
+      <thead className="sticky top-0 bg-white">
+        <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
+          <th className="py-1 pr-2 font-medium">{periodLabel}</th>
+          {series.map(s => <th key={s.key} className="py-1 pl-2 text-right font-medium">{s.short || s.label}</th>)}
+          <th className="py-1 pl-2 text-right font-medium">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {[...points].reverse().map(p => (
+          <tr key={p.key} className="border-b border-slate-100 text-slate-600">
+            <td className="py-1 pr-2">{p.label}</td>
+            {series.map(s => (
+              <td key={s.key} className="py-1 pl-2 text-right tabular-nums">{format(Number(p[s.key]) || 0)}</td>
+            ))}
+            <td className="py-1 pl-2 text-right font-medium tabular-nums text-slate-700">
+              {format(series.reduce((sum, s) => sum + (Number(p[s.key]) || 0), 0))}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   )
 }
 
@@ -314,7 +484,7 @@ function PointsTable({ points, format, valueLabel = 'Valeur', periodLabel = 'Pé
 
 /* Carte de graphique : titre, sous-titre, bascule graphique ↔ tableau,
    lien de détail vers la section correspondante du dashboard classique. */
-function ChartCard({ id, title, subtitle, to, points, format, valueLabel, periodLabel, children, className = '' }) {
+function ChartCard({ id, title, subtitle, to, points, format, valueLabel, periodLabel, table, children, className = '' }) {
   const [asTable, setAsTable] = useState(false)
   return (
     <div className={`card p-3 ${className}`} data-testid={`overview-chart-${id}`}>
@@ -339,7 +509,7 @@ function ChartCard({ id, title, subtitle, to, points, format, valueLabel, period
       </div>
       {asTable
         ? <div className="max-h-[132px] overflow-y-auto" data-testid={`overview-chart-table-${id}`}>
-            <PointsTable points={points} format={format} valueLabel={valueLabel} periodLabel={periodLabel} />
+            {table || <PointsTable points={points} format={format} valueLabel={valueLabel} periodLabel={periodLabel} />}
           </div>
         : children}
     </div>
@@ -381,6 +551,10 @@ function Tile({ id, label, value, sub, tone = 'slate', meter, delta, to, loading
 
 /* ── Séries dérivées ─────────────────────────────────────────────────── */
 
+// Teinte par compte de revenu QB : les ventes gardent la teinte de marque,
+// les abonnements le bleu ciel déjà utilisé pour les séries « service ».
+const QB_REVENUE_TONES = { sale: 'brand', subscription: 'sky', other: 'slate' }
+
 const MONTH_SHORT = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.']
 
 function lastMonthKeys(n) {
@@ -396,6 +570,18 @@ function lastMonthKeys(n) {
     })
   }
   return out
+}
+
+// « 2026-08 » → « août 2026 »
+function monthLabel(key) {
+  const [y, m] = String(key || '').split('-').map(Number)
+  return MONTH_SHORT[m - 1] ? `${MONTH_SHORT[m - 1]} ${y}` : String(key || '')
+}
+
+// « 2026-08 » → « août 26 »
+function monthLabelShort(key) {
+  const [y, m] = String(key || '').split('-').map(Number)
+  return MONTH_SHORT[m - 1] ? `${MONTH_SHORT[m - 1].replace('.', '')} ${String(y).slice(2)}` : String(key || '')
 }
 
 function lastMondayKeys(n) {
@@ -416,22 +602,151 @@ function lastMondayKeys(n) {
   return out
 }
 
+/* ── État des résultats ───────────────────────────────────────────────────
+   Le rapport ProfitAndLoss de QuickBooks, un mois par colonne sur 12 mois
+   glissants (~365 jours), plus la colonne totale de la fenêtre. Le serveur
+   renvoie les lignes déjà aplaties (en-tête / compte / sous-total) avec la
+   chaîne de sections parentes : replier une section masque son détail mais
+   garde son sous-total, et la dernière ligne est le résultat net. */
+function IncomeStatementCard({ data, error }) {
+  // `null` = état par défaut : tout replié, on ne voit que les sous-totaux de
+  // section et le résultat net. Le détail par compte est à un clic.
+  const [override, setOverride] = useState(null)
+  const months = data?.months || []
+  const rows = data?.rows || []
+  const sections = rows.filter(r => r.collapsible)
+  const collapsed = override || new Set(sections.map(r => r.id))
+  const allCollapsed = sections.length > 0 && sections.every(r => collapsed.has(r.id))
+  const visible = rows.filter(r => !(r.parents || []).some(p => collapsed.has(p)))
+
+  const toggle = (id) => setOverride(() => {
+    const next = new Set(collapsed)
+    if (next.has(id)) next.delete(id); else next.add(id)
+    return next
+  })
+  const toggleAll = () => setOverride(allCollapsed ? new Set() : new Set(sections.map(r => r.id)))
+
+  const money = (v, extra = '') => (
+    <span className={`tabular-nums ${v < 0 ? 'text-rose-600' : ''} ${extra}`}>
+      {v ? fmtMoneyCompact(v) : <span className="text-slate-300">—</span>}
+    </span>
+  )
+
+  return (
+    <div className="card p-3" data-testid="overview-income-statement">
+      <div className="mb-2 flex items-start gap-2">
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-[13px] font-semibold text-slate-800">État des résultats</h3>
+          <p className="truncate text-[11px] text-slate-400">
+            QuickBooks · 12 mois glissants
+            {data?.net_income ? ` · ${fmtMoneyCompact(data.net_income.total)} sur la période` : ''}
+          </p>
+        </div>
+        {sections.length > 0 && (
+          <button
+            type="button"
+            onClick={toggleAll}
+            aria-pressed={allCollapsed}
+            aria-label={allCollapsed ? 'Déplier les sections' : 'Replier les sections'}
+            title={allCollapsed ? 'Déplier les sections' : 'Replier les sections'}
+            data-testid="overview-income-statement-toggle"
+            className="shrink-0 rounded p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
+          >
+            {allCollapsed ? <ChevronsUpDown size={14} /> : <ChevronsDownUp size={14} />}
+          </button>
+        )}
+      </div>
+      {error ? (
+        <p className="text-xs text-rose-600" data-testid="overview-income-statement-error">Indisponible : {error}</p>
+      ) : !data ? (
+        <EmptyPlot label="Chargement de l'état des résultats…" />
+      ) : (
+        <div className="max-h-[460px] overflow-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-[11px] text-slate-500">
+                <th className="sticky left-0 top-0 z-20 bg-white px-2 py-1 text-left font-medium">Poste</th>
+                {months.map(m => (
+                  <th
+                    key={m.month}
+                    title={m.is_current_month ? 'Mois en cours — partiel' : undefined}
+                    className={`sticky top-0 z-10 min-w-[64px] whitespace-nowrap bg-white px-2 py-1 text-right font-medium ${m.is_current_month ? 'text-slate-300' : ''}`}
+                  >
+                    {monthLabelShort(m.month)}
+                  </th>
+                ))}
+                <th className="sticky right-0 top-0 z-20 min-w-[72px] whitespace-nowrap bg-white px-2 py-1 text-right font-semibold text-slate-600">Total</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(r => {
+                const isNet = r.group === 'NetIncome'
+                const cls = isNet
+                  ? 'border-t-2 border-slate-300 font-semibold text-slate-900'
+                  : r.kind === 'summary'
+                    ? 'border-t border-slate-200 font-medium text-slate-700'
+                    : r.kind === 'header'
+                      ? 'font-medium text-slate-700'
+                      : 'text-slate-600'
+                return (
+                  <tr key={r.id} className={cls}>
+                    <td
+                      className="sticky left-0 z-10 max-w-[240px] truncate bg-white py-1 pr-2"
+                      style={{ paddingLeft: 8 + (r.depth || 0) * 10 }}
+                      title={r.label}
+                    >
+                      {r.kind === 'header' && r.collapsible ? (
+                        <button type="button" onClick={() => toggle(r.id)} className="flex w-full items-center gap-1 truncate text-left hover:text-brand-700">
+                          {collapsed.has(r.id) ? <ChevronRight size={11} className="shrink-0" /> : <ChevronDown size={11} className="shrink-0" />}
+                          <span className="truncate">{r.label}</span>
+                        </button>
+                      ) : r.label}
+                    </td>
+                    {months.map((m, i) => (
+                      <td key={m.month} className="whitespace-nowrap px-2 py-1 text-right">
+                        {r.values ? money(r.values[i]) : null}
+                      </td>
+                    ))}
+                    <td className="sticky right-0 whitespace-nowrap bg-white px-2 py-1 text-right font-semibold">
+                      {r.values ? money(r.total) : null}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 /* ── La planche ──────────────────────────────────────────────────────── */
 
 export function DashboardOverview({ data, subscriptionEvents }) {
   const [bank, setBank] = useState(null)
   const [bankError, setBankError] = useState(null)
   const [history, setHistory] = useState(null)
-  const [deferred, setDeferred] = useState(null)
   const [aging, setAging] = useState(null)
+  const [qbRevenue, setQbRevenue] = useState(null)
+  const [qbRevenueError, setQbRevenueError] = useState(null)
+  const [pnl, setPnl] = useState(null)
+  const [pnlError, setPnlError] = useState(null)
   const [reloading, setReloading] = useState(false)
 
   const loadFinance = (opts = {}) => {
     setBankError(null)
+    setQbRevenueError(null)
+    setPnlError(null)
+    api.dashboard.incomeStatement({ months: 12, ...opts })
+      .then(setPnl)
+      .catch(e => { setPnl(null); setPnlError(e?.message || 'Erreur QuickBooks') })
     api.dashboard.bankAccounts(opts).then(setBank).catch(e => setBankError(e?.message || 'Erreur QuickBooks'))
     api.dashboard.bankAccountsHistory({ months: 12, ...opts }).then(setHistory).catch(() => setHistory({ months: [] }))
-    api.dashboard.deferredRevenue().then(setDeferred).catch(() => setDeferred(null))
     api.dashboard.agingReceivables().then(setAging).catch(() => setAging(null))
+    api.dashboard.revenueByMonth({ months: 12, ...opts })
+      .then(setQbRevenue)
+      .catch(e => { setQbRevenue(null); setQbRevenueError(e?.message || 'Erreur QuickBooks') })
   }
 
   useEffect(() => { loadFinance() }, [])
@@ -439,6 +754,8 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   function refreshFinance() {
     setReloading(true)
     setBank(null)
+    setQbRevenue(null)
+    setPnl(null)
     loadFinance({ refresh: true })
     // Le rafraîchissement QB peut prendre quelques secondes ; on rend la main
     // dès que les soldes reviennent (l'effet ci-dessous suit `bank`).
@@ -490,6 +807,32 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const revPrev28 = sum(prev4, 'revenue')
   const margin28 = rev28 > 0 ? ((rev28 - sum(last4, 'cogs')) / rev28) * 100 : 0
   const revDeltaPct = revPrev28 > 0 ? ((rev28 - revPrev28) / revPrev28) * 100 : null
+
+  /* Revenus QuickBooks par mois, un compte de revenu par série. Les comptes et
+     leur ordre viennent du serveur (plan comptable QB), pas d'une liste figée
+     ici : un troisième compte apparaîtrait de lui-même. */
+  const qbRevenueSeries = useMemo(
+    () => (qbRevenue?.accounts || []).map((a, i) => ({
+      key: a.key,
+      label: a.acct_num ? `${a.name} (${a.acct_num})` : a.name,
+      short: a.name,
+      tone: QB_REVENUE_TONES[a.key] || ['brand', 'sky', 'teal', 'violet'][i % 4],
+    })),
+    [qbRevenue],
+  )
+  const qbRevenuePoints = useMemo(() => {
+    const by = new Map((qbRevenue?.months || []).map(m => [m.month, m]))
+    return lastMonthKeys(12).map(m => {
+      const row = by.get(m.key)
+      const point = { ...m }
+      for (const a of (qbRevenue?.accounts || [])) point[a.key] = Number(row?.[a.key]) || 0
+      point.total = Number(row?.total) || 0
+      return point
+    })
+  }, [qbRevenue])
+  // Mois complet le plus récent : le mois courant est partiel, le citer comme
+  // sous-titre laisserait croire à un effondrement des revenus.
+  const qbRevenueLastFull = (qbRevenue?.months || []).filter(m => !m.is_current_month).slice(-1)[0] || null
 
   /* Projets créés, closing, billets */
   const projectsSeries = useMemo(() => {
@@ -545,8 +888,13 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const failedSections = Object.keys(data?._errors || {})
 
   const bankRows = bank?.accounts || []
-  const banks = bankRows.filter(a => a.type === 'Bank')
-  const cards = bankRows.filter(a => a.type === 'Credit Card')
+  // Les comptes à 0 $ n'apportent rien à la lecture : on les masque (les sous-totaux restent inchangés)
+  const nonZero = bankRows.filter(a => {
+    const v = Number(a.balance_cad ?? a.balance)
+    return Number.isFinite(v) && Math.round(v * 100) !== 0
+  })
+  const banks = nonZero.filter(a => a.type === 'Bank')
+  const cards = nonZero.filter(a => a.type === 'Credit Card')
 
   return (
     <div data-testid="dashboard-overview" className="space-y-3">
@@ -669,15 +1017,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           to="/dashboard/objectif-de-projets"
         />
         <Tile
-          id="deferred"
-          label="Revenus perçus d'avance"
-          value={deferred ? fmtMoneyCompact(deferred.total_cad || 0) : '…'}
-          tone="amber"
-          sub={deferred ? `${(deferred.items || []).length} facture(s) en attente d'expédition` : 'Chargement…'}
-          to="/dashboard/revenus-percus-avance"
-          loading={!deferred}
-        />
-        <Tile
           id="aging"
           label="Comptes clients en retard"
           value={agingTotal == null ? '…' : fmtMoneyCompact(agingTotal)}
@@ -731,11 +1070,34 @@ export function DashboardOverview({ data, subscriptionEvents }) {
       {/* Graphiques compacts */}
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3" data-testid="overview-charts">
         <ChartCard
+          id="qb-revenue"
+          title="Revenus par mois"
+          subtitle={qbRevenueLastFull
+            ? `QuickBooks · par compte de revenu · ${fmtMoneyCompact(qbRevenueLastFull.total)} en ${monthLabel(qbRevenueLastFull.month)}`
+            : 'QuickBooks · par compte de revenu · 12 mois'}
+          table={<SeriesTable points={qbRevenuePoints} series={qbRevenueSeries} format={fmtMoney} periodLabel="Mois" />}
+        >
+          {qbRevenueError ? (
+            <div className="flex h-[132px] items-center justify-center px-2 text-center text-xs text-rose-600" data-testid="overview-qb-revenue-error">
+              Revenus QuickBooks indisponibles : {qbRevenueError}
+            </div>
+          ) : !qbRevenue ? (
+            <EmptyPlot label="Chargement des revenus…" />
+          ) : (
+            <GroupedColumns points={qbRevenuePoints} series={qbRevenueSeries} format={fmtMoneyCompact} chartId="qb-revenue" />
+          )}
+        </ChartCard>
+
+        <ChartCard
           id="projects" title="Projets créés" subtitle="12 derniers mois"
           to="/dashboard/projets-crees"
           points={projectsSeries} format={fmtInt} valueLabel="Projets" periodLabel="Mois"
         >
-          <MiniColumns points={projectsSeries} tone="brand" format={fmtInt} />
+          <MiniColumns
+            points={projectsSeries} tone="brand" format={fmtInt}
+            chartId="projects"
+            linkFor={p => p.value ? `/pipeline?createdMonth=${p.key}` : null}
+          />
         </ChartCard>
 
         <ChartCard
@@ -759,7 +1121,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           to="/dashboard/rentabilite"
           points={revenueSeries} format={fmtMoneyCompact} valueLabel="Revenus" periodLabel="Semaine"
         >
-          <MiniColumns points={revenueSeries} tone="brand" format={fmtMoneyCompact} labelEvery={4} />
+          <MiniColumns
+            points={revenueSeries} tone="brand" format={fmtMoneyCompact} labelEvery={4}
+            chartId="revenue"
+            linkFor={p => p.value ? `/orders?shippedWeek=${p.key}` : null}
+          />
         </ChartCard>
 
         <ChartCard
@@ -767,7 +1133,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           to="/dashboard/livraisons"
           points={shipmentsSeries} format={fmtInt} valueLabel="Colis" periodLabel="Semaine"
         >
-          <MiniColumns points={shipmentsSeries} tone="sky" format={fmtInt} labelEvery={4} />
+          <MiniColumns
+            points={shipmentsSeries} tone="sky" format={fmtInt} labelEvery={4}
+            chartId="shipments"
+            linkFor={p => p.value ? `/envois?week=${p.key}` : null}
+          />
         </ChartCard>
 
         <ChartCard
@@ -775,7 +1145,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           to="/dashboard/billets-par-mois"
           points={ticketsSeries} format={fmtInt} valueLabel="Billets" periodLabel="Mois"
         >
-          <MiniColumns points={ticketsSeries} tone="violet" format={fmtInt} />
+          <MiniColumns
+            points={ticketsSeries} tone="violet" format={fmtInt}
+            chartId="tickets"
+            linkFor={p => p.value ? `/tickets?createdMonth=${p.key}` : null}
+          />
         </ChartCard>
 
         <ChartCard
@@ -783,7 +1157,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           to="/dashboard/mouvements-abonnements"
           points={mrrSeries} format={fmtMoneyCompact} valueLabel="Delta MRR" periodLabel="Mois"
         >
-          <DivergingColumns points={mrrSeries} format={fmtMoneyCompact} />
+          <DivergingColumns
+            points={mrrSeries} format={fmtMoneyCompact}
+            chartId="mrr"
+            linkFor={p => p.value ? `/abonnements/mouvements?month=${p.key}` : null}
+          />
         </ChartCard>
 
         {/* Soldes par compte */}
@@ -823,6 +1201,13 @@ export function DashboardOverview({ data, subscriptionEvents }) {
                     </tr>
                   </tbody>
                 ) : null)}
+                {!banks.length && !cards.length ? (
+                  <tbody>
+                    <tr className="text-[11px] text-slate-400">
+                      <td className="px-2 py-1" colSpan={2}>Aucun compte avec un solde</td>
+                    </tr>
+                  </tbody>
+                ) : null}
                 <tfoot>
                   <tr className="font-semibold text-slate-900">
                     <td className="px-2 py-1">Trésorerie nette</td>
@@ -834,52 +1219,9 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           )}
         </div>
 
-        {/* Âge des comptes clients */}
-        <div className="card p-3" data-testid="overview-aging">
-          <div className="mb-2">
-            <h3 className="truncate text-[13px] font-semibold text-slate-800">
-              <Link to="/factures" className="hover:text-brand-700 hover:underline">Âge des comptes clients</Link>
-            </h3>
-            <p className="truncate text-[11px] text-slate-400">Soldes dus par tranche de retard</p>
-          </div>
-          {!aging ? <EmptyPlot label="Chargement…" /> : (
-            <div className="space-y-1">
-              {aging.buckets.map((b, i) => {
-                const max = Math.max(...aging.buckets.map(x => x.total), 1)
-                const ramp = ['bg-rose-200', 'bg-rose-300', 'bg-rose-400', 'bg-rose-600'][i] || 'bg-rose-600'
-                return (
-                  <div key={b.key} className="flex items-center gap-2 text-[11px]">
-                    <span className="w-[68px] shrink-0 text-slate-500">{b.label}</span>
-                    <div className="h-2.5 flex-1 overflow-hidden rounded-sm bg-slate-100">
-                      <div className={`h-full ${ramp}`} style={{ width: `${(b.total / max) * 100}%` }} />
-                    </div>
-                    <span className="w-[74px] shrink-0 text-right tabular-nums text-slate-700">{fmtMoney(b.total)}</span>
-                  </div>
-                )
-              })}
-              <div className="mt-2 border-t border-slate-200 pt-2">
-                <p className="mb-1 text-[11px] text-slate-500">Principaux comptes</p>
-                {!(aging.companies || []).length ? (
-                  <p className="text-[11px] text-slate-400">Aucun solde en souffrance 🎉</p>
-                ) : (
-                  <ul className="space-y-0.5">
-                    {aging.companies.slice(0, 6).map((c, i) => (
-                      <li key={c.company_id || i} className="flex items-baseline justify-between gap-2 text-[11px]">
-                        <span className="truncate">
-                          {c.company_id
-                            ? <Link to={`/companies/${c.company_id}`} className="text-brand-600 hover:underline">{c.company_name}</Link>
-                            : <span className="text-slate-600">{c.company_name}</span>}
-                        </span>
-                        <span className="shrink-0 tabular-nums text-slate-600">{fmtMoney(c.total)}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
       </section>
+
+      <IncomeStatementCard data={pnl} error={pnlError} />
     </div>
   )
 }

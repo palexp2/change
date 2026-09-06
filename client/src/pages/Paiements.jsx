@@ -4,23 +4,19 @@ import { Banknote, ArrowDownCircle, ArrowUpCircle } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { fmtCad } from '../utils/formatters.js'
+import { fmtCad, fmtNumber } from '../utils/formatters.js'
 import { METHOD_LABELS } from '../components/FacturePaymentsSection.jsx'
 
 // Les colonnes « Montant » et « Montant (CAD) » sont de type nombre : on les
 // affiche en nombre brut (pas de symbole de devise). La devise est déjà portée
 // par la colonne « Devise » dédiée et par le libellé « (CAD) ».
-function fmtNum(n) {
-  if (n == null || n === '') return '—'
-  const num = Number(n)
-  if (!Number.isFinite(num)) return '—'
-  return num.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-}
+const fmtNum = n => fmtNumber(n, { decimals: 2 })
 
 // Badge de statut QuickBooks dérivé des refs QB de la ligne :
 //   - synthétique Stripe → l'écriture QB est posée au payout, pas par paiement
@@ -119,7 +115,7 @@ export default function Paiements() {
     <Layout>
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Paiements</h1>
+          <PageTitle>Paiements</PageTitle>
           <div className="text-sm text-slate-500" data-testid="paiements-net-cad">
             Net saisi (CAD) : <span className="font-medium text-slate-800">{fmtCad(netCad)}</span>
           </div>

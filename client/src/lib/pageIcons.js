@@ -94,7 +94,7 @@ const ROUTES = [
   [/^\/connectors/, Plug],
   [/^\/automations/, Zap],
   [/^\/agent/, Bot],
-  [/^\/admin/, Settings],
+  [/^\/parametres/, Settings],
 ]
 
 export function iconForPath(pathname) {

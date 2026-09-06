@@ -6,8 +6,8 @@
 // qu'on veut garder et relire. Le passage à l'action est explicite (promoteIdea),
 // et l'item créé arrive « de côté » dans la file : même promue, une idée ne
 // déclenche pas d'exécution sans un geste de plus.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { broadcastAll } from './realtime.js'
 import { createPrompt } from './promptQueue.js'
 
@@ -16,7 +16,7 @@ const SELECT = 'SELECT * FROM work_ideas WHERE deleted_at IS NULL'
 function broadcast() { broadcastAll({ type: 'travaux:ideas:updated' }) }
 
 export function listIdeas() {
-  return db.prepare(`${SELECT} ORDER BY position, created_at`).all()
+  return db.prepare(`${SELECT} ORDER BY priority DESC, position, created_at`).all()
 }
 
 export function getIdea(id) {
@@ -30,7 +30,7 @@ function nextPosition() {
 export function createIdea({ title, notes = null, tag = null, created_by = null }) {
   const text = String(title || '').trim()
   if (!text) throw new Error('title requis')
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO work_ideas (id, title, notes, tag, position, created_by)
     VALUES (?,?,?,?,?,?)
@@ -39,7 +39,7 @@ export function createIdea({ title, notes = null, tag = null, created_by = null 
   return getIdea(id)
 }
 
-const EDITABLE = ['title', 'notes', 'tag']
+const EDITABLE = ['title', 'notes', 'tag', 'priority']
 
 export function updateIdea(id, patch) {
   const row = getIdea(id)
@@ -51,7 +51,7 @@ export function updateIdea(id, patch) {
     // Le titre est la seule chose qui identifie une idée : on refuse de le vider.
     if (k === 'title' && !String(v || '').trim()) continue
     sets.push(`${k}=?`)
-    vals.push(k === 'title' ? String(v).trim() : (v === '' ? null : v))
+    vals.push(k === 'priority' ? (v ? 1 : 0) : k === 'title' ? String(v).trim() : (v === '' ? null : v))
   }
   if (!sets.length) return row
   db.prepare(`UPDATE work_ideas SET ${sets.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)

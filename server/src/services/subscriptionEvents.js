@@ -9,8 +9,8 @@
 // La colonne `stripe_event_id` garantit l'idempotence quand Stripe rejoue un
 // webhook : INSERT OR IGNORE sur l'index unique évite les doublons.
 
-import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { getUsdCadRate } from './fx.js'
 import { emit } from './realtime.js'
 
@@ -121,7 +121,7 @@ export async function recordEvent(args) {
   else if (category === 'reactivation') delta = newCad
   else if (previousCad != null && newCad != null) delta = newCad - previousCad
 
-  const id = uuid()
+  const id = newRecordId()
   const itemsBeforeJson = Array.isArray(itemsBefore) ? JSON.stringify(itemsBefore) : null
   const itemsAfterJson = Array.isArray(itemsAfter) ? JSON.stringify(itemsAfter) : null
   db.prepare(`

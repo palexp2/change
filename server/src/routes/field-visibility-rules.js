@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 
@@ -65,7 +65,7 @@ router.post('/', requireAdmin, (req, res) => {
   const err = validateConditions(conditions)
   if (err) return res.status(400).json({ error: `conditions invalides : ${err}` })
 
-  const id = uuid()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO field_visibility_rules (id, context, field_id, conditions_json, created_by)
     VALUES (?, ?, ?, ?, ?)

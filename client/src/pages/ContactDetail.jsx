@@ -1,20 +1,21 @@
 import { useState, useEffect, useMemo } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Plus, Save, Star, X, CheckSquare } from 'lucide-react'
+import { useParams, useNavigate } from 'react-router-dom'
+import { ArrowLeft, Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import Attachments from '../components/Attachments.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useDetailFields } from '../lib/useDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
+import { sync as syncStore } from '../lib/dataSync.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
@@ -109,12 +110,14 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
             data-company-id={link.company_id}
             className="flex items-center gap-2 group"
           >
-            <Link
-              to={`/companies/${link.company_id}`}
-              className="text-sm text-brand-600 hover:underline"
-            >
-              {link.company_name}
-            </Link>
+            <LinkedRecordField
+              name={`company_${link.company_id}`}
+              value={link.company_id}
+              options={[{ id: link.company_id, name: link.company_name || 'Entreprise' }]}
+              getHref={c => `/companies/${c.id}`}
+              disabled
+              allowClear={false}
+            />
             {link.is_primary ? (
               <Badge color="blue" size="sm">Principale</Badge>
             ) : (
@@ -147,7 +150,6 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
             value={null}
             options={available}
             labelFn={c => c.name}
-            placeholder="Ajouter une entreprise"
             saving={saving}
             onChange={add}
             allowClear={false}
@@ -171,7 +173,6 @@ function InlineField({ field, value, saving, onSave }) {
           value={local}
           options={(field.options || []).map(o => ({ value: o, label: o }))}
           emptyOption="—"
-          placeholder="—"
           onChange={v => { setLocal(v); commit(v) }}
           className="input text-sm"
           size="sm"
@@ -311,7 +312,6 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
           value={taskForm.assigned_to || ''}
           options={users}
           labelFn={u => u.name}
-          placeholder="Responsable"
           saving={!!fieldSaving.assigned_to}
           onChange={v => isEdit ? saveField('assigned_to', v) : setTaskForm(f => ({ ...f, assigned_to: v }))}
         />
@@ -374,11 +374,14 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour). En mode
 // route normale, l'`id` vient de l'URL.
-export default function ContactDetail({ recordId, embedded = false }) {
+export default function ContactDetail({ recordId, embedded = true, onClose }) {
   const { id: paramId } = useParams()
   const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user: _user } = useAuth()
+  const confirm = useConfirm()
+  const { addToast } = useToast()
+  const undoableDelete = useUndoableDelete()
   const { status: saveState, save } = useSaveStatus()
   const [interactions, setInteractions] = useState([])
   const [companies, setCompanies] = useState([])
@@ -414,7 +417,7 @@ export default function ContactDetail({ recordId, embedded = false }) {
   // (custom_fields) : renommer ou supprimer un champ depuis un tableau se voit
   // ici aussi. La mise en page, elle, reste celle de la fiche.
   const baseFields = useMemo(() => CONTACT_FIELDS.filter(f => f.defaultVisible !== false), [])
-  const { fields: visibleFields, customFields: extraFields } = useDetailFields('contacts', baseFields)
+  const { fields: visibleFields } = useDetailFields('contacts', baseFields)
 
   // Colonnes DataTable des tâches du contact. Dérivées de la meta contact_tasks,
   // enrichies des render() (setters useState stables → deps vides).
@@ -449,10 +452,32 @@ export default function ContactDetail({ recordId, embedded = false }) {
     api.auth.users().then(setUsers).catch(() => {})
   }, [id])
 
+  // Fermer la fiche : le side-peek se referme, la page pleine retourne à la liste.
+  const dismiss = () => { if (onClose) onClose(); else navigate('/contacts') }
+
   useRealtimeChannel(id ? `contact:${id}` : null, (msg) => {
     if (msg.type === 'contact:updated') setContact(c => c ? { ...c, ...msg.payload } : c)
-    else if (msg.type === 'contact:deleted') navigate('/contacts')
+    else if (msg.type === 'contact:deleted') dismiss()
   })
+
+  // Suppression du contact : confirmation, fermeture de la fiche, puis toast
+  // « Annuler » de 8 s (soft-delete → restaurable, cf. lib/undoableDelete.js).
+  async function handleDelete() {
+    const name = `${contact?.first_name || ''} ${contact?.last_name || ''}`.trim()
+    if (!(await confirm(name ? `Supprimer le contact ${name} ?` : 'Supprimer ce contact ?'))) return
+    try {
+      await undoableDelete({
+        table: 'contacts',
+        id,
+        deleteFn: () => api.contacts.delete(id),
+        label: 'Contact supprimé',
+        onChange: () => { syncStore().catch(() => {}) },
+      })
+      dismiss()
+    } catch (err) {
+      addToast({ message: err.message || 'Erreur lors de la suppression', type: 'error' })
+    }
+  }
 
   async function saveField(key, value) {
     setFieldSaving(s => ({ ...s, [key]: true }))
@@ -467,9 +492,9 @@ export default function ContactDetail({ recordId, embedded = false }) {
     }
   }
 
-  // En mode embarqué (side-peek), pas de Layout — le drawer fournit son propre
-  // chrome. Sinon, page pleine classique.
-  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
 
   if (loading) {
     return shell(<Spinner center />)
@@ -494,10 +519,24 @@ export default function ContactDetail({ recordId, embedded = false }) {
             )}
             <SaveStatus status={saveState} />
             {contact.company_id && (
-              <Link to={`/companies/${contact.company_id}`} className="text-sm text-brand-600 hover:underline">
-                {contact.company_name}
-              </Link>
+              <LinkedRecordField
+                name="company_id"
+                value={contact.company_id}
+                options={[{ id: contact.company_id, name: contact.company_name || 'Entreprise' }]}
+                getHref={c => `/companies/${c.id}`}
+                disabled
+                allowClear={false}
+              />
             )}
+            <button
+              onClick={handleDelete}
+              className="ml-auto p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+              title="Supprimer ce contact"
+              aria-label="Supprimer ce contact"
+              data-testid="delete-contact"
+            >
+              <Trash2 size={16} />
+            </button>
           </div>
         ) : (
           <div className="flex items-start gap-4 mb-6">
@@ -506,7 +545,7 @@ export default function ContactDetail({ recordId, embedded = false }) {
             </button>
             <div className="flex-1">
               <div className="flex items-center gap-3 flex-wrap">
-                <h1 className="text-2xl font-bold text-slate-900">{contact.first_name} {contact.last_name}</h1>
+                <PageTitle>{contact.first_name} {contact.last_name}</PageTitle>
                 {contact.language && (
                   <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
                     {contact.language === 'French' ? 'FR' : 'EN'}
@@ -515,64 +554,59 @@ export default function ContactDetail({ recordId, embedded = false }) {
                 <SaveStatus status={saveState} />
               </div>
               {contact.company_id && (
-                <Link to={`/companies/${contact.company_id}`} className="text-sm text-brand-600 hover:underline mt-0.5 block">
-                  {contact.company_name}
-                </Link>
+                <div className="mt-0.5">
+                  <LinkedRecordField
+                    name="company_id"
+                    value={contact.company_id}
+                    options={[{ id: contact.company_id, name: contact.company_name || 'Entreprise' }]}
+                    getHref={c => `/companies/${c.id}`}
+                    disabled
+                    allowClear={false}
+                  />
+                </div>
               )}
             </div>
             <div className="flex items-center gap-2">
+              <button
+                onClick={handleDelete}
+                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                title="Supprimer ce contact"
+                aria-label="Supprimer ce contact"
+                data-testid="delete-contact"
+              >
+                <Trash2 size={16} />
+              </button>
             </div>
           </div>
         )}
 
-        {/* Info card */}
-        <div className="card p-5 mb-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-            {visibleFields.map(field => {
-              const value = contact[field.key] ?? ''
-              const span2 = field.span2 || field.type === 'textarea'
-              return (
-                <div key={field.key} className={span2 ? 'sm:col-span-2' : ''}>
-                  <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
-                    {field.label}
-                    {fieldSaving[field.key] && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
-                  </div>
-                  <InlineField
-                    field={field}
-                    value={value}
-                    saving={!!fieldSaving[field.key]}
-                    onSave={val => saveField(field.key, val)}
-                  />
-                </div>
-              )
-            })}
-            <CompanyLinks
-              contactId={id}
-              companies={contact.companies || []}
-              allCompanies={companies}
-              onChange={updated => setContact(c => ({ ...c, ...updated }))}
-            />
-            {/* Champs personnalisés de la table : ils apparaissent ici sans que
-                personne n'ait à toucher au code de la fiche. Lecture seule —
-                l'édition inline d'une colonne cf_ suppose une route PATCH qui
-                la liste explicitement, ce qui n'est pas branché sur contacts. */}
-            {extraFields.map(field => (
-              <div key={field.key} data-testid={`detail-cf-${field.key}`}>
-                <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">
-                  {field.label}
-                </div>
-                <div className="text-sm text-slate-700">
-                  {field.render(contact[field.key])}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Pièces jointes */}
-        <div className="mb-6">
-          <Attachments entityType="contacts" entityId={id} />
-        </div>
+        {/* Info card — l'ordre des champs et ceux qu'on garde se règlent dans la
+            fiche elle-même (bouton « Personnaliser les champs » du panneau
+            latéral, ou au survol de la carte ici). */}
+        <DetailFieldGrid entityType="contacts" record={contact}>
+          {visibleFields.map(field => (
+            <DetailField
+              key={field.key}
+              id={field.key}
+              label={field.label}
+              span2={field.span2 || field.type === 'textarea'}
+              saving={!!fieldSaving[field.key]}
+            >
+              <InlineField
+                field={field}
+                value={contact[field.key] ?? ''}
+                saving={!!fieldSaving[field.key]}
+                onSave={val => saveField(field.key, val)}
+              />
+            </DetailField>
+          ))}
+          <CompanyLinks
+            contactId={id}
+            companies={contact.companies || []}
+            allCompanies={companies}
+            onChange={updated => setContact(c => ({ ...c, ...updated }))}
+          />
+        </DetailFieldGrid>
 
         {/* Tasks section */}
         <div className="mb-6">

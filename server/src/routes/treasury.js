@@ -1,12 +1,12 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { requireAuth } from '../middleware/auth.js'
 import {
   computeProjection, computeActuals, checkTreasuryAlert, variableOccurrence,
-  checkBalanceVariance, reconcileBalanceEntry,
+  checkBalanceVariance, recordBalance,
   getTreasuryConfig, TREASURY_DEFAULT_CONFIG, TREASURY_AUTOMATION_ID,
 } from '../services/treasury.js'
 
@@ -447,16 +447,12 @@ router.get('/balances', (req, res) => {
 router.post('/balance', (req, res) => {
   const n = Number(req.body.balance)
   if (!Number.isFinite(n)) return res.status(400).json({ error: 'balance doit être un nombre' })
-  const id = randomUUID()
-  db.prepare('INSERT INTO treasury_balances (id, balance, created_by) VALUES (?,?,?)')
-    .run(id, Math.round(n * 100) / 100, req.user.id)
   // Réconciliation synchrone (écrit predicted_balance / variance sur la saisie)
   // pour que la réponse porte déjà l'écart, puis notification + alerte en
   // arrière-plan. L'ordre compte : la réconciliation compare à la DERNIÈRE photo
   // de la projection, et checkTreasuryAlert en prend une nouvelle.
-  reconcileBalanceEntry(id)
-  const created = db.prepare('SELECT * FROM treasury_balances WHERE id=?').get(id)
-  checkBalanceVariance(id)
+  const { entry: created } = recordBalance({ balance: n, userId: req.user.id })
+  checkBalanceVariance(created.id)
     .then(() => checkTreasuryAlert({ trigger: 'saisie solde' }))
     .catch(() => {})
   res.status(201).json(created)
@@ -631,7 +627,7 @@ router.post('/recurring', (req, res) => {
   const error = validateRecurring(req.body)
   if (error) return res.status(400).json({ error })
   const b = req.body
-  const id = randomUUID()
+  const id = newRecordId()
   const amount = b.amount === '' || b.amount == null ? null : Number(b.amount)
   db.prepare(`
     INSERT INTO recurring_outflows (id, label, amount, frequency, day_of_month, anchor_date, active, notes, variable_amount, vendor_match, starts_on, ends_on, amount_entered_at)

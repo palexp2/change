@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { logSystemRun } from '../services/systemAutomations.js'
@@ -13,6 +13,7 @@ import {
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { emitFacture, emitFacturePaymentsChanged } from '../services/realtimeEmitters.js'
 import { resolveStripeInvoiceFields, applyStripeCustomFieldColumns } from '../services/stripeFactureFieldMap.js'
 import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
 import { logSync } from '../services/syncLog.js'
@@ -118,7 +119,7 @@ async function handleSubscriptionWebhook(event) {
       subRowId,
     )
   } else {
-    subRowId = randomUUID()
+    subRowId = newRecordId()
     db.prepare(`
       INSERT INTO subscriptions (
         id, company_id, stripe_id, status, amount_monthly, currency,
@@ -198,8 +199,8 @@ function mapStripeInvoiceStatus(s) {
 // latest Stripe state. Downloads the Stripe PDF the first time it appears.
 async function upsertFactureFromStripeInvoice(invoice) {
   // Champs configurables via la modale « Mapping Stripe » sur /factures —
-  // défauts = comportement historique (ex. HT = subtotal_excluding_tax ?? subtotal,
-  // universellement hors taxes même en tax_behavior="inclusive").
+  // défaut du HT = total_excluding_tax ?? subtotal_excluding_tax ?? subtotal :
+  // hors taxes même en tax_behavior="inclusive", ET après rabais.
   // Voir services/stripeFactureFieldMap.js.
   const resolved = resolveStripeInvoiceFields(invoice)
   const total = resolved.total_amount
@@ -281,7 +282,7 @@ async function upsertFactureFromStripeInvoice(invoice) {
     pdfAlreadyDownloaded = !!existing.airtable_pdf_path
     action = 'updated'
   } else {
-    factureId = randomUUID()
+    factureId = newRecordId()
     db.prepare(`
       INSERT INTO factures (id, invoice_id, company_id, document_number, document_date, due_date,
         status, currency, amount_before_tax_cad, total_amount, balance_due,
@@ -321,6 +322,11 @@ async function upsertFactureFromStripeInvoice(invoice) {
   // chèque…). No-op si paid_at est posé (Stripe est autoritaire) ou si rien
   // n'a changé. Voir services/factureBalance.js pour la règle.
   recomputeFactureBalance(factureId)
+
+  // Temps réel : une facture encaissée/émise côté Stripe doit apparaître à jour
+  // dans la liste et la fiche ouverte sans rafraîchir la page. Pas d'acteur —
+  // l'origine est un webhook, pas un utilisateur connecté.
+  emitFacture(action, factureId, null)
 
   return { id: factureId, action, kind }
 }
@@ -426,7 +432,7 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretK
 
       let paymentId = existing?.id
       if (!paymentId) {
-        paymentId = randomUUID()
+        paymentId = newRecordId()
         const refundAmount = (refund.amount || 0) / 100
         const receivedAt = refund.created ? new Date(refund.created * 1000).toISOString() : new Date().toISOString()
         // Atomique : l'INSERT de la ligne payments (refund) et la réconciliation du
@@ -448,6 +454,10 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretK
           )
           recomputeFactureBalance(origFacture.id)
         })()
+        // Temps réel : la fiche facture ouverte voit le remboursement et le
+        // solde recalculé sans rafraîchir.
+        emitFacturePaymentsChanged(origFacture.id, null)
+        emitFacture('updated', origFacture.id, null)
         createdCount++
       } else if (existing.qb_payment_id || existing.qb_journal_entry_id) {
         skippedCount++

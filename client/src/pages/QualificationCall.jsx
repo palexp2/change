@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { PhoneCall, ChevronLeft, Search, Plus, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -60,7 +61,6 @@ function NewCallDropdown({ companies, onPick, onPickNew, busy }) {
               autoFocus
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Rechercher une entreprise…"
               className="w-full pl-7 pr-2 py-1.5 text-sm border border-slate-200 rounded focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500"
             />
           </div>
@@ -440,10 +440,7 @@ export default function QualificationCall() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-              <PhoneCall size={20} className="text-emerald-600" />
-              Appels de qualification
-            </h1>
+            <PageTitle>Appels de qualification</PageTitle>
             <p className="text-sm text-slate-500 mt-0.5">
               {calls.length} appel{calls.length !== 1 ? 's' : ''}
             </p>

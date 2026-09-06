@@ -23,8 +23,8 @@
 //   3. Le montant recommandé est ce qu'il faut payer pour repasser SOUS le
 //      plafond, arrondi au dollar supérieur. Arrondir vers le bas laisserait la
 //      carte à un cheveu du plafond après le paiement.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { qbGet } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { payDateForDue } from '../utils/bankDays.js'
@@ -238,7 +238,7 @@ export function createCard(body = {}) {
   if (db.prepare('SELECT 1 FROM card_ceilings WHERE name = ? AND deleted_at IS NULL').get(name)) {
     return { error: 'Une carte porte déjà ce nom', status: 409 }
   }
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO card_ceilings (id, name, qb_acctnum, bank_account_id, credit_limit, ceiling, draft_day, currency)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -280,7 +280,7 @@ export function seedCardCeilings() {
     db.prepare(`
       INSERT INTO card_ceilings (id, name, qb_acctnum, bank_account_id, credit_limit, ceiling, draft_day, currency)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), s.name, s.qb_acctnum, bank?.id || null, s.credit_limit, s.ceiling, s.draft_day, s.currency)
+    `).run(newRecordId(), s.name, s.qb_acctnum, bank?.id || null, s.credit_limit, s.ceiling, s.draft_day, s.currency)
     created++
   }
   if (created) console.log(`💳 Plafonds de cartes : ${created} carte(s) seedée(s)`)
@@ -448,7 +448,7 @@ export function recordCardAlert(cardId, period, kind, outlook) {
     db.prepare(`
       INSERT INTO card_ceiling_alerts (id, card_id, period, kind, projected, recommended)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), cardId, period, kind, outlook.projected, outlook.recommended)
+    `).run(newRecordId(), cardId, period, kind, outlook.projected, outlook.recommended)
     return true
   } catch {
     // Course entre deux passages (cron + exécution manuelle) : l'index UNIQUE a

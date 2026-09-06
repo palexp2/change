@@ -1,0 +1,7 @@
+{
+  "table": "month_close_periods",
+  "dropped_at": "2026-09-02T19:26:22.991Z",
+  "ddl": "CREATE TABLE month_close_periods (\n      month TEXT PRIMARY KEY,\n      closed_at TEXT,\n      closed_by TEXT REFERENCES users(id),\n      note TEXT,\n      -- Instantané des compteurs au moment de la fermeture : ce qui restait\n      -- ouvert et qui a été fermé quand même reste traçable après coup.\n      snapshot TEXT,\n      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\n    )",
+  "row_count": 0,
+  "rows": []
+}

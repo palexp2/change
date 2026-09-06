@@ -25,8 +25,8 @@
 //    Market) ne sont pas accessibles : Instagram ne les donne qu'au compte
 //    éditeur. Le webhook accepte cependant un second ManyChat (celui du
 //    partenaire) sans modification.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { localDay, isoWeekKey, isoWeekday } from './marketingBudget.js'
 import { sendSlack, resolveSlackTarget } from './slack.js'
@@ -287,7 +287,7 @@ export function ingestManychatEvent(payload = {}) {
     db.prepare(`
       INSERT INTO instagram_prospect_events (id, prospect_id, event_key, kind, payload, occurred_at)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(randomUUID(), prospect.id, eventKey, kind, JSON.stringify(payload).slice(0, 8000), occurredAt)
+    `).run(newRecordId(), prospect.id, eventKey, kind, JSON.stringify(payload).slice(0, 8000), occurredAt)
 
     return { ok: true, stored: true, duplicate: false, is_new: isNew, prospect }
   })
@@ -302,7 +302,7 @@ function normalizeOccurredAt(value) {
 }
 
 function createProspect(fields) {
-  const id = randomUUID()
+  const id = newRecordId()
   const username = normalizeUsername(fields.ig_username)
   const isComment = fields.kind === 'comment'
   const isReply = fields.kind === 'reply'
@@ -456,6 +456,18 @@ export function unnotifiedProspects() {
   `).all()
 }
 
+/**
+ * Sépare les non-annoncés entre ceux de la semaine couverte par l'envoi et
+ * l'arriéré (captés avant, jamais annoncés — envoi manqué, marquage tardif...).
+ * Le message ne doit chiffrer que la semaine ; l'arriéré est mentionné à part
+ * pour ne pas disparaître silencieusement.
+ */
+export function splitByWeek(prospects, weekKey) {
+  const ofWeek = prospects.filter(p => p.week_key === weekKey)
+  const backlog = prospects.filter(p => p.week_key !== weekKey)
+  return { ofWeek, backlog }
+}
+
 const WEEKDAY_LABELS = {
   1: 'le lundi', 2: 'le mardi', 3: 'le mercredi', 4: 'le jeudi',
   5: 'le vendredi', 6: 'le samedi', 7: 'le dimanche',
@@ -516,16 +528,23 @@ export function weekRangeLabel(weekKey) {
  * (il coche « contacté ») ; le recopier dans Slack donnerait un pavé à faire
  * défiler, périmé dès qu'une case est cochée.
  */
-export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = null } = {}) {
+export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = null, backlogCount = 0 } = {}) {
   const header = `:camera_with_flash: *Prospects Instagram — semaine ${weekRangeLabel(coveredWeek(dayIso || localDay()))}*`
   const links = [
     erpUrl ? `<${erpUrl}|Ouvrir la liste dans l'ERP>` : null,
     url ? `<${url}|Ouvrir dans Airtable>` : null,
   ].filter(Boolean)
   const footer = links.length ? `\n${links.join(' · ')}` : ''
+  // Arriéré = prospects jamais annoncés mais captés avant la semaine couverte
+  // (envoi manqué, marquage tardif...). Toujours inclus dans l'annonce et
+  // marqué notified avec le lot, mais compté à part pour ne pas gonfler le
+  // portrait de LA semaine.
+  const backlogNote = backlogCount > 0
+    ? `\n(+${backlogCount} des semaines précédentes, déjà inclus dans la liste)`
+    : ''
 
   if (!prospects.length) {
-    return `${header}\nAucun nouveau prospect cette semaine.${footer}`
+    return `${header}\nAucun nouveau prospect cette semaine.${backlogNote}${footer}`
   }
 
   const dmCount = prospects.filter(p => p.dm_sent).length
@@ -537,7 +556,7 @@ export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = nul
   bits.push(`${dmCount} DM envoyé(s)`)
   bits.push(`${replied} ${replied === 1 ? 'a répondu' : 'ont répondu'}`)
 
-  return `${header}\n${bits.join(' · ')}${footer}`
+  return `${header}\n${bits.join(' · ')}${backlogNote}${footer}`
 }
 
 function alreadySentThisWeek(dayIso) {
@@ -575,7 +594,10 @@ export async function runWeeklyProspectDigest({ force = false, trigger = 'schedu
     try { await reconcileAirtable() } catch (e) { console.error('instagram reconcile:', e.message) }
 
     const prospects = unnotifiedProspects()
-    const message = buildWeeklyMessage(prospects, { dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl() })
+    const { ofWeek, backlog } = splitByWeek(prospects, coveredWeek(dayIso))
+    const message = buildWeeklyMessage(ofWeek, {
+      dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl(), backlogCount: backlog.length,
+    })
 
     const res = await sendSlack({
       url: cfg.slack_webhook_url,
@@ -612,10 +634,11 @@ export async function runWeeklyProspectDigest({ force = false, trigger = 'schedu
     const scheduled = !force
     logSystemRun(INSTAGRAM_SLACK_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger, day: dayIso },
-      result: `${scheduled ? `HEBDO ${week}` : 'ENVOI MANUEL'} — ${prospects.length} prospect(s) annoncé(s) à ${cfg.recipient}` +
+      result: `${scheduled ? `HEBDO ${week}` : 'ENVOI MANUEL'} — ${ofWeek.length} prospect(s) de la semaine` +
+        (backlog.length ? ` + ${backlog.length} d'arriéré` : '') + ` annoncé(s) à ${cfg.recipient}` +
         (res.fallback ? ` · ⚠️ envoyé sur le canal de repli (${res.env})` : ''),
     })
-    return { ok: true, sent: true, count: prospects.length, fallback: res.fallback, message }
+    return { ok: true, sent: true, count: prospects.length, ofWeek: ofWeek.length, backlog: backlog.length, fallback: res.fallback, message }
   } catch (e) {
     logSystemRun(INSTAGRAM_SLACK_AUTOMATION_ID, {
       status: 'error', duration_ms: Date.now() - t0, triggerData: { trigger }, error: e,
@@ -628,7 +651,9 @@ export async function runWeeklyProspectDigest({ force = false, trigger = 'schedu
 /** Aperçu (bouton « Simuler ») : message qui partirait, sans envoi ni marquage. */
 export function previewWeeklyProspectDigest() {
   const cfg = getSlackConfig()
+  const dayIso = localDay()
   const prospects = unnotifiedProspects()
+  const { ofWeek, backlog } = splitByWeek(prospects, coveredWeek(dayIso))
   const target = resolveSlackTarget({ url: cfg.slack_webhook_url, envName: cfg.slack_webhook_env })
   const canal = target.url
     ? (target.fallback
@@ -636,13 +661,17 @@ export function previewWeeklyProspectDigest() {
         : `canal : ${target.env || 'URL configurée dans cette automation'}`)
     : `⚠️ aucun canal joignable (${cfg.slack_webhook_env} absent de server/.env et aucun repli) — l'envoi échouera`
   return {
-    summary: `${prospects.length} prospect(s) à annoncer à ${cfg.recipient} · ` +
+    summary: `${ofWeek.length} prospect(s) de la semaine` +
+      (backlog.length ? ` + ${backlog.length} d'arriéré` : '') +
+      ` à annoncer à ${cfg.recipient} · ` +
       // Les minutes ne sont pas dans la config : elles viennent du cron (7h30
       // le lundi). On les affiche telles quelles pour ne pas laisser croire
       // que l'envoi part à l'heure pile.
       `envoi ${WEEKDAY_LABELS[cfg.send_weekday] || `jour ISO ${cfg.send_weekday}`} vers ${cfg.send_hour} h ` +
       `(heure de Montréal) · ${canal}`,
-    apercu: buildWeeklyMessage(prospects, { dayIso: localDay(), url: airtableUrl(), erpUrl: erpProspectsUrl() }),
+    apercu: buildWeeklyMessage(ofWeek, {
+      dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl(), backlogCount: backlog.length,
+    }),
   }
 }
 

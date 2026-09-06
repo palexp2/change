@@ -1,15 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, Mail, ExternalLink, Search, Filter, Sparkles, Pencil, Send, X, AlertTriangle, Plus, FileText } from 'lucide-react'
+import { Check, ExternalLink, Search, Filter, Sparkles, Pencil, Send, X, AlertTriangle, Plus, FileText } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
+import { fmtMoney } from '../utils/formatters.js'
 
 // ── Petits composants utilitaires ─────────────────────────────────────────
 
 // Textarea qui auto-grandit selon son contenu (jusqu'à un max).
-function AutoTextarea({ value, onChange, onBlur, placeholder, className = '', minRows = 2, maxRows = 30, ...rest }) {
+function AutoTextarea({ value, onChange, onBlur, className = '', minRows = 2, maxRows = 30, ...rest }) {
   const ref = useRef(null)
   function resize() {
     const el = ref.current
@@ -26,7 +28,6 @@ function AutoTextarea({ value, onChange, onBlur, placeholder, className = '', mi
       value={value || ''}
       onChange={e => onChange(e.target.value)}
       onBlur={onBlur}
-      placeholder={placeholder}
       rows={minRows}
       className={`w-full text-sm border border-slate-200 rounded-lg p-2 focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 resize-none ${className}`}
       {...rest}
@@ -115,13 +116,12 @@ function PdfPickerPopover({ onPick, onClose }) {
           autoFocus
           value={search}
           onChange={e => setSearch(e.target.value)}
-          placeholder="Rechercher un fichier…"
           className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500"
         />
       </div>
       <div className="max-h-64 overflow-y-auto">
         {files === null ? (
-          <div className="text-xs text-slate-400 px-2 py-3 text-center">Chargement…</div>
+          <div className="text-xs text-slate-400 px-2 py-3 text-center"><Spinner size="xs" label="Chargement…" /></div>
         ) : filtered.length === 0 ? (
           <div className="text-xs text-slate-400 px-2 py-3 text-center">Aucun PDF trouvé</div>
         ) : filtered.map(f => (
@@ -139,12 +139,11 @@ function PdfPickerPopover({ onPick, onClose }) {
   )
 }
 
-function RulesEditor({ value, onChange, onBlur, placeholder }) {
+function RulesEditor({ value, onChange, onBlur }) {
   const ref = useRef(null)
   const savedRangeRef = useRef(null)
   const lastSerialized = useRef(null)  // null = pas encore monté
   const [pickerOpen, setPickerOpen] = useState(false)
-  const [empty, setEmpty] = useState(!(value && value.length))
 
   // Render initial + resync si value change "de l'extérieur" (différent du
   // dernier émis). Évite de réécrire le DOM sur chaque keystroke (sinon le
@@ -156,14 +155,12 @@ function RulesEditor({ value, onChange, onBlur, placeholder }) {
     if (lastSerialized.current !== null && value === lastSerialized.current) return
     ref.current.innerHTML = rulesToHtml(value || '')
     lastSerialized.current = value || ''
-    setEmpty(!(value && value.length))
   }, [value])
 
   function handleInput() {
     if (!ref.current) return
     const serialized = serializeNode(ref.current)
     lastSerialized.current = serialized
-    setEmpty(serialized.length === 0)
     onChange(serialized)
   }
 
@@ -227,11 +224,6 @@ function RulesEditor({ value, onChange, onBlur, placeholder }) {
         className="w-full min-h-[160px] max-h-[480px] overflow-y-auto text-sm border border-slate-200 rounded-lg p-2 pb-9 focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500 whitespace-pre-wrap"
         style={{ wordBreak: 'break-word' }}
       />
-      {empty && (
-        <div className="pointer-events-none absolute top-2 left-2 text-sm text-slate-400 whitespace-pre-wrap">
-          {placeholder}
-        </div>
-      )}
       <div className="absolute right-2 bottom-2">
         <button
           type="button"
@@ -354,12 +346,11 @@ function SendConfirmModal({ it, subject, body, onClose, onSent }) {
           </p>
 
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Destinataire</label>
+            <label className="label">Destinataire</label>
             <input
               type="email"
               value={recipient}
               onChange={e => setRecipient(e.target.value)}
-              placeholder="adresse@exemple.com"
               className={`w-full text-sm font-medium bg-white border rounded-lg px-3 py-2 focus:outline-none focus:ring-1 ${
                 recipient && !recipientValid
                   ? 'border-red-300 text-red-700 focus:ring-red-500 focus:border-red-500'
@@ -525,7 +516,7 @@ function EmailCard({ it, generalRules, savedSpecific, onSavedSpecificChange, onS
               <span>
                 Projet perdu : <span className="font-mono">{it.project.project_number}</span>
                 {it.project.close_date ? ` · ${fmtDate(it.project.close_date)}` : ''}
-                {it.project.value_cad ? ` · ${new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 0 }).format(it.project.value_cad)}` : ''}
+                {it.project.value_cad ? ` · ${fmtMoney(it.project.value_cad, 'CAD', { maximumFractionDigits: 0 })}` : ''}
               </span>
             )}
           </div>
@@ -618,7 +609,6 @@ function EmailCard({ it, generalRules, savedSpecific, onSavedSpecificChange, onS
               value={specific}
               onChange={setSpecific}
               onBlur={() => specSave.flush(specific)}
-              placeholder={`Ex. : Mentionner qu'on les a vus à l'expo Saint-Hyacinthe en novembre. Ne pas parler de tomates, ils font des fines herbes. Le décideur s'appelle Marie-Pier.`}
               minRows={2}
               maxRows={8}
             />
@@ -837,10 +827,7 @@ export default function RelanceQualification() {
     <Layout>
       <div className="p-6 max-w-7xl mx-auto">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <Mail size={22} className="text-brand-600" />
-            Relances qualification
-          </h1>
+          <PageTitle>Relances qualification</PageTitle>
           <p className="text-sm text-slate-500 mt-1">
             Templates d'emails personnalisés pour les entreprises ayant eu un appel de qualification
             et dont la phase HubSpot est <strong>Quote Sent</strong>. Personnalise les règles de gauche
@@ -866,7 +853,6 @@ export default function RelanceQualification() {
                 value={generalRules}
                 onChange={setGeneralRules}
                 onBlur={() => generalSave.flush(generalRules)}
-                placeholder={`Ex. :\n- Signature : Pierre-Alex, fondateur\n- On tutoie quand le prénom finit en -y, sinon on vouvoie\n- Mentionner qu'on est basés à Saint-Hyacinthe si pertinent\n- Ne pas chiffrer les rendements promis avant un appel\n\nClique « + PDF » en bas pour insérer une référence à un fichier public.`}
               />
             </div>
           </aside>
@@ -879,7 +865,6 @@ export default function RelanceQualification() {
                 <input
                   value={search}
                   onChange={e => setSearch(e.target.value)}
-                  placeholder="Rechercher par entreprise, défi…"
                   className="w-full pl-9 pr-3 py-2 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-1 focus:ring-brand-500 focus:border-brand-500"
                 />
               </div>

@@ -1,11 +1,12 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { newRecordId } from '../utils/recordId.js';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import PDFDocument from 'pdfkit';
 import { PDFDocument as PDFLibDocument } from 'pdf-lib';
 import db from '../db/database.js';
+import { readRelation } from '../services/customFieldsView.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { emitOrder, emitOrderItem } from '../services/realtimeEmitters.js';
@@ -13,10 +14,47 @@ import { notifyAssignment } from '../services/notifications.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { rescanRachatForCompany } from '../services/subscriptionEvents.js';
 import { logSync } from '../services/syncLog.js';
-import { writeBackRecord } from '../services/airtableWriteback.js';
+import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js';
 import { parsePositiveInt, parseNonNegativeInt, parseNonNegativeNumber, validateNumericFields } from '../utils/validateNumbers.js';
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
+import { shippedCostSql, refreezeOrderShippedCosts } from '../services/shippedCost.js';
+import { logSystemRun } from '../services/systemAutomations.js';
+import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// ── Colonnes que la CRÉATION d'une commande sait persister ───────────────────
+//
+// Le formulaire « Nouvelle commande » les propose toutes via « Modifier le
+// formulaire » (cf. client/src/pages/Orders.jsx + services/formFieldCatalog.js).
+// Les 8 colonnes du INSERT de base (company_id, project_id, assigned_to, status,
+// priority, notes, date_commande + order_number) restent traitées à part : elles
+// ont un défaut serveur. Les suivantes sont les colonnes natives ÉDITABLES qui
+// s'ajoutent — mêmes règles qu'au PUT.
+const CREATE_EXTRA_COLUMNS = ['address_id', 'is_subscription', 'revenue_override_cad', 'cogs_override_cad'];
+
+// Colonnes déjà posées par le INSERT de base : une colonne du registre qui
+// porterait le même nom (champ natif adopté) les dupliquerait dans la requête.
+const CREATE_BASE_COLUMNS = new Set([
+  'id', 'order_number', 'company_id', 'project_id', 'assigned_to',
+  'status', 'priority', 'notes', 'date_commande',
+]);
+
+const ORDER_COLUMN_COERCE = {
+  is_subscription: v => (v ? 1 : 0),
+  // '' / null effacent l'override → on retombe sur la valeur calculée.
+  revenue_override_cad: v => (v === '' || v == null ? null : Number(v)),
+  cogs_override_cad: v => (v === '' || v == null ? null : Number(v)),
+};
+
+// SQLite ne sait pas lier un booléen : une case à cocher (champ perso ou champ
+// Airtable bidirectionnel) arrive en true/false et doit passer en 0/1.
+function bindable(v) {
+  if (typeof v === 'boolean') return v ? 1 : 0;
+  if (v === '' || v === undefined) return null;
+  return v;
+}
 
 // Extrait les recordID Airtable (recXXXXXXXXXXXXXX) d'une valeur de champ lien
 // importée d'Airtable, qui peut être : un tableau JSON (["rec…","rec…"]), une
@@ -63,15 +101,15 @@ router.get('/lookup', (req, res) => {
 
 // GET /api/orders
 router.get('/', (req, res) => {
-  const { search, status, company_id, page = 1, limit = 50 } = req.query;
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { search, status, company_id } = req.query;
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50);
   let where = 'WHERE o.deleted_at IS NULL';
   const params = [];
 
   if (search) {
-    where += ' AND (c.name LIKE ? OR CAST(o.order_number AS TEXT) LIKE ?)';
+    // EXISTS plutôt que JOIN : la recherche ne dépend ni de la jointure retirée
+    // ni de la colonne company_name de la vue (supprimable par l'utilisateur).
+    where += ' AND (EXISTS (SELECT 1 FROM companies c WHERE c.id = o.company_id AND c.name LIKE ?) OR CAST(o.order_number AS TEXT) LIKE ?)';
     const q = `%${search}%`;
     params.push(q, q);
   }
@@ -85,16 +123,13 @@ router.get('/', (req, res) => {
   }
 
   const total = db.prepare(
-    `SELECT COUNT(*) as c FROM orders o LEFT JOIN companies c ON o.company_id = c.id ${where}`
+    `SELECT COUNT(*) as c FROM ${readRelation('orders')} o ${where}`
   ).get(...params).c;
 
   const orders = db.prepare(
-    `SELECT o.*, c.name as company_name, u.name as assigned_name,
-      (SELECT COUNT(*) FROM order_items oi WHERE oi.order_id = o.id) as items_count,
+    `SELECT o.*,
       (SELECT SUM(oi.qty * oi.unit_cost) FROM order_items oi WHERE oi.order_id = o.id) as total_value
-     FROM orders o
-     LEFT JOIN companies c ON o.company_id = c.id
-     LEFT JOIN users u ON o.assigned_to = u.id
+     FROM ${readRelation('orders')} o
      ${where}
      ORDER BY o.created_at DESC
      LIMIT ? OFFSET ?`
@@ -106,12 +141,10 @@ router.get('/', (req, res) => {
 // GET /api/orders/:id
 router.get('/:id', (req, res) => {
   const order = db.prepare(
-    `SELECT o.*, c.name as company_name, u.name as assigned_name, p.name as project_name,
+    `SELECT o.*, p.name as project_name,
       a.line1 as address_line1, a.city as address_city, a.province as address_province,
       a.postal_code as address_postal_code, a.country as address_country
-     FROM orders o
-     LEFT JOIN companies c ON o.company_id = c.id
-     LEFT JOIN users u ON o.assigned_to = u.id
+     FROM ${readRelation('orders')} o
      LEFT JOIN projects p ON o.project_id = p.id
      LEFT JOIN adresses a ON o.address_id = a.id
      WHERE o.id = ? AND o.deleted_at IS NULL`
@@ -126,7 +159,10 @@ router.get('/:id', (req, res) => {
      ORDER BY oi.sort_order, oi.created_at`
   ).all(req.params.id);
 
-  const shipments = db.prepare('SELECT * FROM shipments WHERE order_id = ? AND deleted_at IS NULL ORDER BY created_at').all(req.params.id);
+  // readRelation : le tableau Envois de la fiche commande (clé de vue
+  // `order_envois`) propose les mêmes champs custom que /envois, y compris les
+  // champs virtuels (formule/lookup) qui ne vivent que dans la vue shipments_v.
+  const shipments = db.prepare(`SELECT * FROM ${readRelation('shipments')} WHERE order_id = ? AND deleted_at IS NULL ORDER BY created_at`).all(req.params.id);
 
   const itemIds = items.map(i => i.id)
   let itemsWithSerials = items
@@ -168,8 +204,11 @@ router.get('/:id', (req, res) => {
     }))
   }
 
+  // order_id / project_id : la fiche distingue une facture liée DIRECTEMENT à la
+  // commande (déliable depuis l'entête) d'une facture qui n'y arrive que par le
+  // projet (lecture seule ici).
   const factures = db.prepare(
-    `SELECT id, document_number, status, total_amount FROM factures
+    `SELECT id, document_number, status, total_amount, order_id, project_id FROM factures
      WHERE (order_id = ? OR (? IS NOT NULL AND project_id = ?))
      ORDER BY document_date ASC`
   ).all(req.params.id, order.project_id, order.project_id);
@@ -181,32 +220,48 @@ router.get('/:id', (req, res) => {
   // (server/src/routes/dashboard.js). Garder les deux alignés.
   //   Revenu : abonnement → 1re facture HT × 38 ; achat → SUM des factures HT,
   //            liées directement (order_id) ou via le projet (project_id).
-  //   Coûts (COGS) : SUM(COALESCE(shipped_unit_cost, unit_cost) × qty) pour les
+  //            Le HT des factures Stripe est APRÈS rabais (total_excluding_tax,
+  //            cf. services/stripeFactureFieldMap.js) — d'où le filtre > 0 côté
+  //            abonnement : un 1er mois offert (rabais 100 %) ne doit pas
+  //            ramener la valeur projetée de l'abonnement à 0.
+  //   Coûts (COGS) : SUM du coût à l'envoi (services/shippedCost.js) pour les
   //            items 'Facturable' uniquement.
-  // L'override (revenue_override_cad) prime sur le revenu calculé quand il est posé.
+  // Les overrides (revenue_override_cad, cogs_override_cad) priment sur la valeur
+  // calculée correspondante quand ils sont posés.
   const revenueComputed = order.is_subscription
     ? (db.prepare(
         `SELECT f.amount_before_tax_cad * 38 AS rev FROM factures f
          WHERE (f.order_id = ? OR (? IS NOT NULL AND f.project_id = ?))
+           AND COALESCE(f.amount_before_tax_cad, 0) > 0
          ORDER BY COALESCE(f.document_date, f.created_at) ASC LIMIT 1`
       ).get(req.params.id, order.project_id, order.project_id)?.rev || 0)
     : (db.prepare(
         `SELECT COALESCE(SUM(f.amount_before_tax_cad), 0) AS rev FROM factures f
          WHERE (f.order_id = ? OR (? IS NOT NULL AND f.project_id = ?))`
       ).get(req.params.id, order.project_id, order.project_id)?.rev || 0);
-  const cogs = db.prepare(
-    `SELECT COALESCE(SUM(COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty), 0) AS cogs
+  // Coût des marchandises : le coût GELÉ au moment de l'envoi quand il existe
+  // (valeur de fabrication de chaque numéro de série + coût de la pièce pour la
+  // quantité non sérialisée — cf. services/shippedCost.js), sinon la même règle
+  // aux coûts d'aujourd'hui pour les lignes pas encore expédiées.
+  const cogsComputed = db.prepare(
+    `SELECT COALESCE(SUM(${shippedCostSql('oi')}), 0) AS cogs
      FROM order_items oi WHERE oi.order_id = ? AND oi.item_type = 'Facturable'`
   ).get(req.params.id)?.cogs || 0;
-  const override = order.revenue_override_cad;
-  const revenueEffective = (override != null) ? override : revenueComputed;
+  const revOverride = order.revenue_override_cad;
+  const cogsOverride = order.cogs_override_cad;
+  const revenueEffective = (revOverride != null) ? revOverride : revenueComputed;
+  const cogsEffective = (cogsOverride != null) ? cogsOverride : cogsComputed;
   const profitability = {
     revenue_computed: revenueComputed,
-    revenue_override_cad: override != null ? override : null,
+    revenue_override_cad: revOverride != null ? revOverride : null,
     revenue_effective: revenueEffective,
-    cogs,
-    profit: revenueEffective - cogs,
-    margin_pct: revenueEffective ? ((revenueEffective - cogs) / revenueEffective) * 100 : null,
+    cogs_computed: cogsComputed,
+    cogs_override_cad: cogsOverride != null ? cogsOverride : null,
+    // `cogs` reste le coût effectif : les consommateurs existants n'ont pas à
+    // connaître l'override.
+    cogs: cogsEffective,
+    profit: revenueEffective - cogsEffective,
+    margin_pct: revenueEffective ? ((revenueEffective - cogsEffective) / revenueEffective) * 100 : null,
   };
 
   res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers, profitability });
@@ -229,7 +284,36 @@ router.post('/', (req, res) => {
     }
   }
 
-  const id = uuidv4();
+  // Overrides de revenu / coûts : mêmes bornes qu'au PUT (ils alimentent le P&L).
+  const { error: numError } = validateNumericFields(req.body, [
+    { key: 'revenue_override_cad' },
+    { key: 'cogs_override_cad' },
+  ]);
+  if (numError) return res.status(400).json({ error: numError });
+
+  // Un champ Airtable en import seul est refusé en 400 explicite plutôt
+  // qu'ignoré en silence : la valeur saisie serait écrasée au prochain sync.
+  if (refusedAirtablePullKeys('orders', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+
+  // Colonnes supplémentaires effectivement fournies : natives éditables + champs
+  // du registre (perso ERP, ou Airtable passés en bidirectionnel) qui sont
+  // ÉDITABLES selon la règle unique de services/customFieldWritability.js.
+  const extraColumns = [
+    ...CREATE_EXTRA_COLUMNS,
+    ...getWritableCustomColumns('orders').map(c => c.column_name),
+  ];
+  const extras = {};
+  for (const col of extraColumns) {
+    if (CREATE_BASE_COLUMNS.has(col) || col in extras) continue;
+    if (!Object.prototype.hasOwnProperty.call(req.body, col)) continue;
+    const raw = req.body[col];
+    extras[col] = ORDER_COLUMN_COERCE[col] ? ORDER_COLUMN_COERCE[col](raw) : bindable(raw);
+  }
+  const extraCols = Object.keys(extras);
+
+  const id = newRecordId();
 
   // Generate next order number
   const maxNum = db.prepare('SELECT MAX(order_number) as m FROM orders').get();
@@ -237,13 +321,14 @@ router.post('/', (req, res) => {
 
   const run = db.transaction(() => {
     db.prepare(
-      `INSERT INTO orders (id, order_number, company_id, project_id, assigned_to, status, priority, notes, date_commande)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO orders (id, order_number, company_id, project_id, assigned_to, status, priority, notes, date_commande${extraCols.map(c => `, ${c}`).join('')})
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?${extraCols.map(() => ', ?').join('')})`
     ).run(id, orderNumber, company_id || null, project_id || null, assigned_to || null,
-      status || 'Commande vide', priority || null, notes || null, date_commande || null);
+      status || 'Commande vide', priority || null, notes || null, date_commande || null,
+      ...extraCols.map(c => extras[c]));
 
     for (const item of items) {
-      const itemId = uuidv4();
+      const itemId = newRecordId();
       // Get current product cost if not provided
       let unitCost = item.unit_cost;
       if (!unitCost && item.product_id) {
@@ -260,7 +345,7 @@ router.post('/', (req, res) => {
   run();
 
   const order = db.prepare(
-    `SELECT o.*, c.name as company_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id WHERE o.id = ?`
+    `SELECT o.* FROM ${readRelation('orders')} o WHERE o.id = ?`
   ).get(id);
   const orderItems = db.prepare(
     `SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.order_id = ?`
@@ -285,22 +370,33 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id, assigned_to, order_number FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
 
-  // L'override de revenu alimente directement le P&L : un `"abc"` ou un négatif
-  // doit être rejeté (400), pas stocké tel quel (NaN) ni coercé silencieusement.
-  // '' / null restent permis (efface l'override → retour au revenu calculé).
+  // Les overrides de revenu et de coûts alimentent directement le P&L : un
+  // `"abc"` ou un négatif doit être rejeté (400), pas stocké tel quel (NaN) ni
+  // coercé silencieusement. '' / null restent permis (efface l'override →
+  // retour à la valeur calculée).
   const { error: numError } = validateNumericFields(req.body, [
     { key: 'revenue_override_cad' },
+    { key: 'cogs_override_cad' },
   ]);
   if (numError) return res.status(400).json({ error: numError });
 
+  // Un champ Airtable en import seul est refusé en 400 explicite (même règle
+  // qu'au POST et que sur projects/payments) : l'écriture serait de toute façon
+  // écrasée au prochain sync.
+  if (refusedAirtablePullKeys('orders', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+  // Un champ proposé par le formulaire de création doit rester corrigeable
+  // ensuite — même whitelist des deux côtés.
+  const customCols = getWritableCustomColumns('orders').map(c => c.column_name);
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['company_id', 'project_id', 'assigned_to', 'status', 'priority',
-      'notes', 'address_id', 'date_commande', 'is_subscription', 'revenue_override_cad'],
+      'notes', 'address_id', 'date_commande', 'is_subscription', 'revenue_override_cad',
+      'cogs_override_cad', ...customCols],
     nonNullable: new Set(['status']),
     coerce: {
-      is_subscription: v => v ? 1 : 0,
-      // '' / null effacent l'override → on retombe sur le revenu calculé.
-      revenue_override_cad: v => (v === '' || v == null ? null : Number(v)),
+      ...ORDER_COLUMN_COERCE,
+      ...Object.fromEntries(customCols.map(c => [c, bindable])),
     },
   });
   if (error) return res.status(400).json({ error });
@@ -330,7 +426,7 @@ router.put('/:id', (req, res) => {
       link: `/orders/${req.params.id}`,
     });
   }
-  const updated = db.prepare('SELECT o.*, c.name as company_name, p.name as project_name FROM orders o LEFT JOIN companies c ON o.company_id = c.id LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?').get(req.params.id);
+  const updated = db.prepare(`SELECT o.*, p.name as project_name FROM ${readRelation('orders')} o LEFT JOIN projects p ON o.project_id = p.id WHERE o.id = ?`).get(req.params.id);
   // Une modif de commande (date, company, ou items en cascade) peut affecter
   // l'éligibilité comme rachat — re-scan best-effort.
   rescanRachatLogged(updated?.company_id, 'order-update');
@@ -363,7 +459,7 @@ router.patch('/:id/status', (req, res) => {
           db.prepare(
             `INSERT INTO stock_movements (id, product_id, type, qty, reason, reference_id, user_id)
              VALUES (?, ?, 'out', ?, 'Commande envoyée', ?, ?)`
-          ).run(uuidv4(), item.product_id, item.qty, order.id, req.user.id);
+          ).run(newRecordId(), item.product_id, item.qty, order.id, req.user.id);
         }
       }
     });
@@ -384,7 +480,7 @@ router.post('/:id/shipments', (req, res) => {
 
   const { tracking_number, carrier, status, shipped_at, notes, item_ids = [], address_id } = req.body;
   const resolvedAddressId = address_id !== undefined ? address_id : order.address_id;
-  const id = uuidv4();
+  const id = newRecordId();
   const run = db.transaction(() => {
     db.prepare(
       `INSERT INTO shipments (id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id)
@@ -410,7 +506,59 @@ router.post('/:id/shipments', (req, res) => {
 
   const shipment = db.prepare('SELECT * FROM shipments WHERE id = ?').get(id);
   emitOrderItem('bulk_updated', req.params.id, { shipment, item_ids }, req.user?.id);
+
+  // Création ERP → Airtable (2-way sync), même chemin que POST /api/shipments.
+  // Asynchrone et non bloquant : l'envoi existe dans l'ERP même si Airtable est
+  // indisponible, et le PATCH de rattrapage le poussera plus tard. Lancé APRÈS la
+  // transaction pour que les order_items assignés soient déjà liés (« items expédiés »).
+  createInAirtable('envois', id).catch(e => {
+    console.error(`erp-create envois ${id} (async):`, e.message);
+    logSync('envois', 'erp-create', { status: 'error', error: `${id}: ${e.message}` });
+  });
+
   res.status(201).json(shipment);
+});
+
+// POST /api/orders/:id/recompute-shipped-costs — recalcule et re-gèle le coût
+// des lignes déjà envoyées, avec les coûts d'aujourd'hui : valeur de fabrication
+// de CHAQUE numéro de série, coût de la pièce (table Pièces) pour le reste.
+//
+// Le gel automatique (automation sys_order_item_shipped_cost) ne remplit que les
+// lignes vides — il ne réécrit jamais l'historique. Cette route est le chemin
+// explicite pour reprendre un coût faux : coût de pièce corrigé après coup,
+// valeur de fabrication saisie en retard, ou valeur héritée d'Airtable. Écrite
+// dans l'historique de l'automation pour que le recalcul reste visible.
+router.post('/:id/recompute-shipped-costs', (req, res) => {
+  const order = db.prepare('SELECT id, order_number FROM orders WHERE id = ?').get(req.params.id);
+  if (!order) return res.status(404).json({ error: 'Order not found' });
+
+  let r;
+  try {
+    r = refreezeOrderShippedCosts(order.id);
+  } catch (e) {
+    logSystemRun('sys_order_item_shipped_cost', {
+      status: 'error',
+      result: `Recalcul manuel · commande #${order.order_number}`,
+      error: e.message,
+    });
+    return res.status(500).json({ error: e.message });
+  }
+
+  // Rien d'envoyé sur la commande : pas de trace, le clic n'a rien produit.
+  if (r.items) logSystemRun('sys_order_item_shipped_cost', {
+    status: 'success',
+    result: [
+      `Recalcul manuel · commande #${order.order_number} — ${r.frozen}/${r.items} ligne(s) envoyée(s) recalculée(s), total ${r.total.toFixed(2)} $`,
+      ...r.details.map(d => {
+        const from = d.previous != null ? `${d.previous.toFixed(2)} $ → ` : ''
+        return `${d.item_id} → ${from}${d.total.toFixed(2)} $`;
+      }),
+    ].join('\n'),
+    triggerData: { order_id: order.id, frozen: r.frozen, manual: true },
+  });
+
+  if (r.frozen) emitOrderItem('bulk_updated', order.id, { recomputed: r.frozen }, req.user?.id);
+  res.json({ items: r.items, frozen: r.frozen, total: r.total });
 });
 
 // POST /api/orders/:id/items — add item to existing order
@@ -431,7 +579,7 @@ router.post('/:id/items', (req, res) => {
     const product = db.prepare('SELECT unit_cost FROM products WHERE id = ?').get(product_id);
     cost = product?.unit_cost || 0;
   }
-  const itemId = uuidv4();
+  const itemId = newRecordId();
   db.prepare(
     `INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`
   ).run(itemId, req.params.id, product_id || null, qty || 1, cost || 0, item_type || 'Facturable', notes || null);
@@ -498,6 +646,15 @@ router.patch('/:id/items/:itemId', (req, res) => {
   const serials = db.prepare('SELECT * FROM serial_numbers WHERE order_item_id = ? ORDER BY serial').all(req.params.itemId)
   const itemWithSerials = { ...item, serials }
   emitOrderItem('updated', req.params.id, itemWithSerials, req.user?.id);
+
+  // Write-back ERP → Airtable des colonnes dont le sens l'autorise (par défaut
+  // aucune : le module « Lignes de commande » part en import seulement, le sens
+  // se choisit dans la modale « Mapping Airtable » — cf. airtable_field_directions).
+  // Best-effort : n'échoue jamais la réponse, no-op si la ligne n'est pas liée
+  // à Airtable ou si rien d'écrivable n'a changé.
+  writeBackRecord('order_items', req.params.itemId, allowed.filter(k => k in req.body))
+    .catch(e => console.error('write-back order_items:', e.message));
+
   res.json(itemWithSerials);
 });
 
@@ -507,7 +664,7 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
   const item = db.prepare('SELECT * FROM order_items WHERE id=? AND order_id=?').get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
-  const newId = uuidv4();
+  const newId = newRecordId();
   db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?,?)')
     .run(newId, req.params.id, item.product_id, item.qty, item.unit_cost, item.item_type, item.notes, (item.sort_order || 0) + 1);
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
@@ -592,7 +749,7 @@ router.post('/:id/scan', (req, res) => {
 
     let action = 'linked'
     if (!item) {
-      const itemId = uuidv4()
+      const itemId = newRecordId()
       db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type) VALUES (?, ?, ?, 1, ?, ?)')
         .run(itemId, req.params.id, serial.product_id || null, serial.product_cost || 0, 'Facturable')
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
@@ -617,7 +774,7 @@ router.post('/:id/scan', (req, res) => {
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
       action = 'incremented'
     } else {
-      const itemId = uuidv4()
+      const itemId = newRecordId()
       db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type) VALUES (?, ?, ?, 1, ?, ?)')
         .run(itemId, req.params.id, product.id, product.unit_cost || 0, 'Facturable')
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
@@ -655,7 +812,7 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
   `).all(req.params.id);
 
   const lang = (order.langue_du_contact_a_la_ferme || '').toLowerCase().startsWith('en') ? 'en' : 'fr';
-  const uploadsRoot = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads');
+  const uploadsRoot = uploadsPath();
 
   const merged = await PDFLibDocument.create();
   const included = [];
@@ -772,8 +929,7 @@ router.post('/:id/bon-livraison', async (req, res) => {
      ORDER BY oi.created_at`
   ).all(req.params.id);
 
-  const uploadsDir = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'bons-livraison');
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true });
+  const uploadsDir = ensureUploadsDir('bons-livraison')
 
   const filename = `bon-livraison-${order.order_number}-${Date.now()}.pdf`;
   const filepath = path.join(uploadsDir, filename);

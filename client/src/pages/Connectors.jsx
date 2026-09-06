@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText, Landmark } from 'lucide-react'
+import { usePlaidLink } from 'react-plaid-link'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import AirtableConfig from './AirtableConfig.jsx'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { formatRelativeTime } from '../utils/formatters.js'
@@ -17,6 +19,11 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
+import Spinner from '../components/Spinner.jsx'
+
+// Étiquette des champs d'identifiants : elle remplace les placeholders, qui
+// disparaissaient dès la première frappe et laissaient deviner quel champ est quoi.
+const lblCls = 'block text-[11px] text-slate-400 mb-0.5'
 
 function WhisperConfig() {
   const { addToast } = useToast()
@@ -79,7 +86,7 @@ function WhisperConfig() {
     finally { setRetrying(false) }
   }
 
-  if (!data) return <div className="mt-4 text-sm text-slate-400">Chargement…</div>
+  if (!data) return <div className="mt-4 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
 
   const statMap = Object.fromEntries(data.stats.map(s => [s.transcription_status, s.total]))
   const done    = statMap.done    || 0
@@ -101,7 +108,6 @@ function WhisperConfig() {
             <input
               type={showKey ? 'text' : 'password'}
               className="input pr-8 font-mono text-sm"
-              placeholder="sk-..."
               value={apiKey}
               onChange={e => setApiKey(e.target.value)}
             />
@@ -202,7 +208,7 @@ function CubeAcrConfig({ onRefresh }) {
     onRefresh()
   }
 
-  if (!data) return <div className="mt-4 text-sm text-slate-400">Chargement…</div>
+  if (!data) return <div className="mt-4 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
 
   return (
     <div className="mt-4 space-y-4">
@@ -283,7 +289,7 @@ function CubeAcrConfig({ onRefresh }) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="label text-xs">Nom affiché</label>
-                <input className="input" placeholder="Ex: Philippe Chabot" value={form.nom} onChange={e => setForm(f => ({ ...f, nom: e.target.value }))} />
+                <input className="input" value={form.nom} onChange={e => setForm(f => ({ ...f, nom: e.target.value }))} />
               </div>
               <div>
                 <label className="label text-xs">Utilisateur ERP</label>
@@ -296,17 +302,16 @@ function CubeAcrConfig({ onRefresh }) {
                   options={data.erpUsers.filter(u => !u.ftp_username)}
                   getOptionValue={u => u.id}
                   getOptionLabel={u => u.name}
-                  placeholder="— Sélectionner —"
                   searchPlaceholder="Rechercher un utilisateur…"
                 />
               </div>
               <div>
                 <label className="label text-xs">Identifiant FTP</label>
-                <input className="input font-mono" placeholder="Ex: philippe" value={form.ftpUser} onChange={e => setForm(f => ({ ...f, ftpUser: e.target.value.toLowerCase().replace(/\s/g, '') }))} />
+                <input className="input font-mono" value={form.ftpUser} onChange={e => setForm(f => ({ ...f, ftpUser: e.target.value.toLowerCase().replace(/\s/g, '') }))} />
               </div>
               <div>
                 <label className="label text-xs">Mot de passe FTP</label>
-                <input className="input font-mono" placeholder="Ex: motdepasse" value={form.ftpPass} onChange={e => setForm(f => ({ ...f, ftpPass: e.target.value }))} />
+                <input className="input font-mono" value={form.ftpPass} onChange={e => setForm(f => ({ ...f, ftpPass: e.target.value }))} />
               </div>
             </div>
             <div className="flex gap-2 pt-1">
@@ -328,10 +333,10 @@ const CONNECTORS = [
   { id: 'airtable',   name: 'Airtable',    icon: Database,   color: 'bg-amber-50 text-amber-600' },
   { id: 'calls',      name: 'Appels',      icon: Phone,      color: 'bg-green-50 text-green-600', alwaysConnected: true },
   { id: 'quickbooks', name: 'QuickBooks',  icon: BookOpen,   color: 'bg-green-50 text-green-700' },
+  { id: 'plaid',      name: 'Plaid',       icon: Landmark,   color: 'bg-slate-50 text-slate-700', customConnect: true },
   { id: 'stripe',     name: 'Stripe',      icon: CreditCard, color: 'bg-purple-50 text-purple-600', apiKeyManaged: true },
   { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
   { id: 'ups',        name: 'UPS',         icon: Truck,      color: 'bg-amber-50 text-amber-800',  apiKeyManaged: true },
-  { id: 'purolator',  name: 'Purolator',   icon: Truck,      color: 'bg-purple-50 text-purple-700', apiKeyManaged: true },
   { id: 'hubspot',    name: 'HubSpot',     icon: Users,      color: 'bg-rose-50 text-rose-600',     apiKeyManaged: true },
   { id: 'amazon',     name: 'Amazon Business', icon: ShoppingCart, color: 'bg-orange-50 text-orange-700' },
   { id: 'digikey',    name: 'DigiKey',     icon: Cpu,        color: 'bg-red-50 text-red-700',      apiKeyManaged: true },
@@ -394,7 +399,6 @@ function InstagramConfig() {
             <input
               type={showKey ? 'text' : 'password'}
               className="input pr-8 font-mono text-sm"
-              placeholder="sessionid"
               value={sessionid}
               onChange={e => setSessionid(e.target.value)}
             />
@@ -402,12 +406,14 @@ function InstagramConfig() {
               {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
             </button>
           </div>
-          <input
-            className="input font-mono text-sm w-40"
-            placeholder="ds_user_id"
-            value={dsUserId}
-            onChange={e => setDsUserId(e.target.value)}
-          />
+          <label className="block w-40">
+            <span className={lblCls}>ds_user_id</span>
+            <input
+              className="input font-mono text-sm w-full"
+              value={dsUserId}
+              onChange={e => setDsUserId(e.target.value)}
+            />
+          </label>
           <button onClick={save} disabled={saving || !sessionid} className="btn-primary btn-sm">
             {saving ? 'Sauvegarde…' : state?.configured ? 'Mettre à jour' : 'Enregistrer'}
           </button>
@@ -672,7 +678,6 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
                    type="text"
                    defaultValue={(senders[(a.account_email || '').toLowerCase()] || []).join(', ')}
                    onBlur={e => saveSenders(a.account_email, e.target.value)}
-                   placeholder="tous les expéditeurs"
                    className="input text-xs py-1 flex-1 min-w-0"
                    title="Limite la détection auto de cette boîte à ces expéditeurs (domaine ou adresse complète, séparés par des virgules). Vide = aucune restriction. Le label ERP/Factures et factures@orisha.io ne sont jamais filtrés."
                  />
@@ -692,7 +697,6 @@ function GoogleConfig({ accounts, config, syncStatus, onRefresh }) {
           type="email"
           value={newAccount}
           onChange={e => setNewAccount(e.target.value)}
-          placeholder="adresse du compte à connecter (optionnel)"
           className="input text-xs py-1 w-72"
         />
         <button
@@ -737,7 +741,7 @@ function PostmarkConfig() {
     finally { setSaving(false) }
   }
 
-  if (!data) return <div className="mt-4 text-sm text-slate-400">Chargement…</div>
+  if (!data) return <div className="mt-4 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
 
   return (
     <div className="mt-4 space-y-4">
@@ -756,7 +760,6 @@ function PostmarkConfig() {
           getOptionValue={a => a}
           getOptionLabel={a => a}
           emptyOption="— Aucun —"
-          placeholder="— Aucun —"
           searchPlaceholder="Rechercher une adresse…"
         />
         <div className="flex gap-2">
@@ -839,8 +842,9 @@ function QuickBooksConfig({ accounts, onRefresh }) {
   )
 }
 
-// Connexion QuickBooks personnelle de l'utilisateur courant (section dans l'onglet
-// Connecteurs). Le même bloc est aussi exposé dans /settings pour les non-admins.
+// Connexion QuickBooks personnelle de l'utilisateur courant (section dans
+// Paramètres → Connecteurs). Le même bloc est aussi exposé dans
+// Paramètres → QuickBooks, la section visible par tous les rôles.
 function MyQuickBooksConnection() {
   return (
     <div className="pt-2 border-t border-slate-100 space-y-2">
@@ -1062,38 +1066,44 @@ function UpsConfig({ configured: initialConfigured, onRefresh }) {
           : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune application configurée</p>
         }
         <div className="space-y-2">
-          <input
-            type="text"
-            className="input font-mono text-sm"
-            placeholder={cfg.client_id_set ? 'Client ID (enregistré — laisser vide pour ne pas changer)' : 'Client ID (portail developer.ups.com)'}
-            value={clientId}
-            onChange={e => setClientId(e.target.value)}
-            autoComplete="off"
-            data-testid="ups-client-id"
-          />
-          <div className="relative">
+          <label className="block">
+            <span className={lblCls}>Client ID</span>
             <input
-              type={showSecret ? 'text' : 'password'}
-              className="input pr-8 font-mono text-sm"
-              placeholder={cfg.client_secret_set ? 'Client Secret (enregistré — laisser vide pour ne pas changer)' : 'Client Secret'}
-              value={clientSecret}
-              onChange={e => setClientSecret(e.target.value)}
-              autoComplete="new-password"
-              data-testid="ups-client-secret"
+              type="text"
+              className="input font-mono text-sm"
+              value={clientId}
+              onChange={e => setClientId(e.target.value)}
+              autoComplete="off"
+              data-testid="ups-client-id"
             />
-            <button onClick={() => setShowSecret(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          <input
-            type="text"
-            className="input font-mono text-sm"
-            placeholder={cfg.account_number_set ? `N° de compte UPS (${cfg.account_number_hint})` : 'N° de compte UPS (payeur des étiquettes)'}
-            value={accountNumber}
-            onChange={e => setAccountNumber(e.target.value)}
-            autoComplete="off"
-            data-testid="ups-account-number"
-          />
+          </label>
+          <label className="block">
+            <span className={lblCls}>Client Secret</span>
+            <div className="relative">
+              <input
+                type={showSecret ? 'text' : 'password'}
+                className="input pr-8 font-mono text-sm"
+                value={clientSecret}
+                onChange={e => setClientSecret(e.target.value)}
+                autoComplete="new-password"
+                data-testid="ups-client-secret"
+              />
+              <button onClick={() => setShowSecret(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </label>
+          <label className="block">
+            <span className={lblCls}>N° de compte{cfg.account_number_hint ? ` (${cfg.account_number_hint})` : ''}</span>
+            <input
+              type="text"
+              className="input font-mono text-sm"
+              value={accountNumber}
+              onChange={e => setAccountNumber(e.target.value)}
+              autoComplete="off"
+              data-testid="ups-account-number"
+            />
+          </label>
         </div>
         <div className="flex flex-wrap gap-2">
           <button
@@ -1175,171 +1185,6 @@ function UpsConfig({ configured: initialConfigured, onRefresh }) {
       <p className="text-xs text-slate-400">
         Utilisé pour les <strong>étiquettes de retour</strong> (fiche retour), la comparaison de tarifs et le suivi des envois.
         Chaque appel est tracé dans le journal des synchronisations ci-dessous (module « UPS »).
-      </p>
-    </div>
-  )
-}
-
-// Purolator — E-Ship Web Services (SOAP), authentification HTTP Basic : une
-// clé + mot de passe délivrés ensemble par Purolator, plus le numéro de compte
-// (payeur des étiquettes). Deux environnements strictement séparés — Dev
-// (bac à sable devwebservices.purolator.com, aucune facturation) et
-// Production. On démarre toujours en dev tant que les identifiants prod n'ont
-// pas été confirmés. Sens unique ERP → Purolator (achat d'étiquette + suivi).
-function PurolatorConfig({ configured: initialConfigured, onRefresh }) {
-  const { addToast } = useToast()
-  const confirm = useConfirm()
-  const [status, setStatus] = useState(null)
-  const [configured, setConfigured] = useState(initialConfigured)
-  const [key, setKey] = useState('')
-  const [password, setPassword] = useState('')
-  const [accountNumber, setAccountNumber] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [saving, setSaving] = useState(false)
-
-  const load = useCallback(async () => {
-    try {
-      const st = await api.purolator.status()
-      setStatus(st)
-      setConfigured(st.configured)
-    } catch (e) { addToast({ message: e.message, type: 'error' }) }
-  }, [addToast])
-
-  useEffect(() => { load() }, [load])
-
-  // Exception documentée à la règle d'autosave : les trois identifiants n'ont
-  // de sens qu'ensemble et le mot de passe est en écriture seule — on
-  // enregistre le bloc, comme UPS/DigiKey/Novoxpress.
-  const saveCredentials = async () => {
-    setSaving(true)
-    try {
-      await api.purolator.saveConfig({
-        ...(key ? { key } : {}),
-        ...(password ? { password } : {}),
-        ...(accountNumber ? { account_number: accountNumber } : {}),
-      })
-      setPassword('')
-      await load()
-      onRefresh?.()
-    } catch (e) { addToast({ message: e.message, type: 'error' }) }
-    finally { setSaving(false) }
-  }
-
-  const saveField = async (k, value) => {
-    if (status?.config?.[k] === value) return
-    try {
-      const r = await api.purolator.saveConfig({ [k]: value })
-      setStatus(st => ({ ...st, config: r.config, configured: r.configured }))
-      setConfigured(r.configured)
-    } catch (e) { addToast({ message: e.message, type: 'error' }) }
-  }
-
-  const removeCredentials = async () => {
-    if (!(await confirm({
-      title: 'Supprimer les identifiants Purolator',
-      message: "La clé, le mot de passe et le numéro de compte seront effacés. Les étiquettes déjà achetées et leur suivi restent en place.",
-      confirmLabel: 'Supprimer',
-    }))) return
-    try {
-      await api.purolator.deleteConfig()
-      setKey(''); setPassword(''); setAccountNumber('')
-      await load()
-      onRefresh?.()
-    } catch (e) { addToast({ message: e.message, type: 'error' }) }
-  }
-
-  const cfg = status?.config || {}
-  const last = status?.last_sync
-
-  return (
-    <div className="mt-4 space-y-4" data-testid="purolator-config">
-      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Identifiants Purolator (E-Ship)</p>
-        {configured
-          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Application configurée</p>
-          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune application configurée</p>
-        }
-        <div className="space-y-2">
-          <input
-            type="text"
-            className="input font-mono text-sm"
-            placeholder={cfg.key_set ? 'Clé (enregistrée — laisser vide pour ne pas changer)' : 'Clé Purolator (Key)'}
-            value={key}
-            onChange={e => setKey(e.target.value)}
-            autoComplete="off"
-            data-testid="purolator-key"
-          />
-          <div className="relative">
-            <input
-              type={showPassword ? 'text' : 'password'}
-              className="input pr-8 font-mono text-sm"
-              placeholder={cfg.password_set ? 'Mot de passe (enregistré — laisser vide pour ne pas changer)' : 'Mot de passe Purolator'}
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              autoComplete="new-password"
-              data-testid="purolator-password"
-            />
-            <button onClick={() => setShowPassword(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-              {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          <input
-            type="text"
-            className="input font-mono text-sm"
-            placeholder={cfg.account_number_set ? `N° de compte Purolator (${cfg.account_number_hint})` : 'N° de compte Purolator (payeur des étiquettes)'}
-            value={accountNumber}
-            onChange={e => setAccountNumber(e.target.value)}
-            autoComplete="off"
-            data-testid="purolator-account-number"
-          />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button
-            onClick={saveCredentials}
-            disabled={saving || (!key && !password && !accountNumber)}
-            className="btn-primary btn-sm"
-            data-testid="purolator-save-credentials"
-          >
-            {saving ? 'Sauvegarde…' : configured ? 'Mettre à jour' : 'Enregistrer'}
-          </button>
-          {configured && (
-            <button onClick={removeCredentials} className="btn-secondary btn-sm text-red-500 hover:text-red-600">
-              <Trash2 size={14} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Environnement</p>
-        <div className="flex flex-wrap gap-2">
-          {[['dev', 'Développement'], ['production', 'Production']].map(([value, label]) => (
-            <button
-              key={value}
-              onClick={() => saveField('environment', value)}
-              data-testid={`purolator-env-${value}`}
-              className={`px-3 py-1.5 rounded-lg text-sm border transition-colors ${cfg.environment === value ? 'border-brand-500 bg-brand-50 text-brand-700 font-medium' : 'border-slate-200 text-slate-600 hover:border-slate-300'}`}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
-        <p className="text-xs text-slate-400">
-          En Développement (devwebservices.purolator.com), rien n'est facturé — utile pour valider l'intégration avant de passer en production.
-          La valeur par défaut vient de la variable d'environnement <code className="font-mono">PUROLATOR_ENV</code>.
-        </p>
-      </div>
-
-      {last && (
-        <p className="text-xs text-slate-400">
-          Dernier appel Purolator : {fmtDateTime(last.created_at)} — {last.status === 'success'
-            ? 'OK'
-            : <span className="text-red-500">{last.error_message || 'erreur'}</span>}
-        </p>
-      )}
-      <p className="text-xs text-slate-400">
-        Utilisé pour la <strong>tarification et l'achat d'étiquettes sortantes</strong> (fiche envoi, bouton « Tarifer », côte à côte avec Novoxpress) et le suivi horaire.
-        Sens unique ERP → Purolator. Chaque appel est tracé dans le journal des synchronisations ci-dessous (module « Purolator »).
       </p>
     </div>
   )
@@ -1431,27 +1276,31 @@ function DigikeyConfig({ configured: initialConfigured, syncStatus, onRefresh })
           : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune application configurée</p>
         }
         <div className="space-y-2">
-          <input
-            type="text"
-            className="input font-mono text-sm"
-            placeholder="Client ID (portail developer.digikey.com)"
-            value={clientId}
-            onChange={e => setClientId(e.target.value)}
-            autoComplete="off"
-          />
-          <div className="relative">
+          <label className="block">
+            <span className={lblCls}>Client ID</span>
             <input
-              type={showSecret ? 'text' : 'password'}
-              className="input pr-8 font-mono text-sm"
-              placeholder={cfg.client_secret_set ? 'Client Secret (enregistré — laisser vide pour ne pas changer)' : 'Client Secret'}
-              value={clientSecret}
-              onChange={e => setClientSecret(e.target.value)}
-              autoComplete="new-password"
+              type="text"
+              className="input font-mono text-sm"
+              value={clientId}
+              onChange={e => setClientId(e.target.value)}
+              autoComplete="off"
             />
-            <button onClick={() => setShowSecret(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-              {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
+          </label>
+          <label className="block">
+            <span className={lblCls}>Client Secret</span>
+            <div className="relative">
+              <input
+                type={showSecret ? 'text' : 'password'}
+                className="input pr-8 font-mono text-sm"
+                value={clientSecret}
+                onChange={e => setClientSecret(e.target.value)}
+                autoComplete="new-password"
+              />
+              <button onClick={() => setShowSecret(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                {showSecret ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </label>
         </div>
         <div className="flex gap-2">
           <button
@@ -1473,21 +1322,30 @@ function DigikeyConfig({ configured: initialConfigured, syncStatus, onRefresh })
       <div className="bg-slate-50 rounded-xl p-4 space-y-3">
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Compte et région</p>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-          <input
-            type="text" className="input text-sm" placeholder="N° de client DigiKey (optionnel)"
-            defaultValue={cfg.customer_id || ''} key={`cust-${cfg.customer_id || ''}`}
-            onBlur={e => saveField('customer_id', e.target.value.trim())}
-          />
-          <input
-            type="text" className="input text-sm" placeholder="Site (CA)"
-            defaultValue={cfg.locale_site || ''} key={`site-${cfg.locale_site || ''}`}
-            onBlur={e => saveField('locale_site', e.target.value.trim().toUpperCase())}
-          />
-          <input
-            type="text" className="input text-sm" placeholder="Devise (CAD)"
-            defaultValue={cfg.locale_currency || ''} key={`cur-${cfg.locale_currency || ''}`}
-            onBlur={e => saveField('locale_currency', e.target.value.trim().toUpperCase())}
-          />
+          <label className="block">
+            <span className={lblCls}>N° de client</span>
+            <input
+              type="text" className="input text-sm"
+              defaultValue={cfg.customer_id || ''} key={`cust-${cfg.customer_id || ''}`}
+              onBlur={e => saveField('customer_id', e.target.value.trim())}
+            />
+          </label>
+          <label className="block">
+            <span className={lblCls}>Site</span>
+            <input
+              type="text" className="input text-sm"
+              defaultValue={cfg.locale_site || ''} key={`site-${cfg.locale_site || ''}`}
+              onBlur={e => saveField('locale_site', e.target.value.trim().toUpperCase())}
+            />
+          </label>
+          <label className="block">
+            <span className={lblCls}>Devise</span>
+            <input
+              type="text" className="input text-sm"
+              defaultValue={cfg.locale_currency || ''} key={`cur-${cfg.locale_currency || ''}`}
+              onBlur={e => saveField('locale_currency', e.target.value.trim().toUpperCase())}
+            />
+          </label>
         </div>
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input
@@ -1609,35 +1467,41 @@ function NovoxpressConfig({ configured: initialConfigured, onRefresh }) {
           : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucun compte configuré</p>
         }
         <div className="space-y-2">
-          <input
-            type="text"
-            className="input"
-            placeholder="Nom d'utilisateur"
-            value={username}
-            onChange={e => setUsername(e.target.value)}
-            autoComplete="off"
-          />
-          <div className="relative">
+          <label className="block">
+            <span className={lblCls}>Utilisateur</span>
             <input
-              type={showPass ? 'text' : 'password'}
-              className="input pr-8"
-              placeholder="Mot de passe"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              autoComplete="new-password"
+              type="text"
+              className="input"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              autoComplete="off"
             />
-            <button onClick={() => setShowPass(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
-              {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
-            </button>
-          </div>
-          <input
-            type="password"
-            className="input"
-            placeholder="Token API (diagnostic env. dev — généré sur app.novoxpress.ca/generate-my-token)"
-            value={apiToken}
-            onChange={e => setApiToken(e.target.value)}
-            autoComplete="off"
-          />
+          </label>
+          <label className="block">
+            <span className={lblCls}>Mot de passe</span>
+            <div className="relative">
+              <input
+                type={showPass ? 'text' : 'password'}
+                className="input pr-8"
+                value={password}
+                onChange={e => setPassword(e.target.value)}
+                autoComplete="new-password"
+              />
+              <button onClick={() => setShowPass(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                {showPass ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </label>
+          <label className="block">
+            <span className={lblCls}>Token API</span>
+            <input
+              type="password"
+              className="input"
+              value={apiToken}
+              onChange={e => setApiToken(e.target.value)}
+              autoComplete="off"
+            />
+          </label>
         </div>
         <div className="flex gap-2">
           <button onClick={save} disabled={saving || (!(username && password) && !apiToken)} className="btn-primary btn-sm">
@@ -1695,7 +1559,6 @@ function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) 
             <input
               type={showKey ? 'text' : 'password'}
               className="input pr-8 font-mono text-sm"
-              placeholder="sk_live_... ou sk_test_..."
               value={secretKey}
               onChange={e => setSecretKey(e.target.value)}
             />
@@ -1790,7 +1653,6 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
             <input
               type={showToken ? 'text' : 'password'}
               className="input pr-8 font-mono text-sm"
-              placeholder="pat-na1-..."
               value={token}
               onChange={e => setToken(e.target.value)}
             />
@@ -1829,7 +1691,7 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
                 <button onClick={loadInfo} className="btn-secondary btn-sm py-1 text-xs" disabled={loadingInfo}>
                   <RefreshCw size={12} className={loadingInfo ? 'animate-spin' : ''} /> Rafraîchir
                 </button>
-                <Link to="/admin/utilisateurs" className="btn-secondary btn-sm py-1 text-xs" data-testid="hubspot-mapping-users-link">
+                <Link to="/parametres/utilisateurs" className="btn-secondary btn-sm py-1 text-xs" data-testid="hubspot-mapping-users-link">
                   <Users size={12} /> Gérer dans les utilisateurs
                 </Link>
               </div>
@@ -1864,8 +1726,272 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
   )
 }
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured, digikeyConfigured, upsConfigured, purolatorConfigured }) {
-  const [expanded, setExpanded] = useState(false)
+/**
+ * Plaid — connexion directe aux comptes bancaires (BNC…) pour alimenter le
+ * rapprochement (bank_transactions) en temps quasi réel, en remplacement
+ * progressif de la sync manuelle du fichier TRX_Orisha. Un item Plaid peut
+ * couvrir plusieurs comptes/cartes : chaque compte détecté se mappe à un
+ * bank_accounts existant via le sélecteur ci-dessous.
+ */
+function PlaidConfig({ onRefresh }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [items, setItems] = useState([])
+  const [bankAccounts, setBankAccounts] = useState([])
+  const [linkToken, setLinkToken] = useState(null)
+  const [receivedRedirectUri, setReceivedRedirectUri] = useState(undefined)
+  const [connecting, setConnecting] = useState(false)
+  const [syncingItem, setSyncingItem] = useState(null)
+  // État réel de la lecture : depuis quand la BANQUE ne répond plus, et quels
+  // comptes sont mappés sans avoir jamais reçu une transaction.
+  const [health, setHealth] = useState(null)
+  const shouldOpenRef = useRef(false)
+
+  const load = useCallback(() => {
+    Promise.all([api.plaid.status(), api.bank.accounts()])
+      .then(([itemList, accts]) => { setItems(itemList); setBankAccounts(accts) })
+      .catch(() => {})
+    // Interroge Plaid : plus lent, et sans conséquence s'il échoue.
+    api.plaid.syncStatus().then(setHealth).catch(() => setHealth(null))
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  // Certaines banques (BNC…) redirigent l'utilisateur vers leur propre site
+  // (OAuth) au lieu de tout faire dans la popup Link, puis reviennent ici sur
+  // /erp?oauth_state_id=... — la page a été rechargée entre-temps, donc le
+  // link_token en mémoire est perdu : on le retrouve dans sessionStorage
+  // (posé dans startLink) et on reprend le flux là où il s'est arrêté.
+  useEffect(() => {
+    if (!window.location.search.includes('oauth_state_id')) return
+    const savedToken = sessionStorage.getItem('plaid_link_token')
+    if (!savedToken) return
+    setConnecting(true)
+    shouldOpenRef.current = true
+    setReceivedRedirectUri(window.location.href)
+    setLinkToken(savedToken)
+    window.history.replaceState(null, '', window.location.pathname)
+  }, [])
+
+  const onLinkSuccess = useCallback(async (public_token) => {
+    sessionStorage.removeItem('plaid_link_token')
+    setConnecting(true)
+    try {
+      await api.plaid.exchange(public_token)
+      addToast({ message: 'Compte bancaire connecté via Plaid', type: 'success' })
+      load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setConnecting(false)
+    }
+  }, [addToast, load])
+
+  const { open, ready } = usePlaidLink({
+    token: linkToken,
+    receivedRedirectUri,
+    onSuccess: onLinkSuccess,
+    onExit: () => { sessionStorage.removeItem('plaid_link_token'); setConnecting(false) },
+  })
+
+  useEffect(() => {
+    if (ready && shouldOpenRef.current) {
+      shouldOpenRef.current = false
+      open()
+    }
+  }, [ready, open, shouldOpenRef])
+
+  async function startLink() {
+    setConnecting(true)
+    try {
+      const { link_token } = await api.plaid.linkToken()
+      sessionStorage.setItem('plaid_link_token', link_token)
+      shouldOpenRef.current = true
+      setLinkToken(link_token)
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+      setConnecting(false)
+    }
+  }
+
+  async function linkAccount(itemId, plaidAccountId, bankAccountId) {
+    if (!bankAccountId) return
+    try {
+      await api.plaid.linkAccount(bankAccountId, plaidAccountId, itemId)
+      addToast({ message: 'Compte mappé', type: 'success' })
+      load()
+      onRefresh?.()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
+
+  async function forceSync(itemId) {
+    setSyncingItem(itemId)
+    try {
+      const result = await api.plaid.sync(itemId)
+      addToast({ message: `Sync Plaid : ${result.inserted} nouvelle(s) transaction(s)`, type: 'success' })
+      load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setSyncingItem(null)
+    }
+  }
+
+  // Relit tout l'historique que Plaid détient : c'est le rattrapage d'un compte
+  // mappé APRÈS un premier passage (le curseur avait avancé sur des
+  // transactions qu'on jetait, faute de savoir où les mettre).
+  async function relire(itemId) {
+    setSyncingItem(itemId)
+    try {
+      const r = await api.plaid.resetCursor(itemId)
+      addToast({ message: `Historique relu : ${r.inserted} transaction(s) récupérée(s)`, type: 'success' })
+      load(); onRefresh?.()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally { setSyncingItem(null) }
+  }
+
+  // Demande à la banque d'être interrogée maintenant. Utile quand elle a cessé
+  // de livrer : sans ça on attend son prochain passage, qui peut tarder.
+  async function reveiller(itemId) {
+    setSyncingItem(itemId)
+    try {
+      const r = await api.plaid.refresh(itemId)
+      addToast({ message: `Banque interrogée : ${r.inserted} nouvelle(s) transaction(s)`, type: 'success' })
+      load(); onRefresh?.()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally { setSyncingItem(null) }
+  }
+
+  async function disconnectItem(itemId, institutionName) {
+    const ok = await confirm({
+      title: 'Déconnecter cette institution',
+      message: `Déconnecter « ${institutionName || itemId} » de Plaid ? Les comptes mappés cesseront de se rapprocher automatiquement (le sheet TRX_Orisha reprend le relais s'il couvre encore ce compte).`,
+      confirmLabel: 'Déconnecter',
+    })
+    if (!ok) return
+    try {
+      await api.plaid.removeItem(itemId)
+      load()
+      onRefresh?.()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
+
+  const bankAccountOptions = bankAccounts.map(a => ({ value: a.id, label: a.name }))
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-slate-500">
+          Connecte directement un compte bancaire (BNC…) pour un rapprochement en temps quasi réel, sans dépendre du fichier TRX_Orisha.
+        </p>
+        <button onClick={startLink} disabled={connecting} className="btn-primary btn-sm text-xs shrink-0 ml-3">
+          <Link2 size={12} /> {connecting ? 'Connexion…' : 'Connecter un compte bancaire'}
+        </button>
+      </div>
+
+      {items.length === 0 && (
+        <p className="text-xs text-slate-400">Aucune institution connectée via Plaid pour l'instant.</p>
+      )}
+
+      {items.map(item => (
+        <div key={item.item_id} className="bg-slate-50 rounded-xl p-3 space-y-2">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-slate-700">{item.institution_name || item.item_id}</p>
+              <p className="text-xs text-slate-400">
+                {item.last_error
+                  ? <span className="text-red-500">⚠ {item.last_error}</span>
+                  : item.last_synced_at
+                    ? `Dernière sync : ${formatRelativeTime(item.last_synced_at)}`
+                    : 'Jamais synchronisé'}
+              </p>
+              {/* La banque, elle, livre-t-elle encore ? « Dernière sync » ne dit
+                  que « on a demandé » — une banque peut se taire des jours sans
+                  la moindre erreur de notre côté. */}
+              <PlaidBankHealth health={health} itemId={item.item_id} />
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => forceSync(item.item_id)} disabled={syncingItem === item.item_id} className="btn-secondary btn-sm py-1 text-xs">
+                <RefreshCw size={12} className={syncingItem === item.item_id ? 'animate-spin' : ''} /> Forcer la sync
+              </button>
+              <button onClick={() => reveiller(item.item_id)} disabled={syncingItem === item.item_id}
+                title="Demander à la banque de livrer ses transactions maintenant"
+                className="btn-secondary btn-sm py-1 text-xs">Réveiller la banque</button>
+              <button onClick={() => relire(item.item_id)} disabled={syncingItem === item.item_id}
+                title="Relire tout l'historique disponible — à faire après avoir mappé un compte"
+                className="btn-secondary btn-sm py-1 text-xs">Relire l'historique</button>
+              <button onClick={() => disconnectItem(item.item_id, item.institution_name)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          </div>
+          <div className="space-y-1.5">
+            {(item.accounts || []).map(acc => {
+              const mapped = bankAccounts.find(b => b.plaid_account_id === acc.plaid_account_id)
+              const st = health?.accounts?.find(a => a.plaid_account_name === acc.name && a.account_id === mapped?.id)
+              return (
+                <div key={acc.plaid_account_id} className="flex items-center gap-2 text-xs">
+                  <span className="text-slate-500 w-40 truncate" title={acc.name}>{acc.name} {acc.mask ? `••${acc.mask}` : ''}</span>
+                  <SearchableSelect
+                    value={mapped?.id || ''}
+                    options={bankAccountOptions}
+                    onChange={v => linkAccount(item.item_id, acc.plaid_account_id, v)}
+                    className="input text-xs w-56"
+                  />
+                  {/* Mappé mais vide. Deux causes possibles, qu'on ne peut pas
+                      départager d'ici : la lecture a commencé avant le mapping
+                      (« Relire l'historique » corrige), ou la banque ne livre
+                      tout simplement pas ce compte — vérifié le 2026-09-06 pour
+                      la MasterCard et l'épargne BNC, que Plaid ne fournit pas. */}
+                  {st?.empty ? (
+                    <span className="text-amber-700"
+                      title="Soit la lecture a commencé avant que ce compte soit associé (essayer « Relire l'historique »), soit la banque ne livre pas les transactions de ce compte.">
+                      aucune transaction reçue
+                    </span>
+                  ) : st?.last_txn_date ? (
+                    <span className="text-slate-400">{st.plaid_count} trx · jusqu'au {st.last_txn_date}</span>
+                  ) : null}
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// Depuis quand la banque n'a plus rien livré à Plaid. Muet quand tout va bien —
+// c'est le silence prolongé qui compte, pas l'horodatage du dernier succès.
+function PlaidBankHealth({ health, itemId }) {
+  const it = health?.items?.find(i => i.item_id === itemId)
+  if (!it) return null
+  if (it.needs_reauth) {
+    return <p className="text-xs text-red-600">⚠ Connexion à réautoriser — reconnecter cette institution</p>
+  }
+  const last = it.last_successful_update
+  if (!last) return null
+  const hours = (Date.now() - new Date(last).getTime()) / 3600e3
+  if (hours < 36) return null
+  return (
+    <p className="text-xs text-amber-700" title="Plaid n'a pas réussi à obtenir de nouvelles données de la banque depuis ce moment">
+      La banque n'a rien livré depuis {formatRelativeTime(last)}
+    </p>
+  )
+}
+
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured, digikeyConfigured, upsConfigured }) {
+  // Retour d'une banque OAuth (BNC…) au milieu du flux Plaid Link : l'utilisateur
+  // revient sur /erp?oauth_state_id=... — on doit rouvrir la section Plaid,
+  // déjà repliée par défaut, pour que PlaidConfig puisse reprendre le flux.
+  const [expanded, setExpanded] = useState(() =>
+    connector.id === 'plaid' && window.location.search.includes('oauth_state_id')
+  )
   const { icon: Icon, color } = connector
   const connectorAccounts = accounts.filter(a => a.connector === connector.id)
   const isConnected = connector.alwaysConnected ? true
@@ -1875,7 +2001,6 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
         connector.id === 'hubspot' ? hubspotConfigured :
         connector.id === 'digikey' ? digikeyConfigured :
         connector.id === 'ups' ? upsConfigured :
-        connector.id === 'purolator' ? purolatorConfigured :
         false
       )
     : connectorAccounts.length > 0
@@ -1883,7 +2008,7 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
   // Amazon Business : pas de clés API tant que l'onboarding développeur n'est pas approuvé —
   // on masque « Connecter » (sinon le flux OAuth échoue avec une erreur JSON brute).
   const blockedNoCredentials = connector.id === 'amazon' && !amazonConfigured
-  const needsOAuth = !connector.apiKeyManaged && !connector.alwaysConnected && !isConnected && !blockedNoCredentials
+  const needsOAuth = !connector.apiKeyManaged && !connector.alwaysConnected && !connector.customConnect && !isConnected && !blockedNoCredentials
 
   return (
     <div className="card overflow-hidden">
@@ -1935,6 +2060,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'quickbooks' && (
             <QuickBooksConfig accounts={connectorAccounts} config={config} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
+          {connector.id === 'plaid' && (
+            <PlaidConfig onRefresh={onRefresh} />
+          )}
           {connector.id === 'stripe' && (
             <StripeConfig configured={stripeConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
@@ -1956,9 +2084,6 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'ups' && (
             <UpsConfig configured={upsConfigured} onRefresh={onRefresh} />
           )}
-          {connector.id === 'purolator' && (
-            <PurolatorConfig configured={purolatorConfigured} onRefresh={onRefresh} />
-          )}
         </div>
       )}
     </div>
@@ -1975,7 +2100,7 @@ const MODULE_LABELS = {
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
   soumissions: 'Soumissions', retours: 'Retours', retour_items: 'Items retour',
   adresses: 'Adresses', bom: 'BOM', serial_changes: 'Changements série',
-  assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business', digikey: 'DigiKey', ups: 'UPS', purolator: 'Purolator',
+  assemblages: 'Assemblages', factures: 'Factures', amazon: 'Amazon Business', digikey: 'DigiKey', ups: 'UPS',
   instagram: 'Prospects Instagram',
 }
 
@@ -2077,7 +2202,7 @@ const SYNC_LABELS = {
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false, digikey_configured: false, ups_configured: false, purolator_configured: false })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false, digikey_configured: false, ups_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -2103,7 +2228,7 @@ export function ConnectorsContent() {
   return (
     <div>
       <div className="mb-6">
-        <h2 className="text-2xl font-bold text-slate-900">Connecteurs</h2>
+        <PageTitle as="h2">Connecteurs</PageTitle>
         <p className="text-sm text-slate-500 mt-0.5">Intégrez vos outils externes à Boréal</p>
       </div>
 
@@ -2139,7 +2264,6 @@ export function ConnectorsContent() {
                   amazonConfigured={!!data.amazon_configured}
                   digikeyConfigured={!!data.digikey_configured}
                   upsConfigured={!!data.ups_configured}
-                  purolatorConfigured={!!data.purolator_configured}
                   syncConfigs={{
                     contacts:      data.contacts_sync    || {},
                     companies:     data.companies_sync   || {},

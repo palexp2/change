@@ -17,8 +17,8 @@
 // jeu (au cas où il serait publié plus tard, ou sous un autre slug via
 // MAPAQ_DATASET) et, à défaut, accepte un fichier CSV fourni à la main —
 // c'est aujourd'hui le seul chemin qui donne des lignes.
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 
 const CKAN_BASE = process.env.MAPAQ_CKAN_BASE || 'https://www.donneesquebec.ca/recherche/api/3/action'
 // Slug pressenti du jeu sur Données Québec. Surchargeable sans redéploiement.
@@ -513,7 +513,7 @@ export function createProspects(entries, userId) {
       continue
     }
 
-    const companyId = uuidv4()
+    const companyId = newRecordId()
     const notesLines = ['Prospect importé du registre MAPAQ (cultures en serre).']
     if (entry.production) notesLines.push(`Catégorie MAPAQ : ${entry.production}`)
     if (entry.region) notesLines.push(`Région : ${entry.region}`)
@@ -526,7 +526,7 @@ export function createProspects(entries, userId) {
         entry.address, entry.city, 'QC', 'Canada',
         notesLines.join('\n'),
       )
-      const projectId = uuidv4()
+      const projectId = newRecordId()
       insertProject.run(
         projectId, `Prospection MAPAQ — ${entry.name}`, companyId,
         'Créé automatiquement par l\'import MAPAQ (cultures en serre). Stade initial de prospection.',

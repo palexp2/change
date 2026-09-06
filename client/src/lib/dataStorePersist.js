@@ -34,9 +34,9 @@ function openDb() {
   return dbPromise
 }
 
-// Persiste un snapshot complet { tables: { <name>: { columns, rows } }, snapshot_ts }.
-// Une seule transaction → atomique : tout ou rien.
-export async function persistSnapshot({ tables, snapshot_ts }) {
+// Persiste un snapshot complet { tables: { <name>: { columns, rows } },
+// snapshot_ts, columns_signature }. Une seule transaction → atomique : tout ou rien.
+export async function persistSnapshot({ tables, snapshot_ts, columns_signature }) {
   const db = await openDb()
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite')
@@ -46,13 +46,14 @@ export async function persistSnapshot({ tables, snapshot_ts }) {
     for (const [name, payload] of Object.entries(tables)) {
       store.put(payload, name)
     }
-    store.put({ snapshot_ts, persisted_at: new Date().toISOString() }, META_KEY)
+    store.put({ snapshot_ts, columns_signature, persisted_at: new Date().toISOString() }, META_KEY)
     tx.oncomplete = () => resolve()
     tx.onerror = () => reject(tx.error)
   })
 }
 
-// Lit le snapshot persisté. Renvoie { tables, snapshot_ts } ou null si vide.
+// Lit le snapshot persisté. Renvoie { tables, snapshot_ts, columns_signature }
+// ou null si vide.
 export async function loadSnapshot() {
   const db = await openDb()
   return new Promise((resolve, reject) => {
@@ -69,7 +70,7 @@ export async function loadSnapshot() {
         cursor.continue()
       } else {
         if (!meta || Object.keys(tables).length === 0) resolve(null)
-        else resolve({ tables, snapshot_ts: meta.snapshot_ts, persisted_at: meta.persisted_at })
+        else resolve({ tables, snapshot_ts: meta.snapshot_ts, columns_signature: meta.columns_signature, persisted_at: meta.persisted_at })
       }
     }
     req.onerror = () => reject(req.error)

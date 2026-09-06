@@ -3,13 +3,16 @@ import { Plus, ExternalLink, Trash2, RefreshCw, BookOpen, AlertCircle, Wand2, Ch
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 
 import { fmtMoney as fmtCad } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 function todayISO() {
   return localISODate()
@@ -39,7 +42,6 @@ function AccountPicker({ value, accounts, name, onChange }) {
       value={value || ''}
       options={accounts.map(a => ({ id: a.Id, _name: a.Name, _type: a.AccountType }))}
       labelFn={a => a._name}
-      placeholder="— compte —"
       onChange={onChange}
       allowClear={false}
     />
@@ -431,11 +433,11 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
         </div>
         <div>
           <label className="label">N° de document</label>
-          <input type="text" className="input" value={docNumber} onChange={e => setDocNumber(e.target.value)} placeholder="Optionnel" />
+          <input type="text" className="input" value={docNumber} onChange={e => setDocNumber(e.target.value)} />
         </div>
         <div>
           <label className="label">Mémo</label>
-          <input type="text" className="input" value={memo} onChange={e => setMemo(e.target.value)} placeholder="Note privée" />
+          <input type="text" className="input" value={memo} onChange={e => setMemo(e.target.value)} />
         </div>
       </div>
 
@@ -860,7 +862,6 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
                       value={l.account_id}
                       options={accounts.map(a => ({ id: a.Id, _name: a.Name, _type: a.AccountType }))}
                       labelFn={a => `${a._name}${a._type ? ` (${a._type})` : ''}`}
-                      placeholder="Compte"
                       onChange={v => updateLine(i, { account_id: v })}
                     />
                   </td>
@@ -870,7 +871,6 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
                       value={l.description}
                       onChange={e => updateLine(i, { description: e.target.value })}
                       className="input text-xs py-1"
-                      placeholder="Description"
                     />
                   </td>
                   <td className="px-2 py-1.5">
@@ -942,10 +942,11 @@ function EntryDetailModal({ entryId, onClose }) {
   }, [entryId])
 
   return (
-    <Modal isOpen={!!entryId} onClose={onClose} title="Écriture de journal" size="xl">
+    <RecordPeekDrawer open={!!entryId} onClose={onClose} title="Écriture de journal" width={780} peekKey="journal_entries">
+      <div className="px-5 py-4">
       {loading && (
         <div className="flex items-center gap-2 text-slate-500 py-6">
-          <RefreshCw size={16} className="animate-spin" /> Chargement…
+          <Spinner size="xs" label="Chargement…" />
         </div>
       )}
       {error && (
@@ -1035,7 +1036,8 @@ function EntryDetailModal({ entryId, onClose }) {
           </div>
         </div>
       )}
-    </Modal>
+      </div>
+    </RecordPeekDrawer>
   )
 }
 
@@ -1109,7 +1111,7 @@ export default function JournalEntries() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Écritures de journal</h1>
+            <PageTitle>Écritures de journal</PageTitle>
             <p className="text-sm text-slate-500 mt-1">Écritures synchronisées avec QuickBooks</p>
           </div>
           <div className="flex items-center gap-2">

@@ -15,8 +15,8 @@
  * column on the same table that the rule is triggered on. Nothing enforces
  * that here — fieldRuleEngine rejects such configs when they are saved.
  */
-import { randomUUID } from 'crypto'
 import db from '../../db/database.js'
+import { newRecordId } from '../../utils/recordId.js'
 
 const VALID_PRIORITY = new Set(['Basse', 'Normal', 'Haute', 'Urgent'])
 
@@ -41,7 +41,7 @@ export async function createTask({ rule, row, rendered }) {
   const companyId = linkCompany ? (row.company_id || null) : null
   const contactId = row.contact_id || null
 
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO tasks (
       id, title, description, status, priority, due_date,

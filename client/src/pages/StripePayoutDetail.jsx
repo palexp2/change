@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Eye, Send, X } from 'lucide-react'
+import { useParams } from 'react-router-dom'
+import { RefreshCw, ExternalLink, CheckCircle2, AlertCircle, Info, Eye, Send, X } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { ConfirmModal } from '../components/Modal.jsx'
@@ -12,6 +12,7 @@ import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 
 import { fmtMoney } from '../utils/formatters.js'
+import { Field } from '../components/Field.jsx'
 
 
 // Render a compact TPS/TVQ breakdown used in the transactions table.
@@ -39,18 +40,35 @@ const TX_TYPE_LABELS = {
   payout: 'Payout',
 }
 
+const INFO_LABEL_CLASS = 'text-xs text-slate-400 uppercase tracking-wide font-medium'
+
+// Bloc d'information qui n'est PAS un champ de la table (aperçu du Deposit
+// QuickBooks, ventilation des frais…) : rien à garder, rien à renommer.
 function InfoField({ label, value }) {
   return (
     <div>
-      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">{label}</p>
+      <p className={INFO_LABEL_CLASS}>{label}</p>
       <p className="text-sm text-slate-700 mt-0.5 break-words">{value ?? <span className="text-slate-300">—</span>}</p>
     </div>
   )
 }
 
-export default function StripePayoutDetail() {
-  const { stripeId } = useParams()
-  const navigate = useNavigate()
+// Champ du payout lui-même : passe par <Field>, donc par le portier des champs
+// supprimés (il disparaît d'ici dès qu'on le supprime dans /champs/stripe_payouts).
+function PayoutField({ id, label, value }) {
+  return (
+    <Field table="stripe_payouts" id={id} label={label} labelClassName={INFO_LABEL_CLASS}>
+      <p className="text-sm text-slate-700 mt-0.5 break-words">{value ?? <span className="text-slate-300">—</span>}</p>
+    </Field>
+  )
+}
+
+// Fiche d'un payout Stripe. Rendue exclusivement dans un panneau latéral
+// (RecordPeekDrawer) : `recordId` vient du panneau, `useParams` sert au cas où
+// la fiche est montée directement depuis l'URL par le registre des fiches.
+export default function StripePayoutDetail({ recordId }) {
+  const { stripeId: paramStripeId } = useParams()
+  const stripeId = recordId ?? paramStripeId
   const [transactions, setTransactions] = useState([])
 
   const [syncing, setSyncing] = useState(false)
@@ -182,17 +200,12 @@ export default function StripePayoutDetail() {
     }
   }
 
-  if (loading) return <Layout><Spinner center label="Chargement…" /></Layout>
-  if (error && !payout) return <Layout><DetailLoadError message={error} onRetry={load} retrying={loading} /></Layout>
+  if (loading) return <Spinner center label="Chargement…" />
+  if (error && !payout) return <DetailLoadError message={error} onRetry={load} retrying={loading} />
   if (!payout) return (
-    <Layout>
-      <div className="p-6">
-        <button onClick={() => navigate('/stripe-payouts')} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 mb-4">
-          <ArrowLeft size={16} /> Retour
-        </button>
-        <div className="text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm">Payout introuvable</div>
-      </div>
-    </Layout>
+    <div className="p-6">
+      <div className="text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 text-sm">Payout introuvable</div>
+    </div>
   )
 
   const alreadyPushed = !!payout.qb_deposit_id
@@ -211,18 +224,15 @@ export default function StripePayoutDetail() {
   })
 
   return (
-    <Layout>
-      <div className="p-6 max-w-6xl mx-auto">
-        <button onClick={() => navigate('/stripe-payouts')} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 mb-4">
-          <ArrowLeft size={16} /> Retour aux payouts
-        </button>
+    <>
+      <div className="p-6">
 
         {/* Header */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
-                <h1 className="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(payout.amount, payout.currency)}</h1>
+                <PageTitle titleClassName="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(payout.amount, payout.currency)}</PageTitle>
                 {payout.status && <Badge color={STATUS_COLORS[payout.status] || 'gray'}>{payout.status}</Badge>}
                 {alreadyPushed && (
                   payout.qb_deposit_url ? (
@@ -263,19 +273,19 @@ export default function StripePayoutDetail() {
           </div>
 
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-4 border-t border-slate-100">
-            <InfoField label="Date de dépôt" value={fmtDate(payout.arrival_date)} />
-            <InfoField label="Devise" value={payout.currency} />
-            <InfoField label="Méthode" value={payout.method} />
-            <InfoField label="Type" value={payout.type} />
-            <InfoField label="Banque" value={payout.bank_name ? `${payout.bank_name}${payout.bank_last4 ? ' …' + payout.bank_last4 : ''}` : null} />
+            <PayoutField id="arrival_date" label="Date de dépôt" value={fmtDate(payout.arrival_date)} />
+            <PayoutField id="currency" label="Devise" value={payout.currency} />
+            <PayoutField id="method" label="Méthode" value={payout.method} />
+            <PayoutField id="type" label="Type" value={payout.type} />
+            <PayoutField id="bank" label="Banque" value={payout.bank_name ? `${payout.bank_name}${payout.bank_last4 ? ' …' + payout.bank_last4 : ''}` : null} />
             <InfoField label="Automatique" value={payout.automatic ? 'Oui' : 'Non'} />
-            <InfoField label="Créé le" value={fmtDate(payout.created_date)} />
-            <InfoField label="Envoyé à QB" value={payout.qb_pushed_at ? fmtDate(payout.qb_pushed_at) : null} />
+            <PayoutField id="created_date" label="Créé le" value={fmtDate(payout.created_date)} />
+            <PayoutField id="qb_pushed_at" label="Envoyé à QB" value={payout.qb_pushed_at ? fmtDate(payout.qb_pushed_at) : null} />
           </div>
 
           {payout.description && (
             <div className="mt-4 pt-4 border-t border-slate-100">
-              <InfoField label="Description" value={payout.description} />
+              <PayoutField id="description" label="Description" value={payout.description} />
             </div>
           )}
 
@@ -415,7 +425,7 @@ export default function StripePayoutDetail() {
         confirmLabel={confirmState?.confirmLabel}
         danger={confirmState?.danger}
       />
-    </Layout>
+    </>
   )
 }
 

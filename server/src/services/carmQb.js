@@ -4,24 +4,37 @@
 // fournisseurs (21000) — pas de compte de passage à créer, rien dans les frais
 // payés d'avance, et la fiche fournisseur QB reproduit le relevé du portail :
 //   • notre versement  → Dépense sur la carte, une ligne imputée à 21000 ;
-//   • charge (B3, C1, intérêts, pénalité) → Facture fournisseur ASFC : droits en
-//     coût (65000) et TPS à l'importation en CTI 100 % récupérable ;
-//   • correction créditrice → Note de crédit fournisseur (même ventilation) ;
+//   • charge (B3, C1, intérêts, pénalité) → ÉCRITURE DE JOURNAL (pas une
+//     facture fournisseur) : droits en coût (65000) et TPS à l'importation en
+//     CTI 100 % récupérable, portée au compte d'attente TPS/TVH
+//     (gst_suspense_acctnum, le même que celui où l'automatisme des factures
+//     pose la TPS), en contrepartie du solde fournisseur (21000, EntityRef
+//     ASFC) ;
+//   • correction créditrice → même JE, sens inverse ;
 //   • ligne réglée par un courtier → rien (sa facture porte déjà tout).
 // Le crédit laissé au portail (202,68 $ le 2026-08-03) tombe tout seul : le
-// versement dépasse les factures, le fournisseur ASFC est débiteur d'autant.
+// versement dépasse les charges consommées, le fournisseur ASFC est débiteur
+// d'autant.
+//
+// Pourquoi une JE et pas une facture fournisseur (changé le 2026-09-01,
+// demande de Guillaume) : une facture reste « à payer » indéfiniment dans QB
+// tant que personne ne l'applique manuellement au crédit du fournisseur — rien
+// dans ce module ne le fait. Une JE n'a pas de statut payé/impayé, ne
+// nécessite aucun geste supplémentaire, et garde le même solde 21000 comme
+// clearing entre le versement (carte) et la consommation (charges). Attention
+// à ne SURTOUT PAS repasser une charge/crédit en Dépense sur la carte : la
+// carte n'a bougé qu'une fois pour le vrai versement (ex. 500 $) — une charge
+// qui recréditerait la carte compterait cet argent deux fois et fausserait le
+// rapprochement bancaire.
 //
 // SONDÉ SUR LE VRAI FICHIER QB (2026-08-22, transactions créées puis supprimées) :
 //   1. une ligne de dépense imputée aux Comptes fournisseurs avec EntityRef
 //      fournisseur est ACCEPTÉE (c'est l'avance au compte ASFC) ;
-//   2. une facture 100 % TPS passe avec l'astuce +0,01 [TPS] / −0,01 [Hors champ]
-//      et TotalTax explicite (total = la TPS, comme dans l'historique QB) ;
-//   3. le TaxLine TPS n'est accepté QUE si au moins une ligne porte le code TPS —
-//      une facture dont toutes les lignes sont « Hors champ » est rejetée
-//      (« Invalid tax rate id »). La ligne de droits porte donc le code TPS et
-//      le montant de taxe est figé par TaxLine (sinon QB recalcule 5 %).
+//   2. une JE imputée à un compte Comptes fournisseurs exige un Entity
+//      Vendor sur cette ligne (JournalEntryLineDetail.Entity =
+//      { Type: 'Vendor', EntityRef: { value } }), sinon QB refuse.
 import db from '../db/database.js'
-import { qbPost } from '../connectors/quickbooks.js'
+import { qbPost, qbGet, qbRequest } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum, resolveTaxCodeIdsByName, findOrCreateVendor } from './quickbooks.js'
 import { getCarmConfig } from './carmAccount.js'
 import { KIND_LABELS } from './carmRules.js'
@@ -118,29 +131,6 @@ export function buildChargeLines(g, ids) {
   return lines
 }
 
-// ── Fusion des charges/notes de crédit d'un même push ────────────────────────
-// Plusieurs B3 (ou notes de crédit) dans un même relevé partaient chacun dans
-// leur propre Facture fournisseur — pénible à valider un par un dans QB. On
-// les fusionne en une seule écriture multi-lignes (une ligne par déclaration
-// et par nature), avec un seul TaxLine porté sur la TPS totale du lot.
-function buildMergedChargeLines(groups, ids) {
-  const lines = []
-  let tpsCoded = false
-  for (const g of groups) {
-    const suffix = g.number ? ` — ${g.number}` : ''
-    if (g.duty > 0) {
-      const code = g.gst > 0 ? ids.tps : ids.noTax
-      if (code === ids.tps) tpsCoded = true
-      lines.push(expenseLine(g.duty, ids.duty, code, `Droits de douane${suffix}`))
-    }
-    if (g.interest > 0) lines.push(expenseLine(g.interest, ids.interest, ids.noTax, `Intérêts${suffix}`))
-    if (g.penalty > 0) lines.push(expenseLine(g.penalty, ids.penalty, ids.noTax, `Pénalité${suffix}`))
-  }
-  const gstTotal = round2(groups.reduce((s, g) => s + g.gst, 0))
-  if (gstTotal > 0 && !tpsCoded) lines.push(...buildGstOnlyLines(ids.duty, ids.tps, ids.noTax))
-  return { lines, gstTotal }
-}
-
 function mergedMemo(groups) {
   if (groups.length === 1) return memo(groups[0])
   const parts = []
@@ -152,22 +142,53 @@ function mergedMemo(groups) {
   return `${nature.charAt(0).toUpperCase()}${nature.slice(1)} — ${groups.length} déclarations ASFC`
 }
 
-export function buildMergedChargePayload(groups, ids, cfg) {
-  const type = groups[0].type
-  const { lines, gstTotal } = buildMergedChargeLines(groups, ids)
-  const tax = buildGstTaxDetail(gstTotal, ids)
-  const date = groups.reduce((mx, g) => (g.date > mx ? g.date : mx), groups[0].date)
-  const body = {
-    VendorRef: { value: ids.vendor },
-    APAccountRef: { value: ids.ap },
-    TxnDate: date,
-    DocNumber: groups.length === 1 && groups[0].number ? String(groups[0].number).slice(0, 21) : undefined,
-    PrivateNote: mergedMemo(groups),
-    GlobalTaxCalculation: 'TaxExcluded',
-    Line: lines,
-    ...(tax ? { TxnTaxDetail: tax } : {}),
+// Charge/note de crédit → écriture de journal (jamais une facture fournisseur,
+// voir l'en-tête du fichier). Débit des comptes de coûts + TPS en CTI (compte
+// d'attente), crédit du solde fournisseur ASFC (21000, avec Entity) ; sens
+// inverse pour une note de crédit. Marche pour un groupe seul ou fusionné.
+const journalLine = (amount, accountId, postingType, description, entity) => ({
+  Amount: round2(amount),
+  DetailType: 'JournalEntryLineDetail',
+  Description: description,
+  JournalEntryLineDetail: {
+    PostingType: postingType,
+    AccountRef: { value: accountId },
+    ...(entity ? { Entity: entity } : {}),
+  },
+})
+
+export function buildChargeJournalLines(groups, ids) {
+  const side = groups[0].type === 'credit' ? 'Credit' : 'Debit'
+  const lines = []
+  for (const g of groups) {
+    const suffix = g.number ? ` — ${g.number}` : ''
+    if (g.duty > 0) lines.push(journalLine(g.duty, ids.duty, side, `Droits de douane${suffix}`))
+    if (g.interest > 0) lines.push(journalLine(g.interest, ids.interest, side, `Intérêts${suffix}`))
+    if (g.penalty > 0) lines.push(journalLine(g.penalty, ids.penalty, side, `Pénalité${suffix}`))
+    if (g.gst > 0) lines.push(journalLine(g.gst, ids.gstSuspense, side, `TPS à l'importation${suffix}`))
   }
-  return { entity: type === 'credit' ? 'vendorcredit' : 'bill', body, account_source: `fournisseur ${cfg.vendor_name}` }
+  return lines
+}
+
+export function buildChargeJournalPayload(groups, ids, cfg) {
+  const type = groups[0].type
+  const apSide = type === 'credit' ? 'Debit' : 'Credit'
+  const lines = buildChargeJournalLines(groups, ids)
+  const total = round2(groups.reduce((s, g) => s + g.total, 0))
+  const date = groups.reduce((mx, g) => (g.date > mx ? g.date : mx), groups[0].date)
+  lines.push(journalLine(total, ids.ap, apSide, mergedMemo(groups), { Type: 'Vendor', EntityRef: { value: ids.vendor } }))
+  // DocNumber TOUJOURS préfixé « ASFC » : contrairement à une facture (VendorRef
+  // en tête, cherchable par nom de fournisseur), une JE n'a pas de fournisseur au
+  // niveau transaction — seule une ligne le porte. La recherche QuickBooks
+  // n'indexe pas ça de façon fiable ; le DocNumber, si.
+  const docNumber = `ASFC ${groups.length === 1 && groups[0].number ? groups[0].number : date}`.slice(0, 21)
+  const body = {
+    TxnDate: date,
+    DocNumber: docNumber,
+    PrivateNote: mergedMemo(groups),
+    Line: lines,
+  }
+  return { entity: 'journalentry', body, account_source: `fournisseur ${cfg.vendor_name} (écriture de journal)` }
 }
 
 // Regroupe les groupes « prêts » de même nature (charge / note de crédit) en
@@ -217,6 +238,9 @@ export function buildGstTaxDetail(gst, ids) {
   }
 }
 
+// « ASFC » doit toujours figurer dans le mémo : c'est ce que QuickBooks
+// indexe pour sa barre de recherche, et une écriture de douane introuvable
+// par « ASFC » est aussi bonne que perdue (demande de Guillaume, 2026-09-01).
 function memo(g) {
   if (g.type === 'paiement') return 'Paiement compte ASFC'
   const parts = []
@@ -225,22 +249,23 @@ function memo(g) {
   if (g.interest > 0) parts.push('intérêts')
   if (g.penalty > 0) parts.push('pénalité')
   const nature = parts.join(' et ') || KIND_LABELS[g.lines[0]?.kind] || 'douanes'
-  return `${nature.charAt(0).toUpperCase()}${nature.slice(1)}${g.number ? ` — ${g.number}` : ''}`
+  return `${nature.charAt(0).toUpperCase()}${nature.slice(1)} — ASFC${g.number ? ` (${g.number})` : ''}`
 }
 
 // ── Résolution des comptes / codes / fournisseur (une fois par lot) ──────────
 async function resolveIds(cfg) {
-  const [ap, duty, interest, penalty, card, bank] = await Promise.all([
+  const [ap, duty, interest, penalty, card, bank, gstSuspense] = await Promise.all([
     resolveAccountByAcctNum(cfg.ap_acctnum),
     resolveAccountByAcctNum(cfg.duty_acctnum),
     resolveAccountByAcctNum(cfg.interest_acctnum),
     resolveAccountByAcctNum(cfg.penalty_acctnum),
     resolveAccountByAcctNum(cfg.card_acctnum),
     resolveAccountByAcctNum(cfg.bank_acctnum),
+    resolveAccountByAcctNum(cfg.gst_suspense_acctnum),
   ])
   const missing = Object.entries({ ap: cfg.ap_acctnum, duty: cfg.duty_acctnum, interest: cfg.interest_acctnum,
-    penalty: cfg.penalty_acctnum, card: cfg.card_acctnum, bank: cfg.bank_acctnum })
-    .filter(([k]) => !({ ap, duty, interest, penalty, card, bank })[k])
+    penalty: cfg.penalty_acctnum, card: cfg.card_acctnum, bank: cfg.bank_acctnum, gstSuspense: cfg.gst_suspense_acctnum })
+    .filter(([k]) => !({ ap, duty, interest, penalty, card, bank, gstSuspense })[k])
   if (missing.length) {
     throw new Error(`Compte QB introuvable : ${missing.map(([k, n]) => `${k} (no ${n})`).join(', ')}`
       + ' — corriger la configuration de l\'automation « Douanes ASFC »')
@@ -254,7 +279,7 @@ async function resolveIds(cfg) {
   const tpsRate = tc.TaxCode?.PurchaseTaxRateList?.TaxRateDetail?.[0]?.TaxRateRef?.value
   if (!tpsRate) throw new Error(`Le code de taxe « ${cfg.gst_tax_code_name} » n'a pas de taux d'achat dans QuickBooks`)
   const vendor = await findOrCreateVendor(cfg.vendor_name)
-  return { ap, duty, interest, penalty, card, bank, tps, noTax, tpsRate, vendor }
+  return { ap, duty, interest, penalty, card, bank, gstSuspense, tps, noTax, tpsRate, vendor }
 }
 
 // Compte de paiement d'un versement : celui de la sortie bancaire correspondante
@@ -292,20 +317,7 @@ export function buildPayload(g, ids, cfg) {
       },
     }
   }
-  if (g.source_groups) return buildMergedChargePayload(g.source_groups, ids, cfg)
-  const lines = buildChargeLines(g, ids)
-  const tax = buildGstTaxDetail(g.gst, ids)
-  const body = {
-    VendorRef: { value: ids.vendor },
-    APAccountRef: { value: ids.ap },
-    TxnDate: g.date,
-    DocNumber: g.number ? String(g.number).slice(0, 21) : undefined,
-    PrivateNote: memo(g),
-    GlobalTaxCalculation: 'TaxExcluded',
-    Line: lines,
-    ...(tax ? { TxnTaxDetail: tax } : {}),
-  }
-  return { entity: g.type === 'credit' ? 'vendorcredit' : 'bill', body, account_source: `fournisseur ${cfg.vendor_name}` }
+  return buildChargeJournalPayload(g.source_groups || [g], ids, cfg)
 }
 
 // ── Aperçu et exécution ──────────────────────────────────────────────────────
@@ -390,7 +402,7 @@ export async function postCarmGroups({ groupIds = null, userId = null, trigger =
     const { entity, body } = buildPayload(g, ids, cfg)
     try {
       const r = await qbPost(`/${entity}`, body)
-      const key = entity === 'purchase' ? 'Purchase' : entity === 'bill' ? 'Bill' : 'VendorCredit'
+      const key = entity === 'purchase' ? 'Purchase' : entity === 'journalentry' ? 'JournalEntry' : entity === 'bill' ? 'Bill' : 'VendorCredit'
       const txnId = r[key]?.Id
       if (!txnId) throw new Error(`QuickBooks n'a pas retourné d'Id pour ${entity}`)
       const tx = db.transaction(() => {
@@ -413,4 +425,33 @@ export async function postCarmGroups({ groupIds = null, userId = null, trigger =
     durationMs: Date.now() - t0,
   })
   return { posted, failed, skipped: results.filter(r => r.skipped).length, results, user_id: userId }
+}
+
+// Annule une écriture déjà comptabilisée : supprime la transaction QuickBooks
+// et remet les lignes qu'elle couvrait en 'a_comptabiliser' (elles repartiront
+// au prochain push, avec la logique de comptabilisation en vigueur au moment
+// du nouveau push). Sert à corriger une écriture posée avec une ancienne
+// version des règles de comptabilisation (ex. facture fournisseur → JE).
+const QB_ENTITY_KEY = { purchase: 'Purchase', journalentry: 'JournalEntry', bill: 'Bill', vendorcredit: 'VendorCredit' }
+
+export async function unpostCarmGroup(qbTxnId) {
+  const rows = db.prepare(`
+    SELECT id, qb_txn_type FROM carm_transactions WHERE qb_txn_id = ? AND deleted_at IS NULL
+  `).all(String(qbTxnId))
+  if (!rows.length) throw new Error('Aucune ligne comptabilisée avec cet identifiant QuickBooks')
+  const entity = rows[0].qb_txn_type
+  const key = QB_ENTITY_KEY[entity]
+  if (!key) throw new Error(`Type de transaction QuickBooks inconnu : ${entity}`)
+  const current = await qbGet(`/${entity}/${qbTxnId}`)
+  const syncToken = current[key]?.SyncToken
+  if (syncToken == null) throw new Error(`${key} #${qbTxnId} introuvable dans QuickBooks`)
+  await qbRequest('POST', `/${entity}?operation=delete`, { Id: String(qbTxnId), SyncToken: syncToken })
+  const upd = db.prepare(`
+    UPDATE carm_transactions SET posting_state = 'a_comptabiliser', qb_txn_id = NULL, qb_txn_type = NULL,
+      posting_group = NULL, posting_error = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE id = ?
+  `)
+  const tx = db.transaction(() => { for (const r of rows) upd.run(r.id) })
+  tx()
+  return rows.length
 }

@@ -1,6 +1,6 @@
 import { Router } from 'express';
+import { newRecordId } from '../utils/recordId.js';
 import bcrypt from 'bcrypt';
-import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAdmin } from '../middleware/auth.js';
 import { readFileSync, statSync, existsSync } from 'fs';
@@ -9,9 +9,12 @@ import os from 'os';
 import Stripe from 'stripe';
 import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
 import { qbGet } from '../connectors/quickbooks.js';
-import { emitEntity } from '../services/realtimeEmitters.js';
+import { emitEntity, emitFacture } from '../services/realtimeEmitters.js';
+import { invalidateColumnsCache } from '../db/changeLog.js';
 import { getStripeKey } from '../services/stripe.js'
 import { parseLimit } from '../utils/pagination.js'
+import { listTrash, purgeTrash, TRASH_TABLE_KEYS } from '../services/trash.js'
+import { PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
 
 const router = Router();
 router.use(requireAdmin);
@@ -114,6 +117,7 @@ router.post('/factures/:id/clear-paid-status', (req, res) => {
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(nextStatus, req.params.id)
+  emitFacture('updated', req.params.id, req.user?.id)
   res.json({ ok: true, status: nextStatus })
 })
 
@@ -437,7 +441,7 @@ router.post('/users', async (req, res) => {
     return res.status(409).json({ error: 'Email already in use' });
   }
 
-  const id = uuidv4();
+  const id = newRecordId();
   const passwordHash = await bcrypt.hash(password, 10);
   db.prepare(
     'INSERT INTO users (id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)'
@@ -627,51 +631,41 @@ router.delete('/slow-loads', (req, res) => {
   res.json({ deleted: r.changes })
 })
 
-// GET /api/admin/trash — enregistrements supprimés de toutes les tables
+// GET /api/admin/trash — enregistrements supprimés de toutes les tables,
+// accompagnés de la règle de rétention en vigueur (auto-nettoyage).
 router.get('/trash', (req, res) => {
-  const trash = {}
-
-  const tables = [
-    { key: 'custom_fields', label: 'Champs personnalisés', sql: `SELECT id, (erp_table || ' / ' || name) as label, deleted_at FROM custom_fields WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'companies',     label: 'Entreprises',     sql: `SELECT id, name as label, deleted_at FROM companies WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'contacts',      label: 'Contacts',        sql: `SELECT id, (first_name || ' ' || last_name) as label, deleted_at FROM contacts WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'orders',        label: 'Commandes',       sql: `SELECT id, ('Commande #' || order_number) as label, deleted_at FROM orders WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'products',      label: 'Produits',        sql: `SELECT id, COALESCE(name_fr, name_en, sku) as label, deleted_at FROM products WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'shipments',     label: 'Envois',          sql: `SELECT s.id, COALESCE('Envoi #' || o.order_number, s.tracking_number, s.id) as label, s.deleted_at FROM shipments s LEFT JOIN orders o ON s.order_id=o.id WHERE s.deleted_at IS NOT NULL ORDER BY s.deleted_at DESC` },
-    { key: 'returns',       label: 'Retours',         sql: `SELECT id, COALESCE(return_number, id) as label, deleted_at FROM returns WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'projects',      label: 'Projets',         sql: `SELECT id, name as label, deleted_at FROM projects WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'assemblages',   label: 'Assemblages',     sql: `SELECT id, COALESCE(name, id) as label, deleted_at FROM assemblages WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'tasks',         label: 'Tâches',          sql: `SELECT id, title as label, deleted_at FROM tasks WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-    { key: 'interactions',  label: 'Interactions',    sql: `SELECT i.id, COALESCE(e.subject, i.type) as label, i.deleted_at FROM interactions i LEFT JOIN emails e ON e.interaction_id=i.id WHERE i.deleted_at IS NOT NULL ORDER BY i.deleted_at DESC` },
-    { key: 'serial_numbers',label: 'Numéros de série',sql: `SELECT id, serial as label, deleted_at FROM serial_numbers WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC` },
-  ]
-
-  for (const t of tables) {
-    try { trash[t.key] = { label: t.label, items: db.prepare(t.sql).all() } }
-    catch { trash[t.key] = { label: t.label, items: [] } }
-  }
-
-  res.json(trash)
+  res.json(listTrash())
 })
 
 // POST /api/admin/trash/:table/:id/restore
 router.post('/trash/:table/:id/restore', (req, res) => {
-  const allowed = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers','custom_fields']
-  if (!allowed.includes(req.params.table)) return res.status(400).json({ error: 'Table invalide' })
+  if (!TRASH_TABLE_KEYS.includes(req.params.table)) return res.status(400).json({ error: 'Table invalide' })
+
+  // Supprimer un champ issu d'Airtable coupe aussi son import
+  // (routes/custom-fields.js) : le restaurer doit rétablir les DEUX, sinon le
+  // champ reste invisible partout (colonne à import coupé = retirée du tableau,
+  // du panneau Champs et des listes de filtres/tris/groupes) et la corbeille
+  // semble sans effet.
+  const field = req.params.table === 'custom_fields'
+    ? db.prepare('SELECT erp_table, column_name, kind, source FROM custom_fields WHERE id=?').get(req.params.id)
+    : null
 
   const result = db.prepare(`UPDATE ${req.params.table} SET deleted_at = NULL WHERE id = ?`).run(req.params.id)
   if (result.changes === 0) return res.status(404).json({ error: 'Enregistrement introuvable' })
+  if (field?.column_name && (field.source === 'airtable' || PUSH_ONLY_CF_KINDS.has(field.kind))) {
+    db.prepare(
+      'UPDATE airtable_field_mappings SET import_disabled=0 WHERE erp_table=? AND column_name=?'
+    ).run(field.erp_table, field.column_name)
+  }
+  // Un champ restauré doit revenir dans le snapshot client (il en avait été
+  // retiré à la suppression — voir droppedFieldColumns).
+  if (req.params.table === 'custom_fields') invalidateColumnsCache()
   res.json({ ok: true })
 })
 
 // DELETE /api/admin/trash — purge définitive de tous les enregistrements supprimés
 router.delete('/trash', (req, res) => {
-  const tables = ['companies','contacts','orders','products','shipments','returns','projects','assemblages','tasks','interactions','serial_numbers','custom_fields']
-  let total = 0
-  for (const t of tables) {
-    try { total += db.prepare(`DELETE FROM ${t} WHERE deleted_at IS NOT NULL`).run().changes } catch {}
-  }
-  res.json({ purged: total })
+  res.json(purgeTrash())
 })
 
 // ── Backfill factures Stripe post-cutoff (refonte avril 2026) ───────────────
@@ -771,8 +765,7 @@ router.post('/stripe-backfill/process', async (req, res) => {
           continue
         }
 
-        const { randomUUID } = await import('crypto')
-        paymentId = randomUUID()
+        paymentId = newRecordId()
         db.prepare(`
           INSERT INTO payments (
             id, facture_id, direction, method, received_at, amount, currency,

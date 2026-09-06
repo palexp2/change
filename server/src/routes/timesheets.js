@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { parseDurationToMinutes } from '../services/duration.js'
@@ -138,7 +138,7 @@ router.post('/day', (req, res) => {
   const existing = db.prepare('SELECT id FROM timesheet_days WHERE user_id = ? AND date = ? AND deleted_at IS NULL').get(target, date)
   if (existing) return res.json(loadDayWithEntries(existing.id))
 
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO timesheet_days (id, user_id, date, mode)
     VALUES (?, ?, ?, ?)
@@ -296,7 +296,7 @@ router.post('/day/:dayId/entries', (req, res) => {
 
   // sort_order par défaut = max + 1 dans la journée
   const maxOrder = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 as next FROM timesheet_entries WHERE day_id = ?').get(req.params.dayId).next
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO timesheet_entries (id, day_id, sort_order, description, activity_code_id, company_id, duration_minutes, rsde)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?)

@@ -1,7 +1,7 @@
 import { readFileSync, unlinkSync, existsSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import { execSync } from 'child_process'
-import { v4 as uuid } from 'uuid'
 import FormData from 'form-data'
 import nodeFetch from 'node-fetch'
 import db from '../db/database.js'
@@ -108,7 +108,7 @@ async function runTranscription(callId, filePath, trigger = 'manual') {
     return
   }
 
-  const jobId = uuid()
+  const jobId = newRecordId()
   db.prepare(`INSERT INTO transcription_jobs (id, call_id, status) VALUES (?,?,'processing')`).run(jobId, callId)
   db.prepare(`UPDATE calls SET transcription_status='processing' WHERE id=?`).run(callId)
 

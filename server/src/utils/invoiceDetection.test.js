@@ -99,6 +99,35 @@ test('partage de note Google Keep : rejeté', () => {
   }), false)
 })
 
+test('transfert depuis un expéditeur whitelisté : accepté', () => {
+  assert.equal(looksLikeInvoiceMessage({
+    subject: 'Fwd: Ménage facture N17 du 29/08/2026',
+    from: 'guillaume@orisha.io',
+    attachmentNames: ['facture_N17.pdf'],
+    trustedSender: true,
+  }), true)
+})
+
+test('transfert whitelisté avec flag In-Reply-To : accepté aussi', () => {
+  assert.equal(looksLikeInvoiceMessage({
+    subject: 'Fwd: Facture Provo à comptabiliser',
+    from: 'pap@orisha.io',
+    attachmentNames: ['Invoice_INV369457.pdf'],
+    isReply: true,
+    trustedSender: true,
+  }), true)
+})
+
+test('transfert whitelisté sans rien qui ressemble à une facture : rejeté', () => {
+  assert.equal(looksLikeInvoiceMessage({
+    subject: 'Fwd: Plans de la serre révisés',
+    from: 'guillaume@orisha.io',
+    bodyText: 'Voici les plans mis à jour.',
+    attachmentNames: ['plans_v3.pdf'],
+    trustedSender: true,
+  }), false)
+})
+
 test('facture Google Workspace directe : toujours acceptée', () => {
   assert.equal(looksLikeInvoiceMessage({
     subject: 'Votre facture Google Workspace est disponible',

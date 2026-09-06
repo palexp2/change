@@ -1,22 +1,18 @@
 import { Router } from 'express'
-import { randomUUID, randomBytes } from 'crypto'
-import multer from 'multer'
-import { join, extname } from 'path'
-import { existsSync, mkdirSync, unlinkSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
+import { randomBytes } from 'crypto'
+import { makeUpload } from '../utils/upload.js'
+import { join } from 'path'
+import { existsSync, unlinkSync } from 'fs'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { normalizeUploadName } from '../utils/uploadFileName.js'
+import { ensureUploadsDir } from '../config/uploads.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
 
-const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'public')
-if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
+const uploadsDir = ensureUploadsDir('public')
 
-const storage = multer.diskStorage({
-  destination: uploadsDir,
-  filename: (req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`),
-})
-const upload = multer({
-  storage,
-  limits: { fileSize: 100 * 1024 * 1024 }, // 100 Mo
-})
+const upload = makeUpload({ destination: uploadsDir, fileSize: 100 * 1024 * 1024 })
 
 function hydrate(row) {
   if (!row) return null
@@ -65,7 +61,7 @@ publicFilesRouter.get('/folders', (_req, res) => {
 publicFilesRouter.post('/upload', upload.single('file'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'Aucun fichier reçu' })
 
-  const id = randomUUID()
+  const id = newRecordId()
   const token = genToken()
   const folder = typeof req.body.folder === 'string' ? req.body.folder.trim() : ''
   const description = req.body.description || null
@@ -83,7 +79,7 @@ publicFilesRouter.post('/upload', upload.single('file'), (req, res) => {
   `).run(
     id,
     token,
-    req.file.originalname,
+    normalizeUploadName(req.file.originalname),
     req.file.filename,
     req.file.mimetype || null,
     req.file.size || null,
@@ -124,7 +120,7 @@ publicFilesRouter.post('/:id/replace', upload.single('file'), (req, res) => {
     WHERE id = ?
   `).run(
     req.file.filename,
-    req.file.originalname,
+    normalizeUploadName(req.file.originalname),
     req.file.mimetype || null,
     req.file.size || null,
     req.params.id
@@ -142,25 +138,20 @@ publicFilesRouter.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM public_files WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const { folder, description, tags, original_name } = req.body
-  const updates = []
-  const params = []
-  if (folder !== undefined)        { updates.push('folder = ?');        params.push(String(folder || '').trim()) }
-  if (description !== undefined)   { updates.push('description = ?');   params.push(description || null) }
-  if (tags !== undefined) {
-    const arr = Array.isArray(tags) ? tags.map(String) : []
-    updates.push('tags = ?')
-    params.push(JSON.stringify(arr))
-  }
-  if (original_name !== undefined && String(original_name).trim()) {
-    updates.push('original_name = ?')
-    params.push(String(original_name).trim())
-  }
-  if (updates.length === 0) return res.json(hydrate(row))
+  const body = { ...req.body }
+  if (!String(body.original_name ?? '').trim()) delete body.original_name
+  const { setClause, values } = buildPartialUpdate(body, {
+    allowed: ['folder', 'description', 'tags', 'original_name'],
+    coerce: {
+      folder: v => String(v || '').trim(),
+      description: v => v || null,
+      tags: v => JSON.stringify(Array.isArray(v) ? v.map(String) : []),
+      original_name: v => normalizeUploadName(String(v).trim()),
+    },
+  })
+  if (!setClause) return res.json(hydrate(row))
 
-  updates.push("updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')")
-  params.push(req.params.id)
-  db.prepare(`UPDATE public_files SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  db.prepare(`UPDATE public_files SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
 
   const updated = db.prepare(`
     SELECT pf.*, u.name AS uploaded_by_name
@@ -193,8 +184,14 @@ publicFileServeRouter.get('/:token{/:filename}', (req, res) => {
 
   if (row.mime_type) res.setHeader('Content-Type', row.mime_type)
   // Affiche inline (images/pdf) — le navigateur force le téléchargement si type inconnu.
-  const safeName = (row.original_name || 'fichier').replace(/[^\w.\-+\s()]/g, '_')
-  res.setHeader('Content-Disposition', `inline; filename="${safeName}"`)
+  // Deux noms : l'ASCII pour les vieux clients, le `filename*` RFC 5987 pour
+  // que « Capture d'écran.png » garde ses accents à l'enregistrement.
+  const original = row.original_name || 'fichier'
+  const safeName = original.replace(/[^\w.\-+\s()]/g, '_')
+  res.setHeader(
+    'Content-Disposition',
+    `inline; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(original)}`
+  )
   res.setHeader('Cache-Control', 'public, max-age=3600')
   res.sendFile(filePath)
 })

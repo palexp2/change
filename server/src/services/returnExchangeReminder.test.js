@@ -14,7 +14,7 @@ function makeDb() {
     CREATE TABLE returns (
       id TEXT PRIMARY KEY,
       company_id TEXT,
-      contact_id TEXT,
+      contact TEXT,
       billed_at TEXT,
       created_at TEXT
     );
@@ -36,7 +36,7 @@ function makeDb() {
 
 function seedReturn(db, { id, contactId = 'c1', billedAt = null, createdAt = '2026-08-01T00:00:00.000Z', email = 'client@example.com' }) {
   db.prepare('INSERT INTO contacts (id, email, first_name, langue) VALUES (?, ?, ?, ?)').run(contactId, email, 'Marie', 'French')
-  db.prepare('INSERT INTO returns (id, company_id, contact_id, billed_at, created_at) VALUES (?, ?, ?, ?, ?)').run(id, 'co1', contactId, billedAt, createdAt)
+  db.prepare('INSERT INTO returns (id, company_id, contact, billed_at, created_at) VALUES (?, ?, ?, ?, ?)').run(id, 'co1', contactId, billedAt, createdAt)
 }
 
 test('retour avec item immédiat non reçu, non facturé → éligible', () => {

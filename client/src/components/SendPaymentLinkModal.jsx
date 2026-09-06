@@ -3,15 +3,15 @@ import { Send, Mail, ChevronDown } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import api from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { useConfirm } from './ConfirmProvider.jsx'
 import { useUndoSend } from './UndoSendProvider.jsx'
+import ErrorBanner from './ErrorBanner.jsx'
+import Spinner from './Spinner.jsx'
 
 // Modale d'envoi du lien de paiement (pending_invoice).
 // Charge les défauts via /email-defaults, laisse l'utilisateur éditer
 // destinataire / sujet / message, puis appelle stripeInvoices.send.
 export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent }) {
   const { addToast } = useToast()
-  const confirm = useConfirm()
   const scheduleSend = useUndoSend()
   const [loading, setLoading] = useState(false)
   const [defaults, setDefaults] = useState(null)
@@ -20,7 +20,6 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
   const [message, setMessage] = useState('')
   const [recipientPickerOpen, setRecipientPickerOpen] = useState(false)
   const [recipientQuery, setRecipientQuery] = useState('')
-  const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
 
   useEffect(() => {
@@ -71,21 +70,9 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
     if (!cleanTo) { setError('Adresse courriel requise'); return }
     if (!/.+@.+\..+/.test(cleanTo)) { setError('Adresse courriel invalide'); return }
 
-    // Confirmation explicite du side effect (envoi d'un courriel client-facing).
-    setSending(true)
-    const ok = await confirm({
-      title: "Confirmer l'envoi du courriel",
-      message: (
-        <>Un courriel contenant le <strong>lien de paiement Stripe</strong> sera envoyé à <strong>{cleanTo}</strong>.</>
-      ),
-      confirmLabel: 'Envoyer',
-      danger: false,
-    })
-    if (!ok) { setSending(false); return }
-
     const subj = subject?.trim() || undefined
     const msg = message?.trim() || undefined
-    // On ferme la modale et on planifie l'envoi avec une fenêtre d'annulation de 10 s.
+    // On ferme la modale et on planifie l'envoi avec sa fenêtre d'annulation.
     onClose?.()
     scheduleSend({
       message: `Envoi du lien de paiement à ${cleanTo}…`,
@@ -109,14 +96,14 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Envoyer le lien de paiement" size="lg">
       {loading ? (
-        <div className="py-10 text-center text-slate-400">Chargement…</div>
+        <div className="py-10 text-center text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
       ) : !defaults ? (
         <div className="py-10 text-center text-red-600">{error || 'Impossible de charger les valeurs par défaut'}</div>
       ) : (
         <div className="space-y-4">
           {/* Destinataire */}
           <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Destinataire</label>
+            <label className="label">Destinataire</label>
             <div className="relative">
               <div className="flex items-stretch gap-2">
                 <div className="relative flex-1">
@@ -125,7 +112,6 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
                     type="email"
                     value={to}
                     onChange={e => setTo(e.target.value)}
-                    placeholder="email@exemple.com"
                     className="w-full text-sm rounded-lg border border-slate-200 bg-white pl-9 pr-3 py-2 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-400"
                   />
                 </div>
@@ -148,7 +134,6 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
                         autoFocus
                         value={recipientQuery}
                         onChange={e => setRecipientQuery(e.target.value)}
-                        placeholder="Rechercher…"
                         className="w-full text-sm focus:outline-none"
                       />
                     </div>
@@ -181,7 +166,7 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
 
           {/* Objet */}
           <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Objet</label>
+            <label className="label">Objet</label>
             <input
               type="text"
               value={subject}
@@ -192,7 +177,7 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
 
           {/* Message */}
           <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Message</label>
+            <label className="label">Message</label>
             <textarea
               value={message}
               onChange={e => setMessage(e.target.value)}
@@ -205,17 +190,16 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
           </div>
 
           {error && (
-            <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">{error}</div>
+            <ErrorBanner>{error}</ErrorBanner>
           )}
 
           <div className="flex justify-end gap-2 pt-2">
-            <button onClick={onClose} disabled={sending} className="px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 rounded-lg">Annuler</button>
+            <button onClick={onClose} className="px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 rounded-lg">Annuler</button>
             <button
               onClick={handleSend}
-              disabled={sending}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50"
             >
-              <Send size={14} /> {sending ? 'Envoi…' : 'Envoyer'}
+              <Send size={14} /> Envoyer
             </button>
           </div>
         </div>

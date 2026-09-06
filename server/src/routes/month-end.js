@@ -2,7 +2,7 @@
 // salariale) + heures R&D du mois. L'écriture FPA reste servie par
 // /api/prepaid/fpa/month/:month — la page de fin de mois consomme les deux.
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import {
@@ -186,7 +186,7 @@ router.post('/hours', (req, res) => {
     SELECT 1 FROM rd_month_hours WHERE month = ? AND employee_name = ? AND deleted_at IS NULL
   `).get(month, employee_name.trim())
   if (exists) return res.status(400).json({ error: 'Cette personne a déjà une ligne pour ce mois' })
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO rd_month_hours (id, month, employee_name, hours, contractor, source)
     VALUES (?,?,?,?,?,'manuel')

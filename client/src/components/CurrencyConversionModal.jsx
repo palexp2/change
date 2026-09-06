@@ -19,6 +19,7 @@ import { Modal } from './Modal'
 import { api } from '../lib/api'
 import { computeConversion, conversionSpreadPct, parseAmount, round2 } from '../lib/currencyConversion'
 import { localISODate } from '../lib/formatDate.js'
+import { fmtNumber } from '../utils/formatters.js'
 
 const LINES = [
   { key: 'subtotal', label: 'Facture (excluant taxes)' },
@@ -27,10 +28,7 @@ const LINES = [
   { key: 'otherTaxes', label: 'Autres taxes' },
 ]
 
-function fmt(n, digits = 2) {
-  if (n == null || !Number.isFinite(Number(n))) return '—'
-  return Number(n).toLocaleString('fr-CA', { minimumFractionDigits: digits, maximumFractionDigits: digits })
-}
+const fmt = (n, digits = 2) => fmtNumber(n, { decimals: digits })
 
 // Saisie libre : virgule OU point (« 196,14 » comme « 196.14 »), séparateurs de
 // milliers tolérés. L'analyse se fait au calcul (parseAmount), pas à la frappe —
@@ -50,7 +48,6 @@ function AmountInput({ value, onChange, label, testId, autoFocus = false, hint =
         onChange={e => onChange(e.target.value)}
         data-testid={testId}
         className="w-32 shrink-0 text-right tabular-nums text-sm border border-slate-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400"
-        placeholder="0,00"
       />
     </label>
   )

@@ -3,13 +3,19 @@
  * into the ERP, creating columns and storing field metadata dynamically.
  */
 import path from 'path'
-import { existsSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
+import { createHash } from 'crypto'
+import { existsSync, statSync } from 'fs'
 import { mkdir, writeFile } from 'fs/promises'
-import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 import { dynamicFieldDirection, writebackModuleForTable } from './airtableWriteback.js'
+import { syncSelectChoicesFromAirtable } from './airtableSelectChoices.js'
+import { sameStored } from './airtableDiff.js'
+import { resolveRefValue } from './airtableNativeMappedColumns.js'
+import { emitMirrorWrite } from './realtimeEmitters.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // ── Airtable type → ERP type mapping ────────────────────────────────────────
 
@@ -128,6 +134,14 @@ function percentToPoints(val) {
 export function convertValue(val, fieldType, options) {
   if (val === null || val === undefined) return null
 
+  // Colonne native à résolveur (ex. projects.vendeur_ref) : la colonne ne porte
+  // pas la valeur Airtable mais une référence vers un enregistrement Boréal —
+  // cf. services/airtableNativeMappedColumns.js.
+  if (options?.ref_resolver) {
+    const ref = resolveRefValue(options.ref_resolver, val)
+    if (ref !== undefined) return ref
+  }
+
   if (options?.format === 'percent' && typeof val === 'number') return percentToPoints(val)
 
   switch (fieldType) {
@@ -189,7 +203,7 @@ export function convertValue(val, fieldType, options) {
 // table synchronisée depuis Airtable.
 
 const ATTACHMENT_MIRROR_DIR = () =>
-  path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments', 'airtable')
+  uploadsPath('attachments', 'airtable')
 
 const IMAGE_FILENAME_RE = /\.(png|jpe?g|gif|webp|avif|svg|bmp|ico|heic|heif)$/i
 // Sous-types MIME image → extension de fichier. Les autres retombent sur le
@@ -318,6 +332,106 @@ function imageFieldNames(writable, records) {
   return [...names]
 }
 
+// ── Champs « Attachement » alimentés par Airtable ───────────────────────────
+//
+// Un champ perso de type 'attachment' ne stocke pas une URL : sa colonne porte un
+// tableau JSON de descripteurs `{ id, name, size, type }` et les octets vivent
+// sous uploads/attachments/fields/<champ>/<enregistrement>/<id> — convention de
+// routes/custom-field-files.js, qui sert les fichiers. Mapper un tel champ sur une
+// colonne « pièces jointes » Airtable demande donc de RAPATRIER les fichiers et de
+// reproduire cette structure : écrire l'URL Airtable laisserait la cellule vide
+// (le rendu ne lit qu'un tableau JSON) et morte en quelques heures (l'URL expire).
+//
+// L'identifiant de fichier est DÉRIVÉ de celui de la pièce jointe Airtable —
+// empreinte mise en forme d'UUID, seule forme acceptée par la route de service.
+// Il est donc stable d'un sync à l'autre : le fichier n'est téléchargé qu'une
+// fois, et la cellule ne bouge que si Airtable bouge.
+
+const FIELD_FILES_DIR = () =>
+  uploadsPath('attachments', 'fields')
+
+// Colonnes de `erpTable` portées par un champ perso « Attachement », avec l'id du
+// champ — c'est lui qui nomme le répertoire des fichiers.
+export function attachmentFieldColumns(erpTable) {
+  const rows = db.prepare(
+    `SELECT id, column_name FROM custom_fields
+     WHERE erp_table=? AND type='attachment' AND deleted_at IS NULL AND (kind IS NULL OR kind='data')`
+  ).all(erpTable)
+  return new Map(rows.map(r => [r.column_name, r.id]))
+}
+
+function attachmentFileId(att) {
+  const h = createHash('sha1').update(String(att.id || att.url || '')).digest('hex')
+  const id = `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20, 32)}`
+  const name = String(att.filename || 'fichier').replace(/[/\\?%*:|"<>]/g, '_').slice(0, 200) || 'fichier'
+  return `${id}_${name}`
+}
+
+/**
+ * Télécharge les pièces jointes Airtable des colonnes « Attachement » demandées
+ * et retourne une Map `${recordId}::${colonne}` → valeur de cellule (tableau JSON
+ * de descripteurs, ou null si Airtable n'a aucun fichier).
+ *
+ * `targets` : [{ airtableFieldName, columnName, fieldId }].
+ *
+ * Ne jette jamais : un téléchargement raté rend la valeur ACTUELLE de la cellule
+ * — la sync écrit toutes ses colonnes d'un bloc, un `null` de repli effacerait
+ * des fichiers déjà importés au premier hoquet réseau.
+ */
+async function mirrorAttachmentFields(records, targets, erpTable) {
+  const out = new Map()
+  if (!targets.length || !records?.length) return out
+  const idOf = db.prepare(`SELECT id FROM ${erpTable} WHERE airtable_id=?`)
+
+  for (const rec of records) {
+    const recordId = idOf.get(rec.id)?.id
+    if (!recordId) continue // record pas (encore) importé : rien à rattacher
+    for (const t of targets) {
+      const raw = rec.fields?.[t.airtableFieldName]
+      // Airtable omet les cellules vides : absence = aucune pièce jointe.
+      const atts = (Array.isArray(raw) ? (raw.flat ? raw.flat() : raw) : [])
+        .filter(a => a && typeof a === 'object' && typeof a.url === 'string')
+      const dir = path.join(FIELD_FILES_DIR(), t.fieldId, recordId)
+      const files = []
+      let failed = false
+      for (const att of atts) {
+        const id = attachmentFileId(att)
+        const dest = path.join(dir, id)
+        try {
+          if (!existsSync(dest)) {
+            await mkdir(dir, { recursive: true })
+            const res = await fetch(att.url)
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const body = Buffer.from(await res.arrayBuffer())
+            // Une photo sort de l'appareil en pleine résolution : même réduction
+            // que le miroir d'images, les autres formats passent tels quels.
+            await writeFile(dest, IMAGE_FILENAME_RE.test(id) ? await downscale(body, id) : body)
+          }
+          files.push({ id, name: att.filename || id, size: statSync(dest).size, type: att.type || null })
+        } catch (e) {
+          failed = true
+          console.error(`⚠️  Airtable attachement « ${t.airtableFieldName} » (${att.filename || att.id}): ${e.message}`)
+          break
+        }
+      }
+      if (failed) {
+        const current = db.prepare(`SELECT "${t.columnName}" AS v FROM ${erpTable} WHERE id=?`).get(recordId)
+        out.set(`${rec.id}::${t.columnName}`, current?.v ?? null)
+        continue
+      }
+      out.set(`${rec.id}::${t.columnName}`, files.length ? JSON.stringify(files) : null)
+    }
+  }
+  return out
+}
+
+// Cibles « Attachement » parmi les colonnes qu'on s'apprête à écrire.
+function attachmentTargets(writable, attachCols) {
+  return writable
+    .filter(f => attachCols.has(f.columnName))
+    .map(f => ({ ...f, fieldId: attachCols.get(f.columnName) }))
+}
+
 // ── Live table column lookup ────────────────────────────────────────────────
 
 function liveColumns(table) {
@@ -348,13 +462,30 @@ function notNullColumns(table) {
  * synchronisé : tous les projets se déliaient de leur entreprise alors même que
  * la map `company: "Client final"` était correcte.
  */
-function hardcodedErpColumns(hardcodedFieldMap) {
+export function hardcodedErpColumns(hardcodedFieldMap) {
   const cols = new Set()
   for (const key of Object.keys(hardcodedFieldMap || {})) {
     cols.add(key)
     if (!key.endsWith('_id')) cols.add(`${key}_id`)
   }
   return cols
+}
+
+/**
+ * Un champ Airtable peut alimenter PLUSIEURS colonnes Boréal — une def par
+ * colonne (cf. UNIQUE(erp_table, column_name)). Quand le champ est DÉJÀ lu par
+ * le field_map « cœur » du module, la def dynamique qui le double ne prend le
+ * relais que si l'utilisateur l'a explicitement choisie dans /champs : la route
+ * de mapping estampille alors `share_core_field` dans ses options.
+ *
+ * Sans ce garde-fou, ouvrir le partage aurait réveillé d'un coup 11 defs
+ * jumelles dormantes (résidus de l'import webhook), dont `products.image_url`
+ * — que le sync cœur remplit d'un chemin local et que la def aurait écrasé avec
+ * l'URL d'attachment Airtable, périmée en quelques heures.
+ */
+export function sharesCoreField(def) {
+  try { return JSON.parse(def?.options || '{}').share_core_field === true }
+  catch { return false }
 }
 
 /**
@@ -384,6 +515,15 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     return
   }
 
+  // 1 bis. Les CHOIX des Sélections Airtable entrent dans les champs ERP
+  // correspondants (ajout seulement, cf. airtableSelectChoices.js) : sans ça,
+  // une option ajoutée dans Airtable arrivait dans la donnée mais restait
+  // inconnue du champ — ni pastille, ni entrée dans le sélecteur. Passe menée
+  // sur TOUTES les colonnes mappées, indépendamment de la boucle ci-dessous
+  // (qui, elle, ne traite que les champs hors field_map « cœur »).
+  try { syncSelectChoicesFromAirtable(erpTable, tableFields) }
+  catch (e) { console.error(`⚠️  Choix Airtable → ${erpTable} : ${e.message}`) }
+
   // 2. Determine which fields are NOT in the hardcoded map
   const mappedAirtableFields = new Set(Object.values(hardcodedFieldMap || {}).filter(v => typeof v === 'string'))
   // Colonnes ERP gérées par la sync hardcodée — interdire qu'une def dynamique
@@ -395,8 +535,6 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
   const existingDefs = db.prepare(
     'SELECT * FROM airtable_field_mappings WHERE erp_table=?'
   ).all(erpTable)
-  const defsByAtId = new Map(existingDefs.map(d => [d.airtable_field_id, d]))
-  const defsByName = new Map(existingDefs.map(d => [d.airtable_field_name, d]))
   // IDs de champs qui existent réellement dans Airtable — sert à reconnaître les
   // mappings orphelins (cf. `twinDefs`).
   const realFieldIds = new Set(tableFields.map(f => f.id))
@@ -424,37 +562,45 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
   const claimedColumns = new Set() // une colonne ERP n'est écrite qu'une fois par UPDATE
 
   for (const atField of tableFields) {
-    // Skip fields already handled by hardcoded map
-    if (mappedAirtableFields.has(atField.name)) continue
+    // Champ déjà lu par le field_map hardcodé. Il reste traitable ici : une def
+    // dynamique peut le faire alimenter une SECONDE colonne ERP, à condition
+    // d'avoir été posée explicitement (cf. sharesCoreField).
+    const readByCore = mappedAirtableFields.has(atField.name)
 
     const mapped = mapAirtableType(atField)
-    const existingDef = defsByAtId.get(atField.id) || defsByName.get(atField.name)
+    const defs = twinDefs(atField)
 
     // No def → field is unknown to the ERP; we no longer auto-create columns
     // for new Airtable fields, so simply skip.
-    if (!existingDef) continue
+    if (!defs.length) continue
 
-    // Placeholder (`__pending__`) defs created via the sync modale never had
-    // a real column attached — without auto-creation we just skip them.
-    if (existingDef.column_name === '__pending__') continue
-
-    // Update mapping metadata (nom du champ Airtable) sur le mapping existant.
+    // Update mapping metadata (nom du champ Airtable) sur les mappings
+    // existants — TOUS, pas seulement le premier : depuis qu'un même champ peut
+    // alimenter plusieurs colonnes, un renommage côté Airtable laissait les defs
+    // jumelles sur l'ancien nom, et le chemin webhook (updateDynamicFields, qui
+    // lit le nom stocké et non les métadonnées live) leur écrivait alors null.
     // Le field_type/options de RENDU vit désormais dans custom_fields et n'est
     // plus jamais réécrit par le sync entrant (changement de comportement
     // volontaire — un renommage/retype côté Airtable ne doit plus surprendre un
     // utilisateur qui a configuré le rendu ERP à la main). `mapped.field_type`/
     // `mapped.options`, dérivés à chaque passage des métadonnées Airtable
     // live, servent uniquement à convertir la VALEUR ci-dessous.
-    if (existingDef.airtable_field_name !== atField.name) {
+    for (const def of defs) {
+      if (def.airtable_field_name === atField.name) continue
       db.prepare(
         "UPDATE airtable_field_mappings SET airtable_field_name=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?"
-      ).run(atField.name, existingDef.id)
+      ).run(atField.name, def.id)
+      def.airtable_field_name = atField.name
       updatedFields++
     }
 
-    for (const def of twinDefs(atField)) {
+    for (const def of defs) {
       if (def.import_disabled === 1) continue
+      // Placeholder (`__pending__`) créé par la modale de sync : jamais rattaché
+      // à une vraie colonne.
       if (def.column_name === '__pending__') continue
+      // Doublon d'un champ cœur non revendiqué : dormant (voir sharesCoreField).
+      if (readByCore && !sharesCoreField(def)) continue
       // Defensive: if the column was dropped manually, skip rather than crash.
       if (!existingCols.has(def.column_name)) continue
       // Sens 'push' (ERP → Airtable seulement) : la valeur Airtable n'est plus
@@ -477,7 +623,11 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
         airtableFieldName: atField.name,
         columnName: def.column_name,
         fieldType: mapped.field_type,
-        options: { ...mapped.options, link_target_table: mappingOptions.link_target_table || null },
+        options: {
+          ...mapped.options,
+          link_target_table: mappingOptions.link_target_table || null,
+          ref_resolver: mappingOptions.ref_resolver || null,
+        },
       })
     }
   }
@@ -489,7 +639,12 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
   if (writable.length > 0 && records.length > 0) {
     // Les téléchargements se font AVANT la transaction (better-sqlite3 est
     // synchrone : aucun await ne peut vivre à l'intérieur).
-    const mirrored = await mirrorImageAttachments(records, imageFieldNames(writable, records))
+    const attachCols = attachmentFieldColumns(erpTable)
+    // Une colonne « Attachement » prend le chemin des fichiers, pas celui du
+    // miroir d'images (qui n'écrit qu'un chemin en texte).
+    const mirrored = await mirrorImageAttachments(
+      records, imageFieldNames(writable.filter(f => !attachCols.has(f.columnName)), records))
+    const attached = await mirrorAttachmentFields(records, attachmentTargets(writable, attachCols), erpTable)
 
     const updateStmt = writable.map(f => `${f.columnName}=?`).join(', ')
     const stmt = db.prepare(
@@ -499,8 +654,10 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     const populated = db.transaction((recs) => {
       let count = 0
       for (const rec of recs) {
-        const values = writable.map(f => mirrored.get(`${rec.id}::${f.airtableFieldName}`)
-          ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options))
+        const values = writable.map(f => attachCols.has(f.columnName)
+          ? (attached.get(`${rec.id}::${f.columnName}`) ?? null)
+          : mirrored.get(`${rec.id}::${f.airtableFieldName}`)
+            ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options))
         const result = stmt.run(...values, rec.id)
         if (result.changes > 0) count++
       }
@@ -511,6 +668,10 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
 
   if (updatedFields > 0) console.log(`🔄 ${module}: ${updatedFields} types de champs mis à jour`)
 }
+
+// Même seuil que le moteur de miroir : au-delà, ce n'est plus « un champ a été
+// modifié », c'est un import — le delta poll du cache client s'en charge.
+const LIVE_DYNAMIC_WRITE_CAP = 60
 
 /**
  * Lightweight dynamic field update for webhook records.
@@ -544,7 +705,11 @@ export async function updateDynamicFields(erpTable, hardcodedFieldMap, records) 
   const wbModule = writebackModuleForTable(erpTable)
   for (const d of defs) {
     if (d.import_disabled === 1) continue
-    if (mappedFields.has(d.airtable_field_name)) continue
+    // Champ déjà lu par le sync hardcodé : la def qui le double reste dormante
+    // tant qu'elle n'a pas été revendiquée dans /champs (cf. sharesCoreField) —
+    // sinon elle écraserait ce que le sync hardcodé vient d'écrire (ex.
+    // products.image_url, remplacé par l'URL Airtable temporaire).
+    if (mappedFields.has(d.airtable_field_name) && !sharesCoreField(d)) continue
     if (mappedErpColumns.has(d.column_name)) continue
     if (d.column_name === '__pending__') continue
     if (!existingCols.has(d.column_name)) continue
@@ -574,6 +739,7 @@ export async function updateDynamicFields(erpTable, hardcodedFieldMap, records) 
         format: mappingOptions.format,
         ...renderOptions,
         link_target_table: mappingOptions.link_target_table || null,
+        ref_resolver: mappingOptions.ref_resolver || null,
       },
     })
   }
@@ -586,22 +752,65 @@ export async function updateDynamicFields(erpTable, hardcodedFieldMap, records) 
   if (!writable.length) return
 
   // Idem syncDynamicFields : miroir local des pièces jointes image avant la
-  // transaction, sinon le webhook réécrirait une URL Airtable déjà périmée.
-  const mirrored = await mirrorImageAttachments(records, imageFieldNames(writable, records))
+  // transaction, sinon le webhook réécrirait une URL Airtable déjà périmée. Les
+  // colonnes « Attachement », elles, rapatrient les fichiers eux-mêmes.
+  const attachCols = attachmentFieldColumns(erpTable)
+  const mirrored = await mirrorImageAttachments(
+    records, imageFieldNames(writable.filter(f => !attachCols.has(f.columnName)), records))
+  const attached = await mirrorAttachmentFields(records, attachmentTargets(writable, attachCols), erpTable)
 
-  const updateStmt = writable.map(f => `${f.columnName}=?`).join(', ')
-  const stmt = db.prepare(`UPDATE ${erpTable} SET ${updateStmt} WHERE airtable_id=?`)
+  // Écriture DIFFÉRENTIELLE, comme les colonnes cœur du moteur de miroir : on
+  // relit les valeurs en place et on n'écrit que les colonnes qui bougent
+  // vraiment. Deux gains, le second étant le but :
+  //  • un webhook qui ne change rien n'écrit rien (donc pas de ligne
+  //    change_log, donc pas de delta envoyé aux navigateurs pour rien) ;
+  //  • on SAIT quelles colonnes ont changé — c'est ce qui permet à l'interface
+  //    d'allumer la pastille sur le bon champ, sans rafraîchissement.
+  const cols = writable.map(f => f.columnName)
+  const selectStmt = db.prepare(
+    `SELECT id, ${cols.map(c => `"${c}"`).join(', ')} FROM ${erpTable} WHERE airtable_id=?`
+  )
+  // Un statement par combinaison de colonnes changées, préparé une seule fois :
+  // sur un webhook, la même combinaison revient pour tous les records.
+  const updateStmts = new Map()
+  const liveWrites = []
 
   const count = db.transaction((recs) => {
     let n = 0
     for (const rec of recs) {
-      const values = writable.map(f => mirrored.get(`${rec.id}::${f.airtableFieldName}`)
-        ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options))
-      const result = stmt.run(...values, rec.id)
-      if (result.changes > 0) n++
+      const existing = selectStmt.get(rec.id)
+      if (!existing) continue // record pas (encore) importé : rien à enrichir
+      const values = writable.map(f => attachCols.has(f.columnName)
+        ? (attached.get(`${rec.id}::${f.columnName}`) ?? null)
+        : mirrored.get(`${rec.id}::${f.airtableFieldName}`)
+          ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options))
+      const changed = []
+      for (let i = 0; i < writable.length; i++) {
+        if (!sameStored(existing[writable[i].columnName], values[i] ?? null)) changed.push(i)
+      }
+      if (!changed.length) continue
+      const key = changed.join(',')
+      let stmt = updateStmts.get(key)
+      if (!stmt) {
+        stmt = db.prepare(
+          `UPDATE ${erpTable} SET ${changed.map(i => `"${writable[i].columnName}"=?`).join(', ')} WHERE airtable_id=?`
+        )
+        updateStmts.set(key, stmt)
+      }
+      stmt.run(...changed.map(i => values[i]), rec.id)
+      liveWrites.push({ id: existing.id, changed: changed.map(i => writable[i].columnName) })
+      n++
     }
     return n
   })(records)
+
+  // Temps réel, hors transaction (voir syncMirror 5b pour le même garde-fou).
+  if (liveWrites.length && liveWrites.length <= LIVE_DYNAMIC_WRITE_CAP) {
+    for (const w of liveWrites) {
+      try { emitMirrorWrite(erpTable, 'updated', w.id, w.changed) }
+      catch (e) { console.error(`realtime ${erpTable} (champs dynamiques): ${e.message}`) }
+    }
+  }
 
   if (count > 0) console.log(`🔄 ${erpTable}: ${count} records enrichis (webhook)`)
 }
@@ -636,7 +845,7 @@ export function ensureNativeFieldDefs(definitions) {
   let count = 0
   for (const def of definitions) {
     const result = stmt.run(
-      uuid(), def.module, def.erp_table, `native_${def.column_name}`,
+      newRecordId(), def.module, def.erp_table, `native_${def.column_name}`,
       def.label, def.column_name,
       def.sort_order ?? -(1000 - count)
     )

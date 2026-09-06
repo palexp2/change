@@ -2,7 +2,7 @@ import { createContext, useContext, useState, useCallback, useRef, useEffect } f
 
 // Délai d'annulation avant l'exécution réelle d'un envoi (email client-facing).
 // Pendant ce délai, un toast avec barre de progression laisse l'utilisateur annuler.
-const COUNTDOWN_MS = 10000
+const COUNTDOWN_MS = 3000
 
 const UndoSendContext = createContext(null)
 
@@ -20,7 +20,7 @@ export function UndoSendProvider({ children }) {
 
   // Planifie un envoi qui s'exécutera après COUNTDOWN_MS sauf annulation.
   // onRun: l'action réelle (appel API + toast de résultat). onCancel: feedback d'annulation.
-  const scheduleSend = useCallback(({ message, onRun, onCancel }) => {
+  const scheduleSend = useCallback(({ message, onRun, onCancel, durationMs = COUNTDOWN_MS }) => {
     // Si un envoi est déjà en attente, on le déclenche immédiatement avant d'en planifier un nouveau.
     if (timerRef.current) {
       clearTimeout(timerRef.current)
@@ -28,14 +28,14 @@ export function UndoSendProvider({ children }) {
       const prev = pendingRef.current
       prev?.onRun?.()
     }
-    const entry = { id: ++seqRef.current, message, onRun, onCancel }
+    const entry = { id: ++seqRef.current, message, onRun, onCancel, durationMs }
     pendingRef.current = entry
     setPending(entry)
     timerRef.current = setTimeout(() => {
       const e = pendingRef.current
       finish()
       e?.onRun?.()
-    }, COUNTDOWN_MS)
+    }, durationMs)
   }, [finish])
 
   const cancel = useCallback(() => {
@@ -53,7 +53,7 @@ export function UndoSendProvider({ children }) {
         <UndoSendToast
           key={pending.id}
           message={pending.message}
-          durationMs={COUNTDOWN_MS}
+          durationMs={pending.durationMs || COUNTDOWN_MS}
           onCancel={cancel}
         />
       )}

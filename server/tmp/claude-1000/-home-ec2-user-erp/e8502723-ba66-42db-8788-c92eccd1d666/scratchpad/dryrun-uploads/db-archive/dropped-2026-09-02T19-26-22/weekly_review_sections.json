@@ -1,0 +1,19 @@
+{
+  "table": "weekly_review_sections",
+  "dropped_at": "2026-09-02T19:26:22.994Z",
+  "ddl": "CREATE TABLE weekly_review_sections (\n      id TEXT PRIMARY KEY,\n      iso_week TEXT NOT NULL,\n      section_key TEXT NOT NULL,\n      reviewed INTEGER NOT NULL DEFAULT 0,\n      reviewed_by TEXT REFERENCES users(id),\n      reviewed_at TEXT,\n      note TEXT,\n      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\n    )",
+  "row_count": 1,
+  "rows": [
+    {
+      "id": "dc7c25c8-09d9-4ba7-9911-dc32626c204b",
+      "iso_week": "2026-W36",
+      "section_key": "commandes",
+      "reviewed": 0,
+      "reviewed_by": null,
+      "reviewed_at": null,
+      "note": null,
+      "created_at": "2026-09-01T17:38:03.084Z",
+      "updated_at": "2026-09-01T17:57:09.404Z"
+    }
+  ]
+}

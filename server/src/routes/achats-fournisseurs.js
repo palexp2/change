@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import fs from 'fs'
 import db from '../db/database.js'
@@ -8,6 +8,8 @@ import { requireAuth } from '../middleware/auth.js'
 import { qbGet, qbAttachmentDownloadUrl, qbEntityUrl } from '../connectors/quickbooks.js'
 import { pushAchatToQB } from '../services/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { uploadsPath } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
 
 const ACHAT_LIST_SELECT = `
   SELECT a.*, u.name as created_by_name
@@ -25,7 +27,7 @@ const withQbUrl = row => ({
   qb_url: row.quickbooks_id ? qbEntityUrl(row.type === 'bill' ? 'bill' : 'expense', row.quickbooks_id) : null,
 })
 
-const UPLOADS_ROOT = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+const UPLOADS_ROOT = uploadsPath()
 const QB_ATTACH_DIR = path.join(UPLOADS_ROOT, 'qb-attachments')
 
 function sanitizeFileName(name) {
@@ -53,10 +55,8 @@ function validateMoneyFields(body, fields = MONEY_FIELDS) {
 const toMoney = (v) => (v === null || v === '' || v === undefined ? 0 : Number(v))
 
 router.get('/', (req, res) => {
-  const { type, status, category, vendor_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { type, status, category, vendor_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = ''
   const params = []
   const add = (cond, val) => { where += (where ? ' AND' : ' WHERE') + ' ' + cond; params.push(val) }
@@ -104,7 +104,7 @@ router.post('/', (req, res) => {
   const moneyError = validateMoneyFields(req.body)
   if (moneyError) return res.status(400).json({ error: moneyError })
 
-  const id = randomUUID()
+  const id = newRecordId()
   const amt = toMoney(amount_cad)
   const tax = toMoney(tax_cad)
   const paid = toMoney(amount_paid_cad)
@@ -268,66 +268,61 @@ router.post('/:id/fetch-qb-attachments', async (req, res) => {
   if (!achat) return res.status(404).json({ error: 'Not found' })
   if (!achat.quickbooks_id) return res.status(400).json({ error: 'Cet achat n\'est pas lié à QuickBooks' })
 
-  try {
-    const entity = achat.type === 'bill' ? 'Bill' : 'Purchase'
-    const query = `SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Type = '${entity}' AND AttachableRef.EntityRef.Value = '${achat.quickbooks_id}'`
-    const qResp = await qbGet(`/query?query=${encodeURIComponent(query)}`)
-    const attachables = qResp?.QueryResponse?.Attachable || []
+  const entity = achat.type === 'bill' ? 'Bill' : 'Purchase'
+  const query = `SELECT * FROM Attachable WHERE AttachableRef.EntityRef.Type = '${entity}' AND AttachableRef.EntityRef.Value = '${achat.quickbooks_id}'`
+  const qResp = await qbGet(`/query?query=${encodeURIComponent(query)}`)
+  const attachables = qResp?.QueryResponse?.Attachable || []
 
-    const achatDir = path.join(QB_ATTACH_DIR, achat.id)
-    fs.mkdirSync(achatDir, { recursive: true })
+  const achatDir = path.join(QB_ATTACH_DIR, achat.id)
+  fs.mkdirSync(achatDir, { recursive: true })
 
-    const insertStmt = db.prepare(`
-      INSERT OR IGNORE INTO qb_attachments
-        (id, achat_id, qb_id, file_name, content_type, file_size, file_path, note)
-      VALUES (?,?,?,?,?,?,?,?)
-    `)
-    const existingStmt = db.prepare('SELECT 1 FROM qb_attachments WHERE achat_id = ? AND qb_id = ?')
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO qb_attachments
+      (id, achat_id, qb_id, file_name, content_type, file_size, file_path, note)
+    VALUES (?,?,?,?,?,?,?,?)
+  `)
+  const existingStmt = db.prepare('SELECT 1 FROM qb_attachments WHERE achat_id = ? AND qb_id = ?')
 
-    let added = 0
-    let skipped = 0
-    const errors = []
+  let added = 0
+  let skipped = 0
+  const errors = []
 
-    for (const att of attachables) {
-      const qbId = String(att.Id)
-      if (existingStmt.get(achat.id, qbId)) { skipped++; continue }
+  for (const att of attachables) {
+    const qbId = String(att.Id)
+    if (existingStmt.get(achat.id, qbId)) { skipped++; continue }
 
-      // Note-only attachable (sans fichier)
-      if (!att.FileName && att.Note) {
-        insertStmt.run(randomUUID(), achat.id, qbId, null, null, null, '', att.Note)
-        added++
-        continue
-      }
-      if (!att.FileName) { skipped++; continue }
-
-      try {
-        const url = await qbAttachmentDownloadUrl(qbId)
-        const fileResp = await fetch(url)
-        if (!fileResp.ok) throw new Error(`download ${fileResp.status}`)
-        const buf = Buffer.from(await fileResp.arrayBuffer())
-
-        const safeName = sanitizeFileName(att.FileName)
-        const finalName = `${qbId}_${safeName}`
-        const absPath = path.join(achatDir, finalName)
-        fs.writeFileSync(absPath, buf)
-
-        const relPath = path.posix.join('qb-attachments', achat.id, finalName)
-        insertStmt.run(
-          randomUUID(), achat.id, qbId,
-          att.FileName, att.ContentType || null, buf.length,
-          relPath, att.Note || null
-        )
-        added++
-      } catch (e) {
-        errors.push({ qb_id: qbId, file_name: att.FileName, error: e.message })
-      }
+    // Note-only attachable (sans fichier)
+    if (!att.FileName && att.Note) {
+      insertStmt.run(newRecordId(), achat.id, qbId, null, null, null, '', att.Note)
+      added++
+      continue
     }
+    if (!att.FileName) { skipped++; continue }
 
-    res.json({ added, skipped, total: attachables.length, errors })
-  } catch (e) {
-    console.error('fetch-qb-attachments:', e)
-    res.status(500).json({ error: e.message })
+    try {
+      const url = await qbAttachmentDownloadUrl(qbId)
+      const fileResp = await fetch(url)
+      if (!fileResp.ok) throw new Error(`download ${fileResp.status}`)
+      const buf = Buffer.from(await fileResp.arrayBuffer())
+
+      const safeName = sanitizeFileName(att.FileName)
+      const finalName = `${qbId}_${safeName}`
+      const absPath = path.join(achatDir, finalName)
+      fs.writeFileSync(absPath, buf)
+
+      const relPath = path.posix.join('qb-attachments', achat.id, finalName)
+      insertStmt.run(
+        newRecordId(), achat.id, qbId,
+        att.FileName, att.ContentType || null, buf.length,
+        relPath, att.Note || null
+      )
+      added++
+    } catch (e) {
+      errors.push({ qb_id: qbId, file_name: att.FileName, error: e.message })
+    }
   }
+
+  res.json({ added, skipped, total: attachables.length, errors })
 })
 
 router.get('/:id/attachments/:attId/download', (req, res) => {

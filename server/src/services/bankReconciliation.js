@@ -6,12 +6,15 @@
 // (achats_fournisseurs, sale_receipts, stripe_payouts). Le statut — l'ancien
 // code couleur peint à la main — est dérivé automatiquement :
 //   a_traiter (rouge) → facture_recue (bleu) → comptabilise (jaune) → rapproche (vert).
-import { createHash, randomUUID } from 'crypto'
+import { createHash } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { autoClearFromBank } from './treasuryPayments.js'
 import { detectBankReceipts } from './wageSubsidyReceipts.js'
 import { detectTwilioBankRecharges } from './prepaid.js'
 import { shiftDate, daysBetween } from '../utils/datetime.js'
+import { isSystemAutomationActive } from './systemAutomations.js'
+import { BANK_DEBIT_LINK_AUTOMATION_ID } from './bankDebitLink.js'
 
 // ── Seed des comptes (onglets du xlsx TRX_Orisha) ────────────────────────────
 
@@ -35,7 +38,7 @@ export function seedBankAccounts() {
     VALUES (?,?,?,?,?,?,?)
   `)
   SEED_ACCOUNTS.forEach((a, i) => {
-    insert.run(randomUUID(), a.name, a.kind, a.currency, a.account_number || null, a.institution || null, i)
+    insert.run(newRecordId(), a.name, a.kind, a.currency, a.account_number || null, a.institution || null, i)
   })
 }
 
@@ -189,7 +192,7 @@ function dedupKey(accountId, row, occurrence) {
 }
 
 export function importTransactions(accountId, rows, userId) {
-  const batchId = randomUUID()
+  const batchId = newRecordId()
   const insert = db.prepare(`
     INSERT OR IGNORE INTO bank_transactions
       (id, account_id, txn_date, description, details, reference, amount, balance, dedup_key, import_batch_id, sheet_color)
@@ -203,7 +206,7 @@ export function importTransactions(accountId, rows, userId) {
       const occurrence = counters.get(sig) || 0
       counters.set(sig, occurrence + 1)
       const res = insert.run(
-        randomUUID(), accountId, row.txn_date, row.description, row.details || null, row.reference,
+        newRecordId(), accountId, row.txn_date, row.description, row.details || null, row.reference,
         row.amount, row.balance, dedupKey(accountId, row, occurrence), batchId,
         row.sheet_color || null
       )
@@ -215,32 +218,39 @@ export function importTransactions(accountId, rows, userId) {
     `).run(batchId, accountId, rows.length, inserted, rows.length - inserted, userId || null)
   })
   tx()
-  // Le relevé est la confirmation qu'un paiement émis est passé au compte : dès
-  // qu'il arrive, les paiements retrouvés cessent d'être projetés (voir
-  // services/treasuryPayments.js). Ne doit jamais faire échouer l'import.
+  runPostImportHooks(accountId, { source: 'bank' })
+  return { batchId, rowCount: rows.length, inserted, duplicates: rows.length - inserted }
+}
+
+// Effets de bord communs à toute source qui alimente bank_transactions
+// (collage manuel, sync TRX_Orisha, Plaid — voir services/plaidSync.js) :
+// appariement des paiements émis, détection subventions et recharges Twilio.
+// Aucun ne doit faire échouer l'import appelant.
+export function runPostImportHooks(accountId, { source = 'bank' } = {}) {
   try {
     const account = db.prepare('SELECT name FROM bank_accounts WHERE id=?').get(accountId)
-    if (account) autoClearFromBank({ accountName: account.name })
+    if (account) autoClearFromBank({ accountName: account.name, source })
   } catch (e) {
     console.error('bankReconciliation.autoClearFromBank:', e.message)
   }
-  // Détection des versements de subvention (ex. Biotalent) parmi les
-  // transactions créditrices — voir services/wageSubsidyReceipts.js. Ne doit
-  // jamais faire échouer l'import.
   try {
     detectBankReceipts()
   } catch (e) {
     console.error('bankReconciliation.detectBankReceipts:', e.message)
   }
-  // Recharges Twilio (compte Venn USD) : propose la comptabilisation QB et
-  // ajuste le ledger prépayé — voir services/prepaid.js:detectTwilioBankRecharges.
-  // Ne doit jamais faire échouer l'import.
   try {
     detectTwilioBankRecharges()
   } catch (e) {
     console.error('bankReconciliation.detectTwilioBankRecharges:', e.message)
   }
-  return { batchId, rowCount: rows.length, inserted, duplicates: rows.length - inserted }
+  // Sorties déjà connues de l'ERP qui viennent d'apparaître au relevé : le
+  // débit de la paie, les versements de dettes. Asynchrone et non bloquant —
+  // l'import ne doit jamais attendre (ni échouer sur) ce rattachement.
+  if (isSystemAutomationActive(BANK_DEBIT_LINK_AUTOMATION_ID)) {
+    import('./bankDebitLink.js')
+      .then(({ linkKnownDebits }) => linkKnownDebits())
+      .catch(e => console.error('bankReconciliation.linkKnownDebits:', e.message))
+  }
 }
 
 // ── Matching transactions ↔ documents ERP ────────────────────────────────────
@@ -391,21 +401,32 @@ function matchedDocQbId(matchedType, matchedId) {
 //   • `sheet_color` — la couleur que Michel a posée dans TRX_Orisha.
 // Sans ça, 67 lignes vertes (comptabilisées ET rapprochées) restaient
 // « à traiter » et remontaient en anomalie « facture manquante ».
-export function deriveStatus(txn) {
+//
+// `sheet_color` ne fait PLUS foi sur un compte branché à Plaid : TRX_Orisha
+// n'y est plus synchronisé (voir bankTrxSheet.js), donc la couleur qui traîne
+// encore dessus est un vestige — seule une preuve QuickBooks réelle compte
+// (voir services/plaidQbAudit.js, qui alimente qb_txn_id sur tout l'historique).
+export function deriveStatus(txn, { isPlaidAccount = false } = {}) {
   if (txn.status === 'ignore') return 'ignore'
   if (txn.reconciled_at) return 'rapproche'
-  if (txn.sheet_color === 'vert' && txn.qb_txn_id) return 'rapproche'
+  const sheetColor = isPlaidAccount ? null : txn.sheet_color
+  if (sheetColor === 'vert' && txn.qb_txn_id) return 'rapproche'
   const docInQb = txn.matched_id ? !!matchedDocQbId(txn.matched_type, txn.matched_id) : false
-  if (docInQb || txn.qb_txn_id || txn.sheet_color === 'jaune') return 'comptabilise'
-  if (txn.matched_id || txn.sheet_color === 'bleu') return 'facture_recue'
+  if (docInQb || txn.qb_txn_id || sheetColor === 'jaune') return 'comptabilise'
+  // Virement interne apparié à sa contrepartie : le mouvement est identifié, il
+  // ne lui manque plus que l'écriture QuickBooks — exactement l'état « facture
+  // reçue » d'une dépense, sauf qu'ici la pièce n'est pas une facture.
+  if (txn.transfer_txn_id || txn.matched_id || sheetColor === 'bleu') return 'facture_recue'
   return 'a_traiter'
 }
 
 // Recalcule le statut des transactions non figées d'un compte : une facture
 // poussée à QB après le matching fait passer la ligne bleu → jaune sans action.
 export function refreshStatuses(accountId) {
+  const account = db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=?').get(accountId)
+  const isPlaidAccount = !!account?.plaid_account_id
   const rows = db.prepare(`
-    SELECT id, status, matched_type, matched_id, reconciled_at, sheet_color, qb_txn_id
+    SELECT id, status, matched_type, matched_id, reconciled_at, sheet_color, qb_txn_id, transfer_txn_id
     FROM bank_transactions
     WHERE account_id = ? AND deleted_at IS NULL AND status NOT IN ('ignore','rapproche')
   `).all(accountId)
@@ -414,7 +435,7 @@ export function refreshStatuses(accountId) {
   `)
   let changed = 0
   for (const t of rows) {
-    const next = deriveStatus(t)
+    const next = deriveStatus(t, { isPlaidAccount })
     if (next !== t.status) { update.run(next, t.id); changed++ }
   }
   return changed
@@ -424,6 +445,7 @@ export function refreshStatuses(accountId) {
 // ambiguïté au sommet) ; le reste passe par les suggestions dans l'UI.
 export function autoMatchAccount(accountId) {
   invalidateVendorProfilesCache()
+  const isPlaidAccount = !!db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=?').get(accountId)?.plaid_account_id
   const txns = db.prepare(`
     SELECT * FROM bank_transactions
     WHERE account_id=? AND deleted_at IS NULL AND matched_id IS NULL AND status IN ('a_traiter')
@@ -442,7 +464,7 @@ export function autoMatchAccount(accountId) {
     if (!best || best.confidence < 0.8) continue
     if (candidates[1] && candidates[1].confidence >= best.confidence - 0.05) continue
     takenThisRun.add(`${best.type}:${best.id}`)
-    const status = deriveStatus({ ...txn, matched_type: best.type, matched_id: best.id })
+    const status = deriveStatus({ ...txn, matched_type: best.type, matched_id: best.id }, { isPlaidAccount })
     update.run(best.type, best.id, best.confidence, status, txn.id)
     matched++
   }

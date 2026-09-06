@@ -1,43 +1,39 @@
-import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { getAccessToken, airtableFetch, airtablePost } from '../connectors/airtable.js'
 import { tracked } from './syncState.js'
 import { logSync } from './syncLog.js'
 import { logSystemRun } from './systemAutomations.js'
-import {
-  syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats,
-  syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours,
-  syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges,
-  syncAssemblages, syncStockMovements, syncInstagramProspects,
-} from './airtable.js'
+import { LEGACY_SYNCS } from './airtable.js'
 import { syncFactureLinksFromWebhook } from './factureLinks.js'
+import { routeSync } from './airtableMirrorEngine.js'
 import { APP_URL } from '../config/appUrl.js'
 
 const NOTIFICATION_URL = `${APP_URL}/erp/api/connectors/airtable/webhook-ping`
 
-const SYNC_FNS = {
-  airtable: syncAirtable,
-  projets: syncProjets,
-  pieces: syncPieces,
-  orders: syncOrders,
-  achats: syncAchats,
-  billets: syncBillets,
-  serials: syncSerials,
-  envois: syncEnvois,
-  soumissions: syncSoumissions,
-  retours: syncRetours,
-  retour_items: syncRetourItems,
-  adresses: syncAdresses,
-  bom: syncBomItems,
-  serial_changes: syncSerialStateChanges,
-  assemblages: syncAssemblages,
-  stock_movements: syncStockMovements,
-  instagram: syncInstagramProspects,
+// Fonctions historiques, par module. L'aiguillage vers le moteur unique se fait
+// juste après (SYNC_FNS) : un module dont `airtable_mirrors.engine='unified'`
+// part au moteur, les autres gardent leur fonction. Aucun appelant n'a à savoir
+// lequel des deux tourne.
+// La carte module → fonction historique vit dans services/airtable.js (une
+// seule, partagée par le routeur de webhooks, le sync planifié et les syncs
+// manuels). Ici on n'ajoute que le cas propre au webhook : les factures, dont
+// seul le rattrapage de liens subsiste.
+export const LEGACY_SYNC_FNS = {
+  ...LEGACY_SYNCS,
   // Factures : pas de re-sync complet (le sync Airtable a été déconnecté).
   // On ne capte que les changements de liens projet/commande, et seulement
   // pour les factures déjà connues côté Stripe.
   factures: syncFactureLinksFromWebhook,
 }
+
+// Le nom du module EST l'id du miroir dans le registre, sauf pour `airtable`
+// (companies + contacts dans une seule fonction) qui n'a pas d'équivalent —
+// il reste donc sur sa fonction historique jusqu'à ce que les deux miroirs
+// soient séparés.
+const SYNC_FNS = Object.fromEntries(
+  Object.entries(LEGACY_SYNC_FNS).map(([module, fn]) => [module, (changes) => routeSync(module, changes, fn)])
+)
 
 // Dependency-aware dispatch order. Lower number = synced first. Companies/contacts
 // (`airtable`) must run before `projets` (which references companies), and projets
@@ -46,10 +42,13 @@ const SYNC_FNS = {
 // could be synced before 'Companies' and fail the company_id FK / import orphans.
 const MODULE_SYNC_PRIORITY = {
   airtable: 0,     // companies + contacts — base dependency for everything else
+  companies: 0,
+  contacts: 0,
   projets: 1,      // references companies
   pieces: 1,
   serials: 1,
   orders: 2,       // reference projects + companies
+  order_items: 3,  // référencent les commandes
   soumissions: 2,
   factures: 2,
   envois: 2,
@@ -66,6 +65,8 @@ const MODULE_DIFF_TARGETS = {
     { table: 'contacts',  path: 'contacts',  label: 'Contact' },
     { table: 'companies', path: 'companies', label: 'Entreprise' },
   ],
+  companies: [{ table: 'companies', path: 'companies', label: 'Entreprise' }],
+  contacts: [{ table: 'contacts',  path: 'contacts',  label: 'Contact' }],
 }
 
 const DIFF_SKIP_FIELDS = new Set(['updated_at', 'created_at', 'last_hubspot_uptade'])
@@ -131,8 +132,10 @@ function buildTableMap() {
 
   const crm = db.prepare('SELECT * FROM airtable_sync_config LIMIT 1').get()
   if (crm) {
-    add(crm.contacts_table_id, 'airtable')
-    add(crm.companies_table_id, 'airtable')
+    // Deux tables, deux miroirs : depuis le découpage de `syncAirtable`, un
+    // changement de contact ne réveille plus le sync des entreprises.
+    add(crm.contacts_table_id, 'contacts')
+    add(crm.companies_table_id, 'companies')
   }
 
   const inv = db.prepare('SELECT * FROM airtable_projets_config LIMIT 1').get()
@@ -150,7 +153,10 @@ function buildTableMap() {
   const ord = db.prepare('SELECT * FROM airtable_orders_config LIMIT 1').get()
   if (ord) {
     add(ord.orders_table_id, 'orders')
-    add(ord.items_table_id, 'orders')
+    // Depuis le découpage de `syncOrders`, la table des items a son propre
+    // miroir et sa propre fonction : l'envoyer sur 'orders' réveillait le sync
+    // des commandes pour rien, et empêchait de basculer les deux séparément.
+    add(ord.items_table_id, 'order_items')
   }
 
   const mods = db.prepare('SELECT module, table_id FROM airtable_module_config').all()
@@ -192,7 +198,7 @@ export async function registerWebhookForBase(baseId) {
   })
 
   const row = {
-    id: uuid(),
+    id: newRecordId(),
     base_id: baseId,
     webhook_id: data.id,
     cursor: 1,
@@ -242,7 +248,7 @@ export async function registerWebhookForBaseTraced(baseId, trigger = 'oauth-call
 
 // Queue failed changes for retry
 function queueRetry(module, changes, error) {
-  const id = uuid()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO webhook_sync_retry (id, module, changes, attempts, last_error, next_retry_at)
     VALUES (?, ?, ?, 1, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+5 minutes'))

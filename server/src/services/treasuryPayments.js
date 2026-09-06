@@ -16,10 +16,10 @@
 // Modèle : un paiement porte sa date de sortie réelle (ou prévue) et un état
 // binaire — `cleared_at` NULL = pas encore passé à la banque (le vert du
 // fichier). Tant qu'il n'est pas passé, il est projeté ; ensuite le relevé
-// bancaire prend le relais. L'appariement au relevé (et demain à Plaid) coche
-// automatiquement `cleared_at`.
-import { randomUUID } from 'crypto'
+// bancaire (import manuel, TRX_Orisha, ou Plaid en temps quasi réel — voir
+// services/plaidSync.js) coche automatiquement `cleared_at` via `autoClearFromBank`.
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { qbGet } from '../connectors/quickbooks.js'
 
 export const PAYMENT_METHODS = ['interac', 'cheque', 'carte', 'transfert', 'code_paiement', 'autre']
@@ -48,7 +48,15 @@ const LIST_SELECT = `
   WHERE p.deleted_at IS NULL
 `
 
-const setInvoiceDateStmt = db.prepare('UPDATE treasury_payments SET invoice_date = ? WHERE id = ?')
+// Préparé à la PREMIÈRE utilisation, pas au chargement du module : un
+// `db.prepare` au niveau module exige que la table existe dès l'import, ce qui
+// fait échouer tout fichier de test qui importe ce module (directement ou par
+// une chaîne d'imports) avant d'avoir créé le schéma.
+let setInvoiceDateStmt = null
+const setInvoiceDate = (date, id) => {
+  setInvoiceDateStmt ??= db.prepare('UPDATE treasury_payments SET invoice_date = ? WHERE id = ?')
+  return setInvoiceDateStmt.run(date, id)
+}
 
 // « Date de la facture » n'est éditable à la main que pour un paiement sans
 // facture liée (mouvement interne, ou lien jamais établi) : dès qu'un achat_id
@@ -57,7 +65,7 @@ const setInvoiceDateStmt = db.prepare('UPDATE treasury_payments SET invoice_date
 // voient la même chose.
 function resolveInvoiceDate(row) {
   if (row?.achat_invoice_date && row.achat_invoice_date !== row.invoice_date) {
-    setInvoiceDateStmt.run(row.achat_invoice_date, row.id)
+    setInvoiceDate(row.achat_invoice_date, row.id)
     row.invoice_date = row.achat_invoice_date
   }
   return row
@@ -106,7 +114,7 @@ export async function enrichInvoiceDatesFromQb(rows, { cap = 12 } = {}) {
     if (calls >= cap) break
     calls++
     const date = await fetchQbInvoiceDate(p.invoice_number)
-    if (date) { setInvoiceDateStmt.run(date, p.id); p.invoice_date = date }
+    if (date) { setInvoiceDate(date, p.id); p.invoice_date = date }
   }
   return rows
 }
@@ -139,7 +147,7 @@ export function validatePayment(body, { partial = false } = {}) {
 }
 
 export function createPayment(body, userId = null) {
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO treasury_payments (
       id, payment_date, direction, amount, currency, account, label, achat_id,
@@ -490,13 +498,20 @@ export function learnPaymentNote(label, note) {
 
 // ── Appariement au relevé bancaire ───────────────────────────────────────────
 // Un paiement passé au compte apparaît au relevé : dès que le relevé est importé
-// (et demain dès que Plaid pousse la transaction), on coche automatiquement.
+// (collage manuel, sync TRX_Orisha, ou webhook Plaid), on coche automatiquement.
+// `source` trace la provenance de la transaction bancaire qui a servi au match
+// (voir setCleared) — 'bank' par défaut, 'plaid' quand l'appel vient d'un sync
+// Plaid (services/plaidSync.js), pour distinguer le rapprochement en temps
+// quasi réel du relevé importé périodiquement.
 // Tolérance : 1 % ou 1 $ sur le montant, ±5 jours sur la date (un Interac émis
 // le samedi est débité le lundi). Une transaction ne sert qu'une fois.
+// Les transactions EN ATTENTE (autorisation Plaid pas encore confirmée) sont
+// écartées : leur montant peut encore changer, cocher « passé » sur elles
+// figerait un paiement sur un chiffre provisoire.
 const CLEAR_DAY_WINDOW = 5
 const amountsMatch = (a, b) => Math.abs(Math.abs(a) - Math.abs(b)) <= Math.max(1, Math.abs(b) * 0.01)
 
-export function autoClearFromBank({ accountName = null } = {}) {
+export function autoClearFromBank({ accountName = null, source = 'bank' } = {}) {
   const pending = db.prepare(`
     SELECT * FROM treasury_payments
     WHERE deleted_at IS NULL AND cleared_at IS NULL
@@ -514,13 +529,14 @@ export function autoClearFromBank({ accountName = null } = {}) {
       SELECT t.id, t.amount, t.txn_date FROM bank_transactions t
       JOIN bank_accounts b ON b.id = t.account_id
       WHERE t.deleted_at IS NULL AND b.deleted_at IS NULL AND b.name = ?
+        AND COALESCE(t.pending, 0) = 0
         AND t.txn_date >= date(?, '-${CLEAR_DAY_WINDOW} days') AND t.txn_date <= date(?, '+${CLEAR_DAY_WINDOW} days')
     `).all(p.account || 'BNC CAD', p.payment_date, p.payment_date)
     const hit = rows.find(t => !used.has(t.id)
       && Math.sign(t.amount) === sign && amountsMatch(t.amount, p.amount * sign))
     if (!hit) continue
     used.add(hit.id)
-    setCleared(p.id, true, { bankTxnId: hit.id, source: 'bank' })
+    setCleared(p.id, true, { bankTxnId: hit.id, source })
     cleared++
   }
   return { cleared }

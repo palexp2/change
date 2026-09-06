@@ -122,6 +122,10 @@
      vignette d'image) : reste blanc même en mode nuit, contrairement à
      `text-white` qui suit la variable de surface. */
   .text-fixed-white { color: #fff; }
+  /* Surface « papier » : une vignette de document (PDF, image détourée) se lit
+     sur blanc, y compris en mode nuit — contrairement à `bg-white` qui suit la
+     variable de surface. */
+  .bg-fixed-white { background-color: #fff; }
 }
 
 @layer components {
@@ -153,6 +157,18 @@
   .input {
     @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400 transition-all;
   }
+  /* Éditeur de formule : le texte saisi est transparent (la coloration des
+     {champs} est peinte par un calque miroir en dessous), donc la sélection
+     doit rester translucide, sinon elle masquerait le texte coloré. */
+  .formula-input::selection {
+    @apply bg-brand-500/25;
+  }
+  .input-sm {
+    @apply rounded-md px-2 py-1.5;
+  }
+  .input-mono {
+    @apply input font-mono;
+  }
   .label {
     @apply block text-sm font-medium text-slate-600 mb-1;
   }
@@ -172,6 +188,16 @@
   animation: slide-in-right 0.2s ease-out;
 }
 
+/* Sortie du panneau latéral : miroir de slide-in-right. Le décalage supplémentaire
+   couvre les panneaux empilés, posés à quelques pixels du bord droit. */
+@keyframes slide-out-right {
+  from { transform: translateX(0); }
+  to   { transform: translateX(calc(100% + 24px)); }
+}
+.animate-slide-out-right {
+  animation: slide-out-right 0.18s ease-in forwards;
+}
+
 @keyframes fade-in {
   from { opacity: 0; }
   to   { opacity: 1; }
@@ -180,18 +206,51 @@
   animation: fade-in 0.15s ease-out;
 }
 
-/* DataTable — indicateur live « modifié par un autre utilisateur ».
-   Halo vert sur la cellule changée + badge éditeur, qui s'estompent.
-   Durée alignée sur FLASH_MS dans DataTable.jsx (3.6s). */
+@keyframes fade-out {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+.animate-fade-out {
+  animation: fade-out 0.18s ease-in forwards;
+}
+
+/* DataTable — indicateur live « modifié ailleurs ».
+   Halo vert sur la cellule changée + pastille de l'auteur, qui s'estompent.
+   Durée alignée sur PULSE_MS dans lib/recordLive.jsx (4 s). */
 @keyframes dtCellFlash {
   0%   { background-color: rgba(16, 185, 129, 0.30); box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.70); }
   70%  { background-color: rgba(16, 185, 129, 0.12); box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.30); }
   100% { background-color: transparent;             box-shadow: inset 0 0 0 2px transparent; }
 }
 .dt-cell-flash {
-  animation: dtCellFlash 3.6s ease-out forwards;
+  animation: dtCellFlash 4s ease-out forwards;
   border-radius: 4px;
 }
+
+/* DataTable — valeur d'une cellule ÉDITABLE en mode tableur : ses liens sont
+   inertes. Le clic y est un geste de tableur (sélectionner, puis double-clic
+   pour éditer) ; un lien qui navigue au premier clic rendait la cellule
+   inéditable partout où s'étendait son libellé (cellule « Produit » d'une
+   commande). La fiche visée reste accessible par les pastilles de l'éditeur de
+   lien et par la gouttière d'ouverture de la ligne. */
+.dt-inert-links a {
+  pointer-events: none;
+}
+/* Pastille « champ mis à jour ailleurs » (components/FieldPulse.jsx).
+   Apparait, se tient, s'efface — durée alignée sur PULSE_MS dans
+   lib/recordLive.jsx (4 s). Discrète par construction : elle ne doit jamais
+   attirer l'oeil plus que la valeur qu'elle annote. */
+@keyframes fieldPulse {
+  0%   { opacity: 0; transform: scale(0.7); }
+  8%   { opacity: 1; transform: scale(1); }
+  80%  { opacity: 1; transform: scale(1); }
+  100% { opacity: 0; transform: scale(1); }
+}
+.field-pulse {
+  animation: fieldPulse 4s ease-out forwards;
+  vertical-align: middle;
+}
+
 @keyframes dtEditorBadge {
   0%   { opacity: 0; transform: translateY(-50%) translateX(6px); }
   12%  { opacity: 1; transform: translateY(-50%) translateX(0); }
@@ -199,7 +258,18 @@
   100% { opacity: 0; transform: translateY(-50%) translateX(0); }
 }
 .dt-editor-badge {
-  animation: dtEditorBadge 3.6s ease-out forwards;
+  animation: dtEditorBadge 4s ease-out forwards;
+}
+
+/* Petites capitales du DataTable (libellé d'agrégat de la barre de totaux,
+   titre du menu de totaux). Équivalent de `uppercase tracking-wide`, mais SANS
+   ces deux classes : elles sont le crochet des règles `.peek-panel` juste
+   dessous, qui reflowent en grille 1 colonne tout conteneur dont un enfant les
+   porte. Un total affiché dans une fiche ouverte en panneau latéral empilait
+   donc les cellules de la barre de totaux les unes sous les autres. */
+.dt-caps {
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
 }
 
 /* ── Panneaux latéraux (side-peek) — layout des champs façon Airtable ───────
@@ -226,8 +296,12 @@
   grid-column: span 1 / span 1 !important;
 }
 
-/* Une ligne de champ : libellé (colonne fixe) | valeur (reste de la largeur). */
-.peek-panel div:has(> .uppercase.tracking-wide) {
+/* Une ligne de champ : libellé (colonne fixe) | valeur (reste de la largeur).
+   ⚠ Les titres de section (`<h2>`/`<h3>`) portent le même couple de classes
+   sans être des libellés de champ : les exclure, sinon l'en-tête de section
+   devient une ligne de champ et son bouton d'action, poussé dans la colonne
+   « valeur », s'étire sur toute la largeur restante. */
+.peek-panel div:has(> .uppercase.tracking-wide:not(h1, h2, h3, h4, h5, h6)) {
   display: grid;
   grid-template-columns: minmax(0, 140px) minmax(0, 1fr);
   align-items: start;
@@ -236,7 +310,7 @@
 
 /* Libellé : plus de majuscules ni d'interlettrage — casse normale, aligné sur
    la première ligne du champ. */
-.peek-panel div:has(> .uppercase.tracking-wide) > .uppercase.tracking-wide {
+.peek-panel div:has(> .uppercase.tracking-wide:not(h1, h2, h3, h4, h5, h6)) > .uppercase.tracking-wide:not(h1, h2, h3, h4, h5, h6) {
   @apply text-slate-500 font-medium;
   margin-bottom: 0;
   padding-top: 0.4rem;

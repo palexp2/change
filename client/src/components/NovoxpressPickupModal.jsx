@@ -3,8 +3,9 @@ import { CheckCircle, Package, Stethoscope } from 'lucide-react'
 import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
+import ErrorBanner from './ErrorBanner.jsx'
 
-const PICKUP_LOCATIONS = [
+export const PICKUP_LOCATIONS = [
   { value: 'OutsideDoor', label: 'Porte extérieure' },
   { value: 'FrontDoor',   label: 'Porte avant' },
   { value: 'BackDoor',    label: 'Porte arrière' },
@@ -142,12 +143,12 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
         </div>
         <div className="col-span-2">
           <label className="label">Instructions (optionnel)</label>
-          <input type="text" className="input" value={pickupInstructions} onChange={e => setPickupInstructions(e.target.value)} placeholder="ex. Sonner à la porte arrière" />
+          <input type="text" className="input" value={pickupInstructions} onChange={e => setPickupInstructions(e.target.value)} />
         </div>
       </div>
       {error && (
         <>
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>
+          <ErrorBanner>{error}</ErrorBanner>
           <NovoxpressDiagnosticPanel diagnostic={diagnostic} />
           {!diagnostic?.available && (
             <button onClick={handleDiagnose} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5" type="button">

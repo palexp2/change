@@ -54,12 +54,17 @@ export const STRIPE_FACTURE_FIELDS = [
   },
   {
     key: 'amount_before_tax', label: 'Montant avant taxes', column: 'amount_before_tax_cad', type: 'money',
-    default: 'subtotal_excluding_tax', fallbacks: ['subtotal'],
-    hint: 'subtotal_excluding_tax est universellement HT, même en prix taxes incluses',
+    default: 'total_excluding_tax', fallbacks: ['subtotal_excluding_tax', 'subtotal'],
+    // `subtotal_excluding_tax` est HT mais AVANT rabais : une facture de 11 600 $
+    // remisée à 5 220 $ était enregistrée à 11 600 $ (revenu doublé, et
+    // HT + taxes ≠ total). `total_excluding_tax` est HT ET après rabais — c'est
+    // déjà la règle des projets (routes/projets.js) et des abonnements
+    // (services/subscriptionMonthly.js).
+    hint: 'total_excluding_tax est HT après rabais, même en prix taxes incluses',
     candidates: [
-      { path: 'subtotal_excluding_tax', label: 'subtotal_excluding_tax — sous-total hors taxes' },
-      { path: 'subtotal', label: 'subtotal — sous-total (TTC si prix taxes incluses)' },
       { path: 'total_excluding_tax', label: 'total_excluding_tax — total hors taxes (après rabais)' },
+      { path: 'subtotal_excluding_tax', label: 'subtotal_excluding_tax — sous-total hors taxes (avant rabais)' },
+      { path: 'subtotal', label: 'subtotal — sous-total (TTC si prix taxes incluses)' },
     ],
   },
   {

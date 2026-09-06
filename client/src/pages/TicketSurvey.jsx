@@ -26,7 +26,6 @@ const T = {
     yes: 'Oui',
     no: 'Non',
     commentLabel: 'Un commentaire ? (facultatif)',
-    commentPlaceholder: 'Dites-nous en plus…',
     submit: 'Envoyer',
     saving: 'Envoi…',
     thanksTitle: 'Merci !',
@@ -49,7 +48,6 @@ const T = {
     yes: 'Yes',
     no: 'No',
     commentLabel: 'Any comments? (optional)',
-    commentPlaceholder: 'Tell us more…',
     submit: 'Send',
     saving: 'Sending…',
     thanksTitle: 'Thank you!',
@@ -297,7 +295,6 @@ export default function TicketSurvey() {
             onChange={e => setComment(e.target.value)}
             rows={3}
             maxLength={2000}
-            placeholder={t.commentPlaceholder}
             className="w-full border border-slate-300 rounded-lg px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 resize-none"
           />
           {submitError && <p className="text-xs text-red-600 mt-2">{submitError}</p>}

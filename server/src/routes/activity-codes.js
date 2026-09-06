@@ -1,8 +1,9 @@
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { buildPartialUpdate, toBool, trimOrNull } from '../utils/partialUpdate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -50,7 +51,7 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   const { name, description, active, payable, rsde_default } = req.body || {}
   if (!name || !String(name).trim()) return res.status(400).json({ error: 'name requis' })
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO activity_codes (id, name, description, active, payable, rsde_default)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -72,24 +73,14 @@ const PATCHABLE = new Set(['name', 'description', 'active', 'payable', 'rsde_def
 router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM activity_codes WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  const updates = []
-  const params = []
-  for (const [k, rawV] of Object.entries(req.body || {})) {
-    if (!PATCHABLE.has(k)) continue
-    let v = rawV
-    if (k === 'active' || k === 'payable' || k === 'rsde_default') v = v ? 1 : 0
-    else if (v === '' || v === undefined) v = null
-    else if (k === 'name') {
-      v = String(v).trim()
-      if (!v) return res.status(400).json({ error: 'name ne peut pas être vide' })
-    }
-    updates.push(`${k} = ?`)
-    params.push(v)
-  }
-  if (!updates.length) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
-  updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
-  params.push(req.params.id)
-  db.prepare(`UPDATE activity_codes SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  const { setClause, values, error } = buildPartialUpdate(req.body || {}, {
+    allowed: [...PATCHABLE],
+    coerce: { active: toBool, payable: toBool, rsde_default: toBool, name: trimOrNull },
+    nonNullable: new Set(['name']),
+  })
+  if (error) return res.status(400).json({ error: 'name ne peut pas être vide' })
+  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+  db.prepare(`UPDATE activity_codes SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
   const updated = db.prepare('SELECT * FROM activity_codes WHERE id = ?').get(req.params.id)
   emitEntity('activity_code', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)

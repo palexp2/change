@@ -3,10 +3,11 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import { logSync } from './syncLog.js'
+import { uploadsPath } from '../config/uploads.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BASE_URL = 'https://api.novoxpress.ca/prod'
-const LABELS_DIR = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')
+const LABELS_DIR = uploadsPath('labels')
 
 // In-memory JWT cache
 let tokenCache = null

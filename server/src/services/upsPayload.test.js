@@ -70,6 +70,19 @@ test('buildPackages refuse une liste vide plutôt que d\'envoyer un colis fantô
   assert.throws(() => buildPackages([]), /Aucun colis/)
 })
 
+// Régression : le type d'emballage s'appelle `Packaging` côté Shipping API et
+// `PackagingType` côté Rating API. Confondre les deux fait répondre à UPS
+// « [111212] The requested Package Type is unavailable… » et aucun tarif ne sort.
+test('buildPackages : Packaging pour la Shipping API, PackagingType pour la Rating API', () => {
+  const ship = buildPackages(PACKAGES)[0]
+  assert.equal(ship.Packaging.Code, '02')
+  assert.equal(ship.PackagingType, undefined)
+
+  const rate = buildPackages(PACKAGES, 'Envoi', { forRating: true })[0]
+  assert.equal(rate.PackagingType.Code, '02')
+  assert.equal(rate.Packaging, undefined)
+})
+
 test('étiquette de retour : le client expédie, l\'atelier Orisha reçoit, ReturnService 9', () => {
   const { ShipmentRequest } = buildReturnShipmentRequest(CLIENT_CA, {
     accountNumber: 'A1B2C3', packages: PACKAGES,
@@ -135,11 +148,24 @@ test('tarification : requête Shop, Orisha expéditeur, valeur déclarée pour l
   assert.equal(RateRequest.Shipment.ShipFrom.Address.PostalCode, ORISHA_WORKSHOP.postal_code)
   assert.equal(RateRequest.Shipment.ShipTo.Address.CountryCode, 'US')
   assert.equal(RateRequest.Shipment.InvoiceLineTotal.MonetaryValue, '425.00')
+  assert.equal(RateRequest.Shipment.Package[0].PackagingType.Code, '02', 'nom de champ propre à la Rating API')
 })
 
 test('tarification canadienne : pas de valeur déclarée', () => {
   const { RateRequest } = buildRateRequest(CLIENT_CA, { accountNumber: 'A1B2C3', packages: PACKAGES })
   assert.equal(RateRequest.Shipment.InvoiceLineTotal, undefined)
+})
+
+test('tarification : tarifs négociés demandés par défaut, retirables pour le repli', () => {
+  const withNeg = buildRateRequest(CLIENT_CA, { accountNumber: 'A1B2C3', packages: PACKAGES })
+  assert.equal(withNeg.RateRequest.Shipment.ShipmentRatingOptions.NegotiatedRatesIndicator, 'Y')
+
+  const without = buildRateRequest(CLIENT_CA, { accountNumber: 'A1B2C3', packages: PACKAGES, negotiatedRates: false })
+  assert.equal(without.RateRequest.Shipment.ShipmentRatingOptions, undefined)
+
+  // Sans numéro de compte, aucun tarif négocié possible : ne pas le demander.
+  const noAccount = buildRateRequest(CLIENT_CA, { packages: PACKAGES })
+  assert.equal(noAccount.RateRequest.Shipment.ShipmentRatingOptions, undefined)
 })
 
 test('parseRates trie par prix, nomme les services et préfère le tarif négocié', () => {

@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Wallet, Plus, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -10,6 +11,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useAuth } from '../lib/auth.jsx'
+import Spinner from '../components/Spinner.jsx'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -140,7 +142,7 @@ export default function BanqueHeures() {
       <div className="p-6">
         <div className="flex items-center gap-3 mb-6">
           <Wallet size={20} className="text-slate-400" />
-          <h1 className="text-2xl font-bold text-slate-900">Banque d'heures</h1>
+          <PageTitle>Banque d'heures</PageTitle>
           <span className="text-sm text-slate-400">— excédent / déficit par employé</span>
         </div>
 
@@ -161,7 +163,7 @@ export default function BanqueHeures() {
 }
 
 function EntryList({ employeeId, details, isAdding, onStartAdd, onCancelAdd, onAdd, onPatch, onDelete, canEdit }) {
-  if (!details) return <div className="text-sm text-slate-400">Chargement…</div>
+  if (!details) return <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
   const { entries = [] } = details
   return (
     <div className="space-y-3">
@@ -251,11 +253,11 @@ function AddForm({ employeeId, onCancel, onAdd }) {
       </div>
       <div>
         <label className="text-xs text-slate-500">Heures (+/-)</label>
-        <input type="number" step="0.25" className={inp + ' w-28 text-right'} value={hours} onChange={e => setHours(e.target.value)} placeholder="ex: 2.5 ou -1" />
+        <input type="number" step="0.25" className={inp + ' w-28 text-right'} value={hours} onChange={e => setHours(e.target.value)} />
       </div>
       <div className="flex-1 min-w-[200px]">
         <label className="text-xs text-slate-500">Notes</label>
-        <input className={inp} value={notes} onChange={e => setNotes(e.target.value)} placeholder="Optionnel" />
+        <input className={inp} value={notes} onChange={e => setNotes(e.target.value)} />
       </div>
       <button type="submit" disabled={saving || !hours} className="btn-primary btn-sm">{saving ? 'Ajout…' : 'Ajouter'}</button>
       <button type="button" onClick={onCancel} className="btn-secondary btn-sm">Annuler</button>

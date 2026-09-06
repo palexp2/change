@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import { fmtNumber } from '../utils/formatters.js'
 import { useAuth } from './auth.jsx'
 import api from './api.js'
 
@@ -22,7 +23,7 @@ export function formatDecimals(value, decimals) {
   if (value === null || value === undefined || value === '') return null
   const n = Number(value)
   if (!Number.isFinite(n)) return null
-  return n.toLocaleString('fr-CA', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  return fmtNumber(n, { decimals })
 }
 
 export function DecimalPrefsProvider({ children }) {

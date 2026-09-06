@@ -12,8 +12,8 @@
 // Idempotent : chaque ligne porte une clé naturelle (date + type + numéro +
 // montant + solde + rang d'occurrence) — ré-importer le même relevé n'insère
 // rien, et une ligne supprimée dans l'ERP ne ressuscite pas.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { getCarmConfig } from './carmAccount.js'
 import { classifyCarmLine } from './carmRules.js'
 import { recomputeCarm } from './carmPosting.js'
@@ -566,7 +566,7 @@ export function importCarmStatement(text, userId = null) {
       // La nature et la ventilation droits/TPS sont posées dès l'insertion : le
       // relevé dit lui-même ce qu'est chaque ligne, rien à saisir à la main.
       const c = classifyCarmLine(r, { brokerNames })
-      insert.run(randomUUID(), r.transaction_date, r.due_date, r.transaction_type,
+      insert.run(newRecordId(), r.transaction_date, r.due_date, r.transaction_type,
         r.transaction_number, r.description, r.detail || null, r.party || null,
         r.amount, r.balance, r.import_key, userId,
         c.category, c.kind, c.payer, c.broker, c.duty_amount, c.gst_amount, c.rule)

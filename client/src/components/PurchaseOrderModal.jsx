@@ -1,23 +1,34 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { Mail, Download, Plus, Trash2, RefreshCw, CheckCircle, Search } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
-import { useConfirm } from './ConfirmProvider.jsx'
+import EmailComposerModal from './EmailComposerModal.jsx'
+import { textToHtml } from '../lib/emailHtml.js'
+import ErrorBanner from './ErrorBanner.jsx'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
 function AddressFields({ label, value, onChange }) {
   const set = (k, v) => onChange({ ...value, [k]: v })
+  // Étiquette au-dessus plutôt qu'en placeholder : sans elle, six champs
+  // d'adresse vides ne se distinguent plus une fois le formulaire rempli.
+  const row = (k, lbl) => (
+    <label className="block">
+      <span className="block text-[11px] text-slate-400 mb-0.5">{lbl}</span>
+      <input className={inp} value={value[k] || ''} onChange={e => set(k, e.target.value)} />
+    </label>
+  )
   return (
     <div className="space-y-2">
       <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{label}</h3>
-      <input className={inp} placeholder="Société" value={value.company || ''} onChange={e => set('company', e.target.value)} />
-      <input className={inp} placeholder="Adresse ligne 1" value={value.address1 || ''} onChange={e => set('address1', e.target.value)} />
-      <input className={inp} placeholder="Adresse ligne 2" value={value.address2 || ''} onChange={e => set('address2', e.target.value)} />
-      <input className={inp} placeholder="Nom du contact" value={value.contact || ''} onChange={e => set('contact', e.target.value)} />
-      <input className={inp} placeholder="Téléphone" value={value.phone || ''} onChange={e => set('phone', e.target.value)} />
-      <input className={inp} placeholder="Courriel" value={value.email || ''} onChange={e => set('email', e.target.value)} />
+      {row('company', 'Société')}
+      {row('address1', 'Adresse')}
+      {row('address2', 'Adresse (suite)')}
+      {row('contact', 'Contact')}
+      {row('phone', 'Téléphone')}
+      {row('email', 'Courriel')}
     </div>
   )
 }
@@ -32,22 +43,22 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
   const [generating, setGenerating] = useState(false)
   const [showSend, setShowSend] = useState(false)
   const [emailTo, setEmailTo] = useState('')
-  const [emailToMode, setEmailToMode] = useState('select') // 'select' | 'custom'
-  const [emailCc, setEmailCc] = useState('')
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
-  const [sending, setSending] = useState(false)
   const [sent, setSent] = useState(false)
+  // Réponse de l'envoi : sert à rendre compte des achats créés (purchase_ids)
+  // et des lignes écartées — l'envoi d'un PO alimente la page Achats.
+  const [sendResult, setSendResult] = useState(null)
   const [error, setError] = useState('')
   const [fromAccount, setFromAccount] = useState('')
   const [gmailAccounts, setGmailAccounts] = useState([])
-  const confirm = useConfirm()
 
   useEffect(() => {
     if (!isOpen) return
     setLoading(true)
     setError('')
     setSent(false)
+    setSendResult(null)
     setShowSend(false)
     setPdfUrl(null)
     setFromAccount('')
@@ -63,10 +74,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
         const contacts = data.supplier_contacts || []
         setSupplierContacts(contacts)
         setSupplierProducts(data.supplier_products || [])
-        const defaultTo = data.supplier_email || (contacts[0]?.email || '')
-        setEmailTo(defaultTo)
-        const isKnown = contacts.some(c => c.email === defaultTo)
-        setEmailToMode(isKnown || !defaultTo ? 'select' : 'custom')
+        setEmailTo(data.supplier_email || (contacts[0]?.email || ''))
         const t = emailTemplate(data.lang, data.po_number)
         setEmailSubject(t.subject)
         setEmailBody(t.body)
@@ -153,45 +161,21 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
     }
   }
 
-  async function handleSend() {
-    if (!emailTo || !emailTo.includes('@')) { setError('Adresse courriel invalide'); return }
-    setError('')
-
-    // Confirmation explicite du side effect (envoi d'un courriel + PDF au fournisseur).
-    const ok = await confirm({
-      title: "Confirmer l'envoi du bon de commande",
-      message: (
-        <>
-          Un courriel avec le PDF <strong>{po?.po_number}.pdf</strong> en pièce jointe sera envoyé à{' '}
-          <strong>{emailTo}</strong>
-          {emailCc ? <> (Cc&nbsp;: <strong>{emailCc}</strong>)</> : null}
-          {fromAccount ? <>, depuis <strong>{fromAccount}</strong></> : null}.
-        </>
-      ),
-      confirmLabel: 'Envoyer',
-      danger: false,
-    })
-    if (!ok) return
-
-    setSending(true)
-    try {
-      await api.products.poSendEmail(productId, {
-        to: emailTo,
-        cc: emailCc || undefined,
-        subject: emailSubject,
-        body_html: emailBody.split('\n').map(l => `<p>${escapeHtml(l)}</p>`).join(''),
-        from_account: fromAccount || undefined,
-        po,
-      })
-      setSent(true)
-    } catch (e) {
-      setError(e.message)
-    } finally {
-      setSending(false)
-    }
-  }
+  // Brouillon passé à la modale de composition (aperçu ET envoi au même endroit).
+  const emailDraft = po ? {
+    to: emailTo,
+    subject: emailSubject,
+    bodyHtml: textToHtml(emailBody),
+    attachments: [`${po.po_number}.pdf`],
+    recipients: supplierContacts.map(c => ({
+      email: c.email,
+      name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+    })),
+  } : null
 
   const total = (po?.items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0)
+  const createdCount = (sendResult?.purchase_ids || []).length
+  const skipped = { no_product: 0, zero_qty: 0, already_created: 0, ...(sendResult?.purchases_skipped || {}) }
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Bon de commande" size="xl">
@@ -207,99 +191,29 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
             </div>
             <h3 className="font-semibold text-slate-900 text-lg">Bon de commande envoyé</h3>
             <p className="text-sm text-slate-500">Envoyé à <span className="font-medium text-slate-700">{emailTo}</span>.</p>
+            <div className="text-sm text-slate-500 space-y-1" data-testid="po-created-purchases">
+              {createdCount > 0 ? (
+                <p>
+                  <span className="font-medium text-slate-700">{createdCount} achat{createdCount > 1 ? 's' : ''}</span>
+                  {' '}créé{createdCount > 1 ? 's' : ''} pour la référence{' '}
+                  <span className="font-medium text-slate-700">{po.po_number}</span> —{' '}
+                  <Link to="/purchases" onClick={onClose} className="text-brand-600 hover:underline">voir les achats</Link>
+                </p>
+              ) : (
+                <p>Aucun achat créé : les lignes du bon de commande ne pointent vers aucun produit du catalogue.</p>
+              )}
+              {skipped.already_created > 0 && (
+                <p>{skipped.already_created} achat{skipped.already_created > 1 ? 's' : ''} existai{skipped.already_created > 1 ? 'ent' : 't'} déjà pour cette référence (non recréé{skipped.already_created > 1 ? 's' : ''}).</p>
+              )}
+              {skipped.no_product > 0 && createdCount > 0 && (
+                <p>{skipped.no_product} ligne{skipped.no_product > 1 ? 's' : ''} sans produit du catalogue — pas d’achat pour celle{skipped.no_product > 1 ? 's-ci' : '-ci'}.</p>
+              )}
+              {skipped.zero_qty > 0 && (
+                <p>{skipped.zero_qty} ligne{skipped.zero_qty > 1 ? 's' : ''} à quantité 0 — pas d’achat.</p>
+              )}
+            </div>
           </div>
           <button onClick={onClose} className="btn-secondary">Fermer</button>
-        </div>
-      ) : showSend ? (
-        <div className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Envoyer depuis</label>
-            <SearchableSelect
-              testId="po-from-account-select"
-              className={inp}
-              size="sm"
-              value={fromAccount}
-              onChange={setFromAccount}
-              options={gmailAccounts}
-              getOptionValue={a => a.account_email}
-              getOptionLabel={a => `${a.account_email}${a.is_current_user ? ' (vous)' : ''}`}
-              placeholder="— choisir un compte —"
-              searchPlaceholder="Rechercher un compte…"
-            />
-            {!gmailAccounts.some(a => a.is_current_user) && (
-              <p className="text-xs text-amber-700 mt-1">
-                Votre compte Gmail n'est pas connecté. Connectez-le dans Connectors, ou sélectionnez un autre compte pour envoyer.
-              </p>
-            )}
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Destinataire</label>
-            {emailToMode === 'select' && supplierContacts.length > 0 ? (
-              <SearchableSelect
-                testId="po-recipient-select"
-                className={inp}
-                size="sm"
-                value={emailTo}
-                onChange={v => {
-                  if (v === '__custom__') {
-                    setEmailToMode('custom')
-                    setEmailTo('')
-                  } else {
-                    setEmailTo(v)
-                  }
-                }}
-                options={[
-                  ...supplierContacts.map(c => ({
-                    value: c.email,
-                    label: `${[c.first_name, c.last_name].filter(Boolean).join(' ')} — ${c.email}`,
-                  })),
-                  { value: '__custom__', label: 'Autre / Saisir manuellement…' },
-                ]}
-                placeholder="— Choisir un contact —"
-                searchPlaceholder="Rechercher un contact…"
-              />
-            ) : (
-              <>
-                <input className={inp} value={emailTo} onChange={e => setEmailTo(e.target.value)} placeholder="fournisseur@exemple.com" />
-                {supplierContacts.length > 0 && (
-                  <button
-                    onClick={() => {
-                      setEmailToMode('select')
-                      setEmailTo(supplierContacts[0].email)
-                    }}
-                    className="text-xs text-brand-600 hover:underline mt-1"
-                  >
-                    ← Choisir dans la liste des contacts
-                  </button>
-                )}
-              </>
-            )}
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Cc</label>
-            <input className={inp} value={emailCc} onChange={e => setEmailCc(e.target.value)} placeholder="optionnel" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Sujet</label>
-            <input className={inp} value={emailSubject} onChange={e => setEmailSubject(e.target.value)} />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Message</label>
-            <textarea className={inp} rows={6} value={emailBody} onChange={e => setEmailBody(e.target.value)} />
-          </div>
-          <p className="text-xs text-slate-500">
-            Le PDF <span className="font-mono">{po.po_number}.pdf</span> sera attaché automatiquement.
-          </p>
-          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>}
-          <div className="flex justify-between gap-3 pt-2">
-            <button onClick={() => setShowSend(false)} className="btn-secondary">Retour</button>
-            <button onClick={handleSend} disabled={sending || !emailTo || !fromAccount} className="btn-primary flex items-center gap-1.5">
-              {sending
-                ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Envoi…</>
-                : <><Mail size={14} /> Envoyer</>
-              }
-            </button>
-          </div>
         </div>
       ) : (
         <div className="space-y-6">
@@ -334,7 +248,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
             </div>
             <div className="col-span-2 md:col-span-4">
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Détails</label>
-              <input className={inp} value={po.details || ''} onChange={e => setField('details', e.target.value)} placeholder="optionnel" />
+              <input className={inp} value={po.details || ''} onChange={e => setField('details', e.target.value)} />
             </div>
           </div>
 
@@ -412,7 +326,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
             </div>
           )}
 
-          {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>}
+          {error && <ErrorBanner>{error}</ErrorBanner>}
 
           <div className="flex flex-wrap justify-between gap-3 pt-2">
             <div className="flex gap-2">
@@ -429,6 +343,44 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
           </div>
         </div>
       )}
+
+      {/* Composition du courriel au fournisseur : destinataire, Cc, objet,
+          corps et pièce jointe sous les yeux, puis envoi annulable 3 s. */}
+      <EmailComposerModal
+        isOpen={showSend}
+        onClose={() => setShowSend(false)}
+        title="Envoyer au fournisseur"
+        draft={emailDraft}
+        canSend={Boolean(fromAccount)}
+        headerExtra={
+          <div>
+            <label className="block text-xs text-slate-500 mb-1">Envoyer depuis</label>
+            <SearchableSelect
+              testId="po-from-account-select"
+              className={inp}
+              size="sm"
+              value={fromAccount}
+              onChange={setFromAccount}
+              options={gmailAccounts}
+              getOptionValue={a => a.account_email}
+              getOptionLabel={a => `${a.account_email}${a.is_current_user ? ' (vous)' : ''}`}
+              searchPlaceholder="Rechercher un compte…"
+            />
+            {!fromAccount && (
+              <p className="text-xs text-amber-700 mt-1">
+                Choisissez un compte d'envoi — votre compte Gmail n'est pas connecté (Connecteurs).
+              </p>
+            )}
+          </div>
+        }
+        onSend={({ to, cc, subject, bodyHtml }) => api.products.poSendEmail(productId, {
+          to, cc, subject, body_html: bodyHtml,
+          from_account: fromAccount || undefined,
+          po,
+        })}
+        onSent={(res, sentTo) => { setEmailTo(sentTo.to); setSendResult(res || null); setSent(true) }}
+        successMessage={to => `Bon de commande envoyé à ${to}`}
+      />
     </Modal>
   )
 }
@@ -476,7 +428,6 @@ function SupplierProductPicker({ products, existingIds, onPick }) {
             <input
               ref={inputRef}
               className="w-full text-sm focus:outline-none"
-              placeholder="Rechercher une pièce…"
               value={query}
               onChange={e => setQuery(e.target.value)}
             />
@@ -510,10 +461,6 @@ function SupplierProductPicker({ products, existingIds, onPick }) {
       )}
     </div>
   )
-}
-
-function escapeHtml(s) {
-  return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 }
 
 function emailTemplate(lang, poNumber) {

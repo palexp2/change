@@ -61,15 +61,11 @@ router.post('/:id/reopen', (req, res) => {
 
 // POST /api/anomalies/scan — relance manuelle du scan complet.
 router.post('/scan', async (req, res) => {
-  try {
-    const out = runAnomalyScan('manual')
-    // Vérification des liens QB (appels API) : un reçu peut pointer une écriture
-    // supprimée depuis dans QuickBooks.
-    const qb = await runQbLinkVerification('manual')
-    res.json({ ...out, qb_checked: qb.checked, qb_missing: qb.missing })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const out = runAnomalyScan('manual')
+  // Vérification des liens QB (appels API) : un reçu peut pointer une écriture
+  // supprimée depuis dans QuickBooks.
+  const qb = await runQbLinkVerification('manual')
+  res.json({ ...out, qb_checked: qb.checked, qb_missing: qb.missing })
 })
 
 export default router

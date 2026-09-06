@@ -17,9 +17,11 @@ import {
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
+import Spinner from '../components/Spinner.jsx'
 
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 
@@ -108,7 +110,6 @@ function DecisionControls({ row, testPrefix, onPatch, compact = false }) {
       <input
         className={`${inputCls} ${compact ? '!w-52' : 'mt-1'}`}
         data-testid={`${testPrefix}-note-${row.id}`}
-        placeholder="Note…"
         value={note}
         onChange={e => setNote(e.target.value)}
         onBlur={() => {
@@ -308,9 +309,9 @@ function ManualAddRow({ onAdded }) {
   // Bouton requis : création d'un enregistrement qui n'a pas encore d'id (autosave impossible).
   return (
     <div className="flex flex-wrap items-center gap-2">
-      <input className={`${inputCls} !w-64`} placeholder="Nom du document *" value={name}
+      <input className={`${inputCls} !w-64`} value={name}
         data-testid="manual-name" onChange={e => setName(e.target.value)} autoFocus />
-      <input className={`${inputCls} !w-64`} placeholder="Lien Drive (optionnel)" value={link}
+      <input className={`${inputCls} !w-64`} value={link}
         onChange={e => setLink(e.target.value)} />
       <button
         disabled={busy || !name.trim()}
@@ -430,7 +431,7 @@ export default function DriveInventory() {
       <div className="p-6">
         <div className="flex items-start justify-between mb-5 gap-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Inventaire Drive</h1>
+            <PageTitle>Inventaire Drive</PageTitle>
             <p className="text-xs text-slate-500 mt-0.5 max-w-3xl">
               Ce que la comptabilité tient encore dans Google Drive, examiné <strong>onglet par onglet</strong> :
               un classeur en partie repris par l'ERP peut cacher des onglets entiers qui ne le sont pas.
@@ -518,7 +519,7 @@ export default function DriveInventory() {
             </label>
             <div className="relative">
               <Search className="w-4 h-4 text-slate-400 absolute left-2.5 top-1/2 -translate-y-1/2" />
-              <input className={`${inputCls} !pl-8 !w-64`} placeholder="Rechercher un onglet, un classeur…"
+              <input className={`${inputCls} !pl-8 !w-64`}
                 value={q} onChange={e => setQ(e.target.value)} data-testid="drive-search" />
             </div>
           </div>
@@ -527,7 +528,7 @@ export default function DriveInventory() {
         {tab === 'suggestions' ? (
           <div className="space-y-2" data-testid="drive-suggestions">
             {loading ? (
-              <div className="px-3 py-8 text-center text-sm text-slate-400">Chargement…</div>
+              <div className="px-3 py-8 text-center text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
             ) : suggestions.length === 0 ? (
               <div className="px-3 py-10 text-center text-sm text-slate-400 border border-slate-200 rounded-xl bg-white">
                 <Sparkles className="w-5 h-5 mx-auto mb-2 text-slate-300" />
@@ -552,7 +553,7 @@ export default function DriveInventory() {
               </thead>
               <tbody data-testid="drive-inventory-rows">
                 {loading ? (
-                  <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-slate-400">Chargement…</td></tr>
+                  <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></td></tr>
                 ) : items.length === 0 ? (
                   <tr><td colSpan={6} className="px-3 py-8 text-center text-sm text-slate-400">
                     {data.items?.length ? 'Aucun document dans cette vue.' : 'Lancez une analyse du Drive pour construire l\'inventaire.'}

@@ -7,14 +7,17 @@
 // Claude du précédent via --resume. À la fin de chaque item, un recap part dans le
 // DM Slack perso : c'est ce qui permet de ne plus surveiller le terminal.
 //
-// Un seul item « running » à la fois, garanti par advanceQueue() : l'agent n'a
-// qu'un slot d'exécution (il édite l'arbre de travail réel, sans isolation).
-import { randomUUID } from 'crypto'
+// La file est éclatée en EXEC_LANES sous-files parallèles : chaque item reçoit sa
+// file AU HASARD à la création (colonne `exec_lane`, migration 020) et chaque file
+// n'avance qu'un item à la fois. Il y a donc jusqu'à EXEC_LANES chantiers en cours
+// — ils partagent le même arbre de travail, sans isolation (choix assumé, voir
+// taskRunner.js).
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { broadcastAll } from './realtime.js'
 import {
   enqueueAgentTask, findAgentTask, getSettings, presetFor, getMaxParallelQuestions,
-  generateUserSummary, isQueuePaused, setQueuePaused,
+  generateUserSummary, isQueuePaused, setQueuePaused, getExecLaneCount,
   updatePendingAgentTask, cancelPendingAgentTask, sendSteeringMessage,
 } from './taskRunner.js'
 import { heuristicTitle, refineTitle, refineProjectTitle } from './promptTitle.js'
@@ -33,7 +36,33 @@ const _resumeRetried = new Set()
 // attendraient un slot côté runner, et la page afficherait « en cours » à tort.
 const MAX_PARALLEL_QUESTION_PROMPTS = getMaxParallelQuestions()
 
-const SELECT = 'SELECT * FROM work_prompts WHERE deleted_at IS NULL'
+// Files d'implémentation parallèles — la source de vérité est le runner, qui tient
+// un poste par file.
+const EXEC_LANES = getExecLaneCount()
+
+/** File d'un item, bornée : hors intervalle (ou NULL héritée) → file 0. */
+function laneOfRow(row) {
+  const n = Number(row?.exec_lane)
+  return Number.isInteger(n) && n >= 0 && n < EXEC_LANES ? n : 0
+}
+function randomLane() { return Math.floor(Math.random() * EXEC_LANES) }
+
+/**
+ * Vrai si l'item passe par la voie lecture seule (questions, parallèles et hors
+ * files). Un item « même contexte » en est exclu : il doit reprendre la session de
+ * son prédécesseur, donc attendre son tour dans sa file.
+ */
+function isQuestionLane(row) { return row.mode === 'question' && !row.same_context }
+
+// Clause SQL des items qui disputent un poste de file (le complément de isQuestionLane).
+const EXEC_LANE_WHERE = `(mode!='question' OR same_context=1)`
+
+// Sous-requête corrélée plutôt qu'un JOIN : `work_prompts` reste sans alias, donc
+// tous les `${SELECT} AND status=…` / `AND id=…` composés plus bas restent valides
+// sans risque de colonne ambiguë (id existe aussi sur `users`).
+const SELECT = `
+  SELECT *, (SELECT name FROM users WHERE id = work_prompts.created_by) AS created_by_name
+  FROM work_prompts WHERE deleted_at IS NULL`
 
 // Deux files distinctes sur la même table : celle de l'Espace finance et celle de
 // la section Agent. Chaque page ne voit que la sienne ; l'exécuteur est partagé.
@@ -48,9 +77,10 @@ export function listPrompts({ space = null } = {}) {
   // d'une pastille (« Claude · Intégration »), il n'y a donc plus de raison
   // d'aller la relire dans l'onglet Suggestions.
   return db.prepare(`
-    SELECT p.*, s.kind AS suggestion_kind, s.area AS suggestion_area
+    SELECT p.*, s.kind AS suggestion_kind, s.area AS suggestion_area, u.name AS created_by_name
     FROM work_prompts p
     LEFT JOIN work_suggestions s ON s.id = p.suggestion_id
+    LEFT JOIN users u ON u.id = p.created_by
     WHERE p.deleted_at IS NULL${where} ORDER BY
     CASE WHEN p.pending_question IS NOT NULL AND p.status NOT IN ('running','cancelled') THEN 0
          ELSE CASE p.status WHEN 'running' THEN 1 WHEN 'queued' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END END,
@@ -94,7 +124,7 @@ export function createPrompt({
 }) {
   const text = String(prompt || '').trim()
   if (!text) throw new Error('prompt requis')
-  const id = randomUUID()
+  const id = newRecordId()
   // Titre absent = titre automatique : l'heuristique tout de suite (déterministe),
   // puis un titre modèle quelques secondes plus tard s'il tient la route. Un titre
   // saisi à la main n'est jamais touché.
@@ -112,11 +142,14 @@ export function createPrompt({
   const autoPreset = preset === 'auto' || !PRESET_KEYS.includes(preset)
   const chosen = autoPreset ? provisionalPreset(cleanMode) : preset
   db.prepare(`
-    INSERT INTO work_prompts (id, title, prompt, status, position, same_context, mode, preset, suggestion_id, created_by, title_auto, preset_auto, space)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO work_prompts (id, title, prompt, status, position, same_context, mode, preset, suggestion_id, created_by, title_auto, preset_auto, space, exec_lane)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(id, label, text, initial, priority ? frontPosition(inSpace) : nextPosition(inSpace), same_context ? 1 : 0,
     cleanMode, chosen, suggestion_id, created_by,
-    given ? 0 : 1, autoPreset && preset === 'auto' ? 1 : 0, inSpace)
+    given ? 0 : 1, autoPreset && preset === 'auto' ? 1 : 0, inSpace,
+    // File tirée au sort : c'est la répartition qui fait avancer quatre chantiers de
+    // front sans que personne n'ait à ranger les tâches à la main.
+    randomLane())
   broadcast()
   if (!given) scheduleTitleRefine(id, text, label)
   if (preset === 'auto') schedulePresetClassify(id)
@@ -212,7 +245,7 @@ const EDITABLE = ['title', 'prompt', 'mode', 'preset', 'status', 'position', 'st
 // ─── Items « en attente » : remis à l'ordonnanceur, mais pas encore démarrés ───
 //
 // Un item passe « running » dès qu'il est confié au runner — or celui-ci ne démarre
-// qu'une implémentation à la fois. Entre les deux, l'item ne fait RIEN : il attend
+// qu'une implémentation PAR FILE. Entre les deux, l'item ne fait RIEN : il attend
 // son tour. Le figer (prompt en lecture seule, ordre verrouillé, impossible de le
 // mettre de côté) n'avait donc aucune justification, et bloquait la file dès que
 // deux items étaient poussés coup sur coup.
@@ -379,27 +412,57 @@ export function reorderPrompts(ids) {
  * sont repris — sans ça ils partaient quand même avant, et « premier » mentait.
  * Ils repartiront par le chemin normal, derrière celui-ci. Puis l'item est remis
  * tout de suite à l'ordonnanceur (qui sert premier arrivé) : son rang 1 tient
- * même face à l'autre file, l'exécuteur étant partagé. File en pause ou agent
+ * même face à l'autre espace, l'exécuteur étant partagé. File en pause ou agent
  * désactivé : simple repositionnement, rien n'est confié au runner.
+ *
+ * Avec quatre files parallèles, « premier » impose aussi de CHANGER de file quand
+ * celle de l'item est occupée par un chantier réellement en cours : sinon la carte
+ * s'affichait « 1re » tout en attendant la fin d'un long travail alors qu'un autre
+ * poste était libre. La file d'origine était tirée au sort, la remplacer par une
+ * autre au hasard parmi les libres ne trahit donc rien.
  */
 export function moveToFront(id) {
   let target = getPrompt(id)
   if (!target) return null
   target = reclaimPending(target)
   if (!['queued', 'paused'].includes(target.status)) return target
-  // Seule SA voie le concurrence : les questions (parallèles) ne disputent pas le
-  // poste d'implémentation, et réciproquement.
-  const laneWhere = (target.mode === 'question' && !target.same_context)
-    ? `mode='question' AND same_context=0`
-    : `(mode!='question' OR same_context=1)`
-  for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND ${laneWhere}`).all(id)) {
-    reclaimPending(row) // no-op si l'exécution a réellement commencé
+  if (isQuestionLane(target)) {
+    // Voie lecture seule : les questions ne disputent aucun poste d'implémentation.
+    for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND mode='question' AND same_context=0`).all(id)) {
+      reclaimPending(row) // no-op si l'exécution a réellement commencé
+    }
+  } else {
+    const lane = frontLane(target)
+    if (lane !== laneOfRow(target)) {
+      db.prepare(`UPDATE work_prompts SET exec_lane=? WHERE id=?`).run(lane, id)
+    }
+    // Seuls les items de SA file le concurrencent désormais.
+    for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND exec_lane=? AND ${EXEC_LANE_WHERE}`).all(id, lane)) {
+      reclaimPending(row) // no-op si l'exécution a réellement commencé
+    }
   }
   db.prepare(`UPDATE work_prompts SET position=?, status='queued', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
     .run(frontPosition(target.space), id)
   broadcast()
   if (getSettings().enabled && !isQueuePaused()) return startPrompt(getPrompt(id)).prompt
   return getPrompt(id)
+}
+
+/**
+ * File visée par un « Passer en premier » : celle de l'item si aucun chantier n'y
+ * tourne vraiment, sinon la première file libre. Les items simplement « remis à
+ * l'ordonnanceur » (pas démarrés) ne comptent pas comme occupation : l'appelant les
+ * reprend juste après.
+ */
+function frontLane(target) {
+  const own = laneOfRow(target)
+  const busy = new Set()
+  for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND ${EXEC_LANE_WHERE}`).all(target.id)) {
+    if (!isPending(row)) busy.add(laneOfRow(row))
+  }
+  if (!busy.has(own)) return own
+  for (let lane = 0; lane < EXEC_LANES; lane++) if (!busy.has(lane)) return lane
+  return own
 }
 
 // ─── Ordonnancement ───────────────────────────────────────────────────────────
@@ -415,6 +478,9 @@ export function getQueuePauseState() {
     paused: !!s.queuePaused,
     paused_at: s.queuePausedAt || null,
     reason: s.queuePausedReason || null,
+    // La pause vient-elle du garde-fou de quota ? Elle se lèvera d'elle-même au
+    // retour du quota (quotaGuard.js).
+    by_quota: !!s.quotaPauseActive,
   }
 }
 
@@ -466,8 +532,9 @@ export function advanceQueue() {
   if (!getSettings().enabled) return { started: null, startedCount: 0, reason: 'agent-disabled' }
 
   const runningRows = db.prepare(`${SELECT} AND status='running'`).all()
-  const runningQuestions = runningRows.filter(r => r.mode === 'question').length
-  const implRunning = runningRows.some(r => r.mode !== 'question')
+  const runningQuestions = runningRows.filter(isQuestionLane).length
+  // Files déjà occupées : elles n'accueillent rien de plus, les autres avancent.
+  const busyLanes = new Set(runningRows.filter(r => !isQuestionLane(r)).map(laneOfRow))
 
   const started = []
 
@@ -480,13 +547,16 @@ export function advanceQueue() {
     for (const q of questions) started.push(startPrompt(q))
   }
 
-  // 3. Implémentation : une seule à la fois (elle édite l'arbre de travail réel).
-  // Les positions vivent PAR FILE (finance / agent) : comparer les positions brutes
-  // entre files n'aurait aucun sens. On prend donc le prochain candidat de CHAQUE
-  // file selon son propre ordre, puis premier arrivé premier servi entre les files.
-  if (!implRunning) {
+  // 3. Implémentation : UN item par file d'exécution, donc jusqu'à EXEC_LANES
+  // chantiers de front. Chaque file est servie indépendamment — une file occupée par
+  // un long chantier ne retient pas les trois autres.
+  // Les positions vivent PAR ESPACE (finance / agent) : comparer les positions brutes
+  // entre espaces n'aurait aucun sens. On prend donc, pour la file visée, le prochain
+  // candidat de CHAQUE espace selon son propre ordre, puis premier arrivé premier servi.
+  for (let lane = 0; lane < EXEC_LANES; lane++) {
+    if (busyLanes.has(lane)) continue
     const next = PROMPT_SPACES
-      .map(sp => db.prepare(`${SELECT} AND status IN ('queued','running') AND space=? AND (mode!='question' OR same_context=1) ORDER BY position, created_at LIMIT 1`).get(sp))
+      .map(sp => db.prepare(`${SELECT} AND status IN ('queued','running') AND space=? AND exec_lane=? AND ${EXEC_LANE_WHERE} ORDER BY position, created_at LIMIT 1`).get(sp, lane))
       .filter(Boolean)
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0]
     if (next) started.push(startPrompt(next))
@@ -505,14 +575,16 @@ export function advanceQueue() {
  * avec la voie parallèle, une question terminée entre-temps volerait le contexte.
  */
 function sessionOfPrevious(row) {
-  // Scopé à la même file : un item « même contexte » de la file Agent ne doit
-  // jamais reprendre la session d'un item de la file finance (et inversement).
+  // Scopé au même espace ET à la même file d'exécution : un item « même contexte »
+  // de l'espace Agent ne doit jamais reprendre la session d'un item de l'espace
+  // finance (et inversement), ni celle d'un chantier d'une autre file — qui
+  // n'était même pas son prédécesseur.
   const prev = db.prepare(`
     SELECT session_id FROM work_prompts
-    WHERE deleted_at IS NULL AND session_id IS NOT NULL AND space = ?
+    WHERE deleted_at IS NULL AND session_id IS NOT NULL AND space = ? AND exec_lane = ?
       AND (position < ? OR (position = ? AND created_at < ?))
     ORDER BY position DESC, created_at DESC LIMIT 1
-  `).get(row.space, row.position, row.position, row.created_at)
+  `).get(row.space, laneOfRow(row), row.position, row.position, row.created_at)
   return prev?.session_id || null
 }
 
@@ -535,6 +607,7 @@ function startPrompt(row, { forceFresh = false } = {}) {
     author: followUp ? 'File de travaux (suite)' : 'File de travaux',
     work_prompt_id: row.id,
     resume_session_id: resume,
+    exec_lane: laneOfRow(row),
   })
   db.prepare(`
     UPDATE work_prompts
@@ -589,7 +662,7 @@ export function listMessages(promptId) {
 function addMessage(promptId, { role, text, agentTaskId = null, author = null }) {
   const clean = String(text || '').trim()
   if (!clean) return null
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO work_prompt_messages (id, prompt_id, role, text, agent_task_id, author)
     VALUES (?,?,?,?,?,?)
@@ -662,6 +735,7 @@ function relaunchWithThread(row) {
     author: 'File de travaux (suite)',
     work_prompt_id: row.id,
     resume_session_id: row.session_id || null,
+    exec_lane: laneOfRow(row),
   })
   // follow_up=1 : si cette exécution est fauchée avant d'avoir travaillé (quota,
   // reprise de session impossible), le redémarrage saura qu'il doit repartir du

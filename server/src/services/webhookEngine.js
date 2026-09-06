@@ -1,5 +1,5 @@
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { newId } from '../utils/ids.js'
 import { runScriptSandboxed } from './scriptSandbox.js'
 import { writeBackRecord, createInAirtable, TABLE_TO_WRITEBACK_MODULE } from './airtableWriteback.js'
@@ -97,7 +97,7 @@ async function applyCreate(table, patch, actions, stepNo, dryRun) {
     actions.push(`[test] create(${table}) → ${Object.keys(patch).join(', ') || '(vide)'}`)
     return { ...patch } // record synthétique pour le templating
   }
-  const id = randomUUID()
+  const id = newRecordId()
   const keys = Object.keys(patch)
   const cols = ['id', ...keys]
   const placeholders = cols.map(() => '?').join(', ')

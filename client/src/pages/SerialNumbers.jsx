@@ -1,8 +1,11 @@
 import { useMemo } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import SerialDetail from './SerialDetail.jsx'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -31,7 +34,7 @@ const RENDERS = {
 const COLUMNS = TABLE_COLUMN_META.serial_numbers.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
 export default function SerialNumbers() {
-  const navigate = useNavigate()
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   const serialsRaw = useTable('serial_numbers')
   const products = useTable('products')
@@ -64,7 +67,7 @@ export default function SerialNumbers() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Numéros de série</h1>
+            <PageTitle>Numéros de série</PageTitle>
           </div>
         </div>
 
@@ -75,7 +78,15 @@ export default function SerialNumbers() {
           data={serials}
           loading={loading}
           searchFields={['serial', 'product_name', 'company_name']}
-          onRowClick={row => navigate(`/serials/${row.id}`)}
+          peek={{
+            title: row => row.serial || `Numéro de série #${row.id}`,
+            subtitle: row => row.company_name || row.product_name || '',
+            to: row => `/serials/${row.id}`,
+            width: 680,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: row => <SerialDetail recordId={row.id} embedded />,
+          }}
         />
       </div>
     </Layout>

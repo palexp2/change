@@ -32,6 +32,46 @@ function normalizeCountry(country) {
   return v
 }
 
+// Régimes de taxe nommés — miroir de TAX_REGIMES côté serveur. La province
+// suggère, l'utilisateur tranche (client autochtone exonéré, export…).
+export const TAX_REGIMES = {
+  qc: { label: 'TPS 5 % + TVQ 9,975 % — Québec', rates: [
+    { name: 'TPS', percentage: 5, jurisdiction: 'CA' },
+    { name: 'TVQ', percentage: 9.975, jurisdiction: 'CA-QC' },
+  ] },
+  hst_on: { label: 'TVH 13 % — Ontario', rates: [{ name: 'HST', percentage: 13, jurisdiction: 'CA-ON' }] },
+  hst_nb: { label: 'TVH 15 % — Nouveau-Brunswick', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-NB' }] },
+  hst_nl: { label: 'TVH 15 % — Terre-Neuve-et-Labrador', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-NL' }] },
+  hst_ns: { label: 'TVH 15 % — Nouvelle-Écosse', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-NS' }] },
+  hst_pe: { label: 'TVH 15 % — Île-du-Prince-Édouard', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-PE' }] },
+  gst: { label: 'TPS 5 % seulement', rates: [{ name: 'TPS', percentage: 5, jurisdiction: 'CA' }] },
+  none: { label: 'Aucune taxe', rates: [] },
+}
+
+export const TAX_REGIME_KEYS = Object.keys(TAX_REGIMES)
+
+const HST_REGIME_BY_PROVINCE = { ON: 'hst_on', NB: 'hst_nb', NL: 'hst_nl', NS: 'hst_ns', PE: 'hst_pe' }
+
+export function isCanada(country) {
+  return normalizeCountry(country) === 'CA'
+}
+
+export function suggestTaxRegime({ province, country }) {
+  if (!isCanada(country)) return 'none'
+  const p = normalizeProvince(province)
+  if (!p) return 'none'
+  if (HST_REGIME_BY_PROVINCE[p]) return HST_REGIME_BY_PROVINCE[p]
+  if (p === 'QC') return 'qc'
+  return 'gst'
+}
+
+export function taxesForRegime(regime, subtotal) {
+  const def = TAX_REGIMES[regime]
+  if (!def) return []
+  const sub = Number(subtotal) || 0
+  return def.rates.map(r => ({ ...r, amount: round2(sub * r.percentage / 100) }))
+}
+
 export function computeCanadaTaxes({ province, country, subtotal }) {
   const c = normalizeCountry(country)
   if (c !== 'CA') return []

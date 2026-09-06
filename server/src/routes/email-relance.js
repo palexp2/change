@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import {
@@ -181,8 +181,8 @@ router.post('/send/:qcId', async (req, res) => {
 
   // Trace l'envoi côté CRM — même schéma que la sync Gmail (interactions + emails)
   // pour que le courriel apparaisse dans la timeline du contact et de l'entreprise.
-  const interactionId = randomUUID()
-  const emailRowId = randomUUID()
+  const interactionId = newRecordId()
+  const emailRowId = newRecordId()
   const ts = new Date().toISOString()
   // Atomique : interaction + email écrits ensemble. Si le 2e INSERT échoue,
   // on ne veut pas une interaction orpheline sans corps de courriel — sinon la

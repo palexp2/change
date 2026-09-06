@@ -97,13 +97,6 @@ export const SOUMISSION_STATUS_COLORS = {
 
 export const PURCHASE_STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
 
-export const RETOUR_STATUS_COLORS = {
-  'Reçu': 'green',
-  'En attente': 'yellow',
-  'En traitement': 'blue',
-  'Refusé': 'red',
-}
-
 export const STRIPE_PAYOUT_STATUS_COLORS = {
   paid: 'green', pending: 'yellow', in_transit: 'blue', canceled: 'gray', failed: 'red',
 }

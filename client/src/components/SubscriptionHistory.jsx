@@ -201,7 +201,6 @@ export function SubscriptionHistory({ subscriptionId, history, onChanged }) {
             onChange={e => setEditCurrency(e.target.value.toUpperCase().slice(0, 3))}
             onBlur={onBlurSave}
             disabled={inputsDisabled}
-            placeholder="CAD"
             className="w-full border border-slate-300 rounded px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-brand-500 font-mono uppercase"
           />
         </div>

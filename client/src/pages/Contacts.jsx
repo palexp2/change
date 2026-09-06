@@ -6,9 +6,11 @@ import { Plus, Send } from 'lucide-react'
 import api from '../lib/api.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
 import ContactDetail from './ContactDetail.jsx'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -29,75 +31,31 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.contacts.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function ContactForm({ initial = {}, companies = [], onSave, onClose }) {
-  const [form, setForm] = useState({
-    first_name: '', last_name: '', email: '', phone: '', mobile: '',
-    company_id: '', language: '',
-    ...initial,
-  })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    setSaving(true)
-    try { await onSave(form); onClose() }
-    catch (err) { setError(err.message) }
-    finally { setSaving(false) }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="label">Prénom *</label>
-          <input value={form.first_name} onChange={e => setForm(f => ({ ...f, first_name: e.target.value }))} className="input" required />
-        </div>
-        <div>
-          <label className="label">Nom *</label>
-          <input value={form.last_name} onChange={e => setForm(f => ({ ...f, last_name: e.target.value }))} className="input" required />
-        </div>
-        <div>
-          <label className="label">Courriel</label>
-          <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Téléphone</label>
-          <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Mobile</label>
-          <input value={form.mobile} onChange={e => setForm(f => ({ ...f, mobile: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Langue</label>
-          <select value={form.language} onChange={e => setForm(f => ({ ...f, language: e.target.value }))} className="select">
-            <option value="">—</option>
-            <option value="French">Français</option>
-            <option value="English">Anglais</option>
-          </select>
-        </div>
-        <div className="col-span-2">
-          <label className="label">Entreprise</label>
-          <LinkedRecordField
-            name="contact_company_id"
-            value={form.company_id}
-            options={companies}
-            labelFn={c => c.name}
-            placeholder="Entreprise"
-            onChange={v => setForm(f => ({ ...f, company_id: v }))}
-          />
-        </div>
-      </div>
-      {!initial.id && <DuplicateWarning kind="contact" values={form} />}
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
-      </div>
-    </form>
-  )
+// Champs proposés par le formulaire « Nouveau contact » — liste calquée sur ce
+// que POST /api/contacts persiste (voir RecordForm.jsx pour la configuration).
+function contactFormFields(companies) {
+  return [
+    { field: 'first_name', label: 'Prénom', locked: true, required: true },
+    { field: 'last_name', label: 'Nom', locked: true, required: true },
+    { field: 'email', label: 'Courriel', type: 'email' },
+    { field: 'phone', label: 'Téléphone' },
+    { field: 'mobile', label: 'Mobile' },
+    { field: 'language', label: 'Langue', type: 'select', options: [{ value: 'French', label: 'Français' }, { value: 'English', label: 'Anglais' }] },
+    {
+      field: 'company_id', label: 'Entreprise', span: 2,
+      input: ({ value, onChange }) => (
+        <LinkedRecordField
+          name="contact_company_id"
+          value={value}
+          options={companies}
+          labelFn={c => c.name}
+          onChange={onChange}
+        />
+      ),
+    },
+    // Masqué par défaut — disponible via « Modifier le formulaire ».
+    { field: 'notes', label: 'Notes', type: 'textarea', span: 2, visible: false },
+  ]
 }
 
 export default function Contacts() {
@@ -137,7 +95,7 @@ export default function Contacts() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Contacts</h1>
+            <PageTitle>Contacts</PageTitle>
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -163,7 +121,7 @@ export default function Contacts() {
             title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Contact',
             subtitle: row => row.company_name || row.email || '',
             to: row => `/contacts/${row.id}`,
-            render: row => <ContactDetail recordId={row.id} embedded />,
+            render: (row, { close }) => <ContactDetail recordId={row.id} embedded onClose={close} />,
           }}
           searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
           onFilteredDataChange={setFilteredContacts}
@@ -180,7 +138,14 @@ export default function Contacts() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau contact">
-        <ContactForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <RecordForm
+          table="contacts"
+          fields={contactFormFields(companies)}
+          columns={2}
+          onSubmit={handleCreate}
+          onClose={() => setShowModal(false)}
+          extra={values => <DuplicateWarning kind="contact" values={values} />}
+        />
       </Modal>
 
       <HubSpotExportModal

@@ -13,7 +13,8 @@
 //
 // Une seule case porte tout le sens : « passé à la banque ». Tant qu'elle est
 // vide, le paiement pèse sur la projection du solde BNC. Elle se coche toute
-// seule quand la transaction est retrouvée au relevé (et demain via Plaid).
+// seule quand la transaction est retrouvée au relevé (collage, TRX_Orisha, ou
+// Plaid en temps quasi réel).
 //
 // La saisie est guidée par le MOYEN de paiement : les informations utiles ne sont
 // pas les mêmes pour un Interac (bénéficiaire + courriel + n° de confirmation),
@@ -33,17 +34,18 @@ import { payDateForDue } from '../lib/bankDays.js'
 // la cédule « À payer » s'en sert aussi pour nommer la référence à saisir.
 import { METHOD_SPECS, METHOD_ORDER, spec } from '../lib/paymentMethods.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import PaymentSchedule from '../components/PaymentSchedule.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
-import { formatRelativeTime } from '../utils/formatters.js'
+import { formatRelativeTime, fmtMoney, fmtNumber } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
-const fmtCad = (n, currency = 'CAD') =>
-  new Intl.NumberFormat('fr-CA', { style: 'currency', currency: currency || 'CAD' }).format(Number(n) || 0)
+const fmtCad = (n, currency = 'CAD') => fmtMoney(n, currency, { nullIsZero: true })
 // Montant éditable de la liste : lisible (séparateurs de milliers, 2 décimales)
 // sans symbole — parseAmount sait relire cette forme au blur.
-const fmtNum = n => new Intl.NumberFormat('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(Number(n) || 0)
+const fmtNum = n => fmtNumber(n, { decimals: 2, nullIsZero: true })
 const fmtDay = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short', year: 'numeric' }) : '—')
 // Date compacte AAAA-MM-JJ : le format d'une cellule de tableur, et celui que
 // rendent nativement les <input type="date"> — les colonnes de dates de la
@@ -239,9 +241,11 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
               ? ' · détecté dans QuickBooks (écriture compensée au compte bancaire)'
               : p.cleared_source === 'sheet'
                 ? ' · coché automatiquement (retiré du fichier « Maintien du solde disponible BNC »)'
-                : p.cleared_source === 'bank' || p.bank_txn_date
-                  ? ` · apparié au relevé${p.bank_txn_date ? ` du ${fmtDay(p.bank_txn_date)}` : ''}`
-                  : ''} — cliquer pour le remettre dans la projection`
+                : p.cleared_source === 'plaid'
+                  ? ` · détecté automatiquement via Plaid${p.bank_txn_date ? ` (${fmtDay(p.bank_txn_date)})` : ''}`
+                  : p.cleared_source === 'bank' || p.bank_txn_date
+                    ? ` · apparié au relevé${p.bank_txn_date ? ` du ${fmtDay(p.bank_txn_date)}` : ''}`
+                    : ''} — cliquer pour le remettre dans la projection`
             : 'Pas encore passé à la banque — compté dans la projection. Coché automatiquement dès que QuickBooks montre le mouvement au compte (ou que la ligne quitte le fichier de suivi) ; cliquer pour le faire à la main.'}>
           {cleared ? <CheckCircle2 size={14} /> : <Circle size={14} />}
         </button>
@@ -271,13 +275,11 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
           className={`${cellCls} shrink-0 text-slate-500 tabular-nums`} style={{ width: widths.paymentDate }}
           title={sp.dateLabel} onBlur={e => save('payment_date', e.target.value)} />
 
-        <input defaultValue={p.reference || ''} className={`${cellCls} shrink-0`} style={{ width: widths.reference }}
-          placeholder="# Paiement" title={sp.refLabel} data-testid={`payment-reference-${p.id}`}
+        <input defaultValue={p.reference || ''} className={`${cellCls} shrink-0`} style={{ width: widths.reference }} title={sp.refLabel} data-testid={`payment-reference-${p.id}`}
           onBlur={e => save('reference', e.target.value)} />
 
         <span className="shrink-0 flex items-center gap-1.5" style={{ width: widths.vendor }}>
-          <input defaultValue={p.label || ''} className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`}
-            placeholder="Fournisseur / libellé" onBlur={e => save('label', e.target.value)} />
+          <input defaultValue={p.label || ''} className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`} onBlur={e => save('label', e.target.value)} />
           {/* Particularité du fournisseur : signalée tant que le paiement n'est pas
               passé — c'est en l'émettant qu'il ne faut pas l'oublier. */}
           {!cleared && particularites && (
@@ -324,7 +326,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
                   {p.invoice_number || p.achat_vendor || 'facture liée'}
                 </span>}
             </span>
-            : <input defaultValue={p.invoice_number || ''} className={`${cellCls} w-full`} placeholder="# facture"
+            : <input defaultValue={p.invoice_number || ''} className={`${cellCls} w-full`}
               data-testid={`payment-invoice-${p.id}`}
               onBlur={e => save('invoice_number', e.target.value.trim() || null)} />}
         </span>
@@ -339,8 +341,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
           <span className="w-8 text-[11px] text-slate-400">{(p.currency || 'CAD') !== 'CAD' ? p.currency : ''}</span>
         </span>
 
-        <input defaultValue={p.notes || ''} className={`${cellCls} shrink-0`} style={{ width: widths.notes }}
-          placeholder="Commentaire" data-testid={`payment-notes-${p.id}`}
+        <input defaultValue={p.notes || ''} className={`${cellCls} shrink-0`} style={{ width: widths.notes }} data-testid={`payment-notes-${p.id}`}
           title="Mémorisé sur le profil du fournisseur et re-proposé au prochain paiement"
           onBlur={e => save('notes', e.target.value.trim() || null)} />
 
@@ -597,7 +598,7 @@ function OpenBillsPanel({ bills, particByKey, onPick }) {
         {bills.length > 5 && (
           <span className="relative block mt-2">
             <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Fournisseur, n° de facture…"
+            <input value={q} onChange={e => setQ(e.target.value)}
               className={`${inputCls} w-full pl-7`} data-testid="open-bills-search" />
           </span>
         )}
@@ -946,8 +947,7 @@ function NewPaymentForm({ onCreated, onClose, hints, templates, accounts, bills,
                 <span className="shrink-0 text-slate-400 tabular-nums">{fmtCad(t.last_amount, t.currency)}</span>
               </span>
             )}
-            placeholder={templates.length ? "Repartir d'un paiement déjà fait…" : 'Aucun paiement passé'}
-            searchPlaceholder="Bénéficiaire, moyen, compte…"
+            placeholder={templates.length ? '—' : 'Aucun paiement passé'}
             className={`${inputCls} w-full bg-white`}
             size="sm"
             disabled={!templates.length}
@@ -1052,7 +1052,6 @@ function NewPaymentForm({ onCreated, onClose, hints, templates, accounts, bills,
                     value={form.to_account}
                     options={accountOptions(accounts, sp.toKind)}
                     onChange={v => set('to_account', v)}
-                    placeholder="Choisir…"
                     className={`${inputCls} w-full bg-white`} size="sm"
                     searchPlaceholder="Compte…" testId="payment-new-to-account"
                   />
@@ -1070,7 +1069,7 @@ function NewPaymentForm({ onCreated, onClose, hints, templates, accounts, bills,
                 {/* Le datalist filtre à la frappe (règle « dropdown recherchable ») :
                     il liste les fournisseurs déjà payés + ceux dont le profil porte
                     une note de paiement. */}
-                <input value={form.label} onChange={e => onLabelChange(e.target.value)} placeholder={sp.payeePlaceholder}
+                <input value={form.label} onChange={e => onLabelChange(e.target.value)}
                   list="payment-vendor-hints" autoComplete="off"
                   className={`${inputCls} w-full`} data-testid="payment-new-label" />
                 <datalist id="payment-vendor-hints">
@@ -1120,7 +1119,7 @@ function NewPaymentForm({ onCreated, onClose, hints, templates, accounts, bills,
             </Field>
             <Field label={sp.refLabel} className="w-52">
               <input value={form.reference} onChange={e => set('reference', e.target.value)}
-                placeholder={sp.refPlaceholder || ''} className={`${inputCls} w-full`}
+                className={`${inputCls} w-full`}
                 data-testid="payment-new-reference" />
             </Field>
             {sp.invoice && (
@@ -1132,7 +1131,6 @@ function NewPaymentForm({ onCreated, onClose, hints, templates, accounts, bills,
             )}
             <Field label="Note" className="flex-1 min-w-48">
               <input value={form.notes} onChange={e => set('notes', e.target.value)}
-                placeholder="Ex. payé par Antoine, loyer d'août…"
                 title="Mémorisée sur le profil du fournisseur et re-proposée au prochain paiement."
                 className={`${inputCls} w-full`} data-testid="payment-new-notes" />
             </Field>
@@ -1349,6 +1347,26 @@ export default function PaiementsEmis() {
     finally { setSheetBusy(false) }
   }
 
+  // Importe les nouvelles factures QuickBooks (mêmes route/service que le
+  // bouton « Importer depuis QB » d'Achats fournisseurs) : la synchronisation
+  // automatique tourne aux 2 min, ce bouton force le passage immédiatement
+  // pour qu'une facture fraîchement comptabilisée arrive tout de suite dans
+  // « Factures à payer » sans attendre.
+  const [qbImportBusy, setQbImportBusy] = useState(false)
+  const importQbBills = async () => {
+    setQbImportBusy(true)
+    try {
+      const r = await api.connectors.importQB()
+      const bills = (r.bills?.inserted || 0) + (r.bills?.updated || 0)
+      addToast({
+        message: bills ? `${bills} facture(s) fournisseur importée(s) de QuickBooks` : 'Rien de nouveau dans QuickBooks',
+        type: 'success',
+      })
+      loadBills()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setQbImportBusy(false) }
+  }
+
   // Relit le grand livre QuickBooks : coche ce qui est sûr, remonte le reste.
   const syncQb = async () => {
     setQbBusy(true)
@@ -1396,9 +1414,7 @@ export default function PaiementsEmis() {
       <div className="max-w-7xl mx-auto px-6 py-6">
         <div className="flex items-start justify-between gap-4">
           <div className="min-w-0">
-            <h1 className="text-xl font-semibold text-slate-900 flex items-center gap-2">
-              <Landmark size={18} className="text-brand-600" /> Paiements et virements émis
-            </h1>
+            <PageTitle>Paiements et virements émis</PageTitle>
             <p className="text-sm text-slate-500 mt-0.5">
               Tant qu'un paiement n'est pas passé à la banque, il pèse sur la{' '}
               <Link to="/comptabilite" className="text-brand-600 hover:underline">projection du solde</Link>.
@@ -1429,6 +1445,12 @@ export default function PaiementsEmis() {
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 shadow-sm hover:bg-slate-50 hover:border-slate-400 rounded-lg disabled:opacity-50">
               <RefreshCw size={14} className={sheetBusy ? 'animate-spin' : ''} />
               <span>{sheetBusy ? 'Synchronisation…' : 'Synchroniser la feuille'}</span>
+            </button>
+            <button onClick={importQbBills} disabled={qbImportBusy} data-testid="payments-qb-import"
+              title="Importer maintenant les factures fournisseurs comptabilisées dans QuickBooks — sans attendre la synchronisation automatique (toutes les 2 minutes)"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 shadow-sm hover:bg-slate-50 hover:border-slate-400 rounded-lg disabled:opacity-50">
+              <RefreshCw size={14} className={qbImportBusy ? 'animate-spin' : ''} />
+              <span>{qbImportBusy ? 'Importation…' : 'Importer depuis QB'}</span>
             </button>
             <PageMenu items={[
               {
@@ -1521,7 +1543,7 @@ export default function PaiementsEmis() {
               {tab === 'pending' ? 'Tout est passé à la banque.' : 'Aucun paiement.'}
             </p>
           )}
-          {loading && <p className="py-6 px-3 text-center text-sm text-slate-400">Chargement…</p>}
+          {loading && <p className="py-6 px-3 text-center text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
           </div>
         </div>
         )}

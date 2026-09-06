@@ -1,28 +1,34 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen, Download } from 'lucide-react'
+import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen, Download, Clock, SearchCheck, Plus, ArrowLeftRight } from 'lucide-react'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtMoney } from '../utils/formatters.js'
+import { VendorSelect } from '../components/VendorSelect.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
 
-// Statuts = l'ancien code couleur du fichier TRX_Orisha.xlsx.
+// Sentinel « pas de taxe » des profils fournisseurs (côté serveur : bankActions.js).
+const NO_TAX = '__none__'
+
+// Statuts = l'ancien code couleur du fichier TRX_Orisha.xlsx. `cell` peint la
+// cellule du tableau (le fichier était lu à la couleur, pas au texte) ; `color`
+// reste la pastille du panneau latéral.
 const STATUS_META = {
-  a_traiter:     { label: 'À traiter',      color: 'red',    hint: 'Aucun document trouvé — souvent facture manquante' },
-  facture_recue: { label: 'Facture reçue',  color: 'blue',   hint: 'Document apparié, pas encore publié à QB' },
-  comptabilise:  { label: 'Comptabilisé',   color: 'yellow', hint: 'Publié à QuickBooks, pas encore rapproché' },
-  rapproche:     { label: 'Rapproché',      color: 'green',  hint: 'Comptabilisé et validé contre le relevé' },
-  ignore:        { label: 'Ignoré',         color: 'gray',   hint: 'Exclu du rapprochement' },
+  a_traiter:     { label: 'À traiter',      color: 'red',    cell: 'bg-red-50 text-red-700',     hint: 'Aucun document trouvé — souvent facture manquante' },
+  facture_recue: { label: 'Facture reçue',  color: 'blue',   cell: 'bg-sky-50 text-sky-700',     hint: 'Document apparié, pas encore publié à QB' },
+  comptabilise:  { label: 'Comptabilisé',   color: 'yellow', cell: 'bg-amber-50 text-amber-700', hint: 'Publié à QuickBooks, pas encore rapproché' },
+  rapproche:     { label: 'Rapproché',      color: 'green',  cell: 'bg-green-50 text-green-700', hint: 'Comptabilisé et validé contre le relevé' },
+  ignore:        { label: 'Ignoré',         color: 'gray',   cell: 'bg-slate-100 text-slate-500', hint: 'Exclu du rapprochement' },
 }
 
-function money(n, currency = 'CAD') {
-  if (n == null) return <span className="text-slate-300">—</span>
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency, maximumFractionDigits: 2 }).format(n)
-}
+const money = (n, currency = 'CAD') => fmtMoney(n, currency, { fallback: <span className="text-slate-300">—</span> })
 
 // Libellé d'une transaction : « Autres détails » du relevé en principal (il
 // nomme la nature réelle — « NOVO EXPRESS » — là où la description de la
@@ -70,7 +76,6 @@ function ImportModal({ account, onClose, onDone }) {
         </p>
         <textarea
           className="w-full h-48 border border-slate-300 rounded-lg p-2 font-mono text-xs"
-          placeholder={'Date\tDescription\tRéférence\tDébit\tCrédit\tSolde\n2026-07-27\tREMB. MCR\t60024937974\t\t73,00\t…'}
           value={text}
           onChange={(e) => { setText(e.target.value); setPreview(null) }}
         />
@@ -118,8 +123,249 @@ function ImportModal({ account, onClose, onDone }) {
   )
 }
 
+// ── « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture ──────
+//
+// Le pendant du bouton « Ajouter » de QuickBooks. Les valeurs proposées ne sont
+// pas devinées : elles viennent du profil du fournisseur, puis de la façon dont
+// on a réellement comptabilisé ce fournisseur les fois précédentes. Quand ces
+// fois-là ne concordent pas, on le dit plutôt que de choisir en silence.
+function AddExpenseForm({ txn, currency, onDone, onCancel }) {
+  const [defaults, setDefaults] = useState(null)
+  const [form, setForm] = useState(null)
+  const [accounts, setAccounts] = useState([])
+  const [taxCodes, setTaxCodes] = useState([])
+  const [rate, setRate] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    api.bank.addDefaults(txn.id).then((d) => {
+      if (!alive) return
+      setDefaults(d)
+      setForm({
+        vendor: d.vendor || '',
+        expense_account_id: d.expense_account_id || '',
+        tax_code_id: d.tax_code_id || '',
+        memo: d.memo || d.label || '',
+      })
+    }).catch((e) => setError(e.message))
+    Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
+      .then(([a, t]) => { if (alive) { setAccounts(a || []); setTaxCodes(t || []) } })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [txn.id])
+
+  // Taux d'achat du code choisi : c'est lui qui dit quelle part du montant
+  // débité est de la taxe. Un aller-retour par code, gardé en mémoire.
+  const taxCodeId = form?.tax_code_id
+  useEffect(() => {
+    if (!taxCodeId || taxCodeId === NO_TAX) { setRate(null); return }
+    let alive = true
+    setRate(undefined)
+    api.bank.taxCodeRate(taxCodeId).then((r) => { if (alive) setRate(r.percent) }).catch(() => { if (alive) setRate(null) })
+    return () => { alive = false }
+  }, [taxCodeId])
+
+  const total = Math.abs(txn.amount)
+  const taxCad = rate ? Math.round((total - total / (1 + rate / 100)) * 100) / 100 : 0
+
+  const submit = async () => {
+    setBusy(true); setError(null)
+    try {
+      const r = await api.bank.addExpense(txn.id, {
+        vendor: form.vendor,
+        expense_account_id: form.expense_account_id,
+        tax_code_id: form.tax_code_id || null,
+        tax_cad: taxCad,
+        memo: form.memo,
+        payment_account_id: defaults?.payment_account_id || null,
+      })
+      invalidate('/bank')
+      if (r.qbError) setError(`Écriture créée, publication QuickBooks refusée : ${r.qbError}`)
+      else onDone()
+    } catch (e) {
+      setError(e.message)
+    } finally { setBusy(false) }
+  }
+
+  if (!form) return <div className="p-4 text-sm text-slate-400">{error || 'Chargement…'}</div>
+
+  const h = defaults?.history
+  const accountName = (id) => accounts.find((a) => String(a.Id) === String(id))?.Name || id
+  const taxName = (id) => (id === NO_TAX ? 'aucune' : taxCodes.find((t) => String(t.Id) === String(id))?.Name || id)
+  const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="text-xs text-slate-500">
+        Comptabiliser {money(total, currency)} sans facture. {defaults?.source ? `Proposé d'après : ${defaults.source}.` : 'Aucun fournisseur reconnu.'}
+      </div>
+
+      <label className="block">
+        <span className="text-xs text-slate-500">Fournisseur</span>
+        <VendorSelect value={form.vendor} onChange={({ vendor }) => set('vendor')(vendor)} />
+      </label>
+
+      <label className="block">
+        <span className="text-xs text-slate-500">Compte de dépense</span>
+        <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
+          options={accounts} getOptionValue={(a) => String(a.Id)}
+          getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
+          placeholder="Choisir un compte" />
+      </label>
+
+      <label className="block">
+        <span className="text-xs text-slate-500">Taxe</span>
+        <SearchableSelect value={form.tax_code_id} onChange={set('tax_code_id')}
+          options={taxCodes} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
+          emptyOption="Aucune taxe" placeholder="Aucune taxe" />
+        {rate === undefined && <span className="text-xs text-slate-400">taux…</span>}
+        {!!rate && (
+          <span className="text-xs text-slate-500">
+            {rate.toFixed(3).replace(/\.?0+$/, '')} % → {money(taxCad, currency)} de taxe, {money(total - taxCad, currency)} au compte
+          </span>
+        )}
+      </label>
+
+      <label className="block">
+        <span className="text-xs text-slate-500">Mémo</span>
+        <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+          value={form.memo} onChange={(e) => set('memo')(e.target.value)} />
+      </label>
+
+      {h && (() => {
+        // Deux choses valent un avertissement : un historique qui se contredit,
+        // et une proposition (venue du profil fournisseur) qui contredit ce
+        // qu'on a réellement publié les fois précédentes.
+        const usualAccount = h.expense_accounts[0]?.value || null
+        const usualTax = h.tax_codes[0]?.value || null
+        const offAccount = usualAccount && form.expense_account_id && String(form.expense_account_id) !== String(usualAccount)
+        // Les achats publiés ne portent presque jamais de code de taxe (QuickBooks
+        // la calcule alors lui-même) : proposer un code là où l'historique n'en
+        // avait aucun n'est pas une contradiction, c'est une amélioration. On
+        // n'avertit que si l'habitude était un code PRÉCIS, et un autre.
+        const offTax = usualTax && usualTax !== NO_TAX && String(form.tax_code_id || NO_TAX) !== String(usualTax)
+        const warn = !h.consistent || offAccount || offTax
+        return (
+          <div className={`rounded-lg px-2.5 py-1.5 text-xs space-y-0.5 ${warn ? 'bg-amber-50 text-amber-800' : 'bg-slate-50 text-slate-500'}`}>
+            {h.consistent ? (
+              <div>Les {h.count} dernières fois : {accountName(usualAccount)} · taxe {taxName(usualTax)}</div>
+            ) : (
+              <div>
+                Sur {h.count} achats : {h.expense_accounts.map((e) => `${accountName(e.value)} ×${e.n}`).join(', ')}
+                {h.tax_codes.length > 1 && <> — taxe : {h.tax_codes.map((t) => `${taxName(t.value)} ×${t.n}`).join(', ')}</>}
+              </div>
+            )}
+            {offAccount && <div>Le compte proposé n'est pas celui de l'habitude ({accountName(usualAccount)}).</div>}
+            {offTax && <div>La taxe proposée n'est pas celle de l'habitude ({taxName(usualTax)}).</div>}
+          </div>
+        )
+      })()}
+
+      {error && <div className="text-xs text-red-600">{error}</div>}
+
+      <div className="flex gap-2">
+        <button type="button" className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          disabled={busy || !form.vendor || !form.expense_account_id} onClick={submit}>
+          {busy ? 'Publication…' : 'Ajouter et publier'}
+        </button>
+        <button type="button" className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onClick={onCancel}>
+          Annuler
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ── « Transfert » : les deux moitiés d'un mouvement interne ─────────────────
+function TransferForm({ txn, currency, onDone, onCancel }) {
+  const [candidates, setCandidates] = useState(null)
+  const [pick, setPick] = useState(null)
+  const [amount, setAmount] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [note, setNote] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    api.bank.transferCandidates(txn.id)
+      .then((c) => { if (alive) { setCandidates(c); setPick(c[0]?.id || null) } })
+      .catch((e) => { if (alive) { setCandidates([]); setError(e.message) } })
+    return () => { alive = false }
+  }, [txn.id])
+
+  const chosen = candidates?.find((c) => c.id === pick) || null
+
+  const submit = async () => {
+    setBusy(true); setError(null); setNote(null)
+    try {
+      const r = await api.bank.transfer(txn.id, {
+        counterpart_txn_id: pick,
+        amount: chosen?.fx ? Number(amount) : undefined,
+      })
+      invalidate('/bank')
+      if (r.qbError) setError(`Virement lié, écriture QuickBooks refusée : ${r.qbError}`)
+      else { setNote(r.skipped || r.fx_note || null); onDone() }
+    } catch (e) {
+      setError(e.message)
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="space-y-3 text-sm">
+      <div className="text-xs text-slate-500">
+        Choisir la ligne de l'autre compte qui est l'autre moitié de ce mouvement.
+      </div>
+      {candidates == null && <div className="text-slate-400">Recherche…</div>}
+      {candidates?.length === 0 && (
+        <div className="text-slate-500">Aucune ligne de sens opposé au même montant dans un autre compte, à ±5 jours.</div>
+      )}
+      <div className="space-y-1">
+        {candidates?.map((c) => (
+          <button key={c.id} type="button" onClick={() => setPick(c.id)}
+            className={`w-full flex items-center gap-2 rounded-lg px-2 py-1.5 text-left border transition-colors ${pick === c.id
+              ? 'border-brand-400 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+            <span className="min-w-0 grow">
+              <span className="block truncate font-medium text-slate-800">{c.account_name}</span>
+              <span className="block truncate text-xs text-slate-500">{fmtDate(c.txn_date)} · {c.label}</span>
+            </span>
+            <span className="shrink-0 text-right">
+              <span className="block tabular-nums">{money(c.amount, c.currency)}</span>
+              {c.fx && <span className="block text-xs text-amber-600">change ~{c.rate}</span>}
+            </span>
+          </button>
+        ))}
+      </div>
+      {chosen?.fx && (
+        <label className="block">
+          <span className="text-xs text-slate-500">Montant transféré ({currency})</span>
+          <input type="number" step="0.01" className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+            value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={Math.abs(txn.amount).toFixed(2)} />
+        </label>
+      )}
+      {note && <div className="text-xs text-amber-700">{note}</div>}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      <div className="flex gap-2">
+        <button type="button" className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+          disabled={busy || !pick || (chosen?.fx && !(Number(amount) > 0))} onClick={submit}>
+          {busy ? 'Liaison…' : 'Lier et publier'}
+        </button>
+        <button type="button" className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onClick={onCancel}>
+          Annuler
+        </button>
+      </div>
+    </div>
+  )
+}
+
 // ── Drawer latéral : détail + suggestions de matching ────────────────────────
-function TxnPeek({ txn, currency, onChanged }) {
+function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
+  // Le panneau porte les deux gestes qui demandent un formulaire : comptabiliser
+  // sans facture, et apparier un virement. Les boutons de la ligne ouvrent le
+  // panneau DÉJÀ dans le bon mode : `initialMode` n'est lu qu'au montage, la
+  // remise à zéro se fait quand on passe à UNE AUTRE ligne.
+  const [mode, setMode] = useState(initialMode || null)
   const [suggestions, setSuggestions] = useState(null)
   const [busy, setBusy] = useState(false)
   const [comment, setComment] = useState(txn.comment || '')
@@ -128,6 +374,12 @@ function TxnPeek({ txn, currency, onChanged }) {
   // ligne ? null = pas encore chargé, false = aucun collecteur.
   const [need, setNeed] = useState(null)
   const [collecting, setCollecting] = useState(false)
+  // La ligne change dans le panneau (navigation ↑↓) : on repart de la vue
+  // habituelle plutôt que de garder le formulaire de la ligne précédente.
+  const modeSeededFor = useRef(txn.id)
+  useEffect(() => {
+    if (modeSeededFor.current !== txn.id) { modeSeededFor.current = txn.id; setMode(null) }
+  }, [txn.id])
 
   useEffect(() => {
     setComment(txn.comment || '')
@@ -174,6 +426,25 @@ function TxnPeek({ txn, currency, onChanged }) {
   }
 
   const meta = STATUS_META[txn.status] || STATUS_META.a_traiter
+  const done = async () => { setMode(null); await onChanged() }
+
+  if (mode === 'add') {
+    return (
+      <div className="p-4">
+        <div className="font-medium text-slate-900 mb-2">{txnLabel(txn)}</div>
+        <AddExpenseForm txn={txn} currency={currency} onDone={done} onCancel={() => setMode(null)} />
+      </div>
+    )
+  }
+  if (mode === 'transfer') {
+    return (
+      <div className="p-4">
+        <div className="font-medium text-slate-900 mb-2">{txnLabel(txn)}</div>
+        <TransferForm txn={txn} currency={currency} onDone={done} onCancel={() => setMode(null)} />
+      </div>
+    )
+  }
+
   return (
     <div className="p-4 space-y-4 text-sm">
       <div className="space-y-1">
@@ -208,7 +479,25 @@ function TxnPeek({ txn, currency, onChanged }) {
         )}
       </div>
 
-      {txn.matched_id ? (
+      {txn.transfer_txn_id ? (
+        <div className="bg-slate-50 rounded-lg p-3 space-y-2">
+          <div className="text-xs font-medium text-slate-500 uppercase">Virement interne</div>
+          <div>{txn.matched_label || 'Virement'}</div>
+          <div className="flex items-center gap-3">
+            {txn.qb_url && (
+              <a href={txn.qb_url} target="_blank" rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">
+                <ExternalLink size={12} /> Ouvrir dans QuickBooks
+              </a>
+            )}
+            <button className="inline-flex items-center gap-1 text-xs text-red-600 hover:underline disabled:opacity-50" disabled={busy}
+              onClick={() => act(() => api.bank.unlinkTransfer(txn.id))}>
+              <Unlink size={12} /> Défaire le virement
+            </button>
+          </div>
+          {txn.qb_txn_id && <div className="text-xs text-slate-400">L'écriture QuickBooks reste : l'annuler dans QuickBooks si besoin.</div>}
+        </div>
+      ) : txn.matched_id ? (
         <div className="bg-slate-50 rounded-lg p-3 space-y-2">
           <div className="text-xs font-medium text-slate-500 uppercase">Document apparié</div>
           <div>{docLink(txn.matched_type, txn.matched_id, txn.matched_label)}
@@ -275,6 +564,21 @@ function TxnPeek({ txn, currency, onChanged }) {
         </div>
       )}
 
+      {!txn.matched_id && !txn.transfer_txn_id && txn.status !== 'ignore' && (
+        <div className="flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+          {txn.amount < 0 && (
+            <button className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50"
+              title="Comptabiliser cette ligne sans facture" onClick={() => setMode('add')}>
+              <Plus size={12} /> Ajouter
+            </button>
+          )}
+          <button className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 hover:bg-slate-50"
+            title="Apparier à la ligne miroir d'un autre compte" onClick={() => setMode('transfer')}>
+            <ArrowLeftRight size={12} /> Transfert
+          </button>
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2">
         {txn.status !== 'rapproche' && txn.status !== 'ignore' && (
           <button className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-50" disabled={busy}
@@ -310,55 +614,50 @@ function TxnPeek({ txn, currency, onChanged }) {
   )
 }
 
-// ── Panneau de rapprochement — solde calculé, solde QuickBooks, écart ────────
+// Écriture QuickBooks sans ligne au relevé : rien à modifier ici, seulement à
+// constater et à aller corriger dans QuickBooks.
+function GhostPeek({ row, currency }) {
+  return (
+    <div className="p-4 space-y-3 text-sm">
+      <div className="text-slate-600">
+        Cette écriture existe dans QuickBooks mais aucune ligne du relevé ne lui correspond.
+      </div>
+      <div className="rounded-lg bg-slate-50 p-3 space-y-1">
+        <div className="font-medium text-slate-900">{row.label}</div>
+        <div className="text-slate-500">{fmtDate(row.txn_date)}</div>
+        <div className={`text-lg font-semibold ${row.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(row.amount, currency)}</div>
+      </div>
+      <div className="text-xs text-slate-500">
+        Soit le relevé n'a pas encore été importé jusqu'à cette date, soit l'écriture est en trop dans QuickBooks.
+      </div>
+      {row.qb_url && (
+        <a href={row.qb_url} target="_blank" rel="noreferrer"
+          className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">
+          <ExternalLink size={12} /> Ouvrir dans QuickBooks
+        </a>
+      )}
+    </div>
+  )
+}
+
+// ── Rapprochement : état et actions ─────────────────────────────────────────
 //
 // L'équivalent de l'écran « Rapprocher » de QuickBooks : le solde du compte est
 // recalculé à partir du relevé importé, comparé au solde QuickBooks à la même
-// date, et tout écart est décomposé en transactions précises (au relevé mais
-// pas dans QB, dans QB mais pas au relevé, rupture de la chaîne des soldes).
+// date. Le hook porte l'état ; l'écart s'affiche sur une ligne (EcartBar) et
+// les transactions fautives sont signalées DANS le tableau, pas dans des
+// sections repliables au-dessus de lui.
 
-function Figure({ label, value, sub, tone = 'neutral', testId, loading }) {
-  const toneClass = tone === 'ok' ? 'text-green-700' : tone === 'bad' ? 'text-red-700' : 'text-slate-900'
-  return (
-    <div className="px-4 py-3 min-w-0">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`text-xl font-semibold tabular-nums truncate ${toneClass}`} data-testid={testId}>
-        {loading ? <span className="text-slate-300">…</span> : value}
-      </div>
-      {sub && <div className="text-xs text-slate-400 truncate">{sub}</div>}
-    </div>
-  )
-}
-
-// Une section dépliable de l'écart (liste de lignes fautives).
-function GapSection({ id, icon: Icon, color, title, count, open, onToggle, children }) {
-  if (!count) return null
-  return (
-    <div className="border-t border-slate-100">
-      <button type="button" data-testid={`reconcile-gap-${id}`}
-        className="w-full flex items-center gap-2 px-4 py-2 text-sm text-left hover:bg-slate-50 transition-colors"
-        onClick={onToggle}>
-        <Icon size={14} className={color} />
-        <span className="font-medium text-slate-700">{count}</span>
-        <span className="text-slate-600">{title}</span>
-        <span className="grow" />
-        <ChevronRight size={14} className={`text-slate-400 transition-transform ${open ? 'rotate-90' : ''}`} />
-      </button>
-      {open && <div className="px-4 pb-3 space-y-1 max-h-72 overflow-auto">{children}</div>}
-    </div>
-  )
-}
-
-function ReconcilePanel({ account, refreshKey, onChanged, onOpenTxn }) {
+function useReconcile(account, refreshKey, onChanged) {
   const [summary, setSummary] = useState(null)
   const [qb, setQb] = useState(null)
   const [qbLoading, setQbLoading] = useState(false)
   const [qbError, setQbError] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [open, setOpen] = useState(null)
+  const [qbAuditBusy, setQbAuditBusy] = useState(false)
+  const [qbAuditMsg, setQbAuditMsg] = useState(null)
 
   const accountId = account?.id
-  const currency = account?.currency
 
   useEffect(() => {
     if (!accountId) { setSummary(null); return }
@@ -375,7 +674,7 @@ function ReconcilePanel({ account, refreshKey, onChanged, onOpenTxn }) {
     try { setQb(await api.bank.qbCompare(accountId)) } catch (e) { setQbError(e.message); setQb(null) } finally { setQbLoading(false) }
   }, [accountId, account?.qb_account_id])
 
-  useEffect(() => { setQb(null); setQbError(null); setOpen(null); loadQb() }, [loadQb])
+  useEffect(() => { setQb(null); setQbError(null); setQbAuditMsg(null); loadQb() }, [loadQb])
 
   const runAuto = async () => {
     setBusy(true)
@@ -386,108 +685,92 @@ function ReconcilePanel({ account, refreshKey, onChanged, onOpenTxn }) {
     } finally { setBusy(false) }
   }
 
+  // Compte Plaid : la vérité « comptabilisé dans QuickBooks » ne vient plus du
+  // fichier TRX_Orisha (désactivé pour ces comptes) mais de cette recherche
+  // approfondie — voir services/plaidQbAudit.js.
+  const runQbAudit = async () => {
+    setQbAuditBusy(true); setQbAuditMsg(null)
+    try {
+      const r = await api.bank.qbAudit(accountId)
+      setQbAuditMsg(`${r.linked} lié(s) sur ${r.scanned} vérifiée(s)`)
+      await onChanged()
+    } catch (e) {
+      setQbAuditMsg(`Échec : ${e.message}`)
+    } finally { setQbAuditBusy(false) }
+  }
+
+  const onMerged = async () => { await onChanged() }
+
+  return { summary, qb, qbLoading, qbError, loadQb, busy, runAuto, qbAuditBusy, qbAuditMsg, runQbAudit, onMerged }
+}
+
+// Une ligne, trois nombres : le solde du relevé, celui de QuickBooks, et
+// l'écart entre les deux — c'est le seul chiffre qui commande une action.
+function EcartBar({ account, rec }) {
+  const { summary, qb, qbLoading, qbError, qbAuditMsg } = rec
   if (!account) return null
   const stmt = summary?.statement
   const bal = qb?.balance && !qb.balance.error ? qb.balance : null
   const diff = bal?.difference
-  const anomalies = summary?.anomalies || []
-  const missingQb = qb?.missing_in_qb || []
-  const missingStmt = qb?.missing_in_statement || []
-  const toggle = (k) => setOpen((prev) => (prev === k ? null : k))
+  const ok = diff != null && Math.abs(diff) < 0.01
+  const currency = account.currency
 
   return (
-    <div data-testid="reconcile-panel" className="mb-4 rounded-xl border border-slate-200 bg-white overflow-hidden">
-      <div className="flex flex-wrap items-stretch divide-x divide-slate-100">
-        <Figure label="Solde du relevé" testId="reconcile-statement-balance"
-          loading={!summary}
-          value={stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : <span className="text-slate-300">—</span>}
-          sub={stmt?.date ? `au ${fmtDate(stmt.date)}` : null} />
-        <Figure label="Solde QuickBooks" testId="reconcile-qb-balance"
-          loading={qbLoading}
-          value={bal ? money(bal.qb_as_of, currency) : <span className="text-slate-300">—</span>}
-          sub={bal
-            ? (Math.abs(bal.qb_current - bal.qb_as_of) < 0.01
-              ? 'à la date du relevé'
-              : `à la date du relevé · aujourd'hui ${money(bal.qb_current, currency)}`)
-            : (account.qb_account_id ? null : 'aucun compte QB mappé')} />
-        <Figure label="Écart" testId="reconcile-difference"
-          loading={qbLoading}
-          tone={diff == null ? 'neutral' : Math.abs(diff) < 0.01 ? 'ok' : 'bad'}
-          value={diff == null ? <span className="text-slate-300">—</span> : money(diff, currency)}
-          sub={diff == null ? null : Math.abs(diff) < 0.01 ? 'relevé et QuickBooks concordent' : 'relevé moins QuickBooks'} />
-        <Figure label="À rapprocher" testId="reconcile-pending"
-          loading={!summary}
-          value={summary?.totals ? `${summary.totals.pending_count}` : '—'}
-          sub={summary?.totals ? `${summary.totals.reconciled_count} rapprochées · ${summary.totals.no_document_count} sans document` : null} />
-        <div className="px-4 py-3 flex items-center gap-2 grow justify-end">
-          <button type="button" data-testid="reconcile-auto-btn"
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-            title="Apparier les transactions aux documents de l'ERP puis aux écritures QuickBooks"
-            disabled={busy} onClick={runAuto}>
-            <Wand2 size={15} /> {busy ? 'Rapprochement…' : 'Rapprocher automatiquement'}
-          </button>
-          <button type="button" title="Recalculer la comparaison QuickBooks"
-            className="inline-flex items-center justify-center p-1.5 rounded-lg border border-slate-300 hover:bg-slate-50 disabled:opacity-50"
-            disabled={qbLoading || !account.qb_account_id} onClick={loadQb}>
-            <RefreshCw size={15} className={qbLoading ? 'animate-spin' : ''} />
-          </button>
-        </div>
-      </div>
-
-      {qbError && (
-        <div className="border-t border-slate-100 px-4 py-2 text-sm text-amber-700 bg-amber-50">
-          Comparaison QuickBooks indisponible : {qbError}
-        </div>
-      )}
-
-      <GapSection id="missing-qb" icon={AlertTriangle} color="text-red-600" open={open === 'missing-qb'}
-        onToggle={() => toggle('missing-qb')} count={missingQb.length}
-        title={`transaction${missingQb.length > 1 ? 's' : ''} du relevé sans écriture dans QuickBooks`}>
-        {missingQb.map((m) => (
-          <button key={m.txn_id} type="button" onClick={() => onOpenTxn(m.txn_id)}
-            className="w-full flex items-center gap-2 text-sm rounded-lg px-2 py-1 hover:bg-slate-50 text-left">
-            <span className="text-slate-500 whitespace-nowrap w-20 shrink-0">{fmtDate(m.date)}</span>
-            <span className="truncate grow text-slate-700">{m.label}</span>
-            <span className={`tabular-nums whitespace-nowrap ${m.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(m.amount, currency)}</span>
-          </button>
-        ))}
-      </GapSection>
-
-      <GapSection id="missing-stmt" icon={AlertTriangle} color="text-orange-500" open={open === 'missing-stmt'}
-        onToggle={() => toggle('missing-stmt')} count={missingStmt.length}
-        title={`écriture${missingStmt.length > 1 ? 's' : ''} QuickBooks absente${missingStmt.length > 1 ? 's' : ''} du relevé`}>
-        {missingStmt.map((m) => (
-          <a key={`${m.entity}:${m.qb_id}`} href={m.url} target="_blank" rel="noreferrer"
-            className="flex items-center gap-2 text-sm rounded-lg px-2 py-1 hover:bg-slate-50">
-            <span className="text-slate-500 whitespace-nowrap w-20 shrink-0">{fmtDate(m.date)}</span>
-            <span className="truncate grow text-slate-700">{m.entity} #{m.qb_id}</span>
-            <span className={`tabular-nums whitespace-nowrap ${m.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(m.amount, currency)}</span>
-            <ExternalLink size={12} className="text-slate-400 shrink-0" />
-          </a>
-        ))}
-      </GapSection>
-
-      <GapSection id="anomalies" icon={AlertTriangle} color="text-amber-500" open={open === 'anomalies'}
-        onToggle={() => toggle('anomalies')} count={anomalies.length}
-        title={`anomalie${anomalies.length > 1 ? 's' : ''} sur le relevé (solde qui ne suit pas, doublon)`}>
-        {anomalies.map((a, i) => (
-          <button key={`${a.kind}:${a.txn_id}:${i}`} type="button" onClick={() => onOpenTxn(a.txn_id)}
-            className="w-full text-left rounded-lg px-2 py-1 hover:bg-slate-50">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-slate-500 whitespace-nowrap w-20 shrink-0">{fmtDate(a.date)}</span>
-              <span className="truncate grow text-slate-700">{a.label}</span>
-              <span className="tabular-nums whitespace-nowrap text-slate-600">{money(a.amount, currency)}</span>
-            </div>
-            <div className="text-xs text-slate-400 pl-[5.5rem]">{a.explanation}</div>
-          </button>
-        ))}
-        {summary?.anomalies_older_count > 0 && (
-          <div className="text-xs text-slate-400 px-2 pt-1">
-            + {summary.anomalies_older_count} anomalie{summary.anomalies_older_count > 1 ? 's' : ''} antérieure{summary.anomalies_older_count > 1 ? 's' : ''} au {fmtDate(summary.anomalies_since)} (historique, non listées)
-          </div>
-        )}
-      </GapSection>
+    <div data-testid="reconcile-panel" className="flex items-baseline gap-x-2 text-sm min-w-0">
+      <span className="text-slate-500">Écart</span>
+      <span data-testid="reconcile-difference"
+        className={`text-lg font-semibold tabular-nums ${diff == null ? 'text-slate-300' : ok ? 'text-green-700' : 'text-red-700'}`}>
+        {qbLoading ? '…' : diff == null ? '—' : money(diff, currency)}
+      </span>
+      <span className="text-xs text-slate-400 truncate"
+        title={[
+          stmt?.date ? `Soldes au ${fmtDate(stmt.date)}` : null,
+          bal && Math.abs(bal.qb_current - bal.qb_as_of) >= 0.01 ? `Solde QuickBooks aujourd'hui : ${money(bal.qb_current, currency)}` : null,
+        ].filter(Boolean).join(' — ') || undefined}>
+        <span data-testid="reconcile-statement-balance">
+          relevé {stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : '—'}
+        </span>
+        {' · '}
+        <span data-testid="reconcile-qb-balance">
+          QB {bal ? money(bal.qb_as_of, currency) : account.qb_account_id ? '—' : 'non mappé'}
+        </span>
+      </span>
+      {qbError && <span className="text-xs text-amber-700">QuickBooks indisponible : {qbError}</span>}
+      {qbAuditMsg && <span className="text-xs text-slate-400">{qbAuditMsg}</span>}
+      <PlaidDuplicates account={account} rec={rec} />
     </div>
+  )
+}
+
+// Doublons hérités du fichier TRX_Orisha, sur un compte qui reçoit maintenant
+// ses transactions de la banque : chaque mouvement y figure deux fois, une
+// fois par source, avec des clés de dédup étrangères l'une à l'autre. La
+// fusion garde la ligne de la banque en lui donnant ce que portait celle du
+// fichier (statut, lien QuickBooks, commentaire). Rien ne s'affiche quand il
+// n'y en a pas.
+function PlaidDuplicates({ account, rec }) {
+  const { summary, onMerged } = rec
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(null)
+  const n = summary?.plaid_duplicates || 0
+  if (!account?.plaid_account_id || (!n && !done)) return null
+
+  const merge = async () => {
+    setBusy(true)
+    try {
+      const r = await api.bank.mergePlaidDuplicates(account.id, false)
+      setDone(r.merged)
+      await onMerged?.()
+    } finally { setBusy(false) }
+  }
+
+  if (done != null) return <span className="text-xs text-slate-400">{done} doublon(s) fusionné(s)</span>
+  return (
+    <button type="button" onClick={merge} disabled={busy} data-testid="plaid-duplicates-merge"
+      title="Ces mouvements figurent deux fois : une ligne de la banque et une du fichier TRX_Orisha. La fusion garde celle de la banque."
+      className="text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-2 py-0.5 rounded-full whitespace-nowrap disabled:opacity-50">
+      {busy ? 'Fusion…' : `${n} en double · fusionner`}
+    </button>
   )
 }
 
@@ -528,11 +811,13 @@ function fmtDateTime(iso) {
   return d.toLocaleString('fr-CA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
-function TrxSheetBanner({ onSynced, onGoToAccount }) {
+// État + actions de la sync TRX_Orisha, partagés entre l'icône du header
+// (TrxSheetIndicator) et le panneau détaillé repliable (TrxSheetPanel) — un
+// seul chargement de statut pour les deux.
+function useTrxSheetStatus(onSynced) {
   const [status, setStatus] = useState(null)
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState(null)
-  const [showAnomalies, setShowAnomalies] = useState(null)
 
   const load = useCallback(() => {
     api.bank.trxSheetStatus().then(setStatus).catch(() => setStatus(null))
@@ -548,11 +833,50 @@ function TrxSheetBanner({ onSynced, onGoToAccount }) {
     } catch (e) { setError(e.message) } finally { setSyncing(false) }
   }
 
+  const last = status?.last_run
+  return {
+    status, syncing, error, runSync, last,
+    anomalies: last?.anomalies || [],
+    toBook: last?.to_book || [],
+    gaps: last?.gaps || [],
+  }
+}
+
+// Icône discrète dans le header — remplace l'ancien bandeau plein-largeur
+// permanent. Silencieuse quand tout est à jour, se transforme en pill visible
+// seulement quand il y a des anomalies à signaler.
+function TrxSheetIndicator({ trx, open, onToggle }) {
+  if (!trx.status) return null
+  if (trx.anomalies.length > 0) {
+    return (
+      <button type="button" onClick={onToggle} data-testid="trx-sheet-indicator"
+        title="TRX_Orisha : anomalies détectées — cliquer pour voir le détail"
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${open
+          ? 'bg-amber-100 border-amber-300 text-amber-900'
+          : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'}`}>
+        <AlertTriangle size={13} />
+        {trx.anomalies.length} anomalie{trx.anomalies.length > 1 ? 's' : ''}
+      </button>
+    )
+  }
+  return (
+    <button type="button" onClick={onToggle} data-testid="trx-sheet-indicator"
+      title="Fichier TRX_Orisha (Drive) — sync auto aux 20 min, cliquer pour le détail"
+      className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors ${open
+        ? 'bg-slate-100 border-slate-300 text-slate-700'
+        : 'border-slate-300 text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}>
+      {trx.syncing ? <RefreshCw size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />}
+    </button>
+  )
+}
+
+// Panneau détaillé — replié par défaut, ouvert via TrxSheetIndicator (ou
+// auto-ouvert une fois s'il y a des anomalies). Contenu inchangé par rapport
+// à l'ancien bandeau : dernier passage, 3 sous-panneaux, sync manuelle.
+function TrxSheetPanel({ trx, onGoToAccount }) {
+  const { status, syncing, error, runSync, last, anomalies, toBook, gaps } = trx
+  const [showAnomalies, setShowAnomalies] = useState(null)
   if (!status) return null
-  const last = status.last_run
-  const anomalies = last?.anomalies || []
-  const toBook = last?.to_book || []
-  const gaps = last?.gaps || []
 
   // Un panneau à la fois : anomalies (contradictions), à comptabiliser (travail
   // en cours, jamais alerté) et appariements avec écart (frais, conversions).
@@ -572,24 +896,15 @@ function TrxSheetBanner({ onSynced, onGoToAccount }) {
 
   return (
     <div data-testid="trx-sheet-banner"
-      className={`mb-4 rounded-xl border px-4 py-3 ${anomalies.length ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm">
-        <span className="inline-flex items-center gap-1.5 font-medium text-slate-800">
-          <FileSpreadsheet size={15} className="text-green-700" /> Fichier TRX_Orisha (Drive)
+      className={`mb-3 rounded-xl border px-4 py-3 ${anomalies.length ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
+        <span className="inline-flex items-center gap-1.5 font-medium text-slate-700"
+          title={`${status.active ? 'Sync auto aux 20 min' : 'Automation désactivée'} — ${last
+            ? `dernier passage ${fmtDateTime(last.executed_at)} : ${last.status === 'success' ? last.summary : `échec (${last.error})`}`
+            : 'jamais synchronisé'}`}>
+          <FileSpreadsheet size={13} className="text-green-700" /> TRX_Orisha
         </span>
-        {status.active
-          ? <Badge color="green" size="xs">sync auto aux 20 min</Badge>
-          : <Badge color="gray" size="xs">automation désactivée</Badge>}
-        {last ? (
-          <span className="text-slate-500">
-            Dernier passage {fmtDateTime(last.executed_at)} —{' '}
-            {last.status === 'success'
-              ? <span>{last.summary}</span>
-              : <span className="text-red-600">échec : {last.error}</span>}
-          </span>
-        ) : (
-          <span className="text-slate-500">Jamais synchronisé — lancer une première sync.</span>
-        )}
+        {last?.status === 'error' && <span className="text-red-600">échec de la dernière sync : {last.error}</span>}
         <span className="grow" />
         {anomalies.length > 0 && (
           <button type="button"
@@ -674,6 +989,29 @@ function TrxSheetBanner({ onSynced, onGoToAccount }) {
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────────
+
+// Trois files, comme « Opérations bancaires » de QuickBooks : ce qui demande
+// encore un geste, ce qui est classé, ce qu'on a mis de côté.
+const TABS = [
+  { key: 'review', label: 'À réviser', statuses: ['a_traiter', 'facture_recue'] },
+  { key: 'done', label: 'Catégorisées', statuses: ['comptabilise', 'rapproche'] },
+  { key: 'excluded', label: 'Exclues', statuses: ['ignore'] },
+]
+const TAB_OF_STATUS = Object.fromEntries(TABS.flatMap((t) => t.statuses.map((st) => [st, t.key])))
+
+// Onglet : soulignement fin, pas de pastille pleine — la barre de comptes et
+// la barre de files se lisent comme les onglets d'un classeur.
+function Tab({ active, onClick, title, children }) {
+  return (
+    <button type="button" onClick={onClick} title={title}
+      className={`-mb-px border-b-2 px-2 py-1.5 text-sm whitespace-nowrap transition-colors ${active
+        ? 'border-brand-500 text-slate-900 font-medium'
+        : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
+      {children}
+    </button>
+  )
+}
+
 export default function RapprochementBancaire() {
   const [accounts, setAccounts] = useState([])
   const [accountId, setAccountIdRaw] = useState(null)
@@ -692,7 +1030,7 @@ export default function RapprochementBancaire() {
   const [loading, setLoading] = useState(true)
   const [showImport, setShowImport] = useState(false)
   const [notice, setNotice] = useState(null)
-  const [statusFilter, setStatusFilter] = useState(null)
+  const [tab, setTab] = useState('review')
 
   const account = accounts.find((a) => a.id === accountId) || null
 
@@ -723,130 +1061,229 @@ export default function RapprochementBancaire() {
     }
   }, [askedAccount, accounts, accountId])
   useEffect(() => { loadTxns() }, [loadTxns])
-  useEffect(() => { setStatusFilter(null) }, [accountId])
+  useEffect(() => { setTab('review') }, [accountId])
 
-  // Incrémenté à chaque refresh : le panneau de rapprochement recalcule son
-  // résumé local (la comparaison QuickBooks, elle, reste à la demande).
+  // Incrémenté à chaque refresh : le résumé local se recalcule (la comparaison
+  // QuickBooks, elle, reste à la demande).
   const [reconcileKey, setReconcileKey] = useState(0)
-  // Transaction à ouvrir dans le side-peek, demandée depuis le panneau d'écarts.
-  const [peekOpenId, setPeekOpenId] = useState(null)
   const refresh = useCallback(async () => {
     await Promise.all([loadTxns(), loadAccounts()])
     setReconcileKey((k) => k + 1)
   }, [loadTxns, loadAccounts])
 
-  const statusCounts = useMemo(() => {
-    const c = {}
-    for (const r of rows) c[r.status] = (c[r.status] || 0) + 1
-    return c
-  }, [rows])
+  const rec = useReconcile(account, reconcileKey, refresh)
 
-  const filteredRows = useMemo(
-    () => statusFilter ? rows.filter((r) => r.status === statusFilter) : rows,
-    [rows, statusFilter]
-  )
+  // Ouverture du panneau depuis un bouton de ligne : quelle ligne, dans quel
+  // mode. `null` = le panneau s'ouvre sur sa vue habituelle.
+  const [peekOpen, setPeekOpen] = useState({ id: null, mode: null, forId: null })
+
+  // Sync TRX_Orisha : icône discrète dans le header (TrxSheetIndicator),
+  // panneau replié par défaut sous les onglets de comptes (TrxSheetPanel) —
+  // auto-ouvert une seule fois si des anomalies apparaissent.
+  const trx = useTrxSheetStatus(refresh)
+  const [trxOpen, setTrxOpen] = useState(false)
+  const trxAutoOpenedRef = useRef(false)
+  useEffect(() => {
+    if (trx.anomalies.length > 0 && !trxAutoOpenedRef.current) {
+      trxAutoOpenedRef.current = true
+      setTrxOpen(true)
+    }
+  }, [trx.anomalies.length])
+
+  // Ce qui cloche sur une ligne, dit sur la ligne elle-même plutôt que dans une
+  // section repliée au-dessus du tableau : solde qui ne suit pas, doublon,
+  // absence d'écriture QuickBooks.
+  const flags = useMemo(() => {
+    const m = new Map()
+    for (const a of rec.summary?.anomalies || []) if (a.txn_id && !m.has(a.txn_id)) m.set(a.txn_id, a.explanation)
+    for (const g of rec.qb?.missing_in_qb || []) if (g.txn_id && !m.has(g.txn_id)) m.set(g.txn_id, 'Aucune écriture correspondante dans QuickBooks')
+    return m
+  }, [rec.summary, rec.qb])
+
+  // Écritures QuickBooks sans ligne au relevé : des lignes fantômes glissées à
+  // leur date, comme une ligne à compléter dans un tableur. Elles ne sont pas
+  // dans la base — juste montrées là où elles manquent.
+  const ghosts = useMemo(() => (rec.qb?.missing_in_statement || []).map((g) => ({
+    id: `qb:${g.entity}:${g.qb_id}`,
+    _ghost: true,
+    txn_date: g.date,
+    amount: g.amount,
+    label: `${g.entity} #${g.qb_id}`,
+    details: `${g.entity} #${g.qb_id}`,
+    status: 'comptabilise',
+    qb_url: g.url,
+  })), [rec.qb])
+
+  // Débit / crédit : deux colonnes séparées comme sur un relevé. `amount` reste
+  // la valeur signée en base (tri, recherche, filtres).
+  const decorated = useMemo(() => rows.map((r) => ({
+    ...r,
+    debit: r.amount < 0 ? -r.amount : null,
+    credit: r.amount > 0 ? r.amount : null,
+    _flag: flags.get(r.id) || null,
+  })), [rows, flags])
+
+  const counts = useMemo(() => {
+    const c = { review: 0, done: 0, excluded: 0 }
+    for (const r of rows) { const k = TAB_OF_STATUS[r.status]; if (k) c[k] += 1 }
+    c.review += ghosts.length
+    return c
+  }, [rows, ghosts])
+
+  const tabRows = useMemo(() => {
+    const wanted = new Set(TABS.find((t) => t.key === tab)?.statuses || [])
+    const kept = decorated.filter((r) => wanted.has(r.status))
+    // Les fantômes n'existent qu'à réviser : c'est là qu'ils demandent un geste.
+    if (tab !== 'review' || ghosts.length === 0) return kept
+    return [...kept, ...ghosts].sort((a, b) => (a.txn_date < b.txn_date ? 1 : a.txn_date > b.txn_date ? -1 : 0))
+  }, [decorated, ghosts, tab])
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(null), 6000) }
 
+  const currency = account?.currency
 
   const COLUMNS = useMemo(() => {
+    const num = (v, cls = '') => v == null
+      ? <span className="block text-right text-slate-200">·</span>
+      : <span className={`block text-right tabular-nums ${cls}`}>{money(v, currency)}</span>
     const RENDERS = {
-      txn_date: (r) => <span className="text-slate-600 whitespace-nowrap">{fmtDate(r.txn_date)}</span>,
-      // « Autres détails » du relevé en principal (c'est lui qui dit la nature
-      // de la transaction), description de la banque en second.
-      description: (r) => (
-        <div className="min-w-0">
-          <div className="truncate">{txnLabel(r)}</div>
-          {txnSubLabel(r) && <div className="truncate text-xs text-slate-400">{txnSubLabel(r)}</div>}
-        </div>
+      txn_date: (r) => (
+        <span className="whitespace-nowrap text-slate-500 tabular-nums">
+          {!!r.pending && <Clock size={11} className="inline mr-1 -mt-0.5 text-slate-400" title="En attente à la banque (pas encore posée)" />}
+          {fmtDate(r.txn_date)}
+        </span>
       ),
-      amount: (r) => <span className={`font-medium whitespace-nowrap ${r.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{money(r.amount, account?.currency)}</span>,
-      balance: (r) => money(r.balance, account?.currency),
+      // Une seule ligne : la description de la banque, souvent générique, part
+      // en infobulle. Le ⚠ dit sur place ce qui cloche.
+      description: (r) => (
+        <span className={`block truncate ${r._ghost ? 'italic text-slate-400' : ''}`} title={txnSubLabel(r) || undefined}>
+          {r._flag && <AlertTriangle size={12} className="inline mr-1 -mt-0.5 text-amber-500" title={r._flag} />}
+          {r._ghost && <span className="text-slate-400">QuickBooks · </span>}
+          {txnLabel(r)}
+        </span>
+      ),
+      debit: (r) => num(r._ghost ? (r.amount < 0 ? -r.amount : null) : r.debit, 'text-slate-700'),
+      credit: (r) => num(r._ghost ? (r.amount > 0 ? r.amount : null) : r.credit, 'text-green-700'),
+      amount: (r) => num(r.amount, r.amount < 0 ? 'text-slate-700' : 'text-green-700'),
+      balance: (r) => num(r.balance, 'text-slate-400'),
+      // Le statut se lit à la couleur, comme les cases peintes du vieux fichier.
       status: (r) => {
+        if (r._ghost) return <span className="block truncate rounded px-1.5 py-0.5 text-xs bg-slate-100 text-slate-500">Hors relevé</span>
         const m = STATUS_META[r.status] || STATUS_META.a_traiter
-        const sheet = SHEET_COLOR_META[r.sheet_color]
-        const how = MATCH_METHOD[r.qb_match_method]
+        return <span className={`block truncate rounded px-1.5 py-0.5 text-xs font-medium ${m.cell}`} title={m.hint}>{m.label}</span>
+      },
+      matched_label: (r) => (
+        <span className="flex items-center gap-1.5 min-w-0">
+          <span className="truncate">
+            {r.matched_id ? docLink(r.matched_type, r.matched_id, r.matched_label) : <span className="text-slate-200">·</span>}
+          </span>
+          {r.qb_url && (
+            <a href={r.qb_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+              title={r.qb_match_method
+                ? `Ouvrir dans QuickBooks — retrouvée par ${MATCH_METHOD[r.qb_match_method] || r.qb_match_method}${r.qb_match_rate ? ` ${r.qb_match_rate}` : ''}${r.qb_match_account ? ` (${r.qb_match_account})` : ''}${r.qb_match_delta ? `, écart de ${r.qb_match_delta.toFixed(2)} $` : ''}`
+                : 'Ouvrir dans QuickBooks'}
+              className={`shrink-0 ${r.qb_match_delta ? 'text-amber-500' : 'text-slate-300'} hover:text-brand-600`}>
+              <ExternalLink size={12} />
+            </a>
+          )}
+        </span>
+      ),
+      match_confidence: (r) => r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—',
+    }
+    const cols = TABLE_COLUMN_META.bank_transactions.map((meta) => ({ ...meta, render: RENDERS[meta.id] }))
+    // Les deux gestes de « Opérations bancaires », à portée de clic sur la
+    // ligne : le panneau s'ouvre déjà dans le bon formulaire. Uniquement dans
+    // la file à réviser — ailleurs, il n'y a plus rien à décider. En TÊTE de
+    // ligne : en queue, la colonne sortait de l'écran dès que les colonnes
+    // larges (libellé, document) prenaient toute la place.
+    if (tab !== 'review') return cols
+    const act = (e, r, mode) => { e.stopPropagation(); setPeekOpen({ id: r.id, mode, forId: r.id }) }
+    const btn = 'p-1 rounded text-slate-400 hover:text-brand-600 hover:bg-white'
+    return [{
+      id: '_actions', label: '', width: 62, sortable: false, filterable: false, groupable: false,
+      render: (r) => {
+        if (r._ghost || r.matched_id || r.transfer_txn_id) return null
         return (
-          <span className="inline-flex items-center gap-1.5">
-            {sheet && <span className={`h-2 w-2 shrink-0 rounded-full ${sheet.dot}`} title={sheet.label} />}
-            <Badge color={m.color}>{m.label}</Badge>
-            {r.qb_url && (
-              <a href={r.qb_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-                title={how
-                  ? `Ouvrir dans QuickBooks — retrouvée par ${how}${r.qb_match_rate ? ` ${r.qb_match_rate}` : ''}${r.qb_match_account ? ` (${r.qb_match_account})` : ''}${r.qb_match_delta ? `, écart de ${r.qb_match_delta.toFixed(2)} $` : ''}`
-                  : 'Ouvrir dans QuickBooks'}
-                className={`inline-flex items-center hover:text-brand-600 ${r.qb_match_delta ? 'text-amber-500' : 'text-slate-400'}`}>
-                <ExternalLink size={13} />
-              </a>
+          <span className="flex items-center gap-0.5">
+            {r.amount < 0 && (
+              <button type="button" title="Ajouter — comptabiliser cette ligne sans facture"
+                className={btn} onClick={(e) => act(e, r, 'add')}><Plus size={14} /></button>
             )}
+            <button type="button" title="Transfert — apparier à la ligne miroir d'un autre compte"
+              className={btn} onClick={(e) => act(e, r, 'transfer')}><ArrowLeftRight size={13} /></button>
           </span>
         )
       },
-      matched_label: (r) => r.matched_id ? docLink(r.matched_type, r.matched_id, r.matched_label) : <span className="text-slate-300">—</span>,
-      match_confidence: (r) => r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—',
-    }
-    return TABLE_COLUMN_META.bank_transactions.map((meta) => ({ ...meta, render: RENDERS[meta.id] }))
-  }, [account?.currency])
+    }, ...cols]
+  }, [currency, tab])
 
   return (
     <Layout>
       <div className="p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h1 className="text-2xl font-bold text-slate-900">Rapprochement bancaire</h1>
-          <div className="flex items-center gap-2">
-            {/* L'appariement (documents ERP + écritures QuickBooks) a migré dans
-                le panneau de rapprochement, en un seul bouton. */}
-            <button className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-              disabled={!accountId} onClick={() => setShowImport(true)}>
-              <Upload size={15} /> Importer un relevé
+        <div className="flex items-center justify-between mb-3">
+          <PageTitle>Rapprochement bancaire</PageTitle>
+          <div className="flex items-center gap-1.5">
+            {!account?.plaid_account_id && (
+              <TrxSheetIndicator trx={trx} open={trxOpen} onToggle={() => setTrxOpen((v) => !v)} />
+            )}
+            {/* Compte branché à Plaid : les transactions arrivent de la banque.
+                Un collage y créerait un doublon par ligne (les deux sources ne
+                partagent pas leur clé de dédup) — le bouton disparaît, comme
+                l'indicateur TRX_Orisha juste au-dessus. */}
+            {!account?.plaid_account_id && (
+              <button type="button" title="Importer un relevé (collage)"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
+                disabled={!accountId} onClick={() => setShowImport(true)}>
+                <Upload size={15} />
+              </button>
+            )}
+            {!!account?.plaid_account_id && (
+              <button type="button"
+                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
+                title="Rechercher dans QuickBooks (recherche approfondie, tout l'historique) une écriture pour chaque transaction non rapprochée"
+                disabled={rec.qbAuditBusy || !account.qb_account_id} onClick={rec.runQbAudit}>
+                <SearchCheck size={15} className={rec.qbAuditBusy ? 'animate-pulse' : ''} />
+              </button>
+            )}
+            <button type="button" title="Recalculer la comparaison QuickBooks"
+              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
+              disabled={rec.qbLoading || !account?.qb_account_id} onClick={rec.loadQb}>
+              <RefreshCw size={15} className={rec.qbLoading ? 'animate-spin' : ''} />
+            </button>
+            <button type="button" data-testid="reconcile-auto-btn"
+              className="inline-flex items-center gap-1.5 px-3 h-8 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              title="Apparier les transactions aux documents de l'ERP puis aux écritures QuickBooks"
+              disabled={rec.busy || !accountId} onClick={rec.runAuto}>
+              <Wand2 size={15} /> {rec.busy ? 'Rapprochement…' : 'Rapprocher'}
             </button>
           </div>
         </div>
 
-        <TrxSheetBanner onSynced={refresh} onGoToAccount={(id) => setAccountId(id)} />
-
-        {/* Onglets par compte — les anciens onglets du xlsx */}
-        <div className="flex flex-wrap gap-1.5 mb-3">
+        {/* Comptes — les onglets du vieux classeur */}
+        <div className="flex flex-wrap items-center gap-x-3 border-b border-slate-200 mb-2">
           {accounts.map((a) => (
-            <button key={a.id}
-              className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${a.id === accountId
-                ? 'bg-brand-600 text-white border-brand-600'
-                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'}`}
-              onClick={() => setAccountId(a.id)}>
+            <Tab key={a.id} active={a.id === accountId} onClick={() => setAccountId(a.id)}
+              title={[a.institution, a.account_number, a.currency, a.last_txn_date && `dernière trx ${fmtDate(a.last_txn_date)}`]
+                .filter(Boolean).join(' · ')}>
               {a.name}
-              {a.a_traiter_count > 0 && (
-                <span className={`ml-1.5 text-xs rounded-full px-1.5 ${a.id === accountId ? 'bg-white/25' : 'bg-red-100 text-red-700'}`}>
-                  {a.a_traiter_count}
-                </span>
-              )}
-            </button>
+              {a.a_traiter_count > 0 && <span className="ml-1.5 text-xs text-red-600 tabular-nums">{a.a_traiter_count}</span>}
+            </Tab>
           ))}
         </div>
 
-        <ReconcilePanel account={account} refreshKey={reconcileKey} onChanged={refresh}
-          onOpenTxn={(id) => { setStatusFilter(null); setPeekOpenId(id) }} />
+        {trxOpen && !account?.plaid_account_id && <TrxSheetPanel trx={trx} onGoToAccount={(id) => setAccountId(id)} />}
 
-        {account && (
-          <div className="flex flex-wrap items-center gap-3 mb-4 text-sm text-slate-600">
-            <span>{account.institution || ''} {account.account_number ? `· ${account.account_number}` : ''} · {account.currency}</span>
-            {Object.entries(STATUS_META).map(([k, m]) => statusCounts[k] ? (
-              <button key={k} type="button"
-                title={statusFilter === k ? 'Retirer le filtre' : m.hint}
-                className={`inline-flex items-center gap-1 rounded-lg px-1.5 py-0.5 -mx-0.5 transition-colors ${statusFilter === k
-                  ? 'bg-slate-200 text-slate-900 ring-1 ring-slate-300'
-                  : 'hover:bg-slate-100'}`}
-                onClick={() => setStatusFilter((prev) => prev === k ? null : k)}>
-                <Badge color={m.color} size="xs">{statusCounts[k]}</Badge> {m.label}
-              </button>
-            ) : null)}
-            {statusFilter && (
-              <button type="button" className="text-xs text-brand-600 hover:underline" onClick={() => setStatusFilter(null)}>
-                Tout afficher
-              </button>
-            )}
-            {account.last_txn_date && <span className="text-slate-400">Dernière trx : {fmtDate(account.last_txn_date)}</span>}
+        {/* Files de travail à gauche, le seul chiffre qui compte à droite */}
+        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-slate-200 mb-3">
+          <div className="flex items-center gap-x-3">
+            {TABS.map((t) => (
+              <Tab key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>
+                {t.label} <span className="text-xs text-slate-400 tabular-nums">{counts[t.key]}</span>
+              </Tab>
+            ))}
           </div>
-        )}
+          <div className="pb-1.5 min-w-0"><EcartBar account={account} rec={rec} /></div>
+        </div>
 
         {notice && <div className="mb-3 text-sm bg-green-50 text-green-800 rounded-lg px-3 py-2">{notice}</div>}
 
@@ -854,19 +1291,20 @@ export default function RapprochementBancaire() {
           table="bank_transactions"
           manageViews
           columns={COLUMNS}
-          data={filteredRows}
+          data={tabRows}
           loading={loading}
           rowKey="id"
+          rowClassName={(r) => r._ghost ? 'bg-slate-50/70' : r._flag ? 'bg-amber-50/70' : ''}
           searchFields={['details', 'description', 'reference', 'amount', 'comment', 'matched_label']}
           bulkActions={[
             {
               key: 'reconcile', label: 'Marquer rapproché', icon: CheckCheck, busyLabel: 'Rapprochement…',
-              onClick: async (ids) => { await api.bank.reconcile(ids); await refresh() },
+              onClick: async (ids) => { await api.bank.reconcile(ids.filter((id) => !String(id).startsWith('qb:'))); await refresh() },
             },
             {
               key: 'automatch-hint', label: 'Ignorer', icon: Undo2, busyLabel: 'Mise à jour…',
               onClick: async (ids) => {
-                for (const id of ids) await api.bank.updateTransaction(id, { status: 'ignore' })
+                for (const id of ids) if (!String(id).startsWith('qb:')) await api.bank.updateTransaction(id, { status: 'ignore' })
                 await refresh()
               },
             },
@@ -875,11 +1313,21 @@ export default function RapprochementBancaire() {
             title: (r) => txnLabel(r),
             subtitle: (r) => fmtDate(r.txn_date),
             width: 420,
-            openId: peekOpenId,
-            onOpenConsumed: () => setPeekOpenId(null),
-            render: (r) => <TxnPeek txn={r} currency={account?.currency} onChanged={refresh} />,
+            openId: peekOpen.id,
+            onOpenConsumed: () => setPeekOpen((p) => ({ ...p, id: null })),
+            render: (r) => r._ghost
+              ? <GhostPeek row={r} currency={currency} />
+              : <TxnPeek txn={r} currency={currency} onChanged={refresh}
+                  initialMode={peekOpen.forId === r.id ? peekOpen.mode : null} />,
           }}
-          emptyState={{ title: 'Aucune transaction', description: 'Importer un relevé pour commencer le rapprochement.' }}
+          emptyState={{
+            title: tab === 'review' ? 'Rien à réviser' : 'Aucune transaction',
+            description: tab === 'review'
+              ? 'Tout est classé pour ce compte.'
+              : account?.plaid_account_id
+                ? 'Les transactions arrivent de la banque — rien à importer.'
+                : 'Importer un relevé pour commencer le rapprochement.',
+          }}
         />
       </div>
 

@@ -2,6 +2,7 @@
 // décisions. Aucune route de ce module n'importe de donnée métier : on lit des
 // métadonnées et le contenu des onglets pour DÉCIDER, rien de plus.
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import { randomUUID } from 'crypto'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -154,7 +155,7 @@ router.post('/items', (req, res) => {
   const fileId = String(b.drive_file_id || '').trim() || `manual:${randomUUID()}`
   const existing = db.prepare('SELECT id FROM drive_inventory_items WHERE drive_file_id = ? AND deleted_at IS NULL').get(fileId)
   if (existing) return res.status(409).json({ error: 'Ce document est déjà dans l\'inventaire' })
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO drive_inventory_items (
       id, drive_file_id, name, mime_type, kind, owner_email, web_view_link,

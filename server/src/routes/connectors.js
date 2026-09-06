@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
+import { buildAirtableTableToErp } from '../services/airtableTableMap.js'
 import { createHash, randomBytes } from 'crypto'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import db from '../db/database.js'
@@ -32,31 +33,43 @@ import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonCo
 import { syncAmazon } from '../services/amazon.js'
 import { isDigikeyConfigured } from '../connectors/digikey.js'
 import { isUpsConfigured } from '../connectors/ups.js'
-import { isPurolatorConfigured } from '../connectors/purolator.js'
 import { syncDigikey } from '../services/digikey.js'
 import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
 import { syncDrive } from '../services/drive.js'
-import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements, syncInstagramProspects } from '../services/airtable.js'
+import { syncCompanies, syncContacts, syncProjets, syncPieces, syncOrders, syncOrderItems, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncEmployees, syncPaies, syncPaieItems, syncStockMovements, syncInstagramProspects } from '../services/airtable.js'
 import { tracked, getStatus } from '../services/syncState.js'
+import { hardcodedErpColumns } from '../services/airtableAutoSync.js'
+import { directSourceFor } from '../services/airtableDirectSources.js'
 import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
 import { isHubSpotConfigured } from '../connectors/hubspot.js'
 import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride} from '../services/hubspotSync.js'
 import { isNovoxpressConfigured } from '../services/novoxpress.js'
 import { processWebhookPing, registerWebhookForBaseTraced } from '../services/airtableWebhooks.js'
 import { backfillFactureLinks } from '../services/factureLinks.js'
+import { routeSync } from '../services/airtableMirrorEngine.js'
 import { listFromAddresses, getDefaultFrom, setDefaultFrom } from '../services/postmarkConfig.js'
 import { logSync } from '../services/syncLog.js'
 import { listFrozenColumns, setFrozen } from '../services/airtableFrozenColumns.js'
 import {
   fieldMapDirection, isDirectionConfigurable, setFieldDirection,
   dynamicFieldDirection, dynamicDirectionKey, isDynamicDirectionKey, writebackModuleForTable,
+  pushableLinkColumn,
+  coreDirectionLockReason,
+  pushOnlyColumns,
 } from '../services/airtableWriteback.js'
+import { nativeMappedColumn } from '../services/airtableNativeMappedColumns.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // Wrap a sync call with logging
 function trackedWithLog(module, fn, trigger) {
   const t0 = Date.now()
-  tracked(module, () => fn()).then(() => {
+  // Même aiguillage que le webhook et le sync planifié : un module basculé sur
+  // le moteur unique doit y aller AUSSI quand l'utilisateur clique « Synchro »
+  // dans Connecteurs. Sans ça, le bouton réécrivait la table à la manière
+  // historique — deux chemins d'écriture pour la même table, et l'écriture
+  // différentielle perdue à chaque sync manuel.
+  tracked(module, () => routeSync(module, null, fn)).then(() => {
     logSync(module, trigger, { status: 'success', durationMs: Date.now() - t0 })
   }).catch(e => {
     logSync(module, trigger, { status: 'error', error: e.message, durationMs: Date.now() - t0 })
@@ -94,6 +107,18 @@ const AIRTABLE_FIELD_MODULES = {
   adresses:     { erpTable: 'adresses',       label: 'Adresses',           source: 'module',  syncKey: 'adresses' },
   assemblages:  { erpTable: 'assemblages',    label: 'Assemblages',        source: 'module',  syncKey: 'assemblages' },
   instagram:    { erpTable: 'instagram_prospects', label: 'Prospects Instagram', source: 'module', syncKey: 'instagram' },
+  // Employés — config dans airtable_module_config module='employees'. PAS de
+  // write-back (absent de WRITEBACK_MODULES) : le sync entrant est la seule
+  // écriture. Sans cette entrée, /champs/employees n'offrait aucune colonne
+  // « Champ Airtable » alors que la table est bel et bien miroir d'Airtable.
+  employees:    { erpTable: 'employees',      label: 'Employés',           source: 'module',  syncKey: 'employees' },
+  // Factures Airtable (backfill des liens + mappings dynamiques) — config dans
+  // airtable_module_config module='factures'. PAS de write-back : Stripe et le
+  // sync Airtable restent les seules sources d'écriture (ne pas ajouter à
+  // WRITEBACK_MODULES). Sans cette entrée, /champs/factures n'affichait ni la
+  // colonne « Champ Airtable » ni la colonne « Sens » alors que la table a bel
+  // et bien des mappings dynamiques.
+  factures:     { erpTable: 'factures',       label: 'Factures',           source: 'module',  syncKey: 'factures' },
 }
 
 // Résout la config Airtable d'un module : { module, erpTable, label, syncKey,
@@ -192,7 +217,6 @@ router.get('/', requireAuth, (req, res) => {
     amazon_configured: isAmazonConfigured(),
     digikey_configured: isDigikeyConfigured(),
     ups_configured: isUpsConfigured(),
-    purolator_configured: isPurolatorConfigured(),
     ...moduleConfigs,
   })
 })
@@ -233,27 +257,53 @@ router.get('/gmail/accounts', requireAuth, (req, res) => {
   })))
 })
 
+const SETTINGS_GMAIL = '/erp/parametres/gmail'
+
+// Adresse ERP de l'utilisateur courant, en minuscules.
+function myEmail(userId) {
+  const u = db.prepare('SELECT email FROM users WHERE id=?').get(userId)
+  return String(u?.email || '').toLowerCase()
+}
+
 // ── Google OAuth start
 router.get('/google/connect', requireAuth, (req, res) => {
-  const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
-  try {
-    // ?account=<email> : reconnexion d'un compte précis (bouton « Reconnecter »).
-    // Pré-sélectionne le compte et, pour les comptes de DRAFT_SCOPE_ACCOUNTS,
-    // demande en plus gmail.compose.
-    const url = googleAuthUrl(state, { loginHint: req.query.account })
-    res.redirect(url)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
+  // Deux usages :
+  //  • admin depuis la page Connecteurs : n'importe quelle boîte (?account=…) ;
+  //  • n'importe qui depuis Paramètres → Gmail (?scope=me) : SA boîte à lui.
+  // Un non-admin est TOUJOURS en mode personnel — sa boîte, et rien d'autre :
+  // les courriels synchronisés atterrissent dans le CRM partagé.
+  const personal = req.query.scope === 'me' || req.user.role !== 'admin'
+  const mine = myEmail(req.user.id)
+  if (personal && !mine) {
+    return res.redirect(`${SETTINGS_GMAIL}?error=google_no_email`)
   }
+  // ?account=<email> : reconnexion d'un compte précis (bouton « Reconnecter »).
+  // Pré-sélectionne le compte et, pour les comptes de DRAFT_SCOPE_ACCOUNTS,
+  // demande en plus gmail.compose.
+  const loginHint = personal ? mine : req.query.account
+  const state = Buffer.from(JSON.stringify({
+    user_id: req.user.id,
+    ...(personal ? { ret: 'settings', expect: mine } : {}),
+  })).toString('base64url')
+  res.redirect(googleAuthUrl(state, { loginHint }))
 })
 
 // ── Google OAuth callback
 router.get('/google/callback', async (req, res) => {
   const { code, state, error } = req.query
-  if (error) return res.redirect('/erp/connectors?error=google_denied')
+  // Le retour se fait là d'où l'on est parti : page Connecteurs (admin) ou
+  // section Gmail des Paramètres (connexion de sa propre boîte).
+  let parsed = {}
+  try { parsed = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString()) } catch { /* state illisible */ }
+  const back = parsed.ret === 'settings' ? SETTINGS_GMAIL : '/erp/connectors'
+  if (error) return res.redirect(`${back}?error=google_denied`)
   try {
-    JSON.parse(Buffer.from(state, 'base64url').toString())
     const { tokens, email } = await googleExchange(code)
+
+    // Connexion personnelle : la boîte doit être celle de l'utilisateur ERP.
+    if (parsed.expect && String(email).toLowerCase() !== parsed.expect) {
+      return res.redirect(`${back}?error=google_wrong_account`)
+    }
 
     const existing = db.prepare(`
       SELECT id FROM connector_oauth WHERE connector='google' AND account_email=?
@@ -268,14 +318,40 @@ router.get('/google/callback', async (req, res) => {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, account_email, access_token, refresh_token, expiry_date)
         VALUES (?,?,?,?,?,?,?)
-      `).run(uuid(), 'google', email, email, tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null)
+      `).run(newRecordId(), 'google', email, email, tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null)
     }
 
-    res.redirect('/erp/connectors?success=google')
+    res.redirect(`${back}?success=google`)
   } catch (e) {
     console.error('Google callback error:', e.message)
-    res.redirect('/erp/connectors?error=google_failed')
+    res.redirect(`${back}?error=google_failed`)
   }
+})
+
+// GET /google/my-mailbox — état de la boîte Gmail de l'utilisateur courant
+router.get('/google/my-mailbox', requireAuth, (req, res) => {
+  const mine = myEmail(req.user.id)
+  if (!mine) return res.json({ connected: false, email: null })
+  const row = db.prepare(`
+    SELECT co.updated_at, gs.last_synced_at
+    FROM connector_oauth co
+    LEFT JOIN gmail_sync_state gs ON gs.connector_oauth_id = co.id
+    WHERE co.connector='google' AND lower(co.account_email)=? AND co.refresh_token IS NOT NULL
+  `).get(mine)
+  res.json({
+    connected: !!row,
+    email: mine,
+    updatedAt: row?.updated_at || null,
+    lastSyncedAt: row?.last_synced_at || null,
+  })
+})
+
+// DELETE /google/my-mailbox — déconnecter SA propre boîte Gmail
+router.delete('/google/my-mailbox', requireAuth, (req, res) => {
+  const mine = myEmail(req.user.id)
+  if (!mine) return res.status(400).json({ error: 'Aucune adresse sur votre compte' })
+  db.prepare(`DELETE FROM connector_oauth WHERE connector='google' AND lower(account_email)=?`).run(mine)
+  res.json({ ok: true })
 })
 
 // ── Airtable OAuth start (PKCE)
@@ -283,12 +359,8 @@ router.get('/airtable/connect', requireAuth, (req, res) => {
   const verifier = randomBytes(32).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
   const state = Buffer.from(JSON.stringify({ verifier })).toString('base64url')
-  try {
-    const url = airtableAuthUrl(state, challenge)
-    res.redirect(url)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const url = airtableAuthUrl(state, challenge)
+  res.redirect(url)
 })
 
 // ── Airtable OAuth callback
@@ -312,7 +384,7 @@ router.get('/airtable/callback', async (req, res) => {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date)
         VALUES (?,?,?,?,?,?)
-      `).run(uuid(), 'airtable', 'default', tokens.access_token, tokens.refresh_token, expiry)
+      `).run(newRecordId(), 'airtable', 'default', tokens.access_token, tokens.refresh_token, expiry)
     }
 
     res.redirect('/erp/connectors?success=airtable')
@@ -331,12 +403,8 @@ router.get('/airtable/callback', async (req, res) => {
 // ── Amazon Business OAuth start
 router.get('/amazon/connect', requireAuth, (req, res) => {
   const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
-  try {
-    const url = amazonAuthUrl(state)
-    res.redirect(url)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const url = amazonAuthUrl(state)
+  res.redirect(url)
 })
 
 // ── Amazon Business OAuth callback
@@ -358,7 +426,7 @@ router.get('/amazon/callback', async (req, res) => {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date)
         VALUES (?,?,?,?,?,?)
-      `).run(uuid(), 'amazon', 'default', tokens.access_token, tokens.refresh_token || null, expiry)
+      `).run(newRecordId(), 'amazon', 'default', tokens.access_token, tokens.refresh_token || null, expiry)
     }
 
     res.redirect('/erp/connectors?success=amazon')
@@ -570,6 +638,13 @@ router.get('/airtable/field-modules', requireAuth, (req, res) => {
   res.json(out)
 })
 
+// Mapping fixé en code d'une table lue en direct dans Airtable (hors miroir) —
+// la page /champs l'affiche en lecture seule. `null` pour toutes les autres.
+// GET /api/connectors/airtable/direct-source/:table
+router.get('/airtable/direct-source/:table', requireAuth, (req, res) => {
+  res.json(directSourceFor(req.params.table))
+})
+
 // GET /api/connectors/airtable/module-fields/:module/airtable-fields
 // (ancien /airtable/projets/airtable-fields, généralisé par module)
 // Retourne la liste des champs Airtable de la table du module configurée,
@@ -658,7 +733,7 @@ function airtableFieldDisabledHandler(moduleKey, req, res) {
     db.prepare(`
       INSERT INTO airtable_field_mappings (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, sort_order, import_disabled)
       VALUES (?, ?, ?, ?, ?, ?, 0, ?)
-    `).run(uuid(), moduleKey, erpTable, `pending_${Date.now()}`, airtable_field_name, '__pending__', flag)
+    `).run(newRecordId(), moduleKey, erpTable, `pending_${Date.now()}`, airtable_field_name, '__pending__', flag)
   }
   res.json({ ok: true })
 }
@@ -666,6 +741,28 @@ router.post('/airtable/projets/airtable-field-disabled', requireAuth, (req, res)
 router.post('/airtable/module-fields/:module/airtable-field-disabled', requireAuth, (req, res) => airtableFieldDisabledHandler(req.params.module, req, res))
 
 // ── Type compat helpers (mapping Airtable → ERP) ───────────────────────────
+
+// Familles de champs dont la valeur est PRODUITE par l'ERP : elles n'acceptent
+// aucun mapping en sens IMPORT (miroir de COMPUTED_KINDS côté client,
+// client/src/lib/fieldOverrides.jsx). `data`, `native` et `link` en sont
+// exclus : vraies colonnes stockées, donc importables.
+//
+// Elles restent mappables dans l'autre sens (Boréal → Airtable) : cf.
+// PUSH_ONLY_CF_KINDS / pushOnlyColumns (services/airtableWriteback.js), dont
+// seul `button` est absent — une action ne porte aucune valeur à pousser.
+const COMPUTED_CF_KINDS = new Set([
+  'formula', 'lookup', 'rollup', 'button',
+  'created_time', 'last_modified_time', 'created_by', 'last_modified_by',
+])
+
+// Types de champs Airtable que l'API refuse d'écrire (422) : un champ calculé de
+// Boréal ne peut donc pas y être poussé. Sert de garde-fou au mapping push-only,
+// en plus du filtrage de la liste côté client.
+const AIRTABLE_READONLY_TYPES = new Set([
+  'formula', 'rollup', 'count', 'autoNumber', 'lookup', 'multipleLookupValues',
+  'createdTime', 'lastModifiedTime', 'createdBy', 'lastModifiedBy',
+  'button', 'externalSyncSource', 'aiText',
+])
 
 const TYPE_COMPAT = {
   text:          new Set(['text', 'long_text']),
@@ -675,7 +772,17 @@ const TYPE_COMPAT = {
   single_select: new Set(['single_select']),
   multi_select:  new Set(['multi_select']),
   checkbox:      new Set(['checkbox']),
-  link:          new Set(['link']),
+  // Champ « enregistrement lié » Airtable : la colonne ERP qui le reçoit est du
+  // TEXTE — elle garde les record IDs et se rend en pastilles cliquables grâce à
+  // `airtable_link_hint` (cf. `cfType` dans airtableFieldMappingHandler, et
+  // services/recordLinks.js). C'est l'état des ~80 champs lien déjà importés.
+  // 'link' reste accepté pour les colonnes déclarées Lien côté ERP (natives à
+  // résolveur : « Entreprise » / « Vendeur » d'un projet).
+  link:          new Set(['link', 'text', 'long_text']),
+  // Pièces jointes Airtable : soit un vrai champ « Attachement » (les fichiers
+  // sont rapatriés, cf. mirrorAttachmentFields), soit — historiquement — une
+  // colonne texte qui garde le chemin de la copie locale de l'image.
+  attachment:    new Set(['attachment', 'text', 'long_text']),
 }
 
 function typesCompatible(airtableType, erpType) {
@@ -729,36 +836,12 @@ function airtableTypeToErp(atType, options) {
       return 'text'
     }
     case 'multipleAttachments':
-      return 'text'
+      return 'attachment'
     default:
       return 'text'
   }
 }
 
-// Construit une map Airtable table_id → ERP table à partir des configs.
-// Permet (a) de pré-suggérer la table cible pour un champ lien, et (b) de
-// valider qu'une table cible référencée existe bien côté ERP.
-function buildAirtableTableToErp() {
-  const m = new Map()
-  const sync = db.prepare('SELECT contacts_table_id, companies_table_id FROM airtable_sync_config').get()
-  if (sync?.contacts_table_id) m.set(sync.contacts_table_id, 'contacts')
-  if (sync?.companies_table_id) m.set(sync.companies_table_id, 'companies')
-  const projets = db.prepare('SELECT projects_table_id FROM airtable_projets_config').get()
-  if (projets?.projects_table_id) m.set(projets.projects_table_id, 'projects')
-  const orders = db.prepare('SELECT orders_table_id, items_table_id FROM airtable_orders_config').get()
-  if (orders?.orders_table_id) m.set(orders.orders_table_id, 'orders')
-  if (orders?.items_table_id) m.set(orders.items_table_id, 'order_items')
-  const moduleToErp = {
-    pieces: 'products', achats: 'purchases', billets: 'tickets', serials: 'serial_numbers',
-    envois: 'shipments', soumissions: 'soumissions', retours: 'returns', retour_items: 'return_items',
-    adresses: 'adresses', bom: 'bom_items', assemblages: 'assemblages', employees: 'employees',
-    paies: 'paies', paie_items: 'paie_items', serial_changes: 'serial_state_changes',
-  }
-  for (const r of db.prepare('SELECT module, table_id FROM airtable_module_config').all()) {
-    if (r.table_id && moduleToErp[r.module]) m.set(r.table_id, moduleToErp[r.module])
-  }
-  return m
-}
 
 // GET /api/connectors/airtable/projets/mapping-data
 // Renvoie tout ce qu'il faut à la modale de mapping :
@@ -798,8 +881,21 @@ async function mappingDataHandler(moduleKey, req, res) {
     LEFT JOIN custom_fields cf ON cf.erp_table = m.erp_table AND cf.column_name = m.column_name AND cf.deleted_at IS NULL
     WHERE m.erp_table=?
   `).all(erpTable)
-  const defByAtName = new Map()
-  for (const d of defs) defByAtName.set(d.airtable_field_name, d)
+  // Un champ Airtable peut alimenter PLUSIEURS colonnes Boréal : on indexe
+  // toutes ses defs, pas seulement la dernière lue.
+  const defsByAtName = new Map()
+  for (const d of defs) {
+    if (!defsByAtName.has(d.airtable_field_name)) defsByAtName.set(d.airtable_field_name, [])
+    defsByAtName.get(d.airtable_field_name).push(d)
+  }
+  // Clé du field_map « cœur » alimentée par chaque champ Airtable. Un champ qui
+  // en a une reste mappable vers d'autres colonnes, mais sa def doit être
+  // revendiquée explicitement pour que le sync la serve (cf. sharesCoreField).
+  const coreKeyByField = new Map()
+  for (const [k, v] of Object.entries(fieldMap)) {
+    if (typeof v === 'string' && !coreKeyByField.has(v)) coreKeyByField.set(v, k)
+  }
+  const coreOwnedColumns = hardcodedErpColumns(fieldMap)
 
   // Champs personnalisés actifs de la table ERP. Lookup indépendant des mappings
   // Airtable : un champ créé nativement (source='native') n'a aucune ligne dans
@@ -807,7 +903,7 @@ async function mappingDataHandler(moduleKey, req, res) {
   // colonne retombait sur son nom technique (ex. "cf_vendu") + type "text".
   const cfByColumn = new Map()
   for (const cf of db.prepare(`
-    SELECT id, column_name, name, type, options
+    SELECT id, column_name, name, type, kind, options
     FROM custom_fields
     WHERE erp_table = ? AND deleted_at IS NULL
   `).all(erpTable)) cfByColumn.set(cf.column_name, cf)
@@ -825,6 +921,15 @@ async function mappingDataHandler(moduleKey, req, res) {
   }
 
   const SYSTEM = new Set(['id', 'airtable_id', 'created_at', 'updated_at', 'deleted_at'])
+  const wbModule = writebackModuleForTable(erpTable)
+  // Champs CALCULÉS de Boréal (formule, lookup, rollup, « créé le / modifié
+  // par ») : pas de colonne physique, donc absents de liveCols — leur valeur vit
+  // dans la vue <table>_v. Rien ne peut les alimenter depuis Airtable, mais ils
+  // se POUSSENT vers un champ Airtable écrivable. On les expose donc comme
+  // colonnes mappables, en sens 'push' figé — uniquement si le module sait
+  // écrire vers Airtable, sinon le mapping ne ferait rien du tout.
+  const pushOnly = wbModule ? pushOnlyColumns(erpTable) : new Set()
+  const virtualColumns = [...pushOnly].filter(c => cfByColumn.has(c))
   const erp_columns = [...liveCols]
     .filter(c => !SYSTEM.has(c))
     // Colonnes cf_* orphelines : résidus physiques de champs personnalisés
@@ -845,14 +950,52 @@ async function mappingDataHandler(moduleKey, req, res) {
       const isMapped = d && (!isNative || isNativeMapping) && d.import_disabled !== 1
       let opts = {}
       try { opts = JSON.parse(d?.options || '{}') } catch {}
+      // Mapping qui DOUBLE un champ déjà lu par le sync « cœur », sans avoir été
+      // revendiqué : il existe, mais le sync ne le sert pas (cf. sharesCoreField
+      // dans airtableAutoSync.js). L'UI doit le dire — c'est exactement le cas
+      // qui affichait « champ absent d'Airtable » alors que le champ était là.
+      // Une colonne qui EST une clé du field_map est remplie par le sync cœur :
+      // elle n'est pas dormante.
+      const coreDormant = !!(isMapped
+        && coreKeyByField.has(d.airtable_field_name)
+        && opts.share_core_field !== true
+        && !coreOwnedColumns.has(c))
       let cfOpts = {}
       try { cfOpts = JSON.parse(cf?.options || '{}') } catch {}
       // Sens de sync du champ dynamique ('pull' par défaut — jamais réécrit vers
       // Airtable). Configurable quand la table appartient à un module write-back
-      // et que le champ n'est pas un lien (colonne = id ERP, non poussable).
+      // et que le champ n'est pas un lien (colonne = id ERP, non poussable) —
+      // sauf lien que le module sait résoudre en record id Airtable, déclaré
+      // dans `linkColumns` (ex. « Commande » des envois).
       const linkTarget = opts.link_target_table || opts.target_table
         || cfOpts.link_target_table || cfOpts.target_table || null
-      const wbModule = writebackModuleForTable(erpTable)
+      const pushableLink = !!(wbModule && pushableLinkColumn(wbModule, c))
+      // Colonne native à résolveur (ex. projects.vendeur_ref → « Vendeur ») :
+      // mappable comme les autres, mais son libellé/type viennent du registre
+      // (elle n'a pas de champ de rendu) et son sens est figé en import — cf.
+      // services/airtableNativeMappedColumns.js.
+      const nat = nativeMappedColumn(erpTable, c)
+      if (nat) {
+        return {
+          column_name: c,
+          label: nat.label,
+          display_label: nat.label,
+          field_type: nat.field_type,
+          target_table: null,
+          mapped: !!isMapped,
+          direction: isMapped ? 'pull' : null,
+          direction_configurable: false,
+          direction_reason: isMapped ? 'resolved_ref' : null,
+          def_id: d?.id || null,
+          cf_id: null,
+          cf_kind: null,
+          is_native: true,
+          native_ref: true,
+          core_dormant: coreDormant,
+          mapped_airtable_field: isMapped ? d.airtable_field_name : null,
+          airtable_field_id: isMapped ? d.airtable_field_id : null,
+        }
+      }
       return {
         column_name: c,
         // Label affiché : nom du champ personnalisé, puis display_label du mapping,
@@ -869,39 +1012,82 @@ async function mappingDataHandler(moduleKey, req, res) {
         target_table: linkTarget,
         mapped: isMapped,
         direction: isMapped ? dynamicFieldDirection(wbModule, c) : null,
-        direction_configurable: !!(isMapped && wbModule && !linkTarget),
+        direction_configurable: !!(isMapped && wbModule && (!linkTarget || pushableLink)),
+        // Pourquoi le sens n'est PAS configurable (null si configurable ou non
+        // mappé) — permet au client d'afficher une infobulle honnête au lieu du
+        // texte générique « Airtable → ERP ».
+        direction_reason: !isMapped || (wbModule && (!linkTarget || pushableLink))
+          ? null
+          : (!wbModule ? 'module_no_writeback' : 'link_field'),
         // Métadonnées pour la page de gestion :
         def_id: d?.id || null,
         cf_id: cf?.id || d?.cf_id || null,
+        // Famille du champ : le client refuse le mapping des champs calculés
+        // (formule, lookup, rollup, auto, bouton) — cf. COMPUTED_KINDS.
+        cf_kind: cf?.kind || null,
         is_native: !!isNative,
+        core_dormant: coreDormant,
         mapped_airtable_field: isMapped ? d.airtable_field_name : null,
         airtable_field_id: isMapped ? d.airtable_field_id : null,
       }
     })
+    .concat(virtualColumns.map(c => {
+      const d = defByColumn.get(c)
+      const cf = cfByColumn.get(c)
+      const isMapped = !!d && d.import_disabled !== 1
+      return {
+        column_name: c,
+        label: cf.name,
+        display_label: cf.name,
+        // Type de RENDU du champ calculé ('text' ou 'number' selon son
+        // result_type) : c'est lui qui décide des champs Airtable compatibles.
+        field_type: cf.type || 'text',
+        target_table: null,
+        mapped: isMapped,
+        // Sens figé : un champ calculé ne se remplit jamais depuis Airtable.
+        direction: isMapped ? 'push' : null,
+        direction_configurable: false,
+        direction_reason: isMapped ? 'computed_push_only' : null,
+        def_id: d?.id || null,
+        cf_id: cf.id,
+        cf_kind: cf.kind,
+        is_native: false,
+        // Drapeau lu par /champs/:table : la colonne est mappable, mais dans le
+        // seul sens Boréal → Airtable.
+        push_only: true,
+        mapped_airtable_field: isMapped ? d.airtable_field_name : null,
+        airtable_field_id: isMapped ? d.airtable_field_id : null,
+      }
+    }))
     .sort((a, b) => a.label.localeCompare(b.label))
 
+  // Les champs du field_map « cœur » ne sont PLUS retirés de la liste : ils
+  // restent choisissables pour alimenter une colonne de plus (`core_key` dit à
+  // l'UI qu'une partie du sync les lit déjà en code).
   const airtable_fields = (tableMeta.fields || [])
-    .filter(f => !hardcoded.has(f.name))
     .map(f => {
       const erpType = airtableTypeToErp(f.type, f.options)
-      const def = defByAtName.get(f.name)
-      let currentMapping = null
-      if (def && def.column_name && def.column_name !== '__pending__' && def.import_disabled !== 1) {
-        let opts = {}
-        try { opts = JSON.parse(def.options || '{}') } catch {}
-        currentMapping = {
-          column_name: def.column_name,
-          def_id: def.id,
-          link_target_table: opts.link_target_table || null,
-        }
-      }
+      const mappings = (defsByAtName.get(f.name) || [])
+        .filter(d => d.column_name && d.column_name !== '__pending__' && d.import_disabled !== 1)
+        .map(d => {
+          let opts = {}
+          try { opts = JSON.parse(d.options || '{}') } catch {}
+          return {
+            column_name: d.column_name,
+            def_id: d.id,
+            link_target_table: opts.link_target_table || null,
+          }
+        })
       return {
         airtable_field_id: f.id,
         airtable_field_name: f.name,
         airtable_field_type: f.type,        // type brut Airtable (ex: multipleRecordLinks)
         erp_field_type: erpType,            // type normalisé ERP
         linked_table_id: f.options?.linkedTableId || null,
-        current_mapping: currentMapping,
+        core_key: coreKeyByField.get(f.name) || null,
+        // Toutes les colonnes ERP que ce champ alimente déjà — l'UI les nomme
+        // dans la liste au lieu de retirer le champ des choix.
+        current_mappings: mappings,
       }
     })
     .sort((a, b) => a.airtable_field_name.localeCompare(b.airtable_field_name))
@@ -929,73 +1115,140 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
   if (!resolved) return res.status(400).json({ error: `Module inconnu : ${moduleKey}` })
   const { erpTable, fieldMap } = resolved
 
-  const { airtable_field_id, airtable_field_name, airtable_field_type, column_name, link_target_table } = req.body || {}
+  const { airtable_field_id, airtable_field_name, airtable_field_type, column_name, link_target_table, unmap } = req.body || {}
 
   if (!airtable_field_name || !airtable_field_type) {
     return res.status(400).json({ error: 'airtable_field_name et airtable_field_type requis' })
   }
 
-  // Refus de remapper un champ hardcodé
-  const hardcoded = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
-  if (hardcoded.has(airtable_field_name)) {
-    return res.status(400).json({ error: 'Ce champ est géré en code (hardcodé) et ne peut pas être remappé ici' })
-  }
+  // Champs lus par le field_map « cœur » du module. Ils ne sont plus refusés :
+  // un champ Airtable peut alimenter plusieurs colonnes Boréal, donc en plus de
+  // sa clé cœur. Ce qui reste interdit, c'est de viser une colonne que le sync
+  // cœur remplit déjà — deux écritures pour la même case.
+  const coreFields = new Set(Object.values(fieldMap).filter(v => typeof v === 'string'))
+  const coreOwned = hardcodedErpColumns(fieldMap)
 
   const erpType = airtableTypeToErp(airtable_field_type, req.body?.airtable_field_options)
 
-  // Def existante portant ce nom de champ Airtable (ailleurs ou ici).
-  const defByName = db.prepare(
-    'SELECT id, column_name, airtable_field_id FROM airtable_field_mappings WHERE erp_table=? AND airtable_field_name=?'
-  ).get(erpTable, airtable_field_name)
+  // Def qui occupe la colonne visée. Depuis le partage d'un champ entre
+  // plusieurs colonnes, c'est la COLONNE qui identifie un mapping (le schéma le
+  // dit déjà : UNIQUE(erp_table, column_name)) — plus le champ Airtable.
+  const defOfColumn = (col) => col && db.prepare(
+    'SELECT id, column_name, airtable_field_id, airtable_field_name, import_disabled, options FROM airtable_field_mappings WHERE erp_table=? AND column_name=?'
+  ).get(erpTable, col)
 
-  // ── Cas 1 : unmap → on supprime le mapping.
+  // ── Cas 1 : unmap → on supprime le mapping DE CETTE COLONNE.
   // La ligne custom_fields (rendu) associée n'est PAS touchée — la colonne
   // physique et sa présentation ERP survivent au démappage (comportement voulu).
   // Exception : une def NATIVE (ensureNativeFieldDefs) est désactivée au lieu
   // d'être supprimée. La supprimer serait sans effet durable — elle est recréée
   // à chaque démarrage, et le sync l'apparie de nouveau par nom (twinDefs) : le
   // démappage se serait annulé tout seul au prochain redéploiement.
-  if (!column_name) {
-    if (defByName && String(defByName.airtable_field_id || '').startsWith('native_')) {
+  if (unmap || !column_name) {
+    // Sans colonne (ancien contrat, du temps où un champ Airtable n'avait qu'un
+    // seul mapping possible) : on retombe sur la def qui porte ce nom.
+    const target = column_name ? defOfColumn(column_name) : db.prepare(
+      'SELECT id, airtable_field_id FROM airtable_field_mappings WHERE erp_table=? AND airtable_field_name=?'
+    ).get(erpTable, airtable_field_name)
+    if (target && String(target.airtable_field_id || '').startsWith('native_')) {
       db.prepare(
         "UPDATE airtable_field_mappings SET import_disabled=1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?"
-      ).run(defByName.id)
-    } else if (defByName) {
-      db.prepare('DELETE FROM airtable_field_mappings WHERE id=?').run(defByName.id)
+      ).run(target.id)
+    } else if (target) {
+      db.prepare('DELETE FROM airtable_field_mappings WHERE id=?').run(target.id)
     }
     return res.json({ ok: true, mapped: false })
   }
 
   // ── Cas 2 : mapping vers une colonne ERP
+  // Un champ CALCULÉ (formule, lookup, rollup, « créé le »…) n'a pas de colonne
+  // physique : sa valeur vit dans la vue <table>_v. Il est mappable quand même,
+  // mais dans le seul sens Boréal → Airtable (cf. plus bas).
+  const wbModule = writebackModuleForTable(erpTable)
+  const pushOnly = wbModule ? pushOnlyColumns(erpTable) : new Set()
+  const isPushOnly = pushOnly.has(column_name)
   const liveCols = new Set(db.prepare(`PRAGMA table_info(${erpTable})`).all().map(c => c.name))
-  if (!liveCols.has(column_name)) {
+  if (!liveCols.has(column_name) && !isPushOnly) {
     return res.status(400).json({ error: `Colonne ERP "${column_name}" introuvable dans ${erpTable}` })
-  }
-
-  // Validation : pour les liens, target_table requis et doit exister.
-  // On le fait tôt — avant la vérification d'occupation de slot — pour que l'erreur
-  // utilisateur reflète la cause la plus directe (target invalide > slot pris).
-  let optionsToStore = {}
-  if (erpType === 'link') {
-    if (!link_target_table) {
-      return res.status(400).json({ error: 'link_target_table requis pour un champ de type lien' })
-    }
-    const targets = new Set([...buildAirtableTableToErp().values(), 'companies', 'contacts', 'projects', 'users'])
-    if (!targets.has(link_target_table)) {
-      return res.status(400).json({ error: `Table cible "${link_target_table}" inconnue côté ERP` })
-    }
-    const targetCols = new Set(db.prepare(`PRAGMA table_info(${link_target_table})`).all().map(c => c.name))
-    if (!targetCols.has('airtable_id')) {
-      return res.status(400).json({ error: `Table cible "${link_target_table}" n'a pas de colonne airtable_id (résolution impossible)` })
-    }
-    optionsToStore.link_target_table = link_target_table
   }
 
   // Mapping existant occupant le slot (erp_table, column_name) — peut être natif
   // (whitelisting interne), un autre Airtable field, ou le même qu'on remappe.
-  const defByColumn = db.prepare(
-    'SELECT id, airtable_field_id, airtable_field_name, import_disabled FROM airtable_field_mappings WHERE erp_table=? AND column_name=?'
+  const defByColumn = defOfColumn(column_name)
+
+  // Une autre colonne déjà alimentée par ce champ Airtable. Purement
+  // consultative depuis le partage : on n'y touche plus (avant, mapper le champ
+  // ailleurs DÉPLAÇAIT ce mapping), elle sert seulement à récupérer les options
+  // de résolution déjà connues du champ (table liée).
+  const defSameField = db.prepare(
+    'SELECT id, column_name, options FROM airtable_field_mappings WHERE erp_table=? AND airtable_field_name=? AND column_name != ?'
+  ).get(erpTable, airtable_field_name, column_name)
+
+  // Type de RENDU courant de la colonne, désormais porté par custom_fields (pas
+  // par le mapping). Une colonne native jamais adoptée n'a pas encore de ligne
+  // custom_fields — la validation retombe alors sur 'text' (compat large), le
+  // premier mapping réel posera le rendu précis via l'upsert custom_fields plus bas.
+  const cfByColumn = db.prepare(
+    `SELECT id, type, options FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
   ).get(erpTable, column_name)
+  const erpColType = cfByColumn?.type || 'text'
+
+  // Validation : pour les liens, la table cible doit exister quand elle est
+  // demandée. On le fait tôt — avant la vérification d'occupation de slot — pour
+  // que l'erreur utilisateur reflète la cause la plus directe (target invalide >
+  // slot pris).
+  let optionsToStore = {}
+  // Colonne native à résolveur : la valeur importée est traduite en référence
+  // Boréal par le sync (cf. services/airtableNativeMappedColumns.js). Le type du
+  // champ Airtable doit rester compatible avec ce que le résolveur sait lire.
+  const nativeRef = nativeMappedColumn(erpTable, column_name)
+  if (nativeRef) {
+    if (!typesCompatible(erpType, nativeRef.field_type)) {
+      return res.status(400).json({
+        error: `Types incompatibles : champ Airtable "${erpType}" ne peut pas alimenter « ${nativeRef.label} » (${nativeRef.field_type})`,
+      })
+    }
+    optionsToStore.ref_resolver = nativeRef.ref_resolver
+  }
+  if (erpType === 'link') {
+    // Table Airtable pointée par le champ : simple renseignement d'UI (de quelle
+    // table viennent les record IDs stockés — services/airtableTableMap.js). Le
+    // client le renvoie ; à défaut on garde celui du mapping en place, sinon un
+    // remappage l'effacerait.
+    let priorOpts = {}
+    try { priorOpts = JSON.parse(defByColumn?.options || '{}') } catch {}
+    let priorFieldOpts = {}
+    try { priorFieldOpts = JSON.parse(defSameField?.options || '{}') } catch {}
+    const linkedTableId = req.body?.linked_table_id
+      || priorFieldOpts.linked_table_id || priorOpts.linked_table_id || null
+    if (linkedTableId) optionsToStore.linked_table_id = linkedTableId
+
+    // La table cible ERP (`link_target_table`) est une config de RÉSOLUTION : le
+    // sync traduit alors chaque record ID en id Boréal. Elle n'est exigée que
+    // pour une colonne qui EST un lien côté ERP (native à résolveur, ou rendu
+    // « Lien ») — une colonne texte garde les record IDs, ce que fait déjà la
+    // grande majorité des champs lien importés, et poser une cible réécrirait
+    // leurs valeurs au prochain sync.
+    const needsTarget = nativeRef?.field_type === 'link'
+      || erpColType === 'link'
+      // Colonne native déclarée « Lien » et jamais adoptée (pas de ligne
+      // custom_fields) : son type vit dans les options de la def native.
+      || (!cfByColumn && priorOpts.native_field_type === 'link')
+    if (needsTarget && !link_target_table) {
+      return res.status(400).json({ error: 'link_target_table requis pour un champ de type lien' })
+    }
+    if (link_target_table) {
+      const targets = new Set([...buildAirtableTableToErp().values(), 'companies', 'contacts', 'projects', 'users'])
+      if (!targets.has(link_target_table)) {
+        return res.status(400).json({ error: `Table cible "${link_target_table}" inconnue côté ERP` })
+      }
+      const targetCols = new Set(db.prepare(`PRAGMA table_info(${link_target_table})`).all().map(c => c.name))
+      if (!targetCols.has('airtable_id')) {
+        return res.status(400).json({ error: `Table cible "${link_target_table}" n'a pas de colonne airtable_id (résolution impossible)` })
+      }
+      optionsToStore.link_target_table = link_target_table
+    }
+  }
 
   // Si un autre champ Airtable réel et actif occupe déjà ce slot → refus.
   if (defByColumn
@@ -1005,18 +1258,48 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
     return res.status(400).json({ error: `Colonne déjà mappée par "${defByColumn.airtable_field_name}"` })
   }
 
-  // Type de RENDU courant de la colonne, désormais porté par custom_fields (pas
-  // par le mapping). Une colonne native jamais adoptée n'a pas encore de ligne
-  // custom_fields — la validation retombe alors sur 'text' (compat large), le
-  // premier mapping réel posera le rendu précis via l'upsert custom_fields plus bas.
-  const cfByColumn = db.prepare(
-    `SELECT id, type FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
-  ).get(erpTable, column_name)
-  const erpColType = cfByColumn?.type || 'text'
+  // Un champ CALCULÉ ne s'IMPORTE pas : sa valeur est produite par l'ERP
+  // (formule/lookup/rollup recalculés à la lecture, champs « créé le / créé
+  // par » posés à l'écriture, bouton sans valeur). Remplir sa colonne depuis
+  // Airtable n'aurait aucun effet visible — l'UI ne le propose pas, et la route
+  // le refuse pour que l'état n'existe pas non plus par API.
+  //
+  // Il se POUSSE en revanche très bien (sens Boréal → Airtable) : ce mapping-là
+  // est accepté, à condition que le module sache écrire vers Airtable et que le
+  // champ Airtable visé soit écrivable.
+  const cfKindByColumn = db.prepare(
+    `SELECT kind FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
+  ).get(erpTable, column_name)?.kind || null
+  if (COMPUTED_CF_KINDS.has(cfKindByColumn) && !isPushOnly) {
+    return res.status(400).json({
+      error: cfKindByColumn === 'button'
+        ? "Champ bouton : il déclenche une action et ne porte aucune valeur — rien à synchroniser"
+        : `Champ calculé (${cfKindByColumn}) : aucun champ Airtable ne peut l'alimenter, et la table ${erpTable} ne sait pas écrire vers Airtable`,
+    })
+  }
+  if (isPushOnly && AIRTABLE_READONLY_TYPES.has(airtable_field_type)) {
+    return res.status(400).json({
+      error: `Le champ Airtable « ${airtable_field_name} » (${airtable_field_type}) est calculé côté Airtable : il n'accepte aucune écriture`,
+    })
+  }
+
   if (cfByColumn && !typesCompatible(erpType, erpColType)) {
     return res.status(400).json({
       error: `Types incompatibles : champ Airtable "${erpType}" ne peut pas être mappé vers colonne ERP "${erpColType}"`,
     })
+  }
+
+  // Champ déjà lu par le sync « cœur » du module : le partage est explicite.
+  // `share_core_field` est ce que le sync exige pour servir la def (cf.
+  // sharesCoreField, services/airtableAutoSync.js) — sans cette revendication,
+  // les vieilles defs jumelles dormantes se seraient réveillées d'un coup.
+  if (coreFields.has(airtable_field_name)) {
+    if (coreOwned.has(column_name)) {
+      return res.status(400).json({
+        error: `La colonne « ${column_name} » est déjà remplie par la synchronisation de base du module`,
+      })
+    }
+    optionsToStore.share_core_field = true
   }
 
   const newAtFieldId = airtable_field_id || `pending_${Date.now()}`
@@ -1028,30 +1311,15 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
   const cfType = erpType === 'link' ? 'text' : erpType
   const cfOptions = erpType === 'link' ? { airtable_link_hint: true } : null
 
-  // Stratégie d'upsert :
-  // - Si un mapping porte déjà notre airtable_field_name : on met à jour son
-  //   column_name (ce qui peut nécessiter de supprimer un mapping natif/autre
-  //   occupant le slot cible).
-  // - Sinon, si le slot (column_name) est occupé par un mapping natif ou désactivé :
-  //   on prend possession — UPDATE pour remplacer airtable_field_id/name/options.
+  // Stratégie d'upsert, une seule clé : la COLONNE ERP.
+  // - Slot occupé (mapping natif, désactivé, ou le même champ qu'on reconfirme) :
+  //   on prend possession — UPDATE de airtable_field_id/name/options.
   // - Sinon : INSERT.
+  // Le mapping du MÊME champ Airtable sur une autre colonne n'est plus déplacé :
+  // c'est tout l'objet du partage — un champ Airtable, plusieurs colonnes Boréal.
   const tx = db.transaction(() => {
     let mappingId
-    if (defByName) {
-      // L'utilisateur déplace ce champ Airtable vers une autre colonne.
-      // Si un mapping natif/désactivé occupe le slot cible, on le dégage d'abord.
-      if (defByColumn && defByColumn.id !== defByName.id) {
-        db.prepare('DELETE FROM airtable_field_mappings WHERE id=?').run(defByColumn.id)
-      }
-      db.prepare(`
-        UPDATE airtable_field_mappings SET
-          airtable_field_id=?, column_name=?, options=?, import_disabled=0,
-          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-        WHERE id=?
-      `).run(newAtFieldId, column_name, JSON.stringify(optionsToStore), defByName.id)
-      mappingId = defByName.id
-    } else if (defByColumn) {
-      // Reuse du mapping natif/désactivé qui occupait le slot.
+    if (defByColumn) {
       db.prepare(`
         UPDATE airtable_field_mappings SET
           airtable_field_id=?, airtable_field_name=?, options=?, import_disabled=0,
@@ -1060,7 +1328,7 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
       `).run(newAtFieldId, airtable_field_name, JSON.stringify(optionsToStore), defByColumn.id)
       mappingId = defByColumn.id
     } else {
-      mappingId = uuid()
+      mappingId = newRecordId()
       db.prepare(`
         INSERT INTO airtable_field_mappings (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, options, sort_order)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0)
@@ -1071,13 +1339,45 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
     // quoi le champ mappé n'apparaîtrait dans aucune UI de rendu (DataTable,
     // CustomFieldModal). Ne touche PAS le nom si l'utilisateur l'a déjà
     // personnalisé (rename via CustomFieldModal) — seulement au premier mapping.
-    if (cfByColumn) {
+    if (isPushOnly) {
+      // Champ calculé (mapping push seulement) : on ne touche PAS sa définition.
+      // Le mapping ne change ni son rendu ni son éditabilité (une formule est
+      // toujours en lecture seule) — il désigne seulement où pousser sa valeur.
+    } else if (nativeRef) {
+      // Colonne native à résolveur : aucune ligne custom_fields. La colonne a
+      // déjà sa présentation dans l'ERP (le champ « Vendeur » d'un projet) — en
+      // créer une seconde ajouterait un champ homonyme à tous les tableaux.
+    } else if (cfByColumn) {
+      // `source` n'est PAS repassé à 'airtable' : il dit d'où vient le CHAMP
+      // (créé à la main ici), pas d'où vient sa valeur — et les fiches n'y
+      // affichent que les champs 'native' (useExtraCustomFields). C'est le
+      // mapping actif, pas la source, qui met la valeur en lecture seule
+      // (services/customFieldWritability.js).
       db.prepare(`UPDATE custom_fields SET airtable_mapping_id=? WHERE id=?`).run(mappingId, cfByColumn.id)
+      // Un champ lien Airtable posé sur une colonne texte déjà existante doit
+      // quand même se rendre en pastilles cliquables : sans `airtable_link_hint`
+      // la colonne afficherait les record IDs bruts (cf. lib/customFieldDisplay).
+      if (erpType === 'link') {
+        let prevCfOpts = {}
+        try { prevCfOpts = JSON.parse(cfByColumn.options || '{}') } catch {}
+        if (!prevCfOpts.airtable_link_hint) {
+          db.prepare(`UPDATE custom_fields SET options=? WHERE id=?`)
+            .run(JSON.stringify({ ...prevCfOpts, airtable_link_hint: true }), cfByColumn.id)
+        }
+      }
     } else {
+      // Nom du champ de rendu = nom du champ Airtable… sauf si un autre champ de
+      // la table le porte déjà : depuis qu'un champ Airtable peut alimenter deux
+      // colonnes, poser deux fois le même nom rendrait les tableaux illisibles
+      // (et le renommage impossible, l'unicité étant exigée à l'édition).
+      const taken = db.prepare(
+        'SELECT 1 FROM custom_fields WHERE erp_table=? AND lower(name)=lower(?) AND deleted_at IS NULL'
+      ).get(erpTable, airtable_field_name)
+      const cfName = taken ? `${airtable_field_name} (${column_name})` : airtable_field_name
       db.prepare(`
         INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, sort_order, options, source, airtable_mapping_id)
         VALUES (?, ?, ?, ?, ?, 'data', 0, ?, 'airtable', ?)
-      `).run(uuid(), erpTable, airtable_field_name, column_name, cfType, cfOptions ? JSON.stringify(cfOptions) : null, mappingId)
+      `).run(newRecordId(), erpTable, cfName, column_name, cfType, cfOptions ? JSON.stringify(cfOptions) : null, mappingId)
     }
   })
   try { tx() }
@@ -1169,64 +1469,66 @@ const CORE_FIELD_SPECS = {
       { key: 'order',           label: 'Commande (lien)',    hint: 'Champ lié vers la table des commandes — copié vers la facture ERP si elle n’a encore aucun lien', candidates: ['commande', 'commandes', 'order'] },
     ],
   },
-  // Modale demandée depuis /products — candidats identiques à l'auto-détection
-  // de syncPieces (services/airtable.js).
+  // Produits — candidats identiques à l'auto-détection de syncPieces
+  // (services/airtable.js). Chaque clé déclare sa colonne ERP (`column`), donc
+  // le mapping cœur se fusionne ligne à ligne dans /champs/products : un seul
+  // tableau, plus de panneau « Champs alimentés par Airtable » sous celui-ci
+  // (même façon de faire que les lignes de commande).
   pieces: {
     label: 'Produits',
     syncKey: 'pieces',
     erpTable: 'products',
     fields: [
-      { key: 'name_fr',                 label: 'Nom (FR)',                  required: true, hint: 'Sans lui, la ligne Airtable est ignorée à l’import', candidates: ['nom', 'name fr', 'nom français', 'name_fr'] },
-      { key: 'name_en',                 label: 'Nom (EN)',                  candidates: ['name', 'name en', 'nom anglais', 'name_en'] },
-      { key: 'sku',                     label: 'SKU',                       candidates: ['sku', 'code', 'référence', 'ref', 'numéro'] },
-      { key: 'type',                    label: 'Type',                      candidates: ['type', 'catégorie', 'categorie', 'category'] },
-      { key: 'unit_cost',               label: 'Coût unitaire',             candidates: ['coût unitaire', 'cout', 'unit cost', 'cost'] },
-      { key: 'price_cad',               label: 'Prix de vente (CAD)',       candidates: ['prix', 'price', 'prix cad'] },
-      { key: 'stock_qty',               label: 'Qté en stock',              candidates: ['stock', 'quantité', 'qty', 'quantity'] },
-      { key: 'min_stock',               label: 'Stock minimum',             candidates: ['stock min', 'min stock', 'seuil', 'minimum'] },
-      { key: 'supplier',                label: 'Fournisseur',               candidates: ['fournisseur', 'supplier', 'vendor'] },
-      { key: 'procurement_type',        label: 'Approvisionnement',         hint: 'Valeurs reconnues : Acheté, Fabriqué, Drop ship', candidates: ['approvisionnement', 'procurement', 'type achat'] },
-      { key: 'weight_lbs',              label: 'Poids (lbs)',               candidates: ['poids', 'weight', 'poids lbs'] },
-      { key: 'image',                   label: 'Image',                     hint: 'Champ pièce jointe — la première image est téléchargée dans l’ERP', candidates: ['image', 'photo', 'images', 'photos', 'picture'] },
-      { key: 'assembly_status',         label: "Statut d'assemblage",       hint: 'Priorité d’assemblage (étape 5) — Airtable → ERP seulement', candidates: ["status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status'] },
-      { key: 'finished_min_stock',      label: 'Seuil min. produits finis', candidates: ['seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis'] },
-      { key: 'projected_available_qty', label: 'Qté disponible projetée',   candidates: ['quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée'] },
-      { key: 'producible_qty',          label: 'Nb de produits possibles',  candidates: ['nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible'] },
-      { key: 'supplier_link',           label: 'Lien fournisseur',          hint: 'URL du bouton « Acheter » dans Priorité d’assemblage', candidates: ['lien fournisseur', "lien d'achat", 'url fournisseur', 'lien'] },
+      { key: 'name_fr',                 column: 'name_fr',                 label: 'Nom (FR)',                  required: true, hint: 'Sans lui, la ligne Airtable est ignorée à l’import', candidates: ['nom', 'name fr', 'nom français', 'name_fr'] },
+      { key: 'name_en',                 column: 'name_en',                 label: 'Nom (EN)',                  candidates: ['name', 'name en', 'nom anglais', 'name_en'] },
+      { key: 'sku',                     column: 'sku',                     label: 'SKU',                       candidates: ['sku', 'code', 'référence', 'ref', 'numéro'] },
+      { key: 'type',                    column: 'type',                    label: 'Type',                      candidates: ['type', 'catégorie', 'categorie', 'category'] },
+      { key: 'unit_cost',               column: 'unit_cost',               label: 'Coût unitaire',             candidates: ['coût unitaire', 'cout', 'unit cost', 'cost'] },
+      { key: 'price_cad',               column: 'price_cad',               label: 'Prix de vente (CAD)',       candidates: ['prix', 'price', 'prix cad'] },
+      { key: 'stock_qty',               column: 'stock_qty',               label: 'Qté en stock',              candidates: ['stock', 'quantité', 'qty', 'quantity'] },
+      { key: 'min_stock',               column: 'min_stock',               label: 'Stock minimum',             candidates: ['stock min', 'min stock', 'seuil', 'minimum'] },
+      { key: 'supplier',                column: 'supplier',                label: 'Fournisseur',               candidates: ['fournisseur', 'supplier', 'vendor'] },
+      { key: 'procurement_type',        column: 'procurement_type',        label: 'Approvisionnement',         hint: 'Valeurs reconnues : Acheté, Fabriqué, Drop ship', candidates: ['approvisionnement', 'procurement', 'type achat'] },
+      { key: 'weight_lbs',              column: 'weight_lbs',              label: 'Poids (lbs)',               candidates: ['poids', 'weight', 'poids lbs'] },
+      // Le champ pièce jointe Airtable n'atterrit pas dans une colonne `image` :
+      // le fichier est recopié dans l'ERP et c'est son chemin local qui est
+      // stocké — d'où `image_url` (cf. syncPieces).
+      { key: 'image',                   column: 'image_url',               label: 'Image',                     hint: 'Champ pièce jointe — la première image est téléchargée dans l’ERP', candidates: ['image', 'photo', 'images', 'photos', 'picture'] },
+      { key: 'assembly_status',         column: 'assembly_status',         label: "Statut d'assemblage",       hint: 'Priorité d’assemblage (étape 5) — Airtable → ERP seulement', candidates: ["status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status'] },
+      { key: 'finished_min_stock',      column: 'finished_min_stock',      label: 'Seuil min. produits finis', candidates: ['seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis'] },
+      { key: 'projected_available_qty', column: 'projected_available_qty', label: 'Qté disponible projetée',   candidates: ['quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée'] },
+      { key: 'producible_qty',          column: 'producible_qty',          label: 'Nb de produits possibles',  candidates: ['nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible'] },
+      { key: 'supplier_link',           column: 'supplier_link',           label: 'Lien fournisseur',          hint: 'URL du bouton « Acheter » dans Priorité d’assemblage', candidates: ['lien fournisseur', "lien d'achat", 'url fournisseur', 'lien'] },
     ],
   },
-  // Modale demandée depuis /orders — candidats identiques à l'auto-détection de
-  // syncOrders (services/airtable.js). Commandes + lignes vivent dans la table
-  // singleton airtable_orders_config (pas airtable_module_config) — d'où
-  // `configSource` (cf. coreMapConfig ci-dessous).
-  orders: {
-    erpTable: 'orders',
-    label: 'Commandes',
-    syncKey: 'orders',
-    configSource: { table: 'airtable_orders_config', tableIdCol: 'orders_table_id', fieldMapCol: 'field_map_orders' },
-    fields: [
-      { key: 'order_number',    column: 'order_number',    label: 'Numéro de commande', hint: 'Non mappé ou vide : numéro auto-incrémenté à l’import', candidates: ['numéro', 'numero', 'order number', 'commande', '#'] },
-      { key: 'company',         column: 'company_id',      label: 'Entreprise (lien)',  hint: 'Champ lié vers la table des entreprises', candidates: ['company', 'entreprise', 'client', 'compte'] },
-      { key: 'project',         column: 'project_id',      label: 'Projet (lien)',      hint: 'Champ lié vers la table des projets', candidates: ['project', 'projet'] },
-      { key: 'status',          column: 'status',          label: 'Statut',             hint: 'Valeurs Airtable traduites vers les statuts ERP (En attente, Envoyé…)', candidates: ['status', 'statut', 'état'] },
-      { key: 'priority',        column: 'priority',        label: 'Priorité',           candidates: ['priority', 'priorité', 'urgence'] },
-      { key: 'notes',           column: 'notes',           label: 'Notes',              candidates: ['notes', 'commentaires', 'description'] },
-      { key: 'address',         column: 'address_id',      label: 'Adresse (lien)',     hint: 'Champ lié vers la table des adresses', candidates: ['adresse', 'adresse de livraison', 'shipping address', 'address', 'delivery address'] },
-      { key: 'is_subscription', column: 'is_subscription', label: 'Abonnement',         hint: 'Case à cocher — marque la commande comme liée à un abonnement', candidates: ['abonnement', 'subscription', 'abonnement?'] },
-    ],
-  },
+  // Commandes : PLUS de mapping cœur. Le field_map de `orders` a été retiré
+  // (services/airtableUiFieldMap.js → retireOrdersCoreFieldMap) et ses 7 clés
+  // reprises en lignes de mapping ordinaires : tout se règle désormais dans
+  // /champs/orders, où chaque champ est renommable, convertible et supprimable.
+  // Ne PAS réintroduire d'entrée `orders` ici — elle ferait réapparaître la
+  // modale de mapping cœur, exclurait à nouveau ces champs Airtable du picker
+  // (liste `hardcoded` de mapping-data) et re-verrouillerait leur sens de sync.
+  // `order_items` garde le sien : sa bascule est un chantier distinct.
   order_items: {
     erpTable: 'order_items',
     label: 'Lignes de commande',
     syncKey: 'orders',
     configSource: { table: 'airtable_orders_config', tableIdCol: 'items_table_id', fieldMapCol: 'field_map_items' },
     fields: [
-      { key: 'order',     label: 'Commande (lien)', required: true, hint: 'Champ lié vers la table des commandes — sans lui, la ligne est ignorée à l’import', candidates: ['order', 'commande', 'bon de commande'] },
-      { key: 'product',   label: 'Produit (lien)',  hint: 'Lien vers la table des produits, avec repli par nom/SKU', candidates: ['product', 'produit', 'pièce', 'piece', 'item'] },
-      { key: 'qty',       label: 'Quantité',        candidates: ['qty', 'quantité', 'quantite', 'quantity'] },
-      { key: 'unit_cost', label: 'Coût unitaire',   candidates: ['coût unitaire', 'cout', 'unit cost', 'prix unitaire'] },
-      { key: 'item_type', label: "Type d'item",     hint: 'Valeurs reconnues : Facturable, Remplacement, Non facturable', candidates: ['type', 'item type', 'type item', 'facturable'] },
-      { key: 'notes',     label: 'Notes',           candidates: ['notes', 'commentaires'] },
+      { key: 'order',     column: 'order_id',    label: 'Commande (lien)', required: true, hint: 'Champ lié vers la table des commandes — sans lui, la ligne est ignorée à l’import', candidates: ['order', 'commande', 'bon de commande'] },
+      { key: 'product',   column: 'product_id',  label: 'Produit (lien)',  hint: 'Lien vers la table des produits, avec repli par nom/SKU', candidates: ['product', 'produit', 'pièce', 'piece', 'item'] },
+      { key: 'qty',       column: 'qty',         label: 'Quantité',        candidates: ['qty', 'quantité', 'quantite', 'quantity'] },
+      { key: 'item_type', column: 'item_type',   label: "Type d'item",     hint: 'Valeurs reconnues : Facturable, Remplacement, Non facturable', candidates: ['type', 'item type', 'type item', 'facturable'] },
+      // Clés retirées le 2026-09-03 avec leur champ dans /champs/order_items :
+      // `notes` (« Notes ») et `unit_cost` (« Coût unitaire » — le coût d'une
+      // ligne se lit dans « Coût total au moment de l'envoi »). Sans la clé,
+      // /champs/order_items ne rend plus de ligne pour la colonne (cf.
+      // `fromCore` dans FieldConfig.jsx).
+      // ATTENTION : la colonne `order_items.unit_cost` reste ALIMENTÉE par
+      // Airtable — son entrée du field_map (`unit_cost`) survit hors spec grâce
+      // à la préservation des clés inconnues dans le PUT core-map ci-dessous.
+      // Elle sert de base au gel du coût à l'envoi (services/shippedCost.js) et
+      // au calcul des COGS (routes/orders.js).
     ],
   },
   paie_items: {
@@ -1299,6 +1601,9 @@ async function coreMapHandler(moduleKey, req, res) {
       column: column || null,
       direction: fieldMapDirection(moduleKey, key),
       configurable: isDirectionConfigurable(moduleKey, key),
+      // Pourquoi le sens est verrouillé ('module_no_writeback' | 'core_skip',
+      // null si configurable) — infobulle honnête côté client.
+      direction_reason: coreDirectionLockReason(moduleKey, key),
     })),
     field_map: fieldMap,
     airtable_fields: [],
@@ -1361,7 +1666,17 @@ router.put('/airtable/module-fields/:module/core-map', requireAdmin, (req, res) 
     return res.status(400).json({ error: 'field_map (objet) requis' })
   }
   const allowed = new Set(spec.fields.map(f => f.key))
+  // Clés du field_map enregistré qui ne sont PLUS dans la spec (champ retiré de
+  // /champs/:table alors que le sync continue de lire la colonne, ex.
+  // `order_items.unit_cost`) : elles sont préservées telles quelles. La modale
+  // renvoie le draft entier, filtré aux clés de la spec par le GET — sans cette
+  // reprise, mapper n'importe quel autre champ effacerait leur mapping.
+  let stored = {}
+  try { stored = cfg.field_map ? JSON.parse(cfg.field_map) : {} } catch { stored = {} }
   const next = {}
+  for (const [k, v] of Object.entries(stored)) {
+    if (!allowed.has(k) && typeof v === 'string' && v) next[k] = v
+  }
   for (const [k, v] of Object.entries(body)) {
     if (!allowed.has(k)) return res.status(400).json({ error: `Champ inconnu : ${k}` })
     if (v == null || v === '') continue // clé démappée
@@ -1377,7 +1692,10 @@ router.put('/airtable/module-fields/:module/core-map', requireAdmin, (req, res) 
   } else {
     db.prepare('UPDATE airtable_module_config SET field_map=? WHERE module=?').run(JSON.stringify(next), moduleKey)
   }
-  res.json({ ok: true, field_map: next })
+  // Réponse filtrée aux clés de la spec, comme le GET : le client en refait son
+  // draft et le renverra tel quel au prochain enregistrement — une clé hors spec
+  // le ferait alors échouer (« Champ inconnu »).
+  res.json({ ok: true, field_map: Object.fromEntries(Object.entries(next).filter(([k]) => allowed.has(k))) })
 })
 
 // PUT /api/connectors/airtable/module-fields/:module/field-direction
@@ -1403,13 +1721,37 @@ router.put('/airtable/module-fields/:module/field-direction', requireAuth, (req,
     if (!wbModule) return res.status(400).json({ error: 'Ce module ne supporte pas le write-back vers Airtable' })
     const column = field_key.slice('dyn:'.length)
     const def = db.prepare(
-      "SELECT options FROM airtable_field_mappings WHERE erp_table=? AND column_name=? AND column_name != '__pending__' AND import_disabled IS NOT 1"
+      "SELECT options, airtable_field_name FROM airtable_field_mappings WHERE erp_table=? AND column_name=? AND column_name != '__pending__' AND import_disabled IS NOT 1"
     ).get(erpTable, column)
     if (!def) return res.status(400).json({ error: 'Colonne sans mapping Airtable actif' })
+    // Un champ Airtable peut être alimenté par plusieurs colonnes Boréal, mais
+    // une seule peut le REMPLIR : deux colonnes en écriture sur la même case
+    // Airtable, c'est une valeur tirée au sort à chaque write-back.
+    if (direction === 'push' || direction === 'both') {
+      const rival = db.prepare(`
+        SELECT column_name FROM airtable_field_mappings
+        WHERE erp_table=? AND airtable_field_name=? AND column_name != ?
+          AND column_name != '__pending__' AND import_disabled IS NOT 1
+      `).all(erpTable, def.airtable_field_name, column)
+        .find(r => dynamicFieldDirection(wbModule, r.column_name) !== 'pull')
+      if (rival) {
+        return res.status(400).json({
+          error: `« ${def.airtable_field_name} » est déjà écrit par la colonne « ${rival.column_name} » — une seule colonne peut le remplir`,
+        })
+      }
+    }
     let opts = {}
     try { opts = JSON.parse(def.options || '{}') } catch {}
-    if (opts.link_target_table) {
+    // Champ lien : la colonne ERP porte un id local, donc non poussable — sauf
+    // si le module déclare la table où le résoudre (`linkColumns`), auquel cas le
+    // write-back sait envoyer [recXXX] et le sens redevient un choix.
+    if (opts.link_target_table && !pushableLinkColumn(wbModule, column)) {
       return res.status(400).json({ error: 'Champ lien — sens non configurable (la colonne ERP porte un id local)' })
+    }
+    // Colonne native à résolveur : la colonne ERP porte une référence Boréal
+    // (`employee:<id>`), qui ne veut rien dire dans Airtable — import seulement.
+    if (nativeMappedColumn(erpTable, column)?.pull_only) {
+      return res.status(400).json({ error: 'Champ résolu vers un enregistrement Boréal — sens non configurable (import seulement)' })
     }
     try {
       setFieldDirection(wbModule, dynamicDirectionKey(column), direction)
@@ -1451,8 +1793,12 @@ router.post('/sync/drive', requireAuth, async (req, res) => {
   res.json({ ok: true })
 })
 
+// L'app n'a qu'un bouton pour le CRM ; le registre, lui, a deux miroirs depuis
+// le découpage de `syncAirtable`. Les entreprises d'abord : les contacts les
+// référencent.
 router.post('/sync/airtable', requireAuth, async (req, res) => {
-  trackedWithLog('airtable', syncAirtable, 'manual')
+  trackedWithLog('companies', syncCompanies, 'manual')
+  trackedWithLog('contacts', syncContacts, 'manual')
   res.json({ ok: true })
 })
 
@@ -1505,24 +1851,32 @@ router.post('/sync/pieces', requireAuth, async (req, res) => {
 })
 
 // ── Save Orders config
+// `field_map_orders` n'est PLUS écrit : le mapping des commandes vit dans
+// /champs/orders (retireOrdersCoreFieldMap). Le laisser dans l'UPSERT
+// ressuscitait le blob à chaque enregistrement de la page Connecteurs — et un
+// field_map non vide exclut à nouveau ces champs Airtable du picker de champs.
+// La colonne reste en base (NULL) : rien à migrer, rien à perdre.
 router.put('/airtable/orders-config', requireAuth, (req, res) => {
-  const { base_id, orders_table_id, items_table_id, field_map_orders, field_map_items } = req.body
+  const { base_id, orders_table_id, items_table_id, field_map_items } = req.body
   db.prepare(`
-    INSERT INTO airtable_orders_config (base_id, orders_table_id, items_table_id, field_map_orders, field_map_items)
-    VALUES (?,?,?,?,?)
+    INSERT INTO airtable_orders_config (base_id, orders_table_id, items_table_id, field_map_items)
+    VALUES (?,?,?,?)
     ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, orders_table_id=excluded.orders_table_id,
-      items_table_id=excluded.items_table_id, field_map_orders=excluded.field_map_orders,
+      items_table_id=excluded.items_table_id,
       field_map_items=excluded.field_map_items
   `).run(base_id || null, orders_table_id || null, items_table_id || null,
-    field_map_orders ? JSON.stringify(field_map_orders) : null,
     field_map_items ? JSON.stringify(field_map_items) : null)
   res.json({ ok: true })
   if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 router.post('/sync/orders', requireAuth, async (req, res) => {
+  // Un seul bouton dans l'app, deux miroirs depuis le découpage de
+  // `syncOrders` : les items partent juste après les commandes, sinon un item
+  // nouvellement créé n'aurait pas encore sa commande.
   trackedWithLog('orders', syncOrders, 'manual')
+  trackedWithLog('order_items', syncOrderItems, 'manual')
   res.json({ ok: true })
 })
 
@@ -1602,7 +1956,8 @@ router.post('/sync/instagram', requireAuth, async (req, res) => {
 
 router.post('/sync/airtable-all', requireAuth, async (req, res) => {
   const ALL_AIRTABLE_MODULES = [
-    ['airtable',      syncAirtable],
+    ['companies',     syncCompanies],
+    ['contacts',      syncContacts],
     ['projets',       syncProjets],
     ['pieces',        syncPieces],
     ['orders',        syncOrders],
@@ -1668,7 +2023,7 @@ router.put('/whisper', requireAuth, (req, res) => {
 // GET /api/connectors/whisper/drive-status — combien de fichiers Drive manquants
 router.get('/whisper/drive-status', requireAuth, async (req, res) => {
   const { join } = await import('path')
-  const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
+  const uploadsDir = uploadsPath('calls')
   const calls = db.prepare(`
     SELECT ca.id, ca.recording_path FROM calls ca
     JOIN interactions i ON ca.interaction_id = i.id
@@ -1700,7 +2055,7 @@ router.post('/whisper/download-drive', requireAuth, async (req, res) => {
   const { pipeline } = await import('stream/promises')
   const { getDriveClient } = await import('../connectors/google.js')
   const { enqueueTranscription } = await import('../services/whisper.js')
-  const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
+  const uploadsDir = uploadsPath('calls')
 
   const calls = db.prepare(`
     SELECT ca.id, ca.drive_file_id, ca.recording_path, ca.transcription_status FROM calls ca
@@ -1752,7 +2107,7 @@ router.post('/whisper/retry', requireAuth, async (req, res) => {
   if (!process.env.OPENAI_API_KEY) return res.status(400).json({ error: 'OPENAI_API_KEY non configuré' })
   const { enqueueTranscription } = await import('../services/whisper.js')
   const { join } = await import('path')
-  const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
+  const uploadsDir = uploadsPath('calls')
 
   const calls = db.prepare(`SELECT calls.id, calls.recording_path FROM calls
     JOIN interactions i ON calls.interaction_id = i.id
@@ -1854,7 +2209,7 @@ router.put('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
 // Pour chaque doublon : supprime l'enregistrement FTP + son fichier audio,
 // met à jour le timestamp Drive depuis le nom de fichier.
 router.post('/deduplicate-ftp-calls', requireAdmin, (req, res) => {
-  const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
+  const uploadsDir = uploadsPath('calls')
 
   function normalize(p) { return p ? p.replace(/\D/g, '').slice(-10) : null }
 
@@ -2095,12 +2450,8 @@ router.get('/quickbooks/connect', requireAuth, (req, res) => {
   }
   const accountKey = personal ? req.user.id : 'default'
   const state = Buffer.from(JSON.stringify({ accountKey })).toString('base64url')
-  try {
-    const url = qbAuthUrl(state)
-    res.redirect(url)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const url = qbAuthUrl(state)
+  res.redirect(url)
 })
 
 router.get('/quickbooks/callback', async (req, res) => {
@@ -2152,7 +2503,7 @@ router.get('/quickbooks/callback', async (req, res) => {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date, metadata)
         VALUES (?,?,?,?,?,?,?)
-      `).run(uuid(), 'quickbooks', accountKey, tokens.access_token, tokens.refresh_token, expiry, metadata)
+      `).run(newRecordId(), 'quickbooks', accountKey, tokens.access_token, tokens.refresh_token, expiry, metadata)
     }
 
     res.redirect('/erp/connectors?success=quickbooks')

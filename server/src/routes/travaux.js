@@ -22,7 +22,8 @@ import {
 } from '../services/workIdeas.js'
 import {
   getSettings, isRunnerBusy, findAgentTask,
-  getRunningQuestionCount, getMaxParallelQuestions,
+  getRunningQuestionCount, getMaxParallelQuestions, stopRunningTask,
+  getRunningExecutionCount, getExecLaneCount, execLaneOf,
 } from '../services/taskRunner.js'
 
 const router = Router()
@@ -32,10 +33,10 @@ router.use(requireAuth)
 
 /**
  * « running » côté file ne veut PAS dire « Claude travaille dessus » : l'item a été
- * remis à l'ordonnanceur, qui ne démarre qu'une implémentation à la fois (et au plus
+ * remis à l'ordonnanceur, qui ne démarre qu'une implémentation PAR FILE (et au plus
  * getMaxParallelQuestions() questions). Deux réponses envoyées coup sur coup dans
- * deux fils différents donnaient donc deux cartes « en cours » alors qu'une seule
- * avançait. On distingue l'état réel de la tâche agent :
+ * deux fils d'une même file donnaient donc deux cartes « en cours » alors qu'une
+ * seule avançait. On distingue l'état réel de la tâche agent :
  *   'executing' → le process Claude tourne pour cet item
  *   'waiting'   → dans la file de l'ordonnanceur, en attente d'un poste libre
  */
@@ -47,9 +48,14 @@ function runState(p, task) {
   return task.status === 'in_progress' ? 'executing' : 'waiting'
 }
 
-/** Voie d'exécution d'un item : les questions ont leur propre file (parallèle). */
+/**
+ * Voie d'exécution d'un item : les questions ont la leur (lecture seule, parallèle),
+ * les implémentations sont réparties en quatre files qui avancent de front. C'est
+ * cette voie qui définit « avec qui » un item se dispute un poste — donc son rang
+ * d'attente affiché.
+ */
 function laneOf(p) {
-  return (p.mode === 'question' && !p.same_context) ? 'question' : 'exec'
+  return (p.mode === 'question' && !p.same_context) ? 'question' : `exec:${execLaneOf({ exec_lane: p.exec_lane })}`
 }
 
 /**
@@ -77,6 +83,9 @@ function withResult(p) {
     pending_question: parseQuestion(p.pending_question),
     user_summary: task?.user_summary || null,
     agent_status: task?.status || null,
+    // Fichiers touchés par une exécution qui n'a pas fini proprement (arrêtée,
+    // bloquée) : la carte s'en sert pour proposer un nettoyage à la suppression.
+    touched_files: task?.touched_files || [],
     // Repris tel quel par <PageLink> côté front pour retrouver la section modifiée
     // (route de signalement, ou à défaut déduite du rapport d'implémentation).
     context: task?.context || null,
@@ -95,7 +104,7 @@ function withResult(p) {
  * l'ordonnanceur passent avant ceux encore en file côté page.
  */
 function withWaitRank(rows) {
-  const counters = { exec: 0, question: 0 }
+  const counters = {}
   const waiting = rows
     .filter(p => p.run_state === 'waiting' || p.status === 'queued')
     .sort((a, b) => {
@@ -108,7 +117,7 @@ function withWaitRank(rows) {
       return (a.position - b.position) || a.created_at.localeCompare(b.created_at)
     })
   const ranks = new Map()
-  for (const p of waiting) ranks.set(p.id, ++counters[p.lane])
+  for (const p of waiting) ranks.set(p.id, counters[p.lane] = (counters[p.lane] || 0) + 1)
   return rows.map(p => ({ ...p, wait_rank: ranks.get(p.id) || null }))
 }
 
@@ -139,10 +148,16 @@ router.get('/prompts', (req, res) => {
     queue_paused: pause.paused,
     queue_paused_at: pause.paused_at,
     queue_paused_reason: pause.reason,
+    // Pause posée par le garde-fou de quota : elle se lèvera d'elle-même dès que le
+    // quota Claude remonte (quotaGuard.js).
+    queue_paused_by_quota: pause.by_quota,
     runner_busy: isRunnerBusy(),
     // Voie lecture seule : les questions tournent en parallèle d'un chantier.
     running_questions: getRunningQuestionCount(),
     max_parallel_questions: getMaxParallelQuestions(),
+    // Quatre files d'implémentation : combien avancent, sur combien de postes.
+    running_implementations: getRunningExecutionCount(),
+    exec_lanes: getExecLaneCount(),
   })
 })
 
@@ -234,6 +249,19 @@ router.post('/prompts/:id/message', (req, res) => {
   res.status(201).json({ ...withResult(out.prompt), delivered: out.delivered })
 })
 
+// Arrêt d'un item EN COURS D'EXÉCUTION (statut agent 'in_progress' — pas 'waiting'
+// dans la file de l'ordonnanceur, où c'est mettre de côté/reprendre qu'il faut). Le
+// process est tué tout de suite ; la carte repasse à 'blocked' (agent_status
+// 'stopped') dès que le poll de monitorExecution détecte la mort du process.
+router.post('/prompts/:id/stop', (req, res) => {
+  const p = getPrompt(req.params.id)
+  if (!p) return res.status(404).json({ error: 'introuvable' })
+  if (!p.agent_task_id) return res.status(409).json({ error: 'rien à arrêter' })
+  const out = stopRunningTask(p.agent_task_id)
+  if (!out.ok) return res.status(409).json({ error: out.error })
+  res.json({ ok: true })
+})
+
 // Relance manuelle de l'ordonnanceur (bouton « Lancer la file »). `reason` dit
 // pourquoi rien n'a démarré : file vide, agent désactivé, ou exécution en cours.
 router.post('/prompts/advance', (req, res) => {
@@ -254,7 +282,8 @@ router.get('/queue/pause', (req, res) => {
 router.post('/queue/pause', (req, res) => {
   const { paused, reason } = req.body || {}
   if (typeof paused !== 'boolean') return res.status(400).json({ error: 'paused (booléen) requis' })
-  res.json(paused ? pauseQueue({ reason: reason || null }) : resumeQueue())
+  const out = paused ? pauseQueue({ reason: reason || null }) : resumeQueue()
+  res.json(out)
 })
 
 // ─── Suggestions de l'agent ───────────────────────────────────────────────────

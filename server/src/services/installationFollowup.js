@@ -11,8 +11,8 @@
 // When the feature is first activated this prevents a retroactive blast to
 // customers whose first shipment happened months or years ago.
 
-import { v4 as uuidv4 } from 'uuid'
 import { emitCompany } from './realtimeEmitters.js'
+import { newRecordId } from '../utils/recordId.js'
 import { APP_URL } from '../config/appUrl.js'
 import { getPostmarkClient } from './postmarkConfig.js'
 
@@ -166,7 +166,7 @@ export function buildInstallationEmailHtml({ language, firstName, companyId, ema
 // + sets companies.installation_followup_sent_at. All writes happen in a single
 // transaction so we never end up with a sent email and no flag (or vice versa).
 function recordSend(db, { row, subject, html, emailId, to, fromAddress }) {
-  const interactionId = uuidv4()
+  const interactionId = newRecordId()
   const tx = db.transaction(() => {
     db.prepare(`
       INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
@@ -199,7 +199,7 @@ export async function sendInstallationTestEmail(db, {
 } = {}) {
   if (!to || !/@/.test(to)) throw new Error('Adresse email de test invalide')
   const lang = language === 'French' ? 'French' : 'English'
-  const emailId = uuidv4()
+  const emailId = newRecordId()
   const fakeCompanyId = '00000000-0000-0000-0000-000000000000'
 
   const base = buildInstallationEmailHtml({
@@ -254,7 +254,7 @@ export async function sendInstallationFollowups(db, {
   for (const row of eligible) {
     try {
       const language = pickLanguage(row)
-      const emailId = uuidv4()
+      const emailId = newRecordId()
       const html = buildInstallationEmailHtml({
         language,
         firstName: row.contact_first_name,

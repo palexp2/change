@@ -44,19 +44,11 @@
 - Soft delete : table `orders` utilise `deleted_at` → filtrer `WHERE o.deleted_at IS NULL`, supprimer via `UPDATE ... SET deleted_at`.
 - Effets liés : `services/subscriptionEvents.js` (`rescanRachatForCompany`), `utils/centralController.js`.
 
-### Tests E2E existants (`e2e/tests/`) — modèles à copier
-- `order-notes-autosave.test.js` · `order-notes-no-runtime-error.test.js` · `order-detail-notes-readonly.test.js`
-- `order-detail-central-controllers.test.js` · `order-detail-novoxpress-button.test.js`
-- `order-create-shipment-modal-fields.test.js` · `order-generate-installation-docs.test.js`
-- `order-permissions-section.test.js` · `product-order-email.test.js`
-- `facture-order-picker.test.js`
-- `realtime-orders.test.js` · `realtime-order-items.test.js`
-
 ---
 
-## 3. Checklist tests unitaires / E2E (OBLIGATOIRE)
+## 3. Checklist de vérification (OBLIGATOIRE)
 
-Aucune tâche "commandes" n'est **terminée** sans test exécuté en vrai navigateur. (Cf. *Definition of Done* du `CLAUDE.md` racine.)
+Il n'y a plus de suite de tests end-to-end dans le repo. La vérification passe par le build, le lint et les tests unitaires serveur.
 
 ### Workflow
 1. **Modifier** le code (`client/src/...` et/ou `server/src/routes/orders.js`).
@@ -68,14 +60,11 @@ Aucune tâche "commandes" n'est **terminée** sans test exécuté en vrai naviga
    ```bash
    pm2 restart erp-server
    ```
-4. **Écrire / mettre à jour** un test `e2e/tests/order-<sujet>.test.js` (copier un test order-* existant pour le pattern : login, navigation `/orders`, assertions).
-5. **Lancer** le test :
+4. **Lint** :
    ```bash
-   cd /home/ec2-user/erp/e2e
-   ERP_PASS='saluerlessoviets' ERP_EMAIL='claude@orisha.io' ERP_URL='http://localhost:3004/erp' \
-     node --test tests/order-<sujet>.test.js
+   cd /home/ec2-user/erp/client && npm run lint
+   cd /home/ec2-user/erp/server && npm run lint
    ```
-6. ✅ Tous verts → terminé. ❌ Sinon → corriger et relancer.
 
 ### Tests serveur unitaires (si logique pure ajoutée)
 Si tu ajoutes une fonction de calcul/validation testable sans navigateur :
@@ -84,9 +73,9 @@ cd /home/ec2-user/erp/server && npm test
 ```
 Créer un `*.test.js` à côté du module (pattern `node:test`).
 
-### Règles de propreté (DB de test = DB de prod)
-- **Cleanup** : tout record commande créé par le test (`E2E …`, suffixe `Date.now()`) doit être supprimé dans le hook `after()` — **même si le test échoue** — de préférence via `DELETE /api/orders/:id` (API admin).
-- **Restauration** : si le test modifie une **config/préférence existante** (vue DataTable, statut par défaut, permissions, réglage admin…), lire la valeur avant et la restaurer dans `after()`.
+### Règles de propreté (DB de dev = DB de prod)
+- Ne créer aucun record de test jetable dans la DB ; si c'est inévitable, le supprimer immédiatement via l'API admin (`DELETE /api/orders/:id`).
+- **Restauration** : si une vérification modifie une **config/préférence existante** (vue DataTable, statut par défaut, permissions, réglage admin…), remettre la valeur d'origine.
 - **Jamais** de script de purge en masse de la DB commité.
 
 ### Side effects commandes → confirmer dans l'UI
@@ -96,8 +85,6 @@ Une action commande qui déclenche un side effect doit afficher une **modale de 
 - Génération + envoi de bon de livraison / facture.
 - Déclenchement de rachat d'abonnement (`rescanRachatForCompany`).
 - Suppression de commande (soft delete) ou d'items.
-
-Le test E2E doit vérifier que la modale s'affiche et liste bien le(s) side effect(s).
 
 ---
 

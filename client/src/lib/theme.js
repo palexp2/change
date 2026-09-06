@@ -1,3 +1,5 @@
+import { useEffect, useState } from 'react'
+
 // Mode nuit — une classe `dark` sur <html> suffit : toutes les couleurs
 // Tailwind passent par des variables CSS réécrites sous `.dark`
 // (voir client/tailwind.config.js).
@@ -35,4 +37,17 @@ export function toggleTheme() {
   const next = getTheme() === 'dark' ? 'light' : 'dark'
   setTheme(next)
   return next
+}
+
+// Thème courant sous forme de booléen réactif, pour les rares rendus qui ne
+// peuvent pas passer par les classes Tailwind — typiquement un `srcDoc`
+// d'iframe, qui n'hérite ni des variables CSS ni de la classe `.dark`.
+export function useIsDark() {
+  const [dark, setDark] = useState(() => getTheme() === 'dark')
+  useEffect(() => {
+    const onChange = () => setDark(getTheme() === 'dark')
+    window.addEventListener(THEME_EVENT, onChange)
+    return () => window.removeEventListener(THEME_EVENT, onChange)
+  }, [])
+  return dark
 }

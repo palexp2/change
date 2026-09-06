@@ -1,9 +1,10 @@
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { vacationBalance } from '../services/vacationBalance.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -94,7 +95,7 @@ router.post('/', ensureHR, (req, res) => {
   if (!date) return res.status(400).json({ error: 'date requise' })
   const employee = db.prepare('SELECT id FROM employees WHERE id = ?').get(employee_id)
   if (!employee) return res.status(400).json({ error: 'Employé introuvable' })
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO hour_bank_entries (id, employee_id, date, hours, source, notes)
     VALUES (?, ?, ?, ?, 'manual', ?)
@@ -109,22 +110,14 @@ const PATCHABLE = new Set(['hours', 'date', 'notes'])
 router.patch('/entry/:id', ensureHR, (req, res) => {
   const existing = db.prepare('SELECT id FROM hour_bank_entries WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  const updates = []
-  const params = []
-  for (const [k, rawV] of Object.entries(req.body || {})) {
-    if (!PATCHABLE.has(k)) continue
-    let v = rawV
-    if (k === 'hours') {
-      if (v === '' || v === null || v === undefined || isNaN(Number(v))) return res.status(400).json({ error: 'hours invalide' })
-      v = Number(v)
-    } else if (v === '' || v === undefined) v = null
-    updates.push(`${k} = ?`)
-    params.push(v)
-  }
-  if (!updates.length) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
-  updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
-  params.push(req.params.id)
-  db.prepare(`UPDATE hour_bank_entries SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  const { setClause, values, error } = buildPartialUpdate(req.body || {}, {
+    allowed: [...PATCHABLE],
+    coerce: { hours: v => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v)) },
+    nonNullable: new Set(['hours']),
+  })
+  if (error) return res.status(400).json({ error: 'hours invalide' })
+  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+  db.prepare(`UPDATE hour_bank_entries SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
   const updated = db.prepare('SELECT * FROM hour_bank_entries WHERE id = ?').get(req.params.id)
   emitEntity('hour_bank_entry', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)

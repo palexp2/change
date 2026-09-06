@@ -1,5 +1,5 @@
-import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 
 // Profils fournisseurs : fiche unique par fournisseur, éditable dans /fournisseurs.
 // Elle porte à la fois
@@ -136,7 +136,7 @@ export function learnFromPush({ company, txnCurrency, type, expenseAccountId, pa
   const usd = String(txnCurrency || 'CAD').toUpperCase() === 'USD'
   let profile = findVendorProfile(name)
   if (!profile) {
-    const id = uuid()
+    const id = newRecordId()
     db.prepare('INSERT INTO vendor_profiles (id, name) VALUES (?,?)').run(id, name)
     profile = serializeProfile(db.prepare('SELECT * FROM vendor_profiles WHERE id=?').get(id))
   } else if (normalizeVendorKey(profile.name) !== normalizeVendorKey(name)
@@ -188,7 +188,7 @@ export function seedVendorProfiles() {
     if (!key) return null
     let p = byKey.get(key)
     if (p) return p
-    const id = uuid()
+    const id = newRecordId()
     db.prepare('INSERT INTO vendor_profiles (id, name) VALUES (?,?)').run(id, String(name).trim())
     p = serializeProfile(db.prepare('SELECT * FROM vendor_profiles WHERE id=?').get(id))
     byKey.set(key, p)
@@ -355,7 +355,7 @@ export function dismissDuplicateGroup(ids) {
     db.prepare('UPDATE vendor_duplicate_dismissals SET deleted_at=NULL WHERE id=?').run(existing.id)
     return existing.id
   }
-  const id = uuid()
+  const id = newRecordId()
   db.prepare('INSERT INTO vendor_duplicate_dismissals (id, member_ids) VALUES (?,?)').run(id, key)
   return id
 }

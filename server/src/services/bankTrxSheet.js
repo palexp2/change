@@ -540,7 +540,9 @@ function explainMissingQb(entry, unmatchedBank) {
 }
 
 function clearStaleLinks(unmatchedBank) {
-  const stale = unmatchedBank.filter((t) => !t.virtual && t.qb_txn_id)
+  // Un lien posé À LA MAIN (virement publié depuis l'ERP) n'est pas une trace
+  // périmée du fichier : le sync ne doit pas l'effacer.
+  const stale = unmatchedBank.filter((t) => !t.virtual && t.qb_txn_id && t.qb_match_method !== 'manuel')
   if (!stale.length) return 0
   const clear = db.prepare(`
     UPDATE bank_transactions
@@ -563,7 +565,7 @@ export async function auditAccountVsQb(account, cfg, { index, extraTxns = [], ap
 
   const bankTxns = db.prepare(`
     SELECT id, txn_date, COALESCE(NULLIF(details,''), description) AS description, details, reference,
-           amount, status, matched_id, sheet_color, qb_txn_id
+           amount, status, matched_id, sheet_color, qb_txn_id, qb_match_method, transfer_txn_id
     FROM bank_transactions
     WHERE account_id=? AND deleted_at IS NULL AND status != 'ignore' AND txn_date >= ?
     ORDER BY txn_date
@@ -761,6 +763,14 @@ export async function syncTrxSheet({ trigger = 'manual', apply = true, userId = 
       const account = spec ? byName.get(strip(spec.account)) : null
       if (!account) {
         tabs.push({ tab: tabName, status: 'ignoré', detail: spec ? `compte « ${spec.account} » introuvable` : 'onglet non mappé à un compte' })
+        continue
+      }
+      // Compte branché à Plaid : Plaid alimente déjà bank_transactions en temps
+      // réel (services/plaidSync.js) et la vérification QuickBooks robuste vient
+      // de services/plaidQbAudit.js — TRX_Orisha ne doit plus y toucher (deux
+      // sources avec des clés de dédup différentes, risque de doublons).
+      if (account.plaid_account_id) {
+        tabs.push({ tab: tabName, account: account.name, status: 'ignoré', detail: 'compte branché à Plaid — TRX_Orisha désactivé pour ce compte' })
         continue
       }
       const grid = xlsx.utils.sheet_to_json(wb.Sheets[tabName], { header: 1, blankrows: true, raw: false })

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { ArrowLeft, Play, ChevronDown, Lock, FlaskConical, Mail, Zap, RotateCcw, X, Eye, RefreshCw, AlertTriangle, Gauge } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -9,6 +10,9 @@ import { fmtDateTime } from '../lib/formatDate.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { WebhookEditor } from '../components/WebhookEditor.jsx'
 import { AUTOMATION_ACTION_LABELS as ACTION_TYPE_LABELS } from '../components/Badge.jsx'
+// Alias : cette page a déjà un composant local `Field` (paramètres d'action).
+import { Field as TableField } from '../components/Field.jsx'
+import Spinner from '../components/Spinner.jsx'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
 const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push'])
@@ -31,6 +35,7 @@ const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
   'sys_revenue_recognition', CTB_AUTOMATION_ID,
   'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder',
   'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
+  'sys_order_item_shipped_cost',
 ])
 
 // Champs de config des automations à éditeur générique clé-valeur.
@@ -125,8 +130,19 @@ const GENERIC_CONFIG_FIELDS = {
   },
 }
 // Sous-ensemble dont la condition de déclenchement est aussi éditable (le CTB
-// n'en fait pas partie : son trigger vit dans le code, lecture seule).
-const CONFIGURABLE_TRIGGER_AUTOMATIONS = new Set(['sys_revenue_recognition'])
+// n'en fait pas partie : son trigger vit dans le code, lecture seule). Les
+// tables offertes reflètent CONFIGURABLE_SYSTEM_SPECS.allowedTables
+// (server/src/routes/automations.js) — un PATCH sur une autre table est refusé.
+const CONFIGURABLE_TRIGGER_TABLES = {
+  sys_revenue_recognition: [
+    { value: 'shipments', label: 'Envois (shipments)' },
+    { value: 'factures', label: 'Factures' },
+  ],
+  sys_order_item_shipped_cost: [
+    { value: 'order_items', label: 'Lignes de commande (order_items)' },
+  ],
+}
+const CONFIGURABLE_TRIGGER_AUTOMATIONS = new Set(Object.keys(CONFIGURABLE_TRIGGER_TABLES))
 
 // Comptes QB éditables du constat de vente — mirrors REVREC_ACCOUNT_OVERRIDES
 // (server/src/services/quickbooks.js). `hint` explique le rôle Dr/Cr du compte.
@@ -543,14 +559,14 @@ export default function AutomationDetail() {
             <button onClick={() => navigate('/automations')} className="text-gray-400 hover:text-gray-600">
               <ArrowLeft size={20} />
             </button>
-            <h1 className="text-xl font-semibold flex items-center gap-2">
+            <PageTitle>
               {isNew ? 'Nouvelle automation' : name}
               {isSystem && (
                 <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-brand-50 text-brand-700 border border-brand-200">
                   <Lock size={12} /> Système
                 </span>
               )}
-            </h1>
+            </PageTitle>
           </div>
           <div className="flex gap-2 items-center">
             {!isNew && !isSystem && (
@@ -574,8 +590,12 @@ export default function AutomationDetail() {
           <div className="bg-brand-50 border border-brand-200 rounded-lg px-4 py-3 text-sm text-brand-900">
             {id === CTB_AUTOMATION_ID
               ? <>Cette automation est intégrée au code de l'application, mais la <strong>connexion au fichier Google Sheets</strong> (fichier, onglet, compte Google) est configurable ci-dessous. Le déclencheur vit dans le code.</>
-              : isConfigurableSystem
+              : id === 'sys_revenue_recognition'
               ? <>Cette automation est intégrée au code de l'application, mais sa <strong>condition de déclenchement</strong> et ses <strong>comptes QuickBooks</strong> sont configurables ci-dessous. Le comportement (idempotence, file de retry) reste géré par le code.</>
+              : isConfigurableSystem && CONFIGURABLE_TRIGGER_AUTOMATIONS.has(id)
+              ? <>Cette automation est intégrée au code de l'application, mais sa <strong>condition de déclenchement</strong> est configurable ci-dessous. Le calcul lui-même reste géré par le code.</>
+              : isConfigurableSystem
+              ? <>Cette automation est intégrée au code de l'application, mais sa <strong>configuration</strong> est modifiable ci-dessous. Son déclencheur et son comportement restent gérés par le code.</>
               : <>Cette automation est intégrée au code de l'application. Son trigger, son comportement et son script sont en lecture seule. Seul le statut (actif/inactif) peut être modifié.</>}
           </div>
         )}
@@ -583,32 +603,27 @@ export default function AutomationDetail() {
         {/* Infos générales */}
         <div className="bg-white rounded-lg border p-5 space-y-4">
           <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Nom</label>
+            <TableField table="automations" id="name" label="Nom" variant="form" >
               <input type="text" value={name} onChange={e => setName(e.target.value)} disabled={isSystem}
-                className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50 disabled:text-gray-600" placeholder="Mon automation" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Statut</label>
+                className="input disabled:bg-gray-50 disabled:text-gray-600" />
+            </TableField>
+            <TableField table="automations" id="active" label="Statut" variant="form" >
               <label className="flex items-center gap-2 mt-2 cursor-pointer">
                 <input type="checkbox" checked={active} onChange={e => setActive(e.target.checked)} />
                 <span className="text-sm">{active ? 'Activée' : 'Désactivée'}</span>
               </label>
-            </div>
+            </TableField>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
-              {isSystem ? 'Comportement' : 'Description'}
-            </label>
+          <TableField table="automations" id="description" label={isSystem ? 'Comportement' : 'Description'} variant="form" >
             {isSystem ? (
-              <div className="w-full border rounded-lg px-3 py-2 text-sm bg-gray-50 text-gray-700 whitespace-pre-wrap leading-relaxed">
+              <div className="input bg-gray-50 text-gray-700 whitespace-pre-wrap leading-relaxed">
                 {description || '—'}
               </div>
             ) : (
               <input type="text" value={description} onChange={e => setDescription(e.target.value)}
-                className="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Optionnel" />
+                className="input" />
             )}
-          </div>
+          </TableField>
         </div>
 
         {/* Trigger — masqué pour les webhooks (le déclencheur est l'appel HTTP) */}
@@ -632,6 +647,7 @@ export default function AutomationDetail() {
             <ConfigurableSystemTriggerEditor
               triggerConfig={triggerConfig}
               onChange={setTriggerConfig}
+              tables={CONFIGURABLE_TRIGGER_TABLES[id]}
             />
           ) : isSystem ? (
             <SystemTriggerView config={triggerConfig} />
@@ -702,7 +718,7 @@ export default function AutomationDetail() {
             <div className="max-w-md">
               <SearchableSelect
                 testId="system-from-select"
-                className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+                className="input"
                 size="sm"
                 value={systemFrom}
                 options={postmarkInfo?.addresses || []}
@@ -711,7 +727,6 @@ export default function AutomationDetail() {
                 getOptionKey={a => a}
                 onChange={setSystemFrom}
                 emptyOption="— Défaut global —"
-                placeholder="— Défaut global —"
                 searchPlaceholder="Rechercher une adresse…"
               />
             </div>
@@ -839,13 +854,12 @@ export default function AutomationDetail() {
             <div className="mt-4 pt-4 border-t">
               <div className="flex items-end gap-2 flex-wrap">
                 <div className="flex-1 min-w-[200px]">
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Envoyer un email de test</label>
+                  <label className="label">Envoyer un email de test</label>
                   <input type="email" value={testTo} onChange={e => setTestTo(e.target.value)}
-                    placeholder="votre@email.com"
                     className="w-full border rounded-lg px-3 py-1.5 text-sm" />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-gray-600 mb-1">Langue</label>
+                  <label className="label">Langue</label>
                   <select value={testLang} onChange={e => setTestLang(e.target.value)}
                     className="border rounded-lg px-3 py-1.5 text-sm bg-white">
                     <option value="French">Français</option>
@@ -888,8 +902,7 @@ export default function AutomationDetail() {
             </p>
             <textarea value={script} onChange={e => setScript(e.target.value)}
               rows={12}
-              className="w-full border rounded-lg px-4 py-3 font-mono text-sm bg-gray-900 text-green-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
-              placeholder={"// Votre script ici...\nlog('Hello from automation!')\n\nif (record) {\n  updateRecord(record.id, { status: 'Traité' })\n}"} />
+              className="w-full border rounded-lg px-4 py-3 font-mono text-sm bg-gray-900 text-green-400 focus:outline-none focus:ring-2 focus:ring-brand-400" />
           </div>
         )}
 
@@ -992,7 +1005,7 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
     <div className="space-y-3">
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Table ERP</label>
+          <label className="label">Table ERP</label>
           <SearchableSelect
             value={triggerConfig?.erp_table || ''}
             options={tables}
@@ -1002,14 +1015,13 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
             emptyOption="— choisir —"
             onChange={v => onChange({ ...triggerConfig, erp_table: v, column: '' })}
             disabled={readOnly}
-            placeholder="— choisir —"
             size="sm"
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+            className="input disabled:bg-gray-50"
             testId="automation-erp-table"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Colonne</label>
+          <label className="label">Colonne</label>
           <SearchableSelect
             value={triggerConfig?.column || ''}
             options={cols}
@@ -1019,21 +1031,20 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
             emptyOption="— choisir —"
             onChange={v => onChange({ ...triggerConfig, column: v })}
             disabled={readOnly || !triggerConfig?.erp_table}
-            placeholder="— choisir —"
             size="sm"
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+            className="input disabled:bg-gray-50"
             testId="automation-column"
           />
         </div>
       </div>
       <div className="grid grid-cols-[180px_1fr] gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Opérateur</label>
+          <label className="label">Opérateur</label>
           <select
             value={op}
             onChange={e => handleOpChange(e.target.value)}
             disabled={readOnly}
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+            className="input disabled:bg-gray-50"
             data-testid="automation-op"
           >
             {Object.entries(OP_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -1041,7 +1052,7 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
         </div>
         {op !== 'not_null' && op !== 'date_offset' && (
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
+            <label className="label">
               Valeur{op === 'in' ? ' (virgules)' : ''}
             </label>
             <input
@@ -1056,8 +1067,7 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
                 onChange({ ...triggerConfig, value: v })
               }}
               disabled={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
-              placeholder={op === 'in' ? 'Hardware,Software' : (NUMERIC_OPS.has(op) ? '1' : 'Hardware')}
+              className="input disabled:bg-gray-50"
             />
           </div>
         )}
@@ -1068,7 +1078,7 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
         <div className="rounded-lg border border-brand-200 bg-brand-50/40 p-3 space-y-3" data-testid="date-offset-panel">
           <div className="flex items-end gap-2 flex-wrap">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Nombre de jours</label>
+              <label className="label">Nombre de jours</label>
               <input
                 type="number" min="0" step="1"
                 value={magnitude}
@@ -1079,7 +1089,7 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">Sens</label>
+              <label className="label">Sens</label>
               <select
                 value={direction}
                 onChange={e => setOffset(magnitude, e.target.value)}
@@ -1121,13 +1131,12 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
                   emptyOption="— colonne —"
                   onChange={v => setFilter({ column: v })}
                   disabled={readOnly}
-                  placeholder="— colonne —"
                   size="sm"
-                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+                  className="input disabled:bg-gray-50"
                   testId="date-offset-filter-column"
                 />
                 <select value={fop} onChange={e => setFilter({ op: e.target.value })} disabled={readOnly}
-                  className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50">
+                  className="input disabled:bg-gray-50">
                   {Object.entries(FILTER_OP_LABELS).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </div>
@@ -1143,8 +1152,7 @@ function FieldRuleTriggerEditor({ triggerConfig, onChange, readOnly }) {
                     setFilter({ value: fop === 'in' ? raw.split(',').map(s => s.trim()).filter(Boolean) : raw })
                   }}
                   disabled={readOnly}
-                  className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
-                  placeholder={fop === 'in' ? 'Impayée,En retard' : 'Impayée'}
+                  className="input disabled:bg-gray-50"
                   data-testid="date-offset-filter-value"
                 />
               )}
@@ -1188,14 +1196,12 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
           <Field label="Webhook (env var)" hint="Nom de la variable d'environnement qui contient l'URL Slack (ex: SLACK_WEBHOOK_HARDWARE)">
             <input type="text" value={actionConfig.webhookEnv || ''}
               onChange={e => onChange({ ...actionConfig, webhookEnv: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm font-mono disabled:bg-gray-50"
-              placeholder="SLACK_WEBHOOK_HARDWARE" />
+              className="input-mono disabled:bg-gray-50" />
           </Field>
           <Field label="Texte (template)">
             <textarea rows={4} value={actionConfig.text || ''}
               onChange={e => onChange({ ...actionConfig, text: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm font-mono disabled:bg-gray-50"
-              placeholder="🔧 {{title}} — {{company_name}}" />
+              className="input-mono disabled:bg-gray-50" />
           </Field>
         </>
       )}
@@ -1205,7 +1211,7 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
           <Field label="Expéditeur" hint={postmark?.default_from ? `Vide = défaut global (${postmark.default_from})` : 'Vide = défaut global Postmark'}>
             <SearchableSelect
               testId="action-from-select"
-              className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50"
+              className="input disabled:bg-gray-50"
               size="sm"
               value={actionConfig.from || ''}
               options={postmark?.addresses || []}
@@ -1214,7 +1220,6 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
               getOptionKey={a => a}
               onChange={v => onChange({ ...actionConfig, from: v || undefined })}
               emptyOption="— Défaut global —"
-              placeholder="— Défaut global —"
               searchPlaceholder="Rechercher une adresse…"
               disabled={readOnly}
             />
@@ -1223,26 +1228,23 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
             <Field label="Destinataire (env var)" hint="POSTMARK_TO_OPS, ou laisser vide et utiliser le champ direct ci-dessous">
               <input type="text" value={actionConfig.toEnv || ''}
                 onChange={e => onChange({ ...actionConfig, toEnv: e.target.value })} readOnly={readOnly}
-                className="w-full border rounded-lg px-3 py-2 text-sm font-mono disabled:bg-gray-50"
-                placeholder="NOTIFY_EMAIL_OPS" />
+                className="input-mono disabled:bg-gray-50" />
             </Field>
             <Field label="Destinataire (direct)">
               <input type="text" value={actionConfig.to || ''}
                 onChange={e => onChange({ ...actionConfig, to: e.target.value })} readOnly={readOnly}
-                className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
-                placeholder="ops@example.com" />
+                className="input disabled:bg-gray-50" />
             </Field>
           </div>
           <Field label="Sujet">
             <input type="text" value={actionConfig.subject || ''}
               onChange={e => onChange({ ...actionConfig, subject: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50" />
+              className="input disabled:bg-gray-50" />
           </Field>
           <Field label="Corps HTML">
             <textarea rows={6} value={actionConfig.bodyHtml || ''}
               onChange={e => onChange({ ...actionConfig, bodyHtml: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-xs font-mono disabled:bg-gray-50"
-              placeholder="<p>Bonjour, ...</p>" />
+              className="w-full border rounded-lg px-3 py-2 text-xs font-mono disabled:bg-gray-50" />
           </Field>
           <Field label="Corps texte (fallback)">
             <textarea rows={3} value={actionConfig.bodyText || ''}
@@ -1257,19 +1259,18 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
           <Field label="Titre">
             <input type="text" value={actionConfig.title || ''}
               onChange={e => onChange({ ...actionConfig, title: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50"
-              placeholder="Suivi — {{title}}" />
+              className="input disabled:bg-gray-50" />
           </Field>
           <Field label="Description">
             <textarea rows={4} value={actionConfig.description || ''}
               onChange={e => onChange({ ...actionConfig, description: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-sm font-mono disabled:bg-gray-50" />
+              className="input-mono disabled:bg-gray-50" />
           </Field>
           <div className="grid grid-cols-3 gap-3">
             <Field label="Priorité">
               <select value={actionConfig.priority || 'Normal'}
                 onChange={e => onChange({ ...actionConfig, priority: e.target.value })} disabled={readOnly}
-                className="w-full border rounded-lg px-3 py-2 text-sm bg-white disabled:bg-gray-50">
+                className="input disabled:bg-gray-50">
                 <option>Basse</option><option>Normal</option><option>Haute</option><option>Urgent</option>
               </select>
             </Field>
@@ -1279,7 +1280,7 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
                   const n = e.target.value === '' ? null : parseInt(e.target.value, 10)
                   onChange({ ...actionConfig, due_in_days: isNaN(n) ? null : n })
                 }} readOnly={readOnly}
-                className="w-full border rounded-lg px-3 py-2 text-sm disabled:bg-gray-50" />
+                className="input disabled:bg-gray-50" />
             </Field>
             <Field label="Assigné à (user id)">
               <input type="text" value={actionConfig.assigned_to || ''}
@@ -1297,8 +1298,7 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
             hint="Exécuté dans un bac à sable. Disponibles : row (l'enregistrement déclencheur), update(table, id, patch), query(sql) (SELECT only), fetch(url), sendEmail(to, sujet, html), log(...). Timeout 10s.">
             <textarea rows={10} value={actionConfig.script || ''}
               onChange={e => onChange({ ...actionConfig, script: e.target.value })} readOnly={readOnly}
-              className="w-full border rounded-lg px-3 py-2 text-xs font-mono disabled:bg-gray-50"
-              placeholder={"// row = l'enregistrement qui a déclenché la règle\nlog('Commande', row.id, '→ items', row.nombre_d_items)\n\n// Écriture whitelistée (tables: factures, products, orders, shipments, companies, contacts, serial_numbers)\nupdate('orders', row.id, { statut: 'À traiter' })"} />
+              className="w-full border rounded-lg px-3 py-2 text-xs font-mono disabled:bg-gray-50" />
           </Field>
           <label className="flex items-start gap-2 text-xs text-gray-600">
             <input type="checkbox" checked={!!actionConfig.allow_trigger_write}
@@ -1336,7 +1336,7 @@ function FieldRuleActionEditor({ actionType, actionConfig, onChange, erpTable, r
 function Field({ label, hint, children }) {
   return (
     <div>
-      <label className="block text-xs font-medium text-gray-600 mb-1">{label}</label>
+      <label className="label">{label}</label>
       {children}
       {hint && <p className="text-[11px] text-gray-400 mt-1">{hint}</p>}
     </div>
@@ -1388,7 +1388,7 @@ function RetryQueuePanel({ items, maxAttempts, loading, retryingId, onRefresh, o
       </div>
 
       {items == null ? (
-        <p className="text-xs text-gray-400 italic">Chargement…</p>
+        <p className="text-xs text-gray-400 italic"><Spinner size="xs" label="Chargement…" /></p>
       ) : list.length === 0 ? (
         <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2"
           data-testid="retry-queue-empty">
@@ -1472,7 +1472,7 @@ function DeferredQueuePanel({ data, loading, draining, onRefresh, onDrain }) {
       </div>
 
       {data == null ? (
-        <p className="text-xs text-gray-400 italic">Chargement…</p>
+        <p className="text-xs text-gray-400 italic"><Spinner size="xs" label="Chargement…" /></p>
       ) : !hasBacklog ? (
         <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2"
           data-testid="deferred-queue-empty">
@@ -1526,7 +1526,7 @@ function FieldRuleTestModal({ automationId, onClose }) {
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
         </div>
         <div className="px-5 py-4 overflow-y-auto">
-          {loading && <p className="text-sm text-gray-500">Chargement...</p>}
+          {loading && <p className="text-sm text-gray-500"><Spinner size="xs" label="Chargement…" /></p>}
           {error && <p className="text-sm text-red-600">{error}</p>}
           {result && (
             <>
@@ -1583,7 +1583,7 @@ function TriggerConfig({ triggerType, triggerConfig, onTypeChange, onConfigChang
       <div>
         <label className="block text-sm font-medium text-gray-700 mb-1">Type</label>
         <select value={triggerType} onChange={e => { onTypeChange(e.target.value); onConfigChange({}) }}
-          className="w-full border rounded-lg px-3 py-2 text-sm">
+          className="input">
           <option value="schedule">Planifié (cron)</option>
           <option value="manual">Déclenchement manuel</option>
         </select>
@@ -1595,8 +1595,7 @@ function TriggerConfig({ triggerType, triggerConfig, onTypeChange, onConfigChang
             <label className="block text-sm font-medium text-gray-700 mb-1">Expression cron</label>
             <input type="text" value={triggerConfig.cron || ''}
               onChange={e => onConfigChange({ ...triggerConfig, cron: e.target.value })}
-              className="w-full border rounded-lg px-3 py-2 text-sm font-mono"
-              placeholder="0 8 * * *" />
+              className="input-mono" />
           </div>
           <div className="flex flex-wrap gap-2">
             {CRON_PRESETS.map(p => (
@@ -1746,19 +1745,15 @@ function ManualRunResult({ result }) {
   )
 }
 
-// Tables de déclenchement offertes par l'automation configurable — mirrors
-// CONFIGURABLE_SYSTEM_SPECS.allowedTables (server/src/routes/automations.js).
-const REVREC_TRIGGER_TABLES = [
-  { value: 'shipments', label: 'Envois (shipments)' },
-  { value: 'factures', label: 'Factures' },
-]
-
-// Éditeur de condition pour une automation système configurable : table
-// (envois ou factures), colonne — y compris champs personnalisés — opérateur et
-// valeur. La source (watcher change_log) reste affichée en lecture seule.
-function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
+// Éditeur de condition pour une automation système configurable : table,
+// colonne — y compris champs personnalisés — opérateur et valeur. Les tables
+// offertes viennent de CONFIGURABLE_TRIGGER_TABLES (miroir de
+// CONFIGURABLE_SYSTEM_SPECS.allowedTables côté serveur). La source (watcher
+// change_log) reste affichée en lecture seule.
+function ConfigurableSystemTriggerEditor({ triggerConfig, onChange, tables }) {
   const [fieldDefs, setFieldDefs] = useState({ columns: [] })
-  const erpTable = triggerConfig?.erp_table || 'shipments'
+  const tableChoices = tables?.length ? tables : CONFIGURABLE_TRIGGER_TABLES.sys_revenue_recognition
+  const erpTable = triggerConfig?.erp_table || tableChoices[0].value
 
   useEffect(() => {
     // includeCustom : la condition peut cibler un champ personnalisé (lookup,
@@ -1781,21 +1776,21 @@ function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
       </div>
       <div className="grid grid-cols-2 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Table ERP</label>
+          <label className="label">Table ERP</label>
           <SearchableSelect
             value={erpTable}
-            options={REVREC_TRIGGER_TABLES}
+            options={tableChoices}
             getOptionValue={t => t.value}
             getOptionLabel={t => t.label}
             getOptionKey={t => t.value}
             onChange={v => onChange({ ...triggerConfig, erp_table: v, column: '' })}
             size="sm"
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            className="input"
             testId="revrec-trigger-table"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Colonne</label>
+          <label className="label">Colonne</label>
           <SearchableSelect
             value={triggerConfig?.column || ''}
             options={cols}
@@ -1804,16 +1799,15 @@ function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
             getOptionKey={c => c.column_name}
             emptyOption="— choisir —"
             onChange={v => onChange({ ...triggerConfig, column: v })}
-            placeholder="— choisir —"
             size="sm"
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            className="input"
             testId="revrec-trigger-column"
           />
         </div>
       </div>
       <div className="grid grid-cols-[180px_1fr] gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Opérateur</label>
+          <label className="label">Opérateur</label>
           <select
             value={op}
             onChange={e => {
@@ -1821,7 +1815,7 @@ function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
               if (e.target.value === 'not_null') delete tc.value
               onChange(tc)
             }}
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            className="input"
             data-testid="revrec-trigger-op"
           >
             {opChoices.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
@@ -1829,7 +1823,7 @@ function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
         </div>
         {op !== 'not_null' && (
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">
+            <label className="label">
               Valeur{op === 'in' ? ' (virgules)' : ''}
             </label>
             <input
@@ -1843,15 +1837,18 @@ function ConfigurableSystemTriggerEditor({ triggerConfig, onChange }) {
                 const v = op === 'in' ? raw.split(',').map(s => s.trim()).filter(Boolean) : raw
                 onChange({ ...triggerConfig, value: v })
               }}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
-              placeholder="Envoyé"
+              className="input"
               data-testid="revrec-trigger-value"
             />
           </div>
         )}
       </div>
       <p className="text-xs text-gray-500">
-        {erpTable === 'factures'
+        {erpTable === 'order_items'
+          ? <>Le gel est déclenché à chaque écriture DB d'une ligne de commande qui satisfait cette condition
+              (toute origine : fiche commande, mode expédition, Novoxpress, sync Airtable des envois). Une
+              ligne dont le coût est déjà gelé n'est jamais recalculée.</>
+          : erpTable === 'factures'
           ? <>La facture qui satisfait cette condition est constatée directement. Elle est réévaluée à chaque
               écriture DB de la facture, de sa commande ou d'un envoi de la commande (toute origine : UI,
               Novoxpress, sync Airtable) — utile pour déclencher sur un champ personnalisé de type lookup
@@ -1876,13 +1873,13 @@ function RevRecAccountsEditor({ actionConfig, onChange }) {
       <div className="grid grid-cols-2 gap-4">
         {REVREC_ACCOUNT_FIELDS.map(f => (
           <div key={f.key}>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+            <label className="label">{f.label}</label>
             <input
               type="text"
               value={actionConfig?.[f.key] ?? ''}
               onChange={e => onChange({ ...actionConfig, [f.key]: e.target.value })}
               placeholder={f.def}
-              className="w-full border rounded-lg px-3 py-2 text-sm font-mono"
+              className="input-mono"
               data-testid={`revrec-account-${f.key}`}
             />
             <p className="text-[11px] text-gray-400 mt-1">{f.hint} — défaut {f.def}</p>
@@ -1936,7 +1933,7 @@ function CtbSheetConfigEditor({ actionConfig, onChange }) {
       </p>
       <div className="grid grid-cols-2 gap-4">
         <div className="col-span-2">
-          <label className="block text-xs font-medium text-gray-600 mb-1">Fichier (ID ou URL du Google Sheets)</label>
+          <label className="label">Fichier (ID ou URL du Google Sheets)</label>
           <div className="flex items-center gap-2">
             <input
               type="text"
@@ -1956,46 +1953,45 @@ function CtbSheetConfigEditor({ actionConfig, onChange }) {
           <p className="text-[11px] text-gray-400 mt-1">Coller l'URL complète fonctionne — l'ID est extrait automatiquement. Défaut : CTB - Suivi.</p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Onglet</label>
+          <label className="label">Onglet</label>
           <input
             type="text"
             value={actionConfig?.sheet_name ?? ''}
             onChange={e => set('sheet_name', e.target.value)}
             placeholder={defaults.sheet_name}
-            className="w-full border rounded-lg px-3 py-2 text-sm"
+            className="input"
             data-testid="ctb-sheet-name"
           />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Titre de la section (programmation)</label>
+          <label className="label">Titre de la section (programmation)</label>
           <input
             type="text"
             value={actionConfig?.section_header ?? ''}
             onChange={e => set('section_header', e.target.value)}
             placeholder={CTB_DEFAULTS.section_header}
-            className="w-full border rounded-lg px-3 py-2 text-sm"
+            className="input"
             data-testid="ctb-section-header"
           />
           <p className="text-[11px] text-gray-400 mt-1">Recherché dans l'onglet, insensible à la casse et aux accents.</p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Titre de la section (factures payées)</label>
+          <label className="label">Titre de la section (factures payées)</label>
           <input
             type="text"
             value={actionConfig?.paid_section_header ?? ''}
             onChange={e => set('paid_section_header', e.target.value)}
-            placeholder="FACTURES PAYÉES CETTE SEMAINE"
-            className="w-full border rounded-lg px-3 py-2 text-sm"
+            className="input"
             data-testid="ctb-paid-section-header"
           />
           <p className="text-[11px] text-gray-400 mt-1">Une facture passée à « Payée » y est ajoutée et sa ligne de programmation retirée.</p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Jour de paiement des factures</label>
+          <label className="label">Jour de paiement des factures</label>
           <select
             value={actionConfig?.payment_weekday ?? '2'}
             onChange={e => set('payment_weekday', e.target.value)}
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            className="input"
             data-testid="ctb-payment-weekday"
           >
             {CTB_WEEKDAYS.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
@@ -2005,7 +2001,7 @@ function CtbSheetConfigEditor({ actionConfig, onChange }) {
           </p>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Compte Google</label>
+          <label className="label">Compte Google</label>
           <SearchableSelect
             value={actionConfig?.google_account_email ?? ''}
             options={googleAccounts}
@@ -2016,7 +2012,7 @@ function CtbSheetConfigEditor({ actionConfig, onChange }) {
             emptyOption={`— Défaut (${CTB_DEFAULTS.google_account_email}) —`}
             placeholder={`— Défaut (${CTB_DEFAULTS.google_account_email}) —`}
             size="sm"
-            className="w-full border rounded-lg px-3 py-2 text-sm bg-white"
+            className="input"
             testId="ctb-google-account"
           />
         </div>
@@ -2036,13 +2032,13 @@ function GenericConfigEditor({ spec, actionConfig, onChange }) {
       <div className="grid grid-cols-2 gap-4">
         {spec.fields.map(f => (
           <div key={f.key} className={f.key === 'splits' || f.key === 'aga_splits' ? 'col-span-2' : ''}>
-            <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+            <label className="label">{f.label}</label>
             <input
               type="text"
               value={actionConfig?.[f.key] ?? ''}
               onChange={e => set(f.key, e.target.value)}
               placeholder={f.def || '—'}
-              className="w-full border rounded-lg px-3 py-2 text-sm"
+              className="input"
               data-testid={`generic-config-${f.key}`}
             />
             {f.hint && <p className="text-[11px] text-gray-400 mt-1">{f.hint}</p>}
@@ -2163,7 +2159,6 @@ function EmailPreview({ automationId, actionConfig, isSystem }) {
               getOptionLabel={c => `${c.label || c.id}${c.already_fired ? ' • déjà déclenché' : ''}`}
               getOptionKey={c => c.id}
               onChange={v => setSelectedRecordId(v || null)}
-              placeholder="— premier candidat —"
               searchPlaceholder="Rechercher un record…"
             />
           </div>

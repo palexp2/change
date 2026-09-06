@@ -21,7 +21,7 @@ function BaseSelect({ value, onChange, bases, loadingBases, testId }) {
       getOptionLabel={o => o.name}
       onChange={onChange}
       emptyOption="—"
-      placeholder={loadingBases ? 'Chargement…' : 'Choisir une base…'}
+      placeholder={loadingBases ? 'Chargement…' : '—'}
       searchPlaceholder="Rechercher une base…"
     />
   )
@@ -39,7 +39,6 @@ function TableSelect({ value, onChange, tables, testId }) {
       getOptionLabel={o => o.name}
       onChange={onChange}
       emptyOption="—"
-      placeholder="Choisir une table…"
       searchPlaceholder="Rechercher une table…"
     />
   )
@@ -189,9 +188,6 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
     base_id: ordersSync?.base_id || '',
     orders_table_id: ordersSync?.orders_table_id || '',
     items_table_id: ordersSync?.items_table_id || '',
-    field_map_orders: ordersSync?.field_map_orders
-      ? (typeof ordersSync.field_map_orders === 'string' ? JSON.parse(ordersSync.field_map_orders) : ordersSync.field_map_orders)
-      : {},
     field_map_items: ordersSync?.field_map_items
       ? (typeof ordersSync.field_map_items === 'string' ? JSON.parse(ordersSync.field_map_items) : ordersSync.field_map_items)
       : {},
@@ -340,6 +336,17 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
 
   return (
     <div className="mt-4 space-y-4">
+      {/* Reconnexion volontaire (ex. après un changement des droits demandés à
+          Airtable) : relancer l'autorisation écrase le jeton existant, aucune
+          déconnexion préalable n'est nécessaire. */}
+      <div className="flex justify-end">
+        <button
+          onClick={() => window.location.href = `/erp/api/connectors/airtable/connect?token=${localStorage.getItem('erp_token')}`}
+          className="btn-secondary btn-sm py-1"
+          title="Relance l'autorisation Airtable (utile après un changement des droits demandés)"
+        >Reconnecter Airtable</button>
+      </div>
+
       {basesError && (
         <div className="flex items-center justify-between gap-3 text-sm bg-red-50 border border-red-200 rounded-lg p-3 mb-4">
           <span className="text-red-600">⚠️ {basesError}</span>
@@ -485,12 +492,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <BaseSelect testId="orders-base-select" value={ordersForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setOrdersForm(f => ({ ...f, base_id: v, orders_table_id: '', items_table_id: '', field_map_orders: {}, field_map_items: {} }))} />
+            <BaseSelect testId="orders-base-select" value={ordersForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setOrdersForm(f => ({ ...f, base_id: v, orders_table_id: '', items_table_id: '', field_map_items: {} }))} />
           </div>
           {ordersTables.length > 0 && (<>
             <div>
               <label className="label">Table commandes</label>
-              <TableSelect testId="orders-table-select" value={ordersForm.orders_table_id} tables={ordersTables} onChange={v => setOrdersForm(f => ({ ...f, orders_table_id: v, field_map_orders: {} }))} />
+              <TableSelect testId="orders-table-select" value={ordersForm.orders_table_id} tables={ordersTables} onChange={v => setOrdersForm(f => ({ ...f, orders_table_id: v }))} />
             </div>
             <div>
               <label className="label">Table lignes d'items (optionnel)</label>

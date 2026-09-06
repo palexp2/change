@@ -22,7 +22,7 @@ export function selectEligibleReturns(db) {
            ct.id AS contact_id, ct.email AS contact_email, ct.first_name AS contact_first_name,
            ct.langue AS contact_langue
     FROM returns r
-    JOIN contacts ct ON ct.id = r.contact_id
+    JOIN contacts ct ON ct.id = r.contact
     WHERE r.billed_at IS NULL
       AND r.created_at >= ?
       AND ct.email IS NOT NULL AND ct.email LIKE '%@%'

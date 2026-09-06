@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical, Copy, ArrowLeftToLine, ArrowRightToLine } from 'lucide-react'
+import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical, Copy, ArrowLeftToLine, ArrowRightToLine, Maximize2, Plug } from 'lucide-react'
 import EmptyState from './EmptyState.jsx'
 import { useTableView } from '../lib/useTableView.js'
 import { applyFilter, applyFilterGroup, countFilterRules } from '../lib/tableFilters.js'
@@ -9,25 +9,24 @@ import { ViewToolbar, ROW_COLOR_STYLES } from './ViewToolbar.jsx'
 import { defaultOpForType } from './FilterRow.jsx'
 import api from '../lib/api.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { useRealtimeChannel, diffFields } from '../lib/useRealtimeChannel.js'
-import { getRecord } from '../lib/dataStore.js'
+import { fmtNumber } from '../utils/formatters.js'
+import { usePulseTick, getRecordPulse, getRecordPulseFields, RecordScope } from '../lib/recordLive.jsx'
 import { getUser } from '../lib/auth.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
+import { FieldAirtableMapping } from './FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { customFieldToColumn, CUSTOM_FIELD_TABLES, isImageUrl, ImageValue } from '../lib/customFieldDisplay.jsx'
+import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue } from '../lib/customFieldDisplay.jsx'
+import LinkCellEditor from './LinkCellEditor.jsx'
 import { LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import { summarizeDependents } from '../lib/customFieldDeps.js'
 import { useFieldOverrides, applyFieldOverrides, applyFieldOrder } from '../lib/fieldOverrides.jsx'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
 import { ResizeHandle } from './ResizeHandle.jsx'
+import { RecordOps } from '../lib/recordOps.js'
 import { useDecimalPrefs, formatDecimals } from '../lib/decimalPrefs.jsx'
 import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
-
-// Durée du surlignage « modifié en direct » — doit matcher la keyframe
-// dtCellFlash / dtEditorBadge dans index.css.
-const FLASH_MS = 3600
 
 export function fmtPhone(val) {
   if (!val) return ''
@@ -148,9 +147,12 @@ const SELECT_DOT = {
 }
 
 // Éditeur inline (mode tableur) pour une cellule single_select / multi_select.
-// `col.selectChoices` = [{ id, label, color }]. Single : un clic commit le label
-// (ou vide). Multi : cases à cocher → commit un tableau JSON au « Terminé » ou au
+// `col.selectChoices` = [{ id, label, color }] — et, pour un champ NATIF dont
+// les choix ont été personnalisés, `value` porte la valeur réellement stockée
+// (le libellé n'en est que l'affichage). Single : un clic commit la valeur (ou
+// vide). Multi : cases à cocher → commit un tableau JSON au « Terminé » ou au
 // clic en dehors.
+const choiceValue = c => (c?.value != null && c.value !== '' ? c.value : c?.label)
 function SelectCellEditor({ col, value, onCommit, onCancel }) {
   const multi = col.type === 'multi_select'
   const choices = Array.isArray(col.selectChoices) ? col.selectChoices : []
@@ -168,11 +170,11 @@ function SelectCellEditor({ col, value, onCommit, onCancel }) {
   useEffect(() => { rootRef.current?.focus() }, [])
 
   function commitMulti(next) { onCommit(JSON.stringify(next)) }
-  function toggle(label) {
+  function toggle(val) {
     if (multi) {
-      setSel(prev => prev.includes(label) ? prev.filter(x => x !== label) : [...prev, label])
+      setSel(prev => prev.includes(val) ? prev.filter(x => x !== val) : [...prev, val])
     } else {
-      onCommit(sel[0] === label ? '' : label)
+      onCommit(sel[0] === val ? '' : val)
     }
   }
 
@@ -210,13 +212,14 @@ function SelectCellEditor({ col, value, onCommit, onCancel }) {
         <div className="px-3 py-1.5 text-xs text-slate-400">Aucun choix configuré</div>
       )}
       {choices.map(c => {
-        const active = sel.includes(c.label)
+        const val = choiceValue(c)
+        const active = sel.includes(val)
         return (
           <button
             type="button"
-            key={c.id || c.label}
-            data-testid={`datatable-select-opt-${c.label}`}
-            onClick={() => toggle(c.label)}
+            key={c.id || val}
+            data-testid={`datatable-select-opt-${val}`}
+            onClick={() => toggle(val)}
             className={`flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-slate-50 ${active ? 'bg-brand-50' : ''}`}
           >
             <span className={`h-3 w-3 rounded-full ${SELECT_DOT[c.color] || SELECT_DOT.gray}`} />
@@ -317,12 +320,12 @@ function computeAggregation(type, rows, field) {
 function formatAggValue(agg, decimals) {
   if (!agg) return ''
   if (agg.value == null) return '—'
-  if (agg.isCount) return agg.value.toLocaleString('fr-CA')
+  if (agg.isCount) return fmtNumber(agg.value)
   if (decimals != null) {
     const f = formatDecimals(agg.value, decimals)
     if (f != null) return f
   }
-  return agg.value.toLocaleString('fr-CA', { maximumFractionDigits: 2 })
+  return fmtNumber(agg.value, { maximumFractionDigits: 2 })
 }
 
 // Normalise groupBy en tableau de field names. Accepte legacy string / null
@@ -400,17 +403,21 @@ export function DataTable({
   onEditCustomField,      // (field) => void
   onDeleteCustomField,    // (field) => void
   onFilteredDataChange,   // (rows) => void — notifie le parent à chaque update de la vue filtrée
-  realtimeEntity,         // string | undefined — préfixe du canal WS (`${realtimeEntity}:list`). Active l'indicateur live « modifié par X » (halo vert + badge) quand un AUTRE utilisateur édite une ligne affichée.
   emptyState,             // { icon, title, description, cta } | undefined — état vide contextuel quand la table n'a aucun enregistrement (voir EmptyState.jsx). L'état « filtré, aucun résultat » est géré automatiquement.
   renderExpanded,         // (item) => JSX | null — si fourni, chaque ligne devient expandable : une colonne chevron est ajoutée en tête et le contenu retourné s'affiche sous la ligne dépliée (hauteur mesurée dynamiquement).
   rowKey = 'id',          // champ servant d'identifiant unique de ligne pour le suivi d'expansion (ex. 'employee_id' quand les lignes n'ont pas d'`id`).
   onToggleExpand,         // (item, willExpand) => void — notifié à chaque (dé)pliage, utile pour charger les détails à la demande.
-  onCellEdit,             // (row, col, value) => void|Promise — si fourni, active le mode « tableur » : navigation cellule, sélection multi-cellules, copier/coller (Ctrl+C/V), remplissage vers le bas (Ctrl+D) et édition inline. Les colonnes éditables doivent porter `editable: true`. La navigation de ligne (`onRowClick`) passe alors au double-clic.
-  peek,                   // { title, subtitle?, to?, width?, render } — si fourni, un clic sur une ligne ouvre un drawer latéral (side-peek à la Airtable) au lieu de naviguer. Chaque champ est soit une valeur, soit une fonction (item) => valeur ; `render(item, { close })` retourne le corps du drawer (typiquement une page *Detail.jsx en mode `embedded`). `to(item)` active le bouton « ouvrir en grand ». Prend le pas sur `onRowClick` pour le clic simple.
+  onCellEdit,             // (row, col, value) => void|Promise — si fourni, active le mode « tableur » : navigation cellule, sélection multi-cellules, copier/coller (Ctrl+C/V), remplissage vers le bas (Ctrl+D) et édition inline. Les colonnes éditables doivent porter `editable: true`. La navigation de ligne (`peek` / `onRowClick`) reste au CLIC SIMPLE comme partout ailleurs ; seules les cellules `editable: true` gardent le clic de sélection tableur (double-clic = éditer).
+  peek,                   // { title, subtitle?, to?, width?, key?, render } — si fourni, un clic simple sur une ligne ouvre un drawer latéral (side-peek à la Airtable) au lieu de naviguer. Chaque champ est soit une valeur, soit une fonction (item) => valeur ; `render(item, { close })` retourne le corps du drawer (typiquement une page *Detail.jsx en mode `embedded`). `to(item)` fournit l'URL partageable affichée pendant que le drawer est ouvert. `key` nomme la ressource sous laquelle la largeur du panneau est mémorisée (par défaut, déduite de `to`). Prend le pas sur `onRowClick`.
   onRowReorder,           // (orderedIds) => void — active une poignée de drag & drop en tête de chaque ligne pour réordonner manuellement (ordre custom persisté par le parent, ex. sort_order). Actif seulement quand l'ordre affiché == l'ordre réel des données : sans tri, groupage, recherche ni filtre.
   rowClassName,           // (item) => string — classes CSS additionnelles par ligne (ex. font-semibold pour un reçu non lu).
+  recordOps,              // RecordOps | undefined — active le « deuxième type » de table : manipulable au niveau des données (clic droit sur une ligne = dupliquer/supprimer, « + » sous la dernière ligne = créer un enregistrement en ligne, sans formulaire). Voir lib/recordOps.js.
   onFieldsChanged,        // () => void — les pages qui gèrent elles-mêmes leurs champs (Pipeline, Factures) passent leur reload : le menu d'en-tête (duplication, masquage global) doit pouvoir rafraîchir leur liste.
 }) {
+  // `height="auto"` : la table s'affiche en entier (pas d'ascenseur propre,
+  // c'est le conteneur — fiche, panneau latéral — qui défile). Les lignes sont
+  // alors mesurées une à une plutôt que supposées à 32 px.
+  const autoHeight = height === 'auto'
   const [visibleCols, setVisibleCols] = useState([])
   // groupBy : tableau de field names. Hérité du legacy : accepte aussi null /
   // string (single-level) et normalise vers array. Tableau vide = pas de
@@ -428,6 +435,9 @@ export function DataTable({
   // l'autosave de ViewToolbar (color_rules).
   const [colorRules, setColorRules] = useState([])
   const [colWidths, setColWidths] = useState({})
+  // Cellules d'en-tête, pour mesurer la largeur affichée des colonnes fluides
+  // au début d'un redimensionnement (voir handleColResizeStart).
+  const headerCellRefs = useRef(new Map())
   // Barre de totaux en pied : { [colId]: 'sum'|'avg'|'count'|'empty'|'min'|'max' }
   const [footerAggs, setFooterAggs] = useState({})
   const [footerMenu, setFooterMenu] = useState(null) // { col, x, y } pour le picker d'agrégation
@@ -435,6 +445,13 @@ export function DataTable({
   const [deleting, setDeleting] = useState(false)
   const [busyAction, setBusyAction] = useState(null) // key de l'action groupée custom en cours
   const [colMenu, setColMenu] = useState(null) // { x, y, source: 'native'|'airtable', field } pour right-click menu
+  // ── Table manipulable (recordOps) ────────────────────────────────────────
+  // Activée seulement si le parent passe une instance de RecordOps portant au
+  // moins une opération. Sans elle, aucun de ces états n'est utilisé.
+  const recordOpsActive = recordOps instanceof RecordOps && recordOps.isActive
+  const [rowMenu, setRowMenu] = useState(null)        // { row, x, y } — menu contextuel de ligne
+  const [rowOpBusy, setRowOpBusy] = useState(false)   // création/duplication/suppression en cours
+  const [pendingEditId, setPendingEditId] = useState(null) // id de la ligne créée, à ouvrir en édition dès qu'elle apparaît
   const [expandedKeys, setExpandedKeys] = useState(() => new Set()) // rowKey des lignes dépliées (si renderExpanded)
   const expandable = typeof renderExpanded === 'function'
   const [peekItem, setPeekItem] = useState(null) // ligne ouverte dans le side-peek (si `peek` fourni)
@@ -472,6 +489,13 @@ export function DataTable({
   const internalClipRef = useRef('') // fallback presse-papier intra-app (si readText refusé)
   const keyHandlerRef = useRef(null)
   const isColEditable = useCallback((col) => gridMode && !!col?.editable, [gridMode])
+  // Le clic simple ouvre la fiche PARTOUT, mode tableur inclus : c'est la même
+  // règle dans toutes les tables de l'app. Seules les cellules réellement
+  // éditables gardent la sémantique tableur (le clic y sélectionne la cellule,
+  // le double-clic ouvre l'éditeur) — sinon éditer une valeur en place
+  // deviendrait impossible. La gouttière d'ouverture reste offerte sur ces
+  // lignes pour ouvrir la fiche depuis une cellule éditable.
+  const peekGutter = peekEnabled && gridMode
   // Tracks previously seen custom-field column ids so we can auto-show newly
   // created fields in the active view (the user vient de créer le champ, on
   // suppose qu'ils veulent le voir tout de suite).
@@ -489,8 +513,25 @@ export function DataTable({
   // d'en-tête, CustomFieldModal interne, colonnes custom fusionnées et menu
   // contextuel Modifier / Supprimer. Les pages déjà câblées (Factures,
   // Pipeline) gardent leur comportement — leurs props ont priorité.
-  const selfManagedCF = !onAddCustomField && CUSTOM_FIELD_TABLES.has(table)
-  const { fields: ownCustomFields, loaded: ownCfLoaded, reload: reloadOwnCustomFields } = useCustomFields(selfManagedCF ? table : null)
+  // Certaines clés de vue (retours, abonnements…) ne sont pas la table SQL qui
+  // porte les champs custom : les routes custom-fields se parlent en vraie
+  // table SQL (cfTable), les vues/pills/colonnes visibles restent sous la clé
+  // de vue.
+  // Clé de CHAMPS : la table canonique dont ce tableau montre les
+  // enregistrements. Identique à `table` pour une page dédiée ; pour un tableau
+  // encastré dans une fiche (company_envois, order_envois…) c'est la table mère
+  // (shipments). Tout ce qui touche à la DÉFINITION d'un champ — page
+  // /champs/:table, renommage, type, suppression, liste des champs disponibles
+  // — passe par elle : un envoi a les mêmes champs où qu'on le regarde. Les
+  // vues restent, elles, sous `table`.
+  const fieldKey = fieldKeyForView(table)
+  // Tableau encastré dans une fiche : il affiche les colonnes choisies par la
+  // fiche, mais le SÉLECTEUR de champs propose tout le catalogue de la table
+  // mère (voir `defaultVisible: false` sur les colonnes ajoutées plus bas).
+  const embeddedTable = fieldKey !== table
+  const cfTable = sqlTableForView(fieldKey)
+  const selfManagedCF = !onAddCustomField && CUSTOM_FIELD_TABLES.has(cfTable)
+  const { fields: ownCustomFields, loaded: ownCfLoaded, reload: reloadOwnCustomFields } = useCustomFields(selfManagedCF ? cfTable : null)
   const [ownCfModal, setOwnCfModal] = useState(null) // { editing: field|null }
   const columnsWithOwnCf = useMemo(() => {
     if (!selfManagedCF || ownCustomFields.length === 0) return columns
@@ -500,13 +541,37 @@ export function DataTable({
     // « # de série » d'order_items, rendu en liens vers les fiches série plutôt
     // qu'en recordID bruts). Sans cet override, on aurait une colonne dupliquée.
     const pageColIds = new Set(columns.map(c => c.id ?? c.field))
-    // editable: false — l'édition inline exige un onCellEdit page + une route
-    // PATCH qui whiteliste les colonnes cf_ (branché seulement sur projects).
+    // L'éditabilité vient de customFieldToColumn (flag `writable` serveur —
+    // règle d'éditabilité unique) ; l'édition inline ne s'active de toute façon
+    // que si la page fournit onCellEdit (gridMode).
+    // `defaultVisible: false` dans un tableau encastré : ces champs viennent du
+    // catalogue de la table mère, pas de la fiche. Ils doivent être PROPOSÉS
+    // (sélecteur de champs, filtres, tris) sans s'afficher d'office — sinon le
+    // tableau compact des envois d'une entreprise s'ouvrirait avec tous les
+    // champs d'un envoi. Sur une page dédiée, comportement inchangé.
     const autoCfCols = ownCustomFields
       .filter(f => !pageColIds.has(f.column_name))
-      .map(f => ({ ...customFieldToColumn(f), editable: false }))
-    return [...columns, ...autoCfCols]
-  }, [selfManagedCF, columns, ownCustomFields])
+      .map(f => (embeddedTable
+        ? { ...customFieldToColumn(f), defaultVisible: false }
+        : customFieldToColumn(f)))
+    // Pour une colonne de page adossée à un champ custom (colonnes natives
+    // converties en lookup/rollup, colonnes Airtable à rendu sur-mesure), le
+    // libellé vient du champ : c'est lui que le renommage d'en-tête met à jour
+    // (commitRename → api.customFields.update). Sans ça, renommer un champ
+    // converti ne changerait jamais l'en-tête affiché.
+    const cfByCol = new Map(ownCustomFields.map(f => [f.column_name, f]))
+    const relabeled = columns.map(c => {
+      const f = cfByCol.get(c.id ?? c.field)
+      if (!f) return c
+      const next = { ...c }
+      if (f.name && f.name !== c.label) next.label = f.name
+      // La description du champ (modale « Modifier le champ ») prime sur celle
+      // codée dans tableDefs.js.
+      if (f.description) next.description = f.description
+      return next
+    })
+    return [...relabeled, ...autoCfCols]
+  }, [selfManagedCF, columns, ownCustomFields, embeddedTable])
   const ownCfByColumn = useMemo(() => {
     if (!selfManagedCF) return null
     const m = new Map()
@@ -590,12 +655,12 @@ export function DataTable({
     ].filter(Boolean).map(p => Promise.resolve(p)))
   }, [reloadOwnCustomFields, onFieldsChanged])
 
-  // Supprimer un champ NATIF = le masquer partout, réversible. Sa colonne SQL
-  // est lue par des routes serveur, des syncs et les fiches détail : la
-  // détruire casserait l'app. L'utilisateur, lui, voit bien le champ disparaître.
-  const hideNativeField = useCallback(async (col) => {
+  // Supprimer un champ NATIF : le champ part à la corbeille et disparaît de
+  // toute l'interface. Sa colonne SQL, elle, survit — elle est lue par des
+  // routes serveur, des syncs et les fiches détail, la détruire casserait l'app.
+  const deleteNativeField = useCallback(async (col) => {
     try {
-      await api.customFields.setNativeHidden(table, col.id, true)
+      await api.customFields.setNativeHidden(fieldKey, col.id, true, col.label)
       await refreshFields()
       addToast({
         type: 'undo',
@@ -605,7 +670,7 @@ export function DataTable({
           label: 'Annuler',
           onClick: async () => {
             try {
-              await api.customFields.setNativeHidden(table, col.id, false)
+              await api.customFields.setNativeHidden(fieldKey, col.id, false)
               await refreshFields()
               addToast({ message: 'Champ restauré', type: 'success', duration: 2000 })
             } catch (e) {
@@ -617,7 +682,7 @@ export function DataTable({
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
     }
-  }, [table, refreshFields, addToast])
+  }, [fieldKey, refreshFields, addToast])
 
   // Armé quand une création de champ part de CE tableau (bouton « + », insertion
   // depuis le menu d'un champ, duplication). Consommé par l'effet d'affichage
@@ -632,7 +697,7 @@ export function DataTable({
       // remettrait en bout de tableau juste après.
       creationIntent.current = true
       pendingInsert.current = { anchorId: col.id, side: 'after' }
-      const created = await api.customFields.duplicate(table, { field_id: col.field ?? col.id, label: col.label })
+      const created = await api.customFields.duplicate(cfTable, { field_id: col.field ?? col.id, label: col.label })
       await refreshFields()
       addToast({ message: `Champ « ${created.name} » créé`, type: 'success', duration: 3000 })
     } catch (e) {
@@ -640,7 +705,7 @@ export function DataTable({
       pendingInsert.current = null
       addToast({ message: e.message, type: 'error' })
     }
-  }, [table, refreshFields, addToast])
+  }, [cfTable, refreshFields, addToast])
 
   // Insérer à gauche / à droite : la position est une propriété de la VUE, donc
   // on mémorise l'ancre et le côté ; le champ créé s'y glisse (voir l'effet
@@ -655,12 +720,12 @@ export function DataTable({
     const field = cfByColumn?.get(col.field) || cfByColumn?.get(col.id)
     try {
       if (field) await api.customFields.update(field.id, { name: next })
-      else await api.fieldOverrides.save(table, col.id, { label: next })
+      else await api.fieldOverrides.save(fieldKey, col.id, { label: next })
       await refreshFields()
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
     }
-  }, [cfByColumn, table, refreshFields, addToast])
+  }, [cfByColumn, fieldKey, refreshFields, addToast])
 
   const insertFieldAt = useCallback((col, side) => {
     creationIntent.current = true
@@ -671,11 +736,13 @@ export function DataTable({
   // ── Overrides de champs natifs (renommage / changement de type) ──────────
   // Les colonnes définies en dur dans tableDefs.js deviennent éditables via le
   // menu contextuel d'en-tête (« Modifier le champ ») → CustomFieldModal (mode natif).
-  // L'override (persisté serveur, table field_overrides) remplace le label
-  // et/ou le type d'affichage/tri/filtre — les colonnes SQL et syncs ne
+  // L'override (persisté serveur, custom_fields kind='native') remplace le
+  // label et/ou le type d'affichage/tri/filtre — les colonnes SQL et syncs ne
   // bougent pas. Appliqué AVANT useTableView pour que les panneaux Champs /
-  // Filtres / Grouper voient les libellés et types overridés.
-  const { overrides: fieldOverrides, reload: reloadFieldOverrides } = useFieldOverrides(table)
+  // Filtres / Grouper voient les libellés et types overridés. Lu sous la clé de
+  // CHAMPS : un renommage fait depuis /envois vaut aussi pour le tableau des
+  // envois d'une fiche entreprise, et inversement.
+  const { overrides: fieldOverrides, reload: reloadFieldOverrides } = useFieldOverrides(fieldKey)
   reloadFieldOverridesRef.current = reloadFieldOverrides
   const [fieldOverrideModal, setFieldOverrideModal] = useState(null) // { col } | null — col = définition d'origine
   const columnsWithOverrides = useMemo(
@@ -695,15 +762,34 @@ export function DataTable({
   // applyFieldOrder : ordre d'affichage choisi par l'utilisateur dans la modale
   // de configuration des champs (field_overrides.sort_order) — pilote le panneau
   // « Champs » et la position par défaut des colonnes.
-  // Champs masqués globalement (« Supprimer » sur un champ natif) : ils sortent
-  // de TOUTES les colonnes — tableau, panneau Champs, filtres, tris, groupes —
-  // sans que leur colonne SQL ni leurs données ne soient touchées. À ne pas
-  // confondre avec la visibilité par vue (visibleCols), qui est un choix local.
-  const mergedColumns = useMemo(
-    () => applyFieldOrder(allColumns || columnsWithOverrides, fieldOverrides)
-      .filter(c => !fieldOverrides.get(c.id)?.hidden),
-    [allColumns, columnsWithOverrides, fieldOverrides]
-  )
+  // Champs SUPPRIMÉS (le serveur les republie sous le drapeau `hidden`) : ils
+  // sortent de TOUTES les colonnes — tableau, panneau Champs, filtres, tris,
+  // groupes — sans que leur colonne SQL ni leurs données ne soient touchées. À
+  // ne pas confondre avec la visibilité par vue (visibleCols), choix local.
+  // Un même champ ne doit apparaître qu'UNE fois. Une colonne native
+  // (tableDefs.js) et son jumeau Airtable (custom_fields posé sur la MÊME
+  // colonne SQL — `projects.close_date` est à la fois « Date de clôture » et
+  // « Fermeture ») portent le même id : les pages qui concatènent leurs champs
+  // perso à leurs colonnes en dur listaient donc deux fois le même champ dans
+  // les panneaux « Champs », « Filtrer », « Trier » et « Grouper » — avec des
+  // clés React en collision, qui pouvaient répéter un libellé ou en escamoter
+  // un. La PREMIÈRE définition gagne (celle de la page, avec son rendu
+  // sur-mesure) : même règle que columnsWithOwnCf ci-dessus, et même choix que
+  // le tableau lui-même, qui résolvait déjà chaque colonne visible au premier
+  // id trouvé. Le jumeau reste joignable par sa colonne (menu d'en-tête,
+  // /champs/:table) — c'est son doublon d'affichage qui disparaît.
+  const mergedColumns = useMemo(() => {
+    const ordered = applyFieldOrder(allColumns || columnsWithOverrides, fieldOverrides)
+      .filter(c => !fieldOverrides.get(c.id)?.hidden)
+    const seen = new Set()
+    return ordered.filter(c => {
+      const key = c.id ?? c.field
+      if (key == null) return true
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+  }, [allColumns, columnsWithOverrides, fieldOverrides])
   // Helper passé aux consumers pour savoir si une colonne est désactivée
   // (import Airtable coupé via la modale de sync). Comparaison sur field OU id.
   const isDisabled = useCallback((c) => {
@@ -733,77 +819,32 @@ export function DataTable({
             : {}),
         }
       })
-    navigate(`/champs/${table}`, {
-      state: { columns: columnsMeta, fromPath: routeLocation.pathname + routeLocation.search },
+    // Tableau encastré dans une fiche (fieldKey ≠ table) : on ouvre la page de
+    // la table canonique — la même que depuis la page dédiée — et on ne lui
+    // passe PAS les colonnes d'ici. Ce tableau n'en montre qu'un extrait
+    // (4 colonnes pour les envois d'une entreprise) ; les envoyer donnerait une
+    // page de configuration amputée. Sans state, la page part des colonnes
+    // déclarées de la table canonique, exactement comme un accès direct à l'URL.
+    navigate(`/champs/${fieldKey}`, {
+      state: {
+        ...(fieldKey === table ? { columns: columnsMeta } : {}),
+        fromPath: routeLocation.pathname + routeLocation.search,
+      },
     })
-  }, [mergedColumns, columnsWithOwnCf, view.dynamicFields, navigate, table, routeLocation])
+  }, [mergedColumns, columnsWithOwnCf, view.dynamicFields, navigate, table, fieldKey, routeLocation])
 
   const parentRef = useRef(null)
   const saveWidthsTimer = useRef(null)
   const saveFooterTimer = useRef(null)
 
-  // ── Indicateur live « modifié par un autre utilisateur » ────────────────
-  // Quand `realtimeEntity` est fourni, on s'abonne au canal `${entity}:list`.
-  // À chaque event `updated` venant d'un AUTRE utilisateur, on diffe le payload
-  // contre la ligne actuellement affichée pour repérer les champs changés, on
-  // résout l'auteur (actorUserId → users), et on déclenche un halo vert + un
-  // badge éditeur sur la ligne, qui s'estompe après FLASH_MS.
-  // flashes : Map<rowId, { fields:Set<field>, values:Record<field,val>, actorName, ts }>
-  const [flashes, setFlashes] = useState(() => new Map())
-  const rowsByIdRef = useRef(new Map())
-  const flashTimers = useRef(new Map())
-  const currentUserId = useMemo(() => getUser()?.id ?? null, [])
-
-  // Garde une vue id→ligne du `data` courant, lue dans le handler WS (qui n'est
-  // pas dans le render path) pour differ le payload contre l'état affiché.
-  useEffect(() => {
-    const m = new Map()
-    for (const r of (data || [])) if (r && r.id != null) m.set(r.id, r)
-    rowsByIdRef.current = m
-  }, [data])
-
-  useEffect(() => () => {
-    for (const t of flashTimers.current.values()) clearTimeout(t)
-    flashTimers.current.clear()
-  }, [])
-
-  useRealtimeChannel(realtimeEntity ? `${realtimeEntity}:list` : null, (msg) => {
-    const verb = msg.type?.split(':').slice(1).join(':')
-    if (verb !== 'updated') return
-    // Seules les modifs d'AUTRES utilisateurs sont signalées.
-    if (msg.actorUserId && currentUserId && String(msg.actorUserId) === String(currentUserId)) return
-    const payload = msg.payload
-    if (!payload || payload.id == null) return
-    const prevRow = rowsByIdRef.current.get(payload.id)
-    if (!prevRow) return // ligne pas dans cette vue → rien à surligner
-    const changed = diffFields(prevRow, payload)
-    if (changed.length === 0) return
-
-    const values = {}
-    for (const f of changed) values[f] = payload[f]
-    const actorName = (msg.actorUserId && getRecord('users', msg.actorUserId)?.name) || 'Quelqu’un'
-    const ts = msg.ts || Date.now()
-
-    setFlashes(prev => {
-      const next = new Map(prev)
-      next.set(payload.id, { fields: new Set(changed), values, actorName, ts })
-      return next
-    })
-
-    const existing = flashTimers.current.get(payload.id)
-    if (existing) clearTimeout(existing)
-    const timer = setTimeout(() => {
-      flashTimers.current.delete(payload.id)
-      setFlashes(prev => {
-        const cur = prev.get(payload.id)
-        if (!cur || cur.ts !== ts) return prev // un flash plus récent a pris la place
-        const next = new Map(prev)
-        next.delete(payload.id)
-        return next
-      })
-    }, FLASH_MS)
-    flashTimers.current.set(payload.id, timer)
-  })
+  // ── Indicateur live « ce champ vient de changer ailleurs » ─────────────
+  // Le registre des pastilles (lib/recordLive.jsx) est alimenté une fois pour
+  // toute l'app — la table n'a donc rien à s'abonner, elle LIT : halo vert sur
+  // la cellule qui a changé, et pastille au bout de la ligne (initiales de
+  // l'auteur, ou icône de prise quand c'est une API qui a écrit). La valeur
+  // affichée, elle, arrive par le chemin habituel (cache global patché en
+  // direct, ou event de liste fusionné par la page).
+  usePulseTick()
 
   // Charge les largeurs persistées. Désormais par vue : on ré-applique à chaque
   // changement de vue active (et plus seulement à l'init) pour que chaque vue
@@ -814,6 +855,28 @@ export function DataTable({
     setColWidths(view.columnWidths || {})
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.configReady, view.activeViewId])
+
+  // Rétrécir une colonne ne doit JAMAIS élargir celles de gauche. Les colonnes
+  // sans largeur explicite valent `minmax(120px, 1fr)` : elles se partagent
+  // l'espace restant, donc l'espace libéré par la colonne qu'on rétrécit
+  // repartait aussi vers la gauche. On fige donc, au tout début du drag, les
+  // colonnes fluides situées AVANT celle qu'on redimensionne, à leur largeur
+  // affichée (la mise en page ne bouge pas à cet instant). Celles de droite
+  // restent fluides et continuent de remplir la table.
+  function handleColResizeStart(colId) {
+    const idx = visibleColumns.findIndex(c => c.id === colId)
+    if (idx <= 0) return
+    setColWidths(prev => {
+      const pinned = {}
+      for (const c of visibleColumns.slice(0, idx)) {
+        if (prev[c.id]) continue
+        const w = headerCellRefs.current.get(c.id)?.offsetWidth
+        if (w) pinned[c.id] = Math.round(w)
+      }
+      if (Object.keys(pinned).length === 0) return prev
+      return { ...pinned, ...prev }
+    })
+  }
 
   function handleColResize(colId, width) {
     setColWidths(prev => {
@@ -1100,16 +1163,24 @@ export function DataTable({
   }
 
   const gridTemplate = useMemo(() => {
-    const cols = visibleColumns.map(c => colWidths[c.id] ? `${colWidths[c.id]}px` : 'minmax(120px, 1fr)').join(' ')
+    // Largeur : préférence enregistrée d'abord, sinon la largeur naturelle que
+    // la colonne déclare (`width`), sinon une part égale du reste. Une date ou
+    // un montant n'a pas besoin d'occuper autant qu'un libellé.
+    const cols = visibleColumns.map(c => {
+      const w = colWidths[c.id] || c.width
+      return w ? `${w}px` : 'minmax(120px, 1fr)'
+    }).join(' ')
     // Si on a un bouton d'ajout de champ, on réserve une colonne `auto` à la
     // fin pour le "+" — les rows de données auront simplement une cellule vide.
     const withAdd = addCustomField ? `${cols} 36px` : cols
     // Colonne chevron d'expansion en tête (après la case de sélection si présente).
     const withExpand = expandable ? `34px ${withAdd}` : withAdd
-    const withSelect = selectionActive ? `40px ${withExpand}` : withExpand
+    // Gouttière « ouvrir la fiche » (mode tableur uniquement).
+    const withPeek = peekGutter ? `32px ${withExpand}` : withExpand
+    const withSelect = selectionActive ? `40px ${withPeek}` : withPeek
     // Poignée de réordonnancement tout à gauche.
     return reorderActive ? `28px ${withSelect}` : withSelect
-  }, [visibleColumns, colWidths, selectionActive, addCustomField, expandable, reorderActive])
+  }, [visibleColumns, colWidths, selectionActive, addCustomField, expandable, reorderActive, peekGutter])
 
   // Reset selection when data changes (e.g., after delete, filter)
   const visibleIds = useMemo(() => filteredData.map(r => r.id).filter(Boolean), [filteredData])
@@ -1488,6 +1559,21 @@ export function DataTable({
 
   const cancelEdit = useCallback(() => { setEditingCell(null); focusGrid() }, [focusGrid])
 
+  // Toast explicatif quand l'utilisateur double-clique une cellule en lecture
+  // seule pour cause d'import Airtable (sens 'pull'). Anti-spam : un seul toast
+  // à la fois — pas de rafale si l'utilisateur insiste sur plusieurs cellules.
+  const pullToastAtRef = useRef(0)
+  const notifyAirtablePullReadonly = useCallback((col) => {
+    const now = Date.now()
+    if (now - pullToastAtRef.current < 5000) return
+    pullToastAtRef.current = now
+    addToast({
+      type: 'info',
+      duration: 6000,
+      message: `Champ « ${col.label} » importé d'Airtable — sens : import seulement. Modifiable via /champs/${table} (sens bidirectionnel) ou en coupant l'import.`,
+    })
+  }, [addToast, table])
+
   const commitEdit = useCallback((move) => {
     const ec = editingCell
     if (ec) {
@@ -1587,6 +1673,10 @@ export function DataTable({
   // les frappes si un champ (recherche, filtre, input inline) a le focus.
   const onGridKeyDown = useCallback((e) => {
     if (!gridMode || editingCell) return
+    // Fiche ouverte en panneau latéral : la grille est derrière, elle ne doit
+    // plus écouter le clavier. Sinon une frappe dans le panneau (hors champ de
+    // saisie) démarrait l'édition d'une cellule cachée et lui volait le focus.
+    if (peekItem) return
     const ae = document.activeElement
     const tag = ae?.tagName
     if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae?.isContentEditable) return
@@ -1609,7 +1699,7 @@ export function DataTable({
     else if (k.length === 1 && !mod && !e.altKey) {
       if (isColEditable(visibleColumns[fC])) { e.preventDefault(); startEdit(sel.focus.rowId, sel.focus.colId, k) }
     }
-  }, [gridMode, editingCell, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable])
+  }, [gridMode, editingCell, peekItem, sel, selBounds, copyCells, pasteCells, fillDown, moveCursor, startEdit, clearCells, rowIndexById, colIndexById, visibleColumns, isColEditable])
 
   // Échap abandonne la multi-sélection d'en-têtes de colonnes.
   useEffect(() => {
@@ -1648,6 +1738,72 @@ export function DataTable({
     saveCollapsed(s)
   }, [])
 
+  // ── Opérations d'enregistrement (recordOps) ──────────────────────────────
+  // Création en ligne : le parent crée l'enregistrement (valeurs par défaut) et
+  // rafraîchit ses données ; on mémorise l'id pour ouvrir la première cellule
+  // éditable dès que la ligne apparaît dans la grille (effet plus bas).
+  const handleAddRecord = useCallback(async () => {
+    if (!recordOpsActive || !recordOps.canCreate || rowOpBusy) return
+    setRowOpBusy(true)
+    try {
+      const created = await recordOps.create()
+      const newId = created?.[rowKey] ?? created?.id
+      if (newId != null && recordOps.editOnCreate) setPendingEditId(newId)
+    } catch (err) {
+      addToast({ message: 'Création impossible : ' + (err?.message || 'erreur inconnue'), type: 'error' })
+    } finally {
+      setRowOpBusy(false)
+    }
+  }, [recordOpsActive, recordOps, rowOpBusy, rowKey, addToast])
+
+  const handleDuplicateRecord = useCallback(async (row) => {
+    if (!recordOpsActive || !recordOps.canDuplicate) return
+    setRowOpBusy(true)
+    try {
+      const copy = await recordOps.duplicate(row)
+      addToast({ message: recordOps.labels.duplicated, type: 'success', duration: 2500 })
+      const newId = copy?.[rowKey] ?? copy?.id
+      if (newId != null && recordOps.editOnCreate) setPendingEditId(newId)
+    } catch (err) {
+      addToast({ message: 'Duplication impossible : ' + (err?.message || 'erreur inconnue'), type: 'error' })
+    } finally {
+      setRowOpBusy(false)
+    }
+  }, [recordOpsActive, recordOps, rowKey, addToast])
+
+  const handleRemoveRecord = useCallback(async (row) => {
+    if (!recordOpsActive || !recordOps.canDelete) return
+    const msg = recordOps.deleteConfirmMessage(row)
+    if (msg && !(await confirm(msg))) return
+    setRowOpBusy(true)
+    try {
+      await recordOps.remove(row)
+      setSelectedIds(prev => {
+        if (!prev.has(row.id)) return prev
+        const next = new Set(prev); next.delete(row.id); return next
+      })
+      addToast({ message: recordOps.labels.deleted, type: 'success', duration: 2500 })
+    } catch (err) {
+      addToast({ message: 'Suppression impossible : ' + (err?.message || 'erreur inconnue'), type: 'error' })
+    } finally {
+      setRowOpBusy(false)
+    }
+  }, [recordOpsActive, recordOps, confirm, addToast])
+
+  // La ligne fraîchement créée vient d'arriver dans les données : on la place
+  // sous le curseur et on ouvre sa première cellule éditable — c'est ce qui
+  // rend l'ajout « en ligne » réellement utilisable sans formulaire.
+  useEffect(() => {
+    if (pendingEditId == null) return
+    if (!gridMode) { setPendingEditId(null); return }
+    if (!rowIndexById.has(pendingEditId)) return
+    const col = visibleColumns.find(c => isColEditable(c))
+    setPendingEditId(null)
+    const di = displayIndexById.get(pendingEditId)
+    if (di != null) { try { virtualizer.scrollToIndex(di, { align: 'auto' }) } catch {} }
+    if (col) startEdit(pendingEditId, col.id)
+  }, [pendingEditId, gridMode, rowIndexById, displayIndexById, visibleColumns, isColEditable, startEdit, virtualizer])
+
   if (!configReady) return null
 
   return (
@@ -1676,6 +1832,7 @@ export function DataTable({
         manageViews={manageViews}
         manageViewsBulkDelete={typeof onBulkDelete === 'function' && !bulkDeleteAlways}
         onOpenFieldConfig={openFieldConfig}
+        onApplyColumnWidths={setColWidths}
       />
 
       {selectionActive && selectedIds.size > 0 && (
@@ -1749,13 +1906,19 @@ export function DataTable({
         </div>
       )}
 
-      {gridMode && sel && gridBounds && (
-        <div data-testid="datatable-grid-bar" className="flex items-center gap-3 px-4 py-1.5 bg-slate-50 border-b border-slate-100 text-xs text-slate-500">
-          <span className="font-medium text-slate-600">
-            {(gridBounds.maxR - gridBounds.minR + 1) * (gridBounds.maxC - gridBounds.minC + 1)} cellule(s)
-          </span>
-          <span className="text-slate-300">·</span>
-          <span className="hidden sm:inline">⌘/Ctrl+C copier · ⌘/Ctrl+V coller · ⌘/Ctrl+D remplir vers le bas · double-clic pour ouvrir</span>
+      {/* Barre d'état du mode tableur — affichée en permanence, à hauteur
+          fixe (min-h-7 = py-1.5 + une ligne text-xs), même vide. Elle
+          apparaissait avant AU moment de la sélection : son insertion
+          décalait le tableau de sa hauteur entre le mousedown et le mouseup,
+          si bien que le clic ne retombait plus sur la ligne et n'ouvrait
+          jamais la fiche. */}
+      {gridMode && (
+        <div data-testid="datatable-grid-bar" className="flex items-center gap-3 px-4 py-1.5 min-h-7 bg-slate-50 border-b border-slate-100 text-xs text-slate-500">
+          {sel && gridBounds && (
+            <span className="font-medium text-slate-600">
+              {(gridBounds.maxR - gridBounds.minR + 1) * (gridBounds.maxC - gridBounds.minC + 1)} cellule(s)
+            </span>
+          )}
           {gridSaving && (
             <span className="ml-auto flex items-center gap-1.5 text-slate-400">
               <span className="inline-block w-3 h-3 border border-slate-300 border-t-transparent rounded-full animate-spin" />
@@ -1765,7 +1928,22 @@ export function DataTable({
         </div>
       )}
 
-      <div ref={parentRef} tabIndex={gridMode ? -1 : undefined} className="overflow-auto outline-none" style={{ height }}>
+      {/* Table vide : on ne réserve pas la hauteur d'écran habituelle, sinon le
+          message « aucune donnée » se retrouve sous la ligne de flottaison (et
+          surtout suivi d'un grand vide) dans les conteneurs qui défilent —
+          panneaux latéraux, fiches détail. Le bloc se contente de sa hauteur.
+
+          `height="auto"` : la table s'affiche en entier, sans ascenseur propre —
+          c'est le conteneur parent (fiche, panneau latéral) qui défile. Le
+          virtualiseur continue de fonctionner : le conteneur prend la hauteur
+          totale des lignes, sa fenêtre visible couvre donc tout le contenu et
+          toutes les lignes sont rendues. */}
+      <div
+        ref={parentRef}
+        tabIndex={gridMode ? -1 : undefined}
+        className="overflow-auto outline-none"
+        style={{ height: (!loading && virtualItems.length === 0) ? 'auto' : height }}
+      >
         <div style={{ minWidth: 'max-content' }}>
           <div
             className="group/header grid border-b border-slate-200 bg-slate-50 sticky top-0 z-10"
@@ -1785,12 +1963,17 @@ export function DataTable({
               </div>
             )}
             {expandable && <div aria-hidden />}
+            {peekGutter && <div aria-hidden />}
             {visibleColumns.map(col => {
               const customField = cfByColumn?.get(col.field) || cfByColumn?.get(col.id)
               const colSelected = selectedColIds.has(col.id)
               return (
                 <div
                   key={col.id}
+                  ref={el => {
+                    if (el) headerCellRefs.current.set(col.id, el)
+                    else headerCellRefs.current.delete(col.id)
+                  }}
                   data-testid={`col-header-${col.id}`}
                   data-col-selected={colSelected ? 'true' : undefined}
                   onDoubleClick={e => {
@@ -1819,7 +2002,7 @@ export function DataTable({
                       field: customField || null,
                     })
                   }}
-                  className={`group/col relative px-4 py-2.5 text-xs font-semibold uppercase tracking-wide leading-tight break-words select-none cursor-grab active:cursor-grabbing ${colSelected ? 'bg-brand-100 text-brand-800' : 'text-slate-500'}`}
+                  className={`group/col relative px-4 py-2.5 text-xs font-semibold leading-tight break-words select-none cursor-grab active:cursor-grabbing ${colSelected ? 'bg-brand-100 text-brand-800' : 'text-slate-500'}`}
                 >
                   {renamingCol?.id === col.id ? (
                     <input
@@ -1834,7 +2017,7 @@ export function DataTable({
                         e.stopPropagation()
                       }}
                       onClick={e => e.stopPropagation()}
-                      className="w-full bg-white border border-brand-400 rounded px-1 py-0.5 text-xs font-semibold uppercase tracking-wide text-slate-700 focus:outline-none"
+                      className="w-full bg-white border border-brand-400 rounded px-1 py-0.5 text-xs font-semibold text-slate-700 focus:outline-none"
                     />
                   ) : (
                     <span className="inline-flex items-baseline gap-1 pr-4">
@@ -1870,7 +2053,10 @@ export function DataTable({
                       className={`absolute top-0 bottom-0 w-0.5 bg-brand-500 pointer-events-none ${dragOverSide === 'before' ? '-left-px' : '-right-px'}`}
                     />
                   )}
-                  <ResizeHandle onResize={w => handleColResize(col.id, w)} />
+                  <ResizeHandle
+                    onResizeStart={() => handleColResizeStart(col.id)}
+                    onResize={w => handleColResize(col.id, w)}
+                  />
                 </div>
               )
             })}
@@ -2019,7 +2205,7 @@ export function DataTable({
                           const f = colMenu.field
                           setColMenu(null)
                           if (f) deleteCustomField?.(f)
-                          else hideNativeField(c)
+                          else deleteNativeField(c)
                         }}
                         className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left"
                         data-testid="colmenu-delete-field"
@@ -2042,11 +2228,29 @@ export function DataTable({
           <CustomFieldModal
             isOpen={!!ownCfModal || !!fieldOverrideModal}
             onClose={() => { setOwnCfModal(null); setFieldOverrideModal(null) }}
-            erpTable={table}
+            // Mode natif (override cosmétique) : clé de CHAMPS — la
+            // personnalisation appartient à la table canonique, pas à la vue.
+            // Mode champ perso : vraie table SQL (custom_fields).
+            erpTable={fieldOverrideModal ? fieldKey : cfTable}
             editing={ownCfModal?.editing || null}
             native={fieldOverrideModal?.col
               ? { column: fieldOverrideModal.col, override: fieldOverrides.get(fieldOverrideModal.col.id) || null }
               : null}
+            // Champ Airtable qui alimente la colonne, réglable sans quitter le
+            // tableau : le bloc se charge tout seul et ne s'affiche que si la
+            // table a bien une source Airtable.
+            mappingSlot={(() => {
+              const col = fieldOverrideModal?.col?.field || fieldOverrideModal?.col?.id
+                || ownCfModal?.editing?.column_name
+              if (!col) return null
+              return (
+                <FieldAirtableMapping
+                  table={fieldKey}
+                  column={col}
+                  cfKind={ownCfModal?.editing?.kind || null}
+                />
+              )
+            })()}
             onSaved={() => { fieldOverrideModal ? reloadFieldOverrides() : reloadOwnCustomFields() }}
             onDeleted={() => { reloadOwnCustomFields() }}
           />
@@ -2143,6 +2347,7 @@ export function DataTable({
                     {reorderActive && <div />}
                     {selectionActive && <div />}
                     {expandable && <div />}
+                    {peekGutter && <div />}
                     <div className="flex items-center gap-2 px-3" style={{ paddingLeft: `${12 + lvl * 16}px` }}>
                       {item.__collapsed
                         ? <ChevronRight size={13} className="text-slate-400 flex-shrink-0" />
@@ -2155,7 +2360,7 @@ export function DataTable({
                       <div key={col.id} className="px-4 text-xs tabular-nums">
                         {sums[col.field] != null && (
                           <span className="font-medium text-slate-500">
-                            {sums[col.field].toLocaleString('fr-CA', { maximumFractionDigits: 2 })}
+                            {fmtNumber(sums[col.field], { maximumFractionDigits: 2 })}
                           </span>
                         )}
                       </div>
@@ -2164,10 +2369,8 @@ export function DataTable({
                 )
               }
 
-              const rowFlash = flashes.size > 0 ? flashes.get(item.id) : null
-              // Pendant le flash, on affiche les nouvelles valeurs venues du
-              // payload realtime (le store, lui, ne rattrape qu'au prochain poll).
-              const renderItem = rowFlash ? { ...item, ...rowFlash.values } : item
+              const rowPulse = getRecordPulse(item.id)
+              const pulsedFields = rowPulse ? getRecordPulseFields(item.id) : null
               const rowColor = rowColorById.size > 0 ? rowColorById.get(item.id) : undefined
               const rowColorStyle = rowColor ? ROW_COLOR_STYLES[rowColor] : null
 
@@ -2175,23 +2378,47 @@ export function DataTable({
                 <div
                   key={vItem.key}
                   data-row-id={item.id}
+                  data-index={vItem.index}
                   data-row-color={rowColor}
+                  // Table affichée en entier : la ligne est mesurée pour de vrai.
+                  // Sans ça, une ligne dont le contenu dépasse les 32 px estimés
+                  // (pile de numéros de série, résumé sur plusieurs lignes…)
+                  // débordait sur sa voisine et rendait un ascenseur au tableau,
+                  // qui n'était donc plus entièrement visible.
+                  ref={autoHeight ? virtualizer.measureElement : undefined}
                   style={{
                     position: 'absolute',
                     top: vItem.start,
                     left: 0,
                     right: 0,
-                    height: vItem.size,
+                    ...(autoHeight ? { minHeight: vItem.size } : { height: vItem.size }),
                     display: 'grid',
                     gridTemplateColumns: gridTemplate,
                     alignItems: 'center',
                     ...(rowColorStyle ? { background: rowColorStyle.bg, boxShadow: `inset 3px 0 0 0 ${rowColorStyle.bar}` } : {}),
                   }}
-                  onClick={() => { if (gridMode) return; if (peekEnabled) setPeekItem(item); else if (onRowClick) onRowClick(item); else if (expandable) toggleExpand(item) }}
-                  onDoubleClick={gridMode ? (peekEnabled ? () => setPeekItem(item) : (onRowClick ? () => onRowClick(item) : undefined)) : undefined}
+                  onClick={(e) => {
+                    // Un clic simple ouvre la fiche — règle unique pour toutes
+                    // les tables. En mode tableur, deux gestes restent des
+                    // gestes de tableur : le clic modifié (shift/ctrl étend la
+                    // sélection de cellules) et le clic sur une cellule
+                    // éditable (qui coupe la propagation, voir plus bas).
+                    if (gridMode && (e.shiftKey || e.metaKey || e.ctrlKey || e.altKey)) return
+                    if (peekEnabled) setPeekItem(item)
+                    else if (onRowClick) onRowClick(item)
+                    else if (expandable) toggleExpand(item)
+                  }}
+                  onContextMenu={recordOpsActive ? (e) => {
+                    // Table manipulable : le clic droit sur une ligne ouvre le
+                    // menu d'enregistrement (dupliquer / supprimer) à la place
+                    // du menu du navigateur.
+                    e.preventDefault()
+                    e.stopPropagation()
+                    setRowMenu({ row: item, x: e.clientX, y: e.clientY })
+                  } : undefined}
                   onDragOver={reorderActive && dragRowId ? (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; if (dragOverRowId !== item.id) setDragOverRowId(item.id) } : undefined}
                   onDrop={reorderActive && dragRowId ? (e) => { e.preventDefault(); handleRowDrop(item.id) } : undefined}
-                  className={`border-b border-slate-100 hover:bg-slate-50${gridMode ? '' : ' cursor-pointer'}${reorderActive && dragRowId === item.id ? ' opacity-40' : ''}${reorderActive && dragOverRowId === item.id && dragRowId && dragRowId !== item.id ? ' bg-brand-50 border-t-2 border-t-brand-400' : ''}${rowClassName ? ` ${rowClassName(item) || ''}` : ''}`}
+                  className={`border-b border-slate-100 hover:bg-slate-50${gridMode && !peekEnabled && !onRowClick ? '' : ' cursor-pointer'}${reorderActive && dragRowId === item.id ? ' opacity-40' : ''}${reorderActive && dragOverRowId === item.id && dragRowId && dragRowId !== item.id ? ' bg-brand-50 border-t-2 border-t-brand-400' : ''}${rowClassName ? ` ${rowClassName(item) || ''}` : ''}`}
                 >
                   {reorderActive && (
                     <div
@@ -2233,8 +2460,24 @@ export function DataTable({
                         : <ChevronRight size={14} />}
                     </div>
                   )}
+                  {peekGutter && (
+                    <button
+                      type="button"
+                      title="Ouvrir la fiche"
+                      aria-label="Ouvrir la fiche"
+                      data-testid={`datatable-peek-open-${item[rowKey]}`}
+                      // La cellule du mode tableur prend le focus au mousedown :
+                      // sans stopPropagation le mouseup retombait ailleurs et le
+                      // clic n'atteignait jamais ce bouton.
+                      onMouseDown={e => e.stopPropagation()}
+                      onClick={e => { e.stopPropagation(); setPeekItem(item) }}
+                      className="flex items-center justify-center h-full text-slate-300 hover:text-brand-600 transition-colors"
+                    >
+                      <Maximize2 size={13} />
+                    </button>
+                  )}
                   {visibleColumns.map((col, ci) => {
-                    const flashing = rowFlash && rowFlash.fields.has(col.field)
+                    const flashing = pulsedFields ? pulsedFields.has(col.field) : false
                     if (gridMode) {
                       const ri = rowIndexById.get(item.id)
                       const inSel = gridBounds && ri != null
@@ -2249,18 +2492,71 @@ export function DataTable({
                           data-grid-cell={`${item.id}|${col.id}`}
                           onMouseDown={e => {
                             if (e.button !== 0) return
+                            // Lien d'enregistrement dans une cellule NON éditable :
+                            // le laisser tranquille. Sélectionner la cellule ici
+                            // déplace le focus (donc parfois la grille) entre le
+                            // mousedown et le mouseup — le clic ne tombait alors
+                            // plus sur le lien, qui semblait mort. Dans une cellule
+                            // éditable, au contraire, le clic DOIT sélectionner
+                            // (voir la classe dt-inert-links plus bas).
+                            if (!editable && e.target.closest?.('a[href]')) return
                             const cell = { rowId: item.id, colId: col.id }
                             if (e.shiftKey && sel) setSel(s => ({ anchor: s.anchor, focus: cell }))
                             else setSel({ anchor: cell, focus: cell })
                             focusGrid()
                           }}
-                          onDoubleClick={e => { if (editable) { e.stopPropagation(); startEdit(item.id, col.id) } }}
-                          className={`relative px-4 text-sm select-none${flashing ? ' dt-cell-flash' : ''}${inSel ? ' bg-brand-50' : ''}${isActive ? ' z-[1] ring-2 ring-inset ring-brand-500' : ''}`}
+                          // Cellule éditable : le clic reste un geste de tableur
+                          // (sélectionner, puis double-clic pour éditer). Sans
+                          // cette coupure, le clic remonterait à la ligne et
+                          // ouvrirait la fiche par-dessus la grille — plus
+                          // moyen d'éditer une valeur en place.
+                          onClick={editable ? (e => e.stopPropagation()) : undefined}
+                          onDoubleClick={e => {
+                            if (editable) { e.stopPropagation(); startEdit(item.id, col.id) }
+                            // Cellule en lecture seule PARCE QUE le champ est
+                            // importé d'Airtable en sens 'pull' : dire pourquoi
+                            // plutôt que d'ignorer le double-clic en silence.
+                            else if (col.airtablePullReadonly) { e.stopPropagation(); notifyAirtablePullReadonly(col) }
+                          }}
+                          className={`relative px-4 text-sm select-none${editable ? ' cursor-cell' : ''}${flashing ? ' dt-cell-flash' : ''}${inSel ? ' bg-brand-50' : ''}${isActive ? ' z-[1] ring-2 ring-inset ring-brand-500' : ''}`}
                         >
                           {isEditing ? (
-                            (col.type === 'single_select' || col.type === 'multi_select') ? (
+                            // Éditeur fourni par la colonne (échappatoire pour
+                            // ce que le tableur ne sait pas saisir tout seul :
+                            // un champ référence, par exemple, où il faut
+                            // chercher un enregistrement et renvoyer son id).
+                            typeof col.renderEditor === 'function' ? (
                               <>
-                                <span className="block truncate opacity-50">{renderCell(col, renderItem, getDecimals(table, col.field))}</span>
+                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                {col.renderEditor({
+                                  row: item,
+                                  col,
+                                  commit: (value) => {
+                                    if (value !== undefined && value !== item[col.field]) applyCellChanges([{ row: item, col, value }])
+                                    setEditingCell(null); focusGrid()
+                                  },
+                                  cancel: () => { setEditingCell(null); focusGrid() },
+                                })}
+                              </>
+                            ) : (col.linkTarget || col.linkMulti) ? (
+                              // Cellule de lien : pastilles avec « × » pour
+                              // dissocier, liste recherchable pour associer.
+                              // Voir components/LinkCellEditor.jsx.
+                              <>
+                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                <LinkCellEditor
+                                  col={col}
+                                  value={item[col.field]}
+                                  onCommit={(value) => {
+                                    if (value !== undefined && value !== item[col.field]) applyCellChanges([{ row: item, col, value }])
+                                    setEditingCell(null); focusGrid()
+                                  }}
+                                  onCancel={() => { setEditingCell(null); focusGrid() }}
+                                />
+                              </>
+                            ) : (col.type === 'single_select' || col.type === 'multi_select') ? (
+                              <>
+                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
                                 <SelectCellEditor
                                   col={col}
                                   value={item[col.field]}
@@ -2292,26 +2588,40 @@ export function DataTable({
                             />
                             )
                           ) : (
-                            <span className="block truncate">{renderCell(col, renderItem, getDecimals(table, col.field))}</span>
+                            // `dt-inert-links` : dans une cellule éditable, un lien
+                            // rendu par la colonne (le nom d'un produit, une
+                            // pastille de fiche) ne se clique pas — le clic y est
+                            // un geste de tableur, il sélectionne la cellule. Sans
+                            // ça, le premier clic ouvrait la fiche et le
+                            // double-clic n'atteignait jamais l'éditeur : la
+                            // cellule « Produit » d'une commande était inéditable
+                            // sur toute la largeur du nom. Neutralisé en CSS et non
+                            // en JS : la sélection re-rend la ligne au mousedown,
+                            // le `click` retombe alors parfois sur un nœud détaché
+                            // où aucun handler React ne s'exécute — la navigation
+                            // par défaut du `<a>` passait outre. La fiche visée
+                            // reste à un clic dans l'éditeur de lien (pastilles
+                            // cliquables) et par la gouttière d'ouverture de ligne.
+                            <span className={`block truncate${editable ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
                           )}
                         </div>
                       )
                     }
                     return (
                       <div key={col.id} className={`px-4 truncate text-sm${flashing ? ' dt-cell-flash' : ''}`}>
-                        {renderCell(col, renderItem, getDecimals(table, col.field))}
+                        {renderCell(col, item, getDecimals(table, col.field))}
                       </div>
                     )
                   })}
-                  {rowFlash && (
+                  {rowPulse && (
                     <div
                       className="dt-editor-badge"
-                      data-editor-badge={rowFlash.actorName}
+                      data-editor-badge={rowPulse.actorName || rowPulse.source || 'api'}
+                      title={rowPulse.title}
                       style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', pointerEvents: 'none', zIndex: 5 }}
                     >
-                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500 text-white text-[10px] font-medium px-2 py-0.5 shadow-sm whitespace-nowrap">
-                        <span className="h-1.5 w-1.5 rounded-full bg-white/90" />
-                        {rowFlash.actorName}
+                      <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500 text-white text-[10px] font-semibold px-1.5 py-0.5 shadow-sm whitespace-nowrap">
+                        {rowPulse.initials || <Plug size={10} strokeWidth={2.5} />}
                       </span>
                     </div>
                   )}
@@ -2319,6 +2629,27 @@ export function DataTable({
               )
             })}
             </div>
+          )}
+
+          {/* Ligne « + » d'ajout en ligne (table manipulable). Placée sous le
+              dernier enregistrement, à l'intérieur du conteneur scrollable et
+              au-dessus de la barre de totaux : on crée l'enregistrement d'un
+              clic, sans formulaire, et le curseur atterrit dans sa première
+              cellule éditable. Reste visible sur une table vide (sous l'état
+              vide) — c'est souvent là qu'on ajoute la première ligne. */}
+          {recordOpsActive && recordOps.canCreate && !loading && (
+            <button
+              type="button"
+              data-testid="datatable-add-record"
+              onClick={handleAddRecord}
+              disabled={rowOpBusy}
+              title={recordOps.labels.add}
+              className="w-full flex items-center gap-2 px-3 h-8 border-b border-slate-100 text-slate-400 hover:text-brand-600 hover:bg-slate-50 transition-colors disabled:opacity-50 disabled:cursor-wait"
+              style={{ minWidth: '100%' }}
+            >
+              <Plus size={14} className="flex-shrink-0" />
+              <span className="text-xs">{recordOps.labels.add}</span>
+            </button>
           )}
 
           {/* Barre de totaux configurable (summary bar à la Airtable). Toujours
@@ -2334,21 +2665,34 @@ export function DataTable({
               {reorderActive && <div aria-hidden />}
               {selectionActive && <div aria-hidden />}
               {expandable && <div aria-hidden />}
+              {peekGutter && <div aria-hidden />}
               {visibleColumns.map(col => {
                 const aggType = footerAggs[col.id]
                 const agg = footerValues.get(col.id)
-                const formatted = aggType ? formatAggValue(agg, getDecimals(table, col.field)) : ''
+                // Préférence utilisateur, sinon décimales du champ (col.decimals,
+                // champs custom) — même règle que DynamicCell.
+                const formatted = aggType ? formatAggValue(agg, getDecimals(table, col.field) ?? (Number.isInteger(col.decimals) ? col.decimals : null)) : ''
                 return (
                   <div
                     key={col.id}
                     data-testid={`datatable-footer-cell-${col.id}`}
                     onClick={e => { e.stopPropagation(); setFooterMenu({ col, x: e.clientX, y: e.clientY }) }}
                     className="group/foot relative px-4 py-1.5 text-xs cursor-pointer hover:bg-slate-100 transition-colors flex items-baseline justify-end gap-1.5 overflow-hidden select-none"
-                    title="Cliquer pour choisir un total (somme, moyenne, compte, min, max…)"
+                    title={aggType
+                      ? `${agg?.label} : ${formatted} — cliquer pour changer de total`
+                      : 'Cliquer pour choisir un total (somme, moyenne, compte, min, max…)'}
                   >
                     {aggType ? (
                       <>
-                        <span className="text-[10px] uppercase tracking-wide text-slate-400 truncate">{agg?.label}</span>
+                        {/* Colonne étroite : c'est le libellé qui cède en
+                            premier (shrink démesuré, il reste rappelé par le
+                            title), la valeur ne se tronque qu'en dernier
+                            recours — un total affiché « 2.. » ne veut plus
+                            rien dire.
+                            `dt-caps` et pas `uppercase tracking-wide` : ces deux
+                            classes déclenchent le reflow des champs en panneau
+                            latéral (voir .peek-panel dans index.css). */}
+                        <span className="dt-caps text-[10px] text-slate-400 truncate shrink-[9999]">{agg?.label}</span>
                         <span className="font-semibold text-slate-700 tabular-nums truncate">{formatted}</span>
                       </>
                     ) : (
@@ -2375,7 +2719,7 @@ export function DataTable({
                   className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[180px]"
                   style={{ top: footerMenu.y - 8, left: footerMenu.x, transform: 'translateY(-100%)' }}
                 >
-                  <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-slate-400 truncate">{c.label}</div>
+                  <div className="px-3 py-1 dt-caps text-[10px] text-slate-400 truncate">{c.label}</div>
                   <button onClick={() => { setColAggregation(c.id, 'none'); setFooterMenu(null) }} className={itemCls}>
                     <span>Aucun</span>{current === 'none' && <Check size={13} className="text-brand-600 flex-shrink-0" />}
                   </button>
@@ -2391,6 +2735,53 @@ export function DataTable({
         </div>
       </div>
 
+      {/* Menu contextuel de ligne (table manipulable). Rendu hors du conteneur
+          scrollable pour ne jamais être rogné ; positionné en `fixed` sur le
+          curseur, comme le menu d'en-tête de colonne. */}
+      {recordOpsActive && rowMenu && (() => {
+        const itemCls = 'flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left disabled:opacity-50'
+        return (
+          <>
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setRowMenu(null)}
+              onContextMenu={e => { e.preventDefault(); setRowMenu(null) }}
+            />
+            <div
+              data-testid="datatable-row-menu"
+              className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[210px]"
+              // Clic droit sur la dernière ligne d'une table basse (panneau
+              // latéral) : sans ce plafond le menu sortait sous le viewport.
+              style={{
+                top: Math.min(rowMenu.y, window.innerHeight - 24 - 34 * ((recordOps.canDuplicate ? 1 : 0) + (recordOps.canDelete ? 1 : 0))),
+                left: Math.min(rowMenu.x, window.innerWidth - 226),
+              }}
+            >
+              {recordOps.canDuplicate && (
+                <button
+                  data-testid="rowmenu-duplicate"
+                  disabled={rowOpBusy}
+                  onClick={() => { const r = rowMenu.row; setRowMenu(null); handleDuplicateRecord(r) }}
+                  className={itemCls}
+                >
+                  <Copy size={13} /> {recordOps.labels.duplicate}
+                </button>
+              )}
+              {recordOps.canDelete && (
+                <button
+                  data-testid="rowmenu-delete"
+                  disabled={rowOpBusy}
+                  onClick={() => { const r = rowMenu.row; setRowMenu(null); handleRemoveRecord(r) }}
+                  className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-red-600 hover:bg-red-50 text-left disabled:opacity-50"
+                >
+                  <Trash2 size={13} /> {recordOps.labels.delete}
+                </button>
+              )}
+            </div>
+          </>
+        )
+      })()}
+
       {peekEnabled && (
         <RecordPeekDrawer
           open={!!peekItem}
@@ -2399,8 +2790,15 @@ export function DataTable({
           subtitle={resolvePeek('subtitle', peekItem)}
           to={resolvePeek('to', peekItem)}
           width={peek.width}
+          peekKey={peek.key}
         >
-          {peekItem && peek.render(peekItem, { close: () => setPeekItem(null) })}
+          {peekItem && (
+            // Même annonce que RecordRoutePanel : les champs de la fiche
+            // embarquée y lisent leur pastille « mis à jour ailleurs ».
+            <RecordScope id={peekItem[rowKey]}>
+              {peek.render(peekItem, { close: () => setPeekItem(null) })}
+            </RecordScope>
+          )}
         </RecordPeekDrawer>
       )}
     </div>

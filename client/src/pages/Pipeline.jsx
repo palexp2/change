@@ -1,11 +1,15 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Plus, X, Database, Pencil, Landmark } from 'lucide-react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Plus, X } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
+import ProjectDetail from './ProjectDetail.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -13,6 +17,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import CustomFieldModal from '../components/CustomFieldModal.jsx'
+import { FieldAirtableMapping } from '../components/FieldAirtableMapping.jsx'
 import { customFieldToColumn } from '../lib/customFieldDisplay.jsx'
 import { summarizeDependents } from '../lib/customFieldDeps.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -20,175 +25,56 @@ import { useToast } from '../contexts/ToastContext.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 
-const fmtCad = (n) => fmtMoney(n, 'CAD', { maximumFractionDigits: 0 })
-
 const PROJECT_TYPES = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
 
-// Indicateur d'autosave discret (mode édition uniquement).
-function AutosaveStatus({ state }) {
-  if (state === 'saving') {
-    return (
-      <span className="flex items-center gap-1.5 text-xs text-slate-400">
-        <span className="inline-block w-3 h-3 border border-slate-300 border-t-transparent rounded-full animate-spin" />
-        Enregistrement…
-      </span>
-    )
-  }
-  if (state === 'saved') return <span className="text-xs text-green-600">Enregistré</span>
-  if (state === 'error') return <span className="text-xs text-red-600">Échec de la sauvegarde</span>
-  return null
-}
-
-function ProjectForm({ initial = {}, companies = [], onSave, onClose }) {
-  // Mode édition d'un record existant → autosave on-change debounced, pas de
-  // bouton « Enregistrer » (règle de design CLAUDE.md). Mode création → submit
-  // classique (exception autosave : pas encore d'id).
-  const editing = !!initial?.id
-  const { addToast } = useToast()
-  const [form, setForm] = useState({
-    name: '', company_id: '', contact_id: '',
-    type: '', probability: 50, value_cad: '',
-    monthly_cad: '', nb_greenhouses: 0, close_date: '', notes: '',
-    refusal_reason: '', ...initial
-  })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-  const [saveState, setSaveState] = useState('idle') // idle | saving | saved | error
-
-  // File d'attente de patch fusionnés + timer de debounce pour l'autosave.
-  const persistTimer = useRef(null)
-  const persistQueue = useRef({})
-
-  // `/companies/lookup` exclut les entreprises archivées et arrive après le
-  // premier rendu : on injecte l'entreprise déjà liée pour que le picker
-  // l'affiche au lieu d'un champ vide (le projet EST lié).
-  const companyOptions = useMemo(() => {
-    if (!form.company_id) return companies
-    if (companies.some(c => String(c.id) === String(form.company_id))) return companies
-    return [{ id: form.company_id, name: initial?.company_name || 'Entreprise liée' }, ...companies]
-  }, [companies, form.company_id, initial?.company_name])
-
-  const doPersist = useCallback(async () => {
-    const patch = persistQueue.current
-    persistQueue.current = {}
-    // Le nom est non-nullable côté serveur : ne jamais persister un nom vide.
-    if ('name' in patch && !String(patch.name).trim()) delete patch.name
-    if (Object.keys(patch).length === 0) { setSaveState('idle'); return }
-    setSaveState('saving')
-    try {
-      await api.projects.update(initial.id, patch)
-      setSaveState('saved')
-    } catch (e) {
-      setSaveState('error')
-      addToast({ message: e.message, type: 'error' })
-    }
-  }, [initial.id, addToast])
-
-  const schedulePersist = useCallback((patch) => {
-    Object.assign(persistQueue.current, patch)
-    setSaveState('saving')
-    clearTimeout(persistTimer.current)
-    persistTimer.current = setTimeout(doPersist, 500)
-  }, [doPersist])
-
-  // Flush des patchs en attente si la modale se ferme avant le debounce.
-  useEffect(() => {
-    if (!editing) return
-    return () => {
-      clearTimeout(persistTimer.current)
-      const patch = persistQueue.current
-      persistQueue.current = {}
-      if ('name' in patch && !String(patch.name).trim()) delete patch.name
-      if (Object.keys(patch).length) api.projects.update(initial.id, patch).catch(() => {})
-    }
-  }, [editing, initial.id])
-
-  // Setter unifié : met à jour l'état local et, en édition, programme l'autosave.
-  const setField = useCallback((patch) => {
-    setForm(f => ({ ...f, ...patch }))
-    if (editing) schedulePersist(patch)
-  }, [editing, schedulePersist])
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    if (editing) return // autosave : pas de submit en édition
-    setError('')
-    setSaving(true)
-    try { await onSave(form); onClose() }
-    catch (err) { setError(err.message) }
-    finally { setSaving(false) }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="col-span-2">
-          <label className="label">Nom du projet *</label>
-          <input value={form.name} onChange={e => setField({ name: e.target.value })} className="input" required />
-        </div>
-        <div>
-          <label className="label">Entreprise</label>
-          <LinkedRecordField
-            name="pipeline_company_id"
-            value={form.company_id}
-            options={companyOptions}
-            labelFn={c => c.name}
-            getHref={c => `/companies/${c.id}`}
-            placeholder="Entreprise"
-            onChange={v => setField({ company_id: v })}
-          />
-        </div>
-        <div>
-          <label className="label">Type</label>
-          <select value={form.type} onChange={e => setField({ type: e.target.value })} className="select">
-            <option value="">—</option>
-            {PROJECT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="label">Probabilité (%)</label>
-          <input type="range" min="0" max="100" step="5" value={form.probability}
-            onChange={e => setField({ probability: parseInt(e.target.value) })}
+// Champs proposés par le formulaire « Nouveau projet » — liste calquée sur ce
+// que POST /api/projects persiste (voir RecordForm.jsx pour la configuration).
+// « Raison du refus » n'y figure pas : la route de création ne l'accepte pas, un
+// champ qui ne sauvegarde pas n'a rien à faire dans un formulaire d'ajout.
+function projectFormFields(companies) {
+  return [
+    { field: 'name', label: 'Nom du projet', span: 2, locked: true, required: true },
+    {
+      field: 'company_id', label: 'Entreprise',
+      input: ({ value, onChange }) => (
+        <LinkedRecordField
+          name="pipeline_company_id"
+          value={value}
+          options={companies}
+          labelFn={c => c.name}
+          getHref={c => `/companies/${c.id}`}
+          onChange={onChange}
+        />
+      ),
+    },
+    { field: 'type', label: 'Type', type: 'select', options: PROJECT_TYPES },
+    {
+      field: 'probability', label: 'Probabilité (%)', defaultValue: 50,
+      input: ({ value, onChange, id }) => (
+        <>
+          <input
+            id={id}
+            type="range" min="0" max="100" step="5" value={value}
+            onChange={e => onChange(parseInt(e.target.value))}
             className="w-full mt-1"
           />
-          <div className="text-center text-sm font-medium text-brand-600">{form.probability}%</div>
-        </div>
-        <div>
-          <label className="label">Date de clôture prévue</label>
-          <input type="date" value={form.close_date} onChange={e => setField({ close_date: e.target.value })} className="input" />
-        </div>
-        {/* La raison du refus n'était affichée que pour un statut « Perdu ».
-            Le champ Statut ayant été retiré de la table, elle reste offerte en
-            permanence plutôt que de disparaître avec lui. */}
-        <div className="col-span-2">
-          <label className="label">Raison du refus</label>
-          <input value={form.refusal_reason} onChange={e => setField({ refusal_reason: e.target.value })} className="input" />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Notes</label>
-          <textarea value={form.notes} onChange={e => setField({ notes: e.target.value })} className="input" rows={3} />
-        </div>
-      </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      {editing ? (
-        // Autosave : pas de bouton « Enregistrer », juste un statut + fermeture.
-        <div className="flex justify-end items-center gap-3 pt-2">
-          <AutosaveStatus state={saveState} />
-          <button type="button" onClick={onClose} className="btn-secondary">Fermer</button>
-        </div>
-      ) : (
-        <div className="flex justify-end gap-3 pt-2">
-          <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-          <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
-        </div>
-      )}
-    </form>
-  )
+          <div className="text-center text-sm font-medium text-brand-600">{value}%</div>
+        </>
+      ),
+    },
+    { field: 'close_date', label: 'Date de clôture prévue', type: 'date' },
+    { field: 'notes', label: 'Notes', type: 'textarea', span: 2 },
+    // Masqués par défaut — disponibles via « Modifier le formulaire ».
+    { field: 'value_cad', label: 'Valeur (CAD)', type: 'currency', min: '0', visible: false },
+    { field: 'monthly_cad', label: 'Récurrent mensuel (CAD)', type: 'currency', min: '0', visible: false },
+    { field: 'nb_greenhouses', label: 'Nombre de serres', type: 'number', min: '0', visible: false },
+    // Pas de champ « Statut » : il a été retiré des projets (voir /champs/projects
+    // et e2e/tests/projects-no-status-field.test.js) — l'offrir ici le ferait
+    // revenir par la porte de derrière.
+  ]
 }
 
-
 export default function Pipeline() {
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const monthFilter = searchParams.get('month') // e.g. "2026-03" — filters by close_date/creation
   const createdMonthFilter = searchParams.get('createdMonth') // e.g. "2026-03" — filters by created_at
@@ -196,12 +82,13 @@ export default function Pipeline() {
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
-  const [editProject, setEditProject] = useState(null)
   const disabledCols = useDisabledColumns('projects') // Map<column_name, { airtable_field_name }>
   const { fields: customFields, loaded: customFieldsLoaded, reload: reloadCustomFields } = useCustomFields('projects')
   const [customFieldModal, setCustomFieldModal] = useState(null) // { editing: field|null }
   const confirm = useConfirm()
   const { addToast } = useToast()
+
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   const customFieldsByColumn = useMemo(() => {
     const m = new Map()
@@ -280,24 +167,10 @@ export default function Pipeline() {
   const COLUMNS = useMemo(() => TABLE_COLUMN_META.projects.map(meta => ({
     ...meta,
     render:
+      // Pas de crayon d'édition sur la ligne : la fiche s'ouvre en side-peek
+      // (autosave) au clic sur la ligne, c'est là qu'on modifie un projet.
       meta.id === 'name' ? row => (
-        <div className="group flex items-start justify-between gap-2">
-          <div className="font-medium text-slate-900">{row.name}</div>
-          <button
-            type="button"
-            title="Modifier le projet"
-            data-testid={`edit-project-${row.id}`}
-            // Le mousedown doit être arrêté ici : sinon la cellule du mode
-            // tableur prend le focus, se ré-affiche, et le mouseup tombe sur un
-            // autre nœud — le navigateur émet alors le `click` sur la ligne au
-            // lieu du bouton, et la modale ne s'ouvrait jamais à la souris.
-            onMouseDown={e => e.stopPropagation()}
-            onClick={e => { e.stopPropagation(); setEditProject(row) }}
-            className="opacity-0 group-hover:opacity-100 transition-opacity p-1 -m-1 text-slate-400 hover:text-brand-600 flex-shrink-0"
-          >
-            <Pencil size={14} />
-          </button>
-        </div>
+        <div className="font-medium text-slate-900">{row.name}</div>
       ) :
       meta.id === 'company_name' ? row => row.company_id
         ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
@@ -308,7 +181,7 @@ export default function Pipeline() {
         return <span className={`font-semibold ${color}`}>{row.probability}%</span>
       } :
       meta.id === 'value_cad' ? row => (
-        <span className="font-medium text-slate-700">{fmtCad(row.value_cad)}</span>
+        <span className="font-medium text-slate-700">{fmtMoney(row.value_cad, 'CAD', { maximumFractionDigits: 0 })}</span>
       ) :
       meta.id === 'close_date' ? row => (
         <span className="text-slate-500">{fmtDate(row.close_date)}</span>
@@ -355,19 +228,9 @@ export default function Pipeline() {
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Projets</h1>
+            <PageTitle>Projets</PageTitle>
           </div>
           <div className="flex items-center gap-2">
-            {/* Prospection tirée du Registre des entreprises du Québec : les
-                serres et horticulteurs du registre encore absents de l'ERP. */}
-            <Link to="/tests-antoine/prospects-req" className="btn-secondary flex items-center gap-2" title="Entreprises horticoles du Registre des entreprises du Québec absentes de l'ERP" data-testid="pipeline-req-prospects-link">
-              <Landmark size={15} className="text-brand-500" />
-              <span>Prospects REQ</span>
-            </Link>
-            <Link to="/champs/projects?tab=projets" className="btn-secondary flex items-center gap-2" title="Gérer les champs (ordre, renommage, type, mapping Airtable)">
-              <Database size={15} className="text-brand-500" />
-              <span>Champs</span>
-            </Link>
             <button onClick={() => setShowModal(true)} className="btn-primary">
               <Plus size={16} /> Nouveau projet
             </button>
@@ -396,7 +259,15 @@ export default function Pipeline() {
           columns={COLUMNS_WITH_CUSTOM}
           data={displayedProjects}
           loading={loading}
-          onRowClick={row => navigate(`/projects/${row.id}`)}
+          peek={{
+            title: row => row.name || 'Projet',
+            subtitle: row => [row.company_name, row.type].filter(Boolean).join(' · '),
+            to: row => `/projects/${row.id}`,
+            width: 720,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: (row, { close }) => <ProjectDetail recordId={row.id} embedded onClose={close} />,
+          }}
           onCellEdit={(row, col, value) => updateProjectField(row.id, col.field, value)}
           searchFields={['name', 'company_name', 'type', 'vendeur_label', 'nom_du_vendeur', 'value_cad', 'monthly_cad']}
           forceAllView={!!monthFilter || !!createdMonthFilter}
@@ -414,13 +285,13 @@ export default function Pipeline() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau projet" size="lg">
-        <ProjectForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
-      </Modal>
-
-      <Modal isOpen={!!editProject} onClose={() => setEditProject(null)} title="Modifier le projet" size="lg">
-        {editProject && (
-          <ProjectForm initial={editProject} companies={companies} onClose={() => setEditProject(null)} />
-        )}
+        <RecordForm
+          table="projects"
+          fields={projectFormFields(companies)}
+          columns={2}
+          onSubmit={handleCreate}
+          onClose={() => setShowModal(false)}
+        />
       </Modal>
 
       <CustomFieldModal
@@ -428,6 +299,13 @@ export default function Pipeline() {
         onClose={() => setCustomFieldModal(null)}
         erpTable="projects"
         editing={customFieldModal?.editing || null}
+        mappingSlot={customFieldModal?.editing ? (
+          <FieldAirtableMapping
+            table="projects"
+            column={customFieldModal.editing.column_name}
+            cfKind={customFieldModal.editing.kind}
+          />
+        ) : null}
         onSaved={() => { reloadCustomFields(); load() }}
         onDeleted={() => { reloadCustomFields(); load() }}
       />

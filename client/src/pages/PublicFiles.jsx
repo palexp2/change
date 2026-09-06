@@ -2,7 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Upload, Folder, FolderOpen, Copy, ExternalLink, FileText, Image as ImageIcon, File, RefreshCw, X } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
-import { Modal } from '../components/Modal.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -95,7 +96,6 @@ function FolderList({ folders, current, onSelect }) {
       {folders.length > 10 && (
         <input
           type="text"
-          placeholder="Filtrer les dossiers…"
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="input-field text-xs w-full"
@@ -242,8 +242,8 @@ function EditFileModal({ file, onClose, onChange }) {
   }
 
   return (
-    <Modal isOpen={true} onClose={onClose} title="Détails du fichier" size="lg">
-      <div className="space-y-4">
+    <RecordPeekDrawer open onClose={onClose} title={originalName || 'Détails du fichier'} width={680} peekKey="public_files">
+      <div className="space-y-4 px-5 py-4">
         <div>
           <label className="label">Nom</label>
           <input
@@ -257,7 +257,6 @@ function EditFileModal({ file, onClose, onChange }) {
           <label className="label">Dossier</label>
           <input
             className="input"
-            placeholder="Laisser vide pour la racine"
             value={folder}
             onChange={e => setFolder(e.target.value)}
             data-testid="edit-folder"
@@ -277,7 +276,6 @@ function EditFileModal({ file, onClose, onChange }) {
           <label className="label">Étiquettes</label>
           <input
             className="input"
-            placeholder="séparées par des virgules"
             value={tagsText}
             onChange={e => setTagsText(e.target.value)}
             data-testid="edit-tags"
@@ -332,7 +330,7 @@ function EditFileModal({ file, onClose, onChange }) {
           </span>
         </div>
       </div>
-    </Modal>
+    </RecordPeekDrawer>
   )
 }
 
@@ -456,7 +454,7 @@ export default function PublicFiles() {
           <div className="px-6 pt-6 pb-4 border-b border-slate-200 bg-white">
             <div className="flex items-center justify-between mb-4">
               <div>
-                <h1 className="text-2xl font-bold text-slate-900">Fichiers publics</h1>
+                <PageTitle>Fichiers publics</PageTitle>
                 <p className="text-sm text-slate-500 mt-0.5">
                   {currentFolder !== null
                     ? <>Dossier : <strong>{currentFolder || ROOT_LABEL}</strong> — {files.length} fichier{files.length !== 1 ? 's' : ''}</>

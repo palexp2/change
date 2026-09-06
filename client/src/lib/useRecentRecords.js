@@ -69,9 +69,13 @@ export function labelFor(table, record) {
     case 'factures':
       return record.document_number ? `${record.document_number}` : firstOf(record, ['invoice_id'])
     case 'returns':
-      return record.return_number ? `#${record.return_number}` : firstOf(record, ['autonumber'])
+      return record.n_de_retour ? `#${record.n_de_retour}` : firstOf(record, ['autonumber'])
     case 'shipments':
-      return firstOf(record, ['tracking_number', 'autonumber', 'shipping_id_novoxpress'])
+      // Le « # d'envoi » (ENV-1687) nomme l'envoi partout dans l'app ; le no de
+      // suivi n'est qu'un repli pour un envoi pas encore numéroté.
+      // `autonumber` / `shipping_id_novoxpress` : colonnes Airtable droppées
+      // (script drop-envois-airtable-only-cols).
+      return firstOf(record, ['d_envoi', 'tracking_number'])
     case 'products':
       return firstOf(record, ['name_fr', 'name_en', 'sku'])
     case 'serial_numbers':

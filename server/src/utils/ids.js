@@ -1,4 +1,4 @@
-import { randomUUID } from 'crypto'
+import { newRecordId } from './recordId.js'
 
 const PREFIXES = {
   table:     'tbl',
@@ -18,8 +18,11 @@ const PREFIXES = {
   connector: 'con',
 }
 
+// Ids typés du système d'automatisations (`aut_…`, `ver_…`, `alg_…`) : même
+// queue compacte que les ids d'enregistrement (cf. recordId.js), le préfixe et
+// son souligné en plus.
 export function newId(type) {
   const prefix = PREFIXES[type]
   if (!prefix) throw new Error(`Unknown ID type: ${type}`)
-  return `${prefix}_${randomUUID().replace(/-/g, '')}`
+  return newRecordId(`${prefix}_`)
 }

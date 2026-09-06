@@ -5,6 +5,7 @@ import api from '../lib/api.js'
 import { TABLE_LABELS } from '../lib/tableDefs.js'
 import { Modal } from './Modal.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
+import Spinner from './Spinner.jsx'
 
 export function TableConfigModal({ table, bulkDelete = false }) {
   const { user } = useAuth()
@@ -111,7 +112,7 @@ export function TableConfigModal({ table, bulkDelete = false }) {
       >
         <div className="space-y-3">
           {loading ? (
-            <div className="text-slate-400 text-sm py-4">Chargement...</div>
+            <div className="text-slate-400 text-sm py-4"><Spinner size="xs" label="Chargement…" /></div>
           ) : (
             <>
               <div className="space-y-1">
@@ -203,7 +204,6 @@ export function TableConfigModal({ table, bulkDelete = false }) {
                         if (e.key === 'Escape') { setAddingView(false); setNewViewName('') }
                       }}
                       className="input text-sm flex-1"
-                      placeholder="Nom de la vue..."
                     />
                     <button onClick={handleAddView} className="btn-primary btn-sm">Créer</button>
                     <button onClick={() => { setAddingView(false); setNewViewName('') }} className="btn-secondary btn-sm">

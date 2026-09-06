@@ -20,6 +20,7 @@ const PORTAL_ID = 'qb-select-portal'
 //  - getOptionLabel(opt)   : libellé affiché et recherché. Défaut: opt.label.
 //  - getOptionKey(opt)     : clé React. Défaut: getOptionValue.
 //  - renderOption(opt)     : JSX custom dans la liste (sinon getOptionLabel).
+//  - renderValue(opt)      : JSX custom sur le bouton fermé (sinon getOptionLabel).
 //  - filterOption(opt, q)  : filtre custom (q déjà en minuscules).
 //  - emptyOption           : libellé d'une entrée « vide » (value '') ajoutée en tête.
 //  - className             : classes du bouton déclencheur. Défaut: ancien look QB.
@@ -29,12 +30,12 @@ export function SearchableSelect({
   value,
   options = [],
   onChange,
-  placeholder = 'Sélectionner…',
-  searchPlaceholder = 'Rechercher…',
+  placeholder = '—',
   getOptionValue = o => o.value,
   getOptionLabel = o => o.label,
   getOptionKey,
   renderOption,
+  renderValue,
   filterOption,
   emptyOption,
   className = 'input-field text-xs w-full',
@@ -137,9 +138,16 @@ export function SearchableSelect({
         title={selected ? titleOf(selected) : undefined}
         className={`${className} flex items-center justify-between gap-1 text-left ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
-        <span className={`truncate ${selected ? 'text-slate-700' : 'text-slate-400'}`}>
-          {selected ? getOptionLabel(selected) : placeholder}
-        </span>
+        {/* `renderValue` produit du JSX (icône + libellé) : il porte lui-même sa
+            troncature, un `truncate` inline autour d'une rangée flex ne coupe
+            rien. Le chemin texte, lui, garde exactement l'ancien rendu. */}
+        {selected && renderValue ? (
+          <span className="min-w-0 flex-1 flex items-center text-slate-700">{renderValue(selected)}</span>
+        ) : (
+          <span className={`min-w-0 truncate ${selected ? 'text-slate-700' : 'text-slate-400'}`}>
+            {selected ? getOptionLabel(selected) : placeholder}
+          </span>
+        )}
         <ChevronDown size={12} className="flex-shrink-0 text-slate-400" />
       </button>
       {open && createPortal(
@@ -165,7 +173,6 @@ export function SearchableSelect({
                 onChange={e => { setSearch(e.target.value); setActiveIdx(0) }}
                 onKeyDown={onKeyDown}
                 className={`w-full pl-7 pr-2 py-1.5 ${txt} border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400`}
-                placeholder={searchPlaceholder}
               />
             </div>
           </div>

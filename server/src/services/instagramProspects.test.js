@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   normalizeUsername, dedupKeyFor, eventKeyFor, detectKeyword, buildWeeklyMessage, localHour,
-  weekRangeLabel, coveredWeek,
+  weekRangeLabel, coveredWeek, splitByWeek,
 } from './instagramProspects.js'
 
 // Seules les fonctions PURES sont testées ici. La logique de dédup en base
@@ -101,6 +101,29 @@ test('buildWeeklyMessage : pas de lien si ni ERP ni Airtable ne sont configurés
   const msg = buildWeeklyMessage([], { dayIso: '2026-08-24', url: null })
   assert.equal(msg.includes('airtable.com'), false)
   assert.equal(msg.includes('Ouvrir'), false)
+})
+
+test('splitByWeek : sépare la semaine couverte de l’arriéré', () => {
+  const prospects = [
+    { ig_username: 'a', week_key: '2026-W34' },
+    { ig_username: 'b', week_key: '2026-W34' },
+    { ig_username: 'c', week_key: '2026-W33' },
+  ]
+  const { ofWeek, backlog } = splitByWeek(prospects, '2026-W34')
+  assert.deepEqual(ofWeek.map(p => p.ig_username), ['a', 'b'])
+  assert.deepEqual(backlog.map(p => p.ig_username), ['c'])
+})
+
+test('buildWeeklyMessage : mentionne l’arriéré sans le compter dans le portrait de la semaine', () => {
+  const prospects = [{ ig_username: 'a', has_keyword: 0, dm_sent: 1, replied: 0 }]
+  const msg = buildWeeklyMessage(prospects, { dayIso: '2026-08-24', backlogCount: 3 })
+  assert.match(msg, /^:camera_with_flash:.*\n1 prospect\(s\)/)
+  assert.match(msg, /\(\+3 des semaines précédentes, déjà inclus dans la liste\)/)
+})
+
+test('buildWeeklyMessage : aucune mention d’arriéré quand il n’y en a pas', () => {
+  const msg = buildWeeklyMessage([], { dayIso: '2026-08-24' })
+  assert.equal(msg.includes('semaines précédentes'), false)
 })
 
 test('localHour : minuit et midi à Montréal, quelle que soit la saison', () => {

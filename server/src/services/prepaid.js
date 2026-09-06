@@ -9,8 +9,8 @@
 // fichiers FPA_Continuité annuels) : calcul de l'amortissement mensuel par item
 // et préparation de l'écriture Dr dépense / Cr 13000 du mois, publiée dans QB
 // seulement après approbation dans l'interface.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
@@ -129,8 +129,8 @@ export function detectTwilioBankRecharges() {
     const amount = Math.round(Math.abs(txn.amount) * 100) / 100
     const ledgerDescription = `Recharge auto détectée — banque ${TWILIO_BANK_ACCOUNT_NAME} (${txn.label || 'Twilio'})`
     try {
-      const ledgerId = randomUUID()
-      const achatId = randomUUID()
+      const ledgerId = newRecordId()
+      const achatId = newRecordId()
       // La contrainte UNIQUE sur bank_transaction_id fait échouer tout l'INSERT
       // (donc toute la transaction db) si une course concurrente l'a déjà traitée.
       db.transaction(() => {
@@ -278,7 +278,7 @@ export async function syncPrepaidAccountFromQB(accountId, trigger = 'manual') {
     `)
     let imported = 0
     for (const t of await fetchVendorQbTxns(account, vendorId, assetAccountId, since)) {
-      const r = insert.run(randomUUID(), accountId, t.entry_date, t.type,
+      const r = insert.run(newRecordId(), accountId, t.entry_date, t.type,
         t.amount, t.description, t.qb_txn_type, t.qb_txn_id)
       imported += r.changes
     }
@@ -346,7 +346,7 @@ export async function auditPrepaidAccountAgainstQB(accountId, { apply = false, t
           VALUES (?,?,?,?,?,?,'qb',?,?)
         `)
         for (const t of diff.missing) {
-          fixed += insert.run(randomUUID(), accountId, t.entry_date, t.type,
+          fixed += insert.run(newRecordId(), accountId, t.entry_date, t.type,
             t.amount, t.description, t.qb_txn_type, t.qb_txn_id).changes
         }
         // Réalignement : montant/date depuis QB, type conservé (reclassement
@@ -585,7 +585,7 @@ export async function publishFpaMonth(month, { userId = null } = {}) {
         db.prepare(`UPDATE prepaid_amortizations SET pushed_at = ?, updated_at = ? WHERE id = ?`).run(now, now, existing.id)
         claimed.push(existing.id)
       } else {
-        const id = randomUUID()
+        const id = newRecordId()
         db.prepare(`
           INSERT INTO prepaid_amortizations (id, expense_id, month, amount, source, pushed_at)
           VALUES (?,?,?,?,'auto',?)

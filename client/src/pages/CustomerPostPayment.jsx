@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { useSearchParams, useParams } from 'react-router-dom'
 import Spinner from '../components/Spinner.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
-import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+import { fmtMoney } from '../utils/formatters.js'
+import ErrorBanner from '../components/ErrorBanner.jsx'
 
 // Public page (no auth). Deux entrées :
 //   - /customer/post-payment?session_id=cs_xxx  → flow Stripe Checkout (legacy)
@@ -163,7 +164,7 @@ function Header({ data, isDiscoveryMode }) {
           </div>
           <div>
             <div className="text-xs text-slate-400 uppercase tracking-wide">Total payé</div>
-            <div className="font-medium">{fmtMoney(inv.total, inv.currency)}</div>
+            <div className="font-medium">{fmtMoney(inv.total, inv.currency, { cents: true, fallback: '' })}</div>
           </div>
           {inv.pdf_url && (
             <div className="col-span-2">
@@ -176,8 +177,6 @@ function Header({ data, isDiscoveryMode }) {
   )
 }
 
-// Stripe stocke les montants en cents — on convertit en dollars pour l'affichage.
-const fmtMoney = (cents, currency) => fmtMoneyBase(cents == null ? null : cents / 100, currency, { fallback: '' })
 
 // ─── Wizard ───────────────────────────────────────────────────────────────
 
@@ -223,7 +222,7 @@ function Wizard({ resp, queueSave, permission, hasMobileController, lockedCount,
 
       {resp.is_new_site && <Step_ValveBlocksPayment resp={resp} baseUrl={baseUrl} />}
 
-      {error && <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">{error}</div>}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
 
       {resp.is_new_site && (
         <div className="flex justify-end items-center gap-3">
@@ -396,7 +395,7 @@ function AddressForm({ value, onChange }) {
   return (
     <div className="grid grid-cols-2 gap-3">
       <Field label="Adresse" colSpan={2}>
-        <input className={inputCls} value={value.line1 || ''} onChange={e => onChange({ line1: e.target.value })} placeholder="123 rang Saint-Joseph" />
+        <input className={inputCls} value={value.line1 || ''} onChange={e => onChange({ line1: e.target.value })} />
       </Field>
       <Field label="Ville">
         <input className={inputCls} value={value.city || ''} onChange={e => onChange({ city: e.target.value })} />
@@ -406,7 +405,6 @@ function AddressForm({ value, onChange }) {
           value={value.province || ''}
           options={PROVINCES}
           onChange={v => onChange({ province: v })}
-          placeholder="—"
           emptyOption="—"
           searchPlaceholder="Rechercher une province…"
           className={inputCls}
@@ -415,7 +413,7 @@ function AddressForm({ value, onChange }) {
         />
       </Field>
       <Field label="Code postal">
-        <input className={inputCls} value={value.postal_code || ''} onChange={e => onChange({ postal_code: e.target.value })} placeholder="A1A 1A1" />
+        <input className={inputCls} value={value.postal_code || ''} onChange={e => onChange({ postal_code: e.target.value })} />
       </Field>
       <Field label="Pays">
         <input className={inputCls} value={value.country || 'Canada'} onChange={e => onChange({ country: e.target.value })} />
@@ -427,7 +425,7 @@ function AddressForm({ value, onChange }) {
 function Field({ label, colSpan = 1, children }) {
   return (
     <div className={colSpan === 2 ? 'col-span-2' : ''}>
-      <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">{label}</label>
+      <label className="label">{label}</label>
       {children}
     </div>
   )
@@ -612,7 +610,7 @@ function DiameterPicker({ label, defaultOption, value, onChange }) {
       </Field>
       {isOther && (
         <Field label="Diamètre exact">
-          <input className={inputCls} value={otherText} onChange={e => onChange(`Autre: ${e.target.value}`)} placeholder="Ex. 1 1/2&quot;" />
+          <input className={inputCls} value={otherText} onChange={e => onChange(`Autre: ${e.target.value}`)} />
         </Field>
       )}
     </div>
@@ -736,7 +734,7 @@ function FurnaceForm({ idx, f, onChange }) {
               <option value="Autre">Autre</option>
             </select>
           ) : (
-            <input className={inputCls} value={f.model || ''} onChange={e => onChange({ model: e.target.value })} placeholder="Marque + modèle" />
+            <input className={inputCls} value={f.model || ''} onChange={e => onChange({ model: e.target.value })} />
           )}
         </Field>
         {f.model === 'Autre' && (
@@ -746,7 +744,7 @@ function FurnaceForm({ idx, f, onChange }) {
         )}
       </div>
       <Field label="Filage de contrôle requis ? (pieds)" >
-        <input type="number" min={0} className={inputCls} value={f.control_wire_feet || ''} onChange={e => onChange({ control_wire_feet: e.target.value })} placeholder="Ex. 50" />
+        <input type="number" min={0} className={inputCls} value={f.control_wire_feet || ''} onChange={e => onChange({ control_wire_feet: e.target.value })} />
         <div className="text-xs text-slate-500 mt-1">Pensez à inclure les longueurs verticales (monter, traverser une porte, redescendre) — pas seulement la distance horizontale.</div>
       </Field>
       <Field label="Thermostat de secours requis ? (gratuit)">
@@ -799,7 +797,7 @@ function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, perm
           <h3 className="font-semibold text-blue-900">Extras suggérés selon vos réponses</h3>
           <ul className="text-sm text-blue-900 mt-2 list-disc pl-5 space-y-0.5">
             {extras.items.map((it, i) => (
-              <li key={i}>{it.qty} × {it.description} — {fmtMoney(Math.round(it.unit_price * 100), 'CAD')} l'unité</li>
+              <li key={i}>{it.qty} × {it.description} — {fmtMoney(it.unit_price, 'CAD', { fallback: '' })} l'unité</li>
             ))}
           </ul>
           <p className="text-sm text-blue-800 mt-2">Voulez-vous les acheter maintenant ? Vous serez redirigé vers une page de paiement Stripe.</p>

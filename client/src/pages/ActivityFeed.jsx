@@ -4,6 +4,7 @@ import { Activity } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDateTime } from '../lib/formatDate.js'
@@ -92,9 +93,7 @@ export function ActivityContent() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <Activity size={22} className="text-brand-600" /> Feed des opérations
-          </h1>
+          <PageTitle icon={Activity}>Feed des opérations</PageTitle>
           <p className="text-xs text-slate-400 mt-0.5">Qui a fait quoi, et quand</p>
         </div>
       </div>

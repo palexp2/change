@@ -3,10 +3,13 @@ import { Plus, ArrowDownCircle, ArrowUpCircle, AlertCircle, RefreshCw, ExternalL
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { invalidate } from '../lib/prefetch.js'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { Modal } from './Modal.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
+import Spinner from './Spinner.jsx'
 
 export const METHOD_LABELS = {
   stripe: 'Stripe',
@@ -66,16 +69,36 @@ export default function FacturePaymentsSection({
 
   function reload() {
     setLoading(true)
+    // Les GET sont cachés 30 s : sans invalidation, un rechargement déclenché
+    // par un événement temps réel (paiement saisi ailleurs, webhook Stripe)
+    // renverrait la liste d'avant la mutation.
+    invalidate(`/payments/facture/${factureId}`)
     return api.payments.listForFacture(factureId)
       .then(rows => setPayments(rows || []))
       .catch(() => setPayments([]))
       .finally(() => setLoading(false))
   }
 
+  // Toute mutation de paiement recalcule balance_due / status côté serveur : le
+  // « Solde dû » affiché en tête de fiche doit suivre immédiatement, sans que
+  // l'utilisateur ait à rafraîchir la page. On recharge donc la facture parente
+  // en même temps que la liste des paiements.
+  function refreshAll() {
+    return Promise.all([reload(), onFactureChanged?.()])
+  }
+
   useEffect(() => {
     if (!factureId) return
     reload()
   }, [factureId]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Temps réel : paiement saisi depuis un autre onglet/poste, remboursement
+  // Stripe reçu par webhook, écriture QB posée… La facture elle-même est
+  // rafraîchie par la fiche parente (canal `facture:<id>`), ici on ne recharge
+  // que la liste des paiements.
+  useRealtimeChannel(factureId ? `facture:${factureId}` : null, (msg) => {
+    if (msg.type === 'facture:payments_changed') reload()
+  })
 
   function openForm(direction, opts = {}) {
     setMethod(opts.method || 'cheque')
@@ -148,11 +171,15 @@ export default function FacturePaymentsSection({
         currency,
         notes: notes.trim() || undefined,
         skip_qb: skipQb || undefined,
+        // POST /api/payments refuse un skip sans motif énuméré (400). La case à
+        // cocher signifie littéralement « l'écriture a déjà été saisie à la
+        // main dans QuickBooks » → un seul motif possible ici.
+        qb_skip_reason: skipQb ? 'saisi_manuellement_qb' : undefined,
       })
       setConfirmOpen(false)
       setFormOpen(null)
       if (res.qb_error) setErr(`Saisi mais écriture QB échouée : ${res.qb_error}`)
-      reload()
+      refreshAll()
     } catch (e) {
       setConfirmOpen(false)
       setErr(e.message || 'Erreur')
@@ -240,11 +267,11 @@ export default function FacturePaymentsSection({
         <div className="px-5 py-4 border-b border-slate-100 bg-slate-50/60">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Mode</label>
+              <label className="label">Mode</label>
               <select
                 value={method}
                 onChange={e => setMethod(e.target.value)}
-                className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+                className="input input-sm"
               >
                 {MANUAL_METHODS.map(m => (
                   <option key={m} value={m}>{METHOD_LABELS[m]}</option>
@@ -252,33 +279,32 @@ export default function FacturePaymentsSection({
               </select>
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Date</label>
+              <label className="label">Date</label>
               <input
                 type="date"
                 value={receivedAt}
                 onChange={e => setReceivedAt(e.target.value)}
-                className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+                className="input input-sm"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Montant</label>
+              <label className="label">Montant</label>
               <input
                 type="number"
                 step="0.01"
                 min="0"
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
-                placeholder="0.00"
-                className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+                className="input input-sm"
                 data-testid="payment-amount"
               />
             </div>
             <div>
-              <label className="block text-xs font-medium text-slate-500 mb-1">Devise</label>
+              <label className="label">Devise</label>
               <select
                 value={currency}
                 onChange={e => setCurrency(e.target.value)}
-                className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+                className="input input-sm"
               >
                 <option value="CAD">CAD</option>
                 <option value="USD">USD</option>
@@ -286,13 +312,12 @@ export default function FacturePaymentsSection({
             </div>
           </div>
           <div className="mt-3">
-            <label className="block text-xs font-medium text-slate-500 mb-1">Notes (optionnel)</label>
+            <label className="label">Notes (optionnel)</label>
             <input
               type="text"
               value={notes}
               onChange={e => setNotes(e.target.value)}
-              placeholder="Numéro de chèque, référence, etc."
-              className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+              className="input input-sm"
             />
           </div>
           {/* Skip QB : utile quand l'écriture comptable a déjà été posée
@@ -341,7 +366,7 @@ export default function FacturePaymentsSection({
 
       <div className="px-5 py-3">
         {loading ? (
-          <div className="text-xs text-slate-400">Chargement…</div>
+          <div className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
         ) : payments.length === 0 ? (
           <div className="text-xs text-slate-400 italic">Aucun paiement enregistré pour cette facture.</div>
         ) : (
@@ -565,7 +590,6 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
             value={qbId}
             onChange={e => setQbId(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
-            placeholder="ID"
             className="w-20 text-xs border border-slate-300 rounded px-1 py-0.5"
             autoFocus
             disabled={saving}
@@ -598,7 +622,6 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
             type="text"
             value={creditAcctName}
             onChange={e => setCreditAcctName(e.target.value)}
-            placeholder="ex. 23900 Revenus perçus d'avance"
             className="text-xs border border-slate-300 rounded px-1 py-0.5 w-64"
             disabled={saving}
             data-testid={`payment-qb-credit-name-${payment.id}`}
@@ -734,7 +757,6 @@ function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
           value={name}
           onChange={e => setName(e.target.value)}
           onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
-          placeholder="ex. 23900 Revenus perçus d'avance"
           className="text-[11px] border border-slate-300 rounded px-1 py-0.5 w-56"
           autoFocus
           disabled={saving}

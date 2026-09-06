@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Upload, RefreshCw, AlertCircle, CheckCircle, Camera, BookOpen, Trash2, Archive, ArchiveRestore, Receipt, Mail, MailOpen, FileX } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -233,7 +234,19 @@ function WebcamCaptureModal({ onClose, onCapture, uploading }) {
 }
 
 const RENDERS = {
-  company: row => <span className="font-medium text-slate-900">{row.company || row.original_name || '—'}</span>,
+  // Point bleu à la Gmail devant le nom : visible tant que le document n'a pas
+  // été ouvert (read_at NULL). L'espace est réservé même une fois lu pour que
+  // les noms restent alignés d'une ligne à l'autre.
+  company: row => (
+    <span className="inline-flex items-center gap-2 min-w-0">
+      <span
+        className={`h-2 w-2 rounded-full shrink-0 ${row.read_at ? 'bg-transparent' : 'bg-blue-500'}`}
+        title={row.read_at ? undefined : 'Non consulté'}
+        data-testid={row.read_at ? undefined : 'receipt-unread-dot'}
+      />
+      <span className="font-medium text-slate-900 truncate">{row.company || row.original_name || '—'}</span>
+    </span>
+  ),
   receipt_date: row => <span className="text-slate-500">{row.receipt_date ? fmtDate(row.receipt_date) : '—'}</span>,
   receipt_number: row => row.receipt_number
     ? <span className="font-mono text-xs text-slate-600">#{row.receipt_number}</span>
@@ -274,6 +287,9 @@ const RENDERS = {
   archived_at: row => row.archived_at
     ? <span className="text-slate-500">{fmtDate(row.archived_at)}</span>
     : <span className="text-slate-300">—</span>,
+  read_at: row => row.read_at
+    ? <span className="text-slate-500">{fmtDate(row.read_at)}</span>
+    : <span className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700"><span className="h-2 w-2 rounded-full bg-blue-500" /> Non lu</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.sale_receipts.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
@@ -303,6 +319,12 @@ export default function SaleReceipts() {
   useEffect(() => { load() }, [load])
 
   useEntityListRealtime('sale_receipt', setReceipts)
+
+  // Compteur de non-lus (documents actifs seulement — les archivés ne comptent pas).
+  const unreadCount = useMemo(
+    () => receipts.filter(r => !r.read_at && !r.archived_at).length,
+    [receipts]
+  )
 
   async function handleUpload(formData) {
     setUploading(true)
@@ -471,7 +493,18 @@ export default function SaleReceipts() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Extraction de données</h1>
+            <span className="inline-flex items-center gap-2">
+              <PageTitle>Extraction de données</PageTitle>
+              {tab === 'recus' && unreadCount > 0 && (
+                <span
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full"
+                  data-testid="receipts-unread-count"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+                  {unreadCount} non lu{unreadCount > 1 ? 's' : ''}
+                </span>
+              )}
+            </span>
             <p className="text-xs text-slate-400 mt-0.5">Extraction automatique par IA</p>
           </div>
           <div className="flex items-center bg-slate-100 rounded-lg p-0.5">
@@ -502,6 +535,10 @@ export default function SaleReceipts() {
           </button>
         </div>
 
+        {/* Lu / non lu à la Gmail : les non-lus ressortent (gras, texte plein,
+            point bleu dans la cellule Fournisseur), les lus passent en retrait
+            (fond légèrement teinté, titre atténué) ; transition-colors adoucit
+            le passage au clic — voir rowClassName. */}
         <DataTable
           table="sale_receipts"
           manageViews
@@ -513,7 +550,9 @@ export default function SaleReceipts() {
           bulkActions={BULK_ACTIONS}
           bulkDeleteAlways
           onFilteredDataChange={rows => { displayedIdsRef.current = rows.map(r => String(r.id)) }}
-          rowClassName={row => row.read_at ? '' : 'font-semibold [&_.text-slate-500]:text-slate-700 [&_.text-slate-600]:text-slate-800'}
+          rowClassName={row => row.read_at
+            ? 'transition-colors bg-slate-50/70 hover:bg-slate-100 [&_.text-slate-900]:text-slate-600 [&_.text-slate-700]:text-slate-500'
+            : 'transition-colors bg-white font-semibold [&_.text-slate-500]:text-slate-700 [&_.text-slate-600]:text-slate-800'}
           onRowClick={row => {
             // Ouvrir un reçu le marque lu (comme un courriel Gmail).
             if (!row.read_at) {

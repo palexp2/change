@@ -23,12 +23,16 @@ export const STATUS_STYLES = {
   paused: 'bg-amber-50 text-amber-700',
   done: 'bg-emerald-50 text-emerald-700',
   blocked: 'bg-rose-50 text-rose-700',
+  // Arrêt volontaire (bouton « Arrêter ») : même famille que « Bloqué » côté
+  // serveur (work_prompts n'a que 'blocked' comme statut d'échec), mais ce n'est
+  // pas un crash — la pastille doit le dire clairement.
+  stopped: 'bg-slate-100 text-slate-600',
   cancelled: 'bg-slate-100 text-slate-500',
 }
 export const STATUS_LABELS = {
   asking: 'À répondre',
   running: 'En cours', waiting: 'En file', queued: 'En file', paused: 'De côté',
-  done: 'Terminé', blocked: 'Bloqué', cancelled: 'Annulé',
+  done: 'Terminé', blocked: 'Bloqué', stopped: 'Arrêté', cancelled: 'Annulé',
 }
 
 /** L'agent attend une réponse : rien n'avancera sans un clic de l'utilisateur. */
@@ -37,15 +41,20 @@ export function isAsking(p) {
 }
 
 /**
- * Un item remis à l'agent n'est pas forcément en train de tourner : une seule
- * implémentation avance à la fois. `run_state` (serveur) tranche entre les deux —
- * sans lui, deux réponses envoyées coup sur coup affichaient deux « En cours ».
+ * Un item remis à l'agent n'est pas forcément en train de tourner : chaque file
+ * n'avance qu'une implémentation à la fois (elles sont quatre). `run_state`
+ * (serveur) tranche entre les deux — sans lui, deux réponses envoyées coup sur
+ * coup affichaient deux « En cours ».
  */
 export function pillStateOf(p) {
   if (p.status === 'running') return p.run_state === 'executing' ? 'running' : 'waiting'
   // « Terminé » serait faux : la tâche a rendu la main faute d'une décision qui
   // n'appartenait qu'à l'utilisateur, et reprendra dès qu'il aura répondu.
   if (isAsking(p)) return 'asking'
+  // Arrêté à la main (bouton « Arrêter ») : le statut serveur reste 'blocked'
+  // (aucun troisième statut d'échec en DB), mais `agent_status` — recopié depuis
+  // la tâche agent, en JSON, pas de contrainte — porte le vrai motif.
+  if (p.status === 'blocked' && p.agent_status === 'stopped') return 'stopped'
   return p.status
 }
 
@@ -70,16 +79,40 @@ export function StatusPill({ p }) {
   const rank = p.wait_rank
   const suffix = (state === 'waiting' || state === 'queued') && rank ? ` · ${ordinal(rank)}` : ''
   const title = state === 'waiting'
-    ? "Remis à l'agent, mais son tour n'est pas venu : une seule implémentation tourne à la fois."
+    ? "Remis à l'agent, mais son tour n'est pas venu : sa file avance une tâche à la fois (elles sont quatre en parallèle)."
     : state === 'running' ? "Claude travaille sur cette tâche en ce moment."
       : state === 'asking' ? "Claude attend ta réponse : le travail reprend dès que tu choisis."
-        : state === 'queued' ? "Dans la file : partira quand le poste sera libre." : undefined
+        : state === 'queued' ? "Dans la file : partira quand le poste de sa file sera libre." : undefined
   return (
     <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${STATUS_STYLES[state] || 'bg-slate-100 text-slate-600'}`} title={title}>
       {state === 'running' && <Loader2 size={11} className="inline animate-spin mr-1" />}
       {state === 'asking' && <HelpCircle size={11} className="inline mr-1" />}
       {STATUS_LABELS[state] || state}{suffix}
     </span>
+  )
+}
+
+/** Initiales d'un nom complet (« Guillaume Tremblay » → « GT »), pour la puce discrète. */
+function initialsOf(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean)
+  if (!parts.length) return '?'
+  return (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase()
+}
+
+/**
+ * Qui a créé cet item — subtil (juste des initiales), mais visible sans ouvrir la
+ * carte : sert surtout à ne pas arrêter/supprimer par erreur le chantier d'un
+ * collègue en le prenant pour le sien. `name` vient de `created_by_name`, joint
+ * côté serveur (promptQueue.js) depuis `work_prompts.created_by` → `users.name`.
+ */
+export function CreatorChip({ name }) {
+  if (!name) return null
+  return (
+    <span
+      data-testid="travaux-creator"
+      className="shrink-0 inline-flex items-center justify-center w-4 h-4 rounded-full bg-slate-200 text-slate-600 text-[9px] font-semibold leading-none"
+      title={`Créé par ${name}`}
+    >{initialsOf(name)}</span>
   )
 }
 
@@ -147,7 +180,6 @@ export function ReplyBox({ onSend, autoFocus, rows = 2 }) {
         data-testid="travaux-reply-input"
         className={`${inputCls} w-full`}
         rows={rows}
-        placeholder="Répondre à Claude — ta réponse relance la tâche…"
         value={text}
         onChange={e => setText(e.target.value)}
         // Cmd/Ctrl+Entrée envoie (au début de la file) : Entrée seule sert aux retours à la ligne.
@@ -209,8 +241,13 @@ export function PlacementToggle({ value, onChange, testId = 'travaux-placement',
   )
 }
 
-/** Voie d'exécution d'un item — même règle que le serveur (`laneOf`). */
-function laneOf(p) { return p.lane || ((p.mode === 'question' && !p.same_context) ? 'question' : 'exec') }
+/**
+ * Voie d'exécution d'un item — même règle que le serveur (`laneOf`) : la voie
+ * lecture seule des questions, ou l'une des quatre files d'implémentation.
+ */
+function laneOf(p) {
+  return p.lane || ((p.mode === 'question' && !p.same_context) ? 'question' : `exec:${p.exec_lane ?? 0}`)
+}
 
 /**
  * « Passer en premier », joué localement — exactement ce que le serveur va faire :
@@ -239,7 +276,9 @@ function liftToFront(prompts, id) {
 
 const EMPTY_QUEUE = {
   prompts: [], agent_enabled: true, runner_busy: false, running_questions: 0, max_parallel_questions: 2,
+  running_implementations: 0, exec_lanes: 4,
   queue_paused: false, queue_paused_at: null, queue_paused_reason: null,
+  queue_paused_by_quota: false,
 }
 
 /**
@@ -254,6 +293,16 @@ const EMPTY_QUEUE = {
  *   on note qu'un rafraîchissement est dû (`flushStale`) et on le passe quand le
  *   champ perd le focus.
  */
+// Rafraîchir la liste pendant que l'utilisateur écrit re-rend les cartes sous
+// ses doigts : on note que c'est dû (`stale`) et on repasse au blur.
+function isTypingInQueue() {
+  const el = document.activeElement
+  return !!(el && /^(INPUT|TEXTAREA)$/.test(el.tagName) && el.closest('[data-prompt-id], [data-travaux-composer]'))
+}
+
+// Fenêtre de fusion des rafales d'événements — voir softLoad().
+const COALESCE_MS = 2000
+
 export function useTravauxPrompts({ activeOnly = false, pollMs = 20_000, enabled = true, onError } = {}) {
   const [data, setData] = useState(EMPTY_QUEUE)
   const [loading, setLoading] = useState(true)
@@ -317,19 +366,47 @@ export function useTravauxPrompts({ activeOnly = false, pollMs = 20_000, enabled
   const unliftPrompt = useCallback(id => { lifted.current.delete(id) }, [])
 
   const stale = useRef(false)
-  const softLoad = useCallback(() => {
-    const el = document.activeElement
-    const typing = !!(el && /^(INPUT|TEXTAREA)$/.test(el.tagName) && el.closest('[data-prompt-id], [data-travaux-composer]'))
-    if (typing) { stale.current = true; return }
-    load()
-  }, [load])
-  const flushStale = useCallback(() => {
-    if (!stale.current) return
-    stale.current = false
+
+  // Rythme minimum entre deux chargements de la liste. Le sondage lent (20 s)
+  // n'était pas le problème : ce sont les événements. Pendant une exécution de
+  // l'agent, `agent:task:updated` arrive plusieurs fois par seconde et chacun
+  // déclenchait un rechargement complet de la file — mesuré le 2026-09-04 dans
+  // le log nginx, `/api/travaux/prompts?active=1` était appelé une fois par
+  // SECONDE, 6,8 ko par réponse, pendant toute la durée de l'exécution. Sur un
+  // serveur mono-thread, c'est autant de blocages qui retardent tout le reste.
+  //
+  // Les rafales sont donc fusionnées : le premier événement charge sans délai,
+  // ceux qui suivent dans la fenêtre n'en programment qu'UN seul de plus, en fin
+  // de fenêtre. La file reste réactive sans jamais dépasser deux appels par
+  // fenêtre de COALESCE_MS.
+  const lastLoadAt = useRef(0)
+  const trailing = useRef(null)
+
+  const doLoad = useCallback(() => {
+    lastLoadAt.current = Date.now()
     load()
   }, [load])
 
-  useEffect(() => { if (enabled) load() }, [enabled, load])
+  const softLoad = useCallback(() => {
+    if (isTypingInQueue()) { stale.current = true; return }
+    const since = Date.now() - lastLoadAt.current
+    if (since >= COALESCE_MS) { doLoad(); return }
+    if (trailing.current) return // un rattrapage est déjà programmé
+    trailing.current = setTimeout(() => {
+      trailing.current = null
+      if (isTypingInQueue()) { stale.current = true; return }
+      doLoad()
+    }, COALESCE_MS - since)
+  }, [doLoad])
+
+  useEffect(() => () => { if (trailing.current) clearTimeout(trailing.current) }, [])
+  const flushStale = useCallback(() => {
+    if (!stale.current) return
+    stale.current = false
+    doLoad()
+  }, [doLoad])
+
+  useEffect(() => { if (enabled) doLoad() }, [enabled, doLoad])
   useEffect(() => {
     if (!enabled) return undefined
     const onEvt = () => softLoad()

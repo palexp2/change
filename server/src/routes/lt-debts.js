@@ -1,7 +1,7 @@
 // Dettes à long terme — cédules de remboursement et comptabilisation des
 // versements dans QB (Dépense : banque → capital + intérêts).
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
@@ -19,7 +19,10 @@ const isDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || ''))
 
 const DEBT_FIELDS = ['label', 'lender', 'loan_number', 'currency', 'principal',
   'qb_debt_acctnum', 'qb_interest_acctnum', 'qb_bank_acctnum', 'active', 'notes',
-  'annual_rate', 'payment_frequency', 'payment_amount']
+  'annual_rate', 'payment_frequency', 'payment_amount',
+  // Libellé du prélèvement au relevé bancaire (« BDC », « VILLE DE QUEBEC ») :
+  // ce qui permet de reconnaître le versement quand il passe au compte.
+  'bank_label_pattern']
 
 function debtSummary(debt) {
   const payments = db.prepare(`
@@ -59,7 +62,7 @@ router.get('/', (req, res) => {
 router.post('/', (req, res) => {
   const b = req.body
   if (!b.label || !String(b.label).trim()) return res.status(400).json({ error: 'label requis' })
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO lt_debts (id, label, lender, loan_number, currency, principal, qb_debt_acctnum, qb_interest_acctnum, qb_bank_acctnum, active, notes, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
@@ -94,11 +97,23 @@ router.delete('/:id', (req, res) => {
 
 // ── Cédule (versements) ─────────────────────────────────────────────────────
 
-router.get('/:id/payments', (req, res) => {
+router.get('/:id/payments', async (req, res) => {
   const debt = db.prepare('SELECT * FROM lt_debts WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!debt) return res.status(404).json({ error: 'Not found' })
+  // Cherche au relevé les versements dont le débit vient de paraître. Sans
+  // QuickBooks joignable (le compte de banque s'y résout), on affiche la
+  // cédule telle quelle plutôt que de faire échouer la page.
+  try {
+    const { confirmDebtPaymentsFromBank } = await import('../services/bankDebitLink.js')
+    await confirmDebtPaymentsFromBank(debt.id)
+  } catch (e) {
+    console.error('lt-debts confirmDebtPaymentsFromBank:', e.message)
+  }
   const payments = db.prepare(`
-    SELECT * FROM lt_debt_payments WHERE debt_id = ? AND deleted_at IS NULL ORDER BY payment_date
+    SELECT p.*, t.txn_date AS bank_txn_date, t.amount AS bank_txn_amount
+    FROM lt_debt_payments p
+    LEFT JOIN bank_transactions t ON t.id = p.bank_txn_id AND t.deleted_at IS NULL
+    WHERE p.debt_id = ? AND p.deleted_at IS NULL ORDER BY p.payment_date
   `).all(debt.id)
   for (const p of payments) p.qb_txn_url = p.qb_txn_id ? qbEntityUrl(p.qb_txn_type === 'purchase' ? 'expense' : 'journal', p.qb_txn_id) : null
   Object.assign(debt, debtSummary(debt))
@@ -120,7 +135,7 @@ router.post('/:id/payments', (req, res) => {
   const error = validatePaymentRow(req.body)
   if (error) return res.status(400).json({ error })
   const b = req.body
-  const id = randomUUID()
+  const id = newRecordId()
   try {
     db.prepare(`
       INSERT INTO lt_debt_payments (id, debt_id, payment_date, principal, interest, balance_after, source, notes)
@@ -171,7 +186,7 @@ function insertScheduleRows(debtId, rows, replace) {
       const dup = db.prepare('SELECT id FROM lt_debt_payments WHERE debt_id = ? AND payment_date = ? AND deleted_at IS NULL')
         .get(debtId, r.payment_date)
       if (dup) { skipped++; continue }
-      insert.run(randomUUID(), debtId, r.payment_date, Number(r.principal), Number(r.interest),
+      insert.run(newRecordId(), debtId, r.payment_date, Number(r.principal), Number(r.interest),
         Number.isFinite(Number(r.balance_after)) && r.balance_after !== '' && r.balance_after != null ? Number(r.balance_after) : null,
         r.notes || null)
       inserted++

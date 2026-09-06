@@ -175,7 +175,7 @@ export function attributeLimitScope(usage) {
 }
 
 export async function fetchLimitScope() {
-  try { return attributeLimitScope(await getClaudeUsage()) } catch { return 'model' }
+  try { return attributeLimitScope(await getClaudeUsage({ allowStale: false })) } catch { return 'model' }
 }
 
 // ─── Lecture proactive du plafond par modèle ───────────────────────────────────
@@ -213,7 +213,7 @@ export function scopedLimitFromUsage(usage, now = Date.now()) {
  */
 export async function syncScopedModelLimit() {
   let usage
-  try { usage = await getClaudeUsage() } catch { return false }
+  try { usage = await getClaudeUsage({ allowStale: false }) } catch { return false }
   const verdict = scopedLimitFromUsage(usage)
   if (!verdict) return purgeExpiredLimits()
   if (verdict.limited) {

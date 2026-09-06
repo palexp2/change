@@ -148,6 +148,15 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     allowedTables: ['shipments', 'factures'],
     actionKeys: new Set(['deferred_acctnum', 'sale_acctnum', 'ar_cad_acctnum', 'ar_usd_acctnum']),
   },
+  // Gel du coût total au moment de l'envoi : seule la condition de
+  // déclenchement est éditable (quelle écriture sur la ligne de commande vaut
+  // « la ligne part dans un envoi »). Le calcul lui-même vit dans le code —
+  // d'où actionKeys vide, mais la clé doit exister : sans entrée ici, le PATCH
+  // du déclencheur répondrait 400 « lecture seule ».
+  sys_order_item_shipped_cost: {
+    allowedTables: ['order_items'],
+    actionKeys: new Set(),
+  },
   // CTB - Suivi (Google Sheets) : seule l'action est configurable — le
   // déclencheur (publication d'un Bill QB / création d'une facture fournisseur)
   // vit dans le code. validateKey remplace la validation AcctNum par défaut.
@@ -160,7 +169,9 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     actionKeys: new Set(['splits', 'source_acctnum', 'phone_acctnum', 'phone_amount',
       'meals_acctnum', 'reimb_acctnum', 'aga_splits', 'aga_source_acctnum',
       'aga_vendor_name', 'aga_taxcode', 'aga_memo',
-      'bank_acctnum', 'salary_vendor_name', 'salary_taxcode', 'phone_taxcode']),
+      'bank_acctnum', 'salary_vendor_name', 'salary_taxcode', 'phone_taxcode',
+      'bank_account_name', 'bank_label_pattern', 'bank_window_before_days',
+      'bank_window_after_days', 'aga_bank_label_pattern', 'aga_bank_window_days']),
     validateKey(key, v) {
       if (!v) return
       if (['salary_vendor_name', 'salary_taxcode', 'phone_taxcode', 'aga_vendor_name', 'aga_taxcode', 'aga_memo'].includes(key)) {
@@ -177,30 +188,49 @@ const CONFIGURABLE_SYSTEM_SPECS = {
         if (!/^[0-9]+([.,][0-9]+)?$/.test(v)) throw new Error('phone_amount doit être un montant')
         return
       }
+      // Recherche du débit au relevé : nom de compte et libellés sont du texte
+      // libre (ce sont des morceaux de libellé bancaire), les fenêtres sont
+      // des nombres de jours.
+      if (['bank_account_name', 'bank_label_pattern', 'aga_bank_label_pattern'].includes(key)) {
+        if (v.length > 120) throw new Error(`${key} trop long (max 120 caractères)`)
+        return
+      }
+      if (['bank_window_before_days', 'bank_window_after_days', 'aga_bank_window_days'].includes(key)) {
+        if (!/^\d{1,3}$/.test(v)) throw new Error(`${key} doit être un nombre de jours`)
+        return
+      }
       if (!ACCTNUM_RE.test(v)) throw new Error(`${key} : numéro de compte invalide`)
     },
   },
-  // Registre des entreprises du Québec : chemin du ZIP déposé à la main (le
-  // téléchargement direct est bloqué par Cloudflare) et définition de ce qui
-  // compte comme activité horticole sur la page Prospects REQ.
-  sys_req_import: {
-    actionKeys: new Set(['local_zip_path', 'activity_codes', 'activity_keywords']),
+  // Lecture bancaire Plaid et rattachement des sorties connues : rien à
+  // configurer côté action (les libellés vivent sur sys_paie_repartition et sur
+  // les fiches de dettes), mais l'entrée doit exister — sans elle le PATCH
+  // d'activation/désactivation répondrait 400 « lecture seule ».
+  sys_plaid_sync: { actionKeys: new Set() },
+  sys_bank_debit_link: { actionKeys: new Set() },
+  // Même cas : déclarée configurable sans spec, son interrupteur répondait 400.
+  sys_plaid_qb_audit: { actionKeys: new Set() },
+  // Vérificateur de prix d'achats : bornes de détection et notification.
+  sys_purchase_price_check: {
+    actionKeys: new Set(['ratio_min', 'ratio_max', 'min_abs_diff', 'fallback_roles', 'notify']),
     validateKey(key, v) {
       if (!v) return
-      if (key === 'local_zip_path') {
-        if (v.length > 400) throw new Error('local_zip_path trop long (max 400 caractères)')
-        if (!v.startsWith('/')) throw new Error('local_zip_path doit être un chemin absolu sur le serveur')
-        return
+      if (['ratio_min', 'ratio_max', 'min_abs_diff'].includes(key) && !/^\d{1,6}([.,]\d{1,4})?$/.test(v)) {
+        throw new Error(`${key} doit être un nombre positif`)
       }
-      if (key === 'activity_codes') {
-        if (!/^[0-9A-Za-z]{1,15}([,;\s]+[0-9A-Za-z]{1,15})*$/.test(v.trim())) {
-          throw new Error("activity_codes : liste de codes d'activité séparés par des virgules")
+      if (key === 'notify' && !/^[01]$/.test(v)) throw new Error('notify doit être 0 ou 1')
+      if (key === 'fallback_roles' && v.length > 200) throw new Error('fallback_roles : 200 caractères maximum')
+    },
+  },
+  // Corbeille : durée de rétention avant suppression définitive. Le compte à
+  // rebours affiché sur chaque élément de /admin/corbeille suit ce réglage.
+  sys_trash_auto_cleanup: {
+    actionKeys: new Set(['retention_days']),
+    validateKey(key, v) {
+      if (key === 'retention_days') {
+        if (!/^\d{1,4}$/.test(v || '') || Number(v) < 1) {
+          throw new Error('retention_days doit être un nombre de jours supérieur à 0')
         }
-        return
-      }
-      if (key === 'activity_keywords') {
-        if (v.length > 500) throw new Error('activity_keywords trop long (max 500 caractères)')
-        try { new RegExp(v, 'i') } catch { throw new Error('activity_keywords : expression régulière invalide') }
       }
     },
   },
@@ -530,7 +560,9 @@ function validateConfigurableSystemPatch(automation, { trigger_config, action_co
     const op = incoming.op || 'eq'
     const subject = erpTable === 'factures'
       ? "d'une facture (réévaluée aussi quand sa commande ou un envoi lié change)"
-      : "d'un shipment"
+      : erpTable === 'order_items'
+        ? "d'une ligne de commande"
+        : "d'un shipment"
     const merged = {
       ...current,
       erp_table: erpTable,
@@ -1284,11 +1316,7 @@ router.post('/:id/retry-queue/:retryId/retry', async (req, res) => {
     "UPDATE webhook_sync_retry SET next_retry_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?"
   ).run(req.params.retryId)
 
-  try {
-    await processRetryQueue()
-  } catch (e) {
-    return res.status(500).json({ error: e.message })
-  }
+  await processRetryQueue()
 
   const items = db.prepare(`
     SELECT id, module, attempts, last_error, created_at, next_retry_at

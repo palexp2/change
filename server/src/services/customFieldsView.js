@@ -28,20 +28,25 @@
 //   - une seule colonne par lookup (pour faire 2 colonnes du même record lié,
 //     créer 2 lookups distincts — le query planner consolidera les JOIN)
 
-import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
+import { invalidateColumnsCache } from '../db/changeLog.js'
 import { FORMULA_FUNCTIONS } from './formulaEngine.js'
 
 // Whitelist des tables qu'on autorise comme cible de lookup. Exclut
-// volontairement `users` (hashes de mots de passe), `oauth_tokens`,
-// `automation_secrets`, etc.
+// `oauth_tokens`, `automation_secrets`, etc. `users` est autorisée : ses
+// colonnes sensibles (password_hash) sont bloquées par SENSITIVE_COLUMN_PATTERNS.
 export const LOOKUP_TARGET_WHITELIST = new Set([
   'companies', 'contacts', 'projects', 'orders', 'products', 'employees',
   'subscriptions', 'shipments', 'returns', 'tasks', 'factures', 'soumissions',
-  'achats_fournisseurs', 'addresses', 'activity_codes', 'vendor_subscriptions',
+  'achats_fournisseurs', 'adresses', 'activity_codes', 'vendor_subscriptions',
   // Paiements clients (payments.facture_id → factures) : permet notamment un
   // rollup « Date de paiement » (MIN/MAX de received_at) sur les factures.
   'payments',
+  // Cibles requises par la conversion des colonnes calculées (chantier
+  // unification des champs) : assigned_name/user_name → users,
+  // ticket_title → tickets, lignes de commande/paie → rollups parents.
+  'users', 'tickets', 'purchases', 'paies', 'order_items', 'ticket_surveys',
 ])
 
 // Tables autorisées comme CIBLE d'un champ link bidirectionnel. Doit rester
@@ -64,6 +69,17 @@ const SENSITIVE_COLUMN_PATTERNS = [
 
 function isSafeLookupColumn(name) {
   return !SENSITIVE_COLUMN_PATTERNS.some(re => re.test(name))
+}
+
+// Relation de LECTURE d'une table : la VUE <table>_v si elle existe (elle expose
+// en plus les champs custom virtuels — formule/lookup/rollup/auto), sinon la
+// table physique. À utiliser dans les SELECT des routes ; les écritures restent
+// évidemment sur la table physique. Généralisation du pattern
+// paymentsReadRelation() (routes/payments.js).
+export function readRelation(table) {
+  if (!SAFE_IDENT.test(table)) throw new Error('Nom de table invalide')
+  const hasView = db.prepare(`SELECT 1 FROM sqlite_master WHERE type='view' AND name=?`).get(`${table}_v`)
+  return hasView ? `${table}_v` : table
 }
 
 // Colonne « libellé » lisible d'une table (pour afficher un record lié). Premier
@@ -119,6 +135,52 @@ function singularCandidates(table) {
   if (table.endsWith('s')) out.add(table.slice(0, -1))
   out.add(table)
   return [...out]
+}
+
+// Table ERP vers laquelle pointent les valeurs d'une colonne, ou null si la
+// colonne ne porte pas de référence. Sert à rendre cliquable tout champ dont la
+// valeur est un identifiant d'enregistrement — y compris un LOOKUP qui rapatrie
+// un champ lien : la valeur copiée reste un id, donc elle reste navigable.
+//
+// Deux sources, dans cet ordre :
+//   1. champ lien Airtable (custom_fields.options.airtable_link_hint) — la table
+//      cible vit sur le mapping (`link_target_table`) ; `null` si elle n'est pas
+//      configurée : la colonne porte alors des record IDs Airtable, que
+//      services/recordLinks.js sait résoudre sans indice.
+//   2. colonne FK : contrainte formelle, sinon heuristique `<table>_id`, la même
+//      que celle du picker de lookup ci-dessous.
+export function recordLinkTargetOf(erpTable, column) {
+  if (!SAFE_IDENT.test(erpTable) || !SAFE_IDENT.test(column)) return null
+
+  const cf = db.prepare(
+    `SELECT cf.options, m.options AS mapping_options
+     FROM custom_fields cf
+     LEFT JOIN airtable_field_mappings m
+       ON m.erp_table = cf.erp_table AND m.column_name = cf.column_name
+     WHERE cf.erp_table=? AND cf.column_name=? AND cf.deleted_at IS NULL`
+  ).get(erpTable, column)
+  if (cf) {
+    let opts = null
+    try { opts = JSON.parse(cf.options || 'null') } catch { opts = null }
+    if (opts?.airtable_link_hint) {
+      let mo = null
+      try { mo = JSON.parse(cf.mapping_options || 'null') } catch { mo = null }
+      return { table: mo?.link_target_table || null, link: true }
+    }
+  }
+
+  try {
+    for (const fk of db.pragma(`foreign_key_list(${erpTable})`)) {
+      if (fk.from === column && LOOKUP_TARGET_WHITELIST.has(fk.table)) return { table: fk.table, link: true }
+    }
+  } catch { /* table inconnue */ }
+
+  if (column.endsWith('_id')) {
+    const base = column.slice(0, -3)
+    const target = [base + 's', base + 'es', base].find(g => LOOKUP_TARGET_WHITELIST.has(g))
+    if (target) return { table: target, link: true }
+  }
+  return null
 }
 
 // Métadonnées exposées au client pour construire l'UI de création de lookup.
@@ -217,6 +279,28 @@ export function getLookupMeta(erpTable) {
     })
     .filter(Boolean)
 
+  // Colonnes de la table source elle-même — alimente l'autocomplete de
+  // l'éditeur de formule (à la Airtable). On filtre les colonnes sensibles par
+  // cohérence, même si projects/factures n'en exposent pas. On y ajoute les
+  // AUTRES champs custom virtuels (formule/lookup/rollup/auto) de la même
+  // table : une formule peut les référencer (résolution de dépendances V2).
+  // Chaque entrée porte son libellé UI (custom_fields.name) : l'éditeur affiche
+  // et cherche « AT recordId » autant que `cf_at_recordid`, sinon un champ dont
+  // le nom technique ne ressemble pas au libellé reste introuvable.
+  const sourceLabels = new Map(
+    db.prepare(
+      `SELECT column_name, name FROM custom_fields
+       WHERE erp_table=? AND deleted_at IS NULL AND name IS NOT NULL AND name != ''`
+    ).all(erpTable).map(r => [r.column_name, r.name])
+  )
+  const virtualColumns = db.prepare(
+    `SELECT column_name FROM custom_fields
+     WHERE erp_table=? AND deleted_at IS NULL
+       AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by')`
+  ).all(erpTable).map(r => r.column_name)
+  const sourceColumns = [...new Set([...allCols.filter(isSafeLookupColumn), ...virtualColumns])]
+    .map(c => ({ column: c, label: sourceLabels.get(c) || null }))
+
   return {
     fk_columns: fkColumns,
     allowed_targets: [...LOOKUP_TARGET_WHITELIST],
@@ -230,14 +314,7 @@ export function getLookupMeta(erpTable) {
     // les AUTRES champs custom virtuels (formule/lookup/rollup/auto) de la même
     // table : une formule peut désormais les référencer (résolution de
     // dépendances V2), donc l'éditeur doit pouvoir les suggérer.
-    source_columns: [...new Set([
-      ...allCols.filter(isSafeLookupColumn),
-      ...db.prepare(
-        `SELECT column_name FROM custom_fields
-         WHERE erp_table=? AND deleted_at IS NULL
-           AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by')`
-      ).all(erpTable).map(r => r.column_name),
-    ])],
+    source_columns: sourceColumns,
     // Catalogue des fonctions de formule réellement supportées (parité Airtable),
     // source unique venant du moteur (formulaEngine.js) : l'éditeur de formule
     // affiche EXACTEMENT ce que la VUE sait évaluer, sans liste dupliquée qui
@@ -269,7 +346,7 @@ function formulaReadRelation(erpTable) {
 
 export function previewFormula(erpTable, formulaExpr, limit = 5) {
   if (!SAFE_IDENT.test(erpTable)) throw new Error('Nom de table invalide')
-  validateFormulaExpr(formulaExpr)
+  const sqlExpr = validateFormulaExpr(formulaExpr)
   const rel = formulaReadRelation(erpTable)
   const cols = db.pragma(`table_info(${rel})`).map(c => c.name)
   if (!cols.includes('id')) throw new Error(`Table ${erpTable} sans colonne id — aperçu non supporté`)
@@ -284,7 +361,7 @@ export function previewFormula(erpTable, formulaExpr, limit = 5) {
   let rows
   try {
     rows = db.prepare(
-      `SELECT id AS _id, ${labelCol} AS _label, (${formulaExpr}) AS _value ` +
+      `SELECT id AS _id, ${labelCol} AS _label, (${sqlExpr}) AS _value ` +
       `FROM ${rel} ${where} ORDER BY ${orderCol} DESC LIMIT ${n}`
     ).all()
   } catch (e) {
@@ -302,6 +379,58 @@ const FORBIDDEN_TOKENS = /\b(select|insert|update|delete|attach|detach|pragma|al
 
 const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 
+// Découpe une expression formule en séparant les chaînes de texte du reste.
+// Deux raisons :
+//
+//  1. Parité Airtable sur les guillemets. Airtable écrit ses chaînes littérales
+//     entre guillemets doubles ("texte") ; SQLite réserve les guillemets doubles
+//     aux IDENTIFIANTS et better-sqlite3 est compilé avec SQLITE_DQS=0, donc
+//     CONCATENATE("https://…", id) échouait avec « no such column: https://… ».
+//     On réécrit donc tout littéral "…" en littéral SQL '…' (apostrophes
+//     internes doublées) — l'auteur peut utiliser l'une ou l'autre notation.
+//  2. La détection de mots-clés interdits ne doit s'appliquer QU'EN DEHORS des
+//     chaînes : un texte constant comme 'Commande à créer' ou une URL contenant
+//     « update » n'est pas une injection. Le scan garantit que chaque littéral
+//     est bien fermé et ré-échappé, donc son contenu ne peut pas s'en évader.
+//
+// Retourne { sql, code } : `sql` = expression prête pour SQLite, `code` = même
+// expression avec le contenu des chaînes vidé (pour le scan de mots-clés).
+function scanFormulaStrings(expr) {
+  const s = String(expr)
+  let sql = ''
+  let code = ''
+  let i = 0
+  while (i < s.length) {
+    const c = s[i]
+    if (c !== "'" && c !== '"') { sql += c; code += c; i++; continue }
+    // Littéral : on lit jusqu'au guillemet fermant du même type. `''` / `""`
+    // (doublage SQL) et `\"` / `\\` (habitude JS) échappent le délimiteur.
+    let raw = ''
+    let j = i + 1
+    let closed = false
+    while (j < s.length) {
+      const ch = s[j]
+      if (ch === '\\' && (s[j + 1] === c || s[j + 1] === '\\')) { raw += s[j + 1]; j += 2; continue }
+      if (ch === c) {
+        if (s[j + 1] === c) { raw += c; j += 2; continue }
+        j++; closed = true; break
+      }
+      raw += ch; j++
+    }
+    if (!closed) {
+      throw new Error(`Chaîne de texte non fermée — il manque un ${c === '"' ? 'guillemet' : "'"} fermant`)
+    }
+    sql += `'${raw.replace(/'/g, "''")}'`
+    code += "''"
+    i = j
+  }
+  return { sql, code }
+}
+
+// Valide une expression formule et retourne sa traduction SQLite (guillemets
+// doubles normalisés en littéraux texte). TOUJOURS utiliser la valeur retournée
+// pour construire du SQL — l'expression brute stockée reste celle tapée par
+// l'auteur.
 export function validateFormulaExpr(expr) {
   if (typeof expr !== 'string' || !expr.trim()) {
     throw new Error('Expression vide')
@@ -309,9 +438,11 @@ export function validateFormulaExpr(expr) {
   if (expr.length > 1000) {
     throw new Error('Expression trop longue (max 1000 caractères)')
   }
-  if (FORBIDDEN_TOKENS.test(expr)) {
+  const { sql, code } = scanFormulaStrings(expr)
+  if (FORBIDDEN_TOKENS.test(code)) {
     throw new Error('Expression contient un mot-clé interdit (SELECT, ;, etc.)')
   }
+  return sql
 }
 
 // Valide que toutes les colonnes référencées par une formule existent réellement
@@ -329,8 +460,10 @@ export function validateFormulaReferences(formulaExpr, erpTable) {
   // vue. La détection de cycle se fait dans regenerateView (DFS) et l'appelant
   // (route) annule la transaction si le champ sauvegardé se retrouve en erreur.
   const rel = formulaReadRelation(erpTable)
+  // Même normalisation que la compilation de la vue (guillemets doubles → texte).
+  const sqlExpr = validateFormulaExpr(formulaExpr)
   try {
-    db.prepare(`SELECT (${formulaExpr}) AS _probe FROM ${rel} LIMIT 0`)
+    db.prepare(`SELECT (${sqlExpr}) AS _probe FROM ${rel} LIMIT 0`)
   } catch (e) {
     const m = /no such column:\s*(\S+)/i.exec(e.message || '')
     if (m) throw new Error(`Colonne référencée introuvable : « ${m[1]} »`)
@@ -345,8 +478,8 @@ export function validateFormulaReferences(formulaExpr, erpTable) {
 // dégrade. column_name est supposé déjà validé SAFE_IDENT par l'appelant.
 function buildVirtualColumn(cf, erpTable, alias) {
   if (cf.kind === 'formula') {
-    validateFormulaExpr(cf.formula_expr)
-    return { selectExpr: `(${cf.formula_expr}) AS ${cf.column_name}`, joins: [] }
+    const sqlExpr = validateFormulaExpr(cf.formula_expr)
+    return { selectExpr: `(${sqlExpr}) AS ${cf.column_name}`, joins: [] }
   }
   if (cf.kind === 'lookup') {
     validateLookup(cf, erpTable)
@@ -587,7 +720,7 @@ export function setLinkValue(field, recordId, targetIds) {
       if (inverseSingle) detachOther.run(field.link_group_id, tid)
       const source_id = field.link_role === 'source' ? recId : tid
       const target_id = field.link_role === 'source' ? tid : recId
-      insert.run(uuid(), field.link_group_id, source_table, source_id, target_table, target_id)
+      insert.run(newRecordId(), field.link_group_id, source_table, source_id, target_table, target_id)
     }
   })
   tx()
@@ -627,7 +760,10 @@ export function deleteLinkGroup(linkGroupId) {
 // column_name connu (présent dans cfByColumn) — y compris la colonne elle-même
 // si auto-référencée : on laisse la détection de cycle s'en charger.
 function extractFormulaDeps(expr, cfByColumn) {
-  const stripped = String(expr).replace(/'(?:[^']|'')*'/g, "''")
+  // Le contenu des chaînes de texte n'est pas une référence de champ : on vide
+  // les littéraux (simples ET doubles quotes) avant d'y chercher des colonnes.
+  let stripped
+  try { stripped = scanFormulaStrings(expr).code } catch { stripped = String(expr).replace(/'(?:[^']|'')*'/g, "''") }
   const deps = new Set()
   const re = /[a-zA-Z_][a-zA-Z0-9_]*/g
   let m
@@ -907,6 +1043,9 @@ export function regenerateView(erpTable) {
       db.exec(`CREATE VIEW ${viewName} AS SELECT * FROM ${erpTable}`)
     })
     tx()
+    // Le snapshot client lit la VUE (voir db/changeLog.js) : ses colonnes
+    // viennent de changer, le cache de colonnes est périmé.
+    invalidateColumnsCache()
     return { view: viewName, columns: 0 }
   }
 
@@ -931,10 +1070,15 @@ export function regenerateView(erpTable) {
   const { levelByColumn, cyclicColumns } = computeDependencyLevels(virtualCols, cfByColumn, depsByColumn)
 
   // Regroupe les colonnes par niveau, en préservant l'ordre (sort_order) dans
-  // chaque niveau.
-  const maxLevel = virtualCols.reduce((m, cf) => Math.max(m, levelByColumn.get(cf.column_name) || 0), 0)
+  // chaque niveau. Les FORMULES montent d'une couche : la couche 0 contient les
+  // JOINs des lookups, où une référence de colonne nue (ex. `record_id`) devient
+  // ambiguë dès que la table jointe possède une colonne homonyme. Dans les
+  // couches >0 le FROM est la sous-requête interne — colonnes uniques, aucune
+  // ambiguïté possible.
+  const layerOf = cf => (levelByColumn.get(cf.column_name) || 0) + (cf.kind === 'formula' ? 1 : 0)
+  const maxLevel = virtualCols.reduce((m, cf) => Math.max(m, layerOf(cf)), 0)
   const byLevel = Array.from({ length: maxLevel + 1 }, () => [])
-  for (const cf of virtualCols) byLevel[levelByColumn.get(cf.column_name) || 0].push(cf)
+  for (const cf of virtualCols) byLevel[layerOf(cf)].push(cf)
 
   // Colonnes physiques masquées par un champ virtuel de même nom : le champ a
   // été converti depuis 'data', sa colonne SQL a été conservée intacte.
@@ -999,9 +1143,9 @@ export function regenerateView(erpTable) {
         // calculées dans innerSql (couches inférieures). On sonde l'expression
         // contre cette sous-requête : si une référence reste introuvable, dégrade.
         try {
-          validateFormulaExpr(cf.formula_expr)
-          db.prepare(`SELECT (${cf.formula_expr}) AS _probe FROM (${innerSql}) LIMIT 0`)
-          exprs.push(`(${cf.formula_expr}) AS ${cf.column_name}`)
+          const sqlExpr = validateFormulaExpr(cf.formula_expr)
+          db.prepare(`SELECT (${sqlExpr}) AS _probe FROM (${innerSql}) LIMIT 0`)
+          exprs.push(`(${sqlExpr}) AS ${cf.column_name}`)
           errorsById.set(cf.id, null)
         } catch (e) {
           const mm = /no such column:\s*(\S+)/i.exec(e.message || '')
@@ -1024,6 +1168,7 @@ export function regenerateView(erpTable) {
     for (const [id, msg] of errorsById) updErr.run(msg, id)
   })
   tx()
+  invalidateColumnsCache()
   const errors = [...errorsById].filter(([, m]) => m).map(([id, message]) => ({ id, message }))
   return { view: viewName, columns: virtualCols.length, sql, errors }
 }

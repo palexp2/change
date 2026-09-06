@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { normalizeVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup } from '../services/vendorProfiles.js'
@@ -109,7 +109,7 @@ router.post('/', (req, res) => {
   if (!name) return res.status(400).json({ error: 'Nom requis' })
   const dupe = db.prepare('SELECT id FROM vendor_profiles WHERE deleted_at IS NULL AND LOWER(TRIM(name))=LOWER(?)').get(name)
   if (dupe) return res.status(409).json({ error: 'Un profil existe déjà pour ce fournisseur' })
-  const id = uuid()
+  const id = newRecordId()
   db.prepare('INSERT INTO vendor_profiles (id, name) VALUES (?,?)').run(id, name)
   res.status(201).json(enrich(serializeProfile(db.prepare('SELECT * FROM vendor_profiles WHERE id=?').get(id)), buildContext()))
 })

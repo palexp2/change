@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, FileDown, Copy, Trash2, Pencil, Check, Plus, ChevronUp, ChevronDown, ExternalLink, PackagePlus } from 'lucide-react'
 import { api } from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, SOUMISSION_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -14,6 +14,8 @@ import { fmtDate } from '../lib/formatDate.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
+import { Field } from '../components/Field.jsx'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
 const fmtPrice = (n, currency = 'CAD') => fmtMoney(n, currency, { locale: currency === 'USD' ? 'en-US' : 'fr-CA' })
 
@@ -35,8 +37,12 @@ function blankItem() {
   return { catalog_product_id: '', description_fr: '', description_en: '', qty: 1, unit_price_cad: 0 }
 }
 
-export default function SoumissionDetail() {
-  const { id } = useParams()
+// Fiche d'une soumission. Rendue exclusivement dans un panneau latéral :
+// `recordId`/`onClose` viennent du panneau, `useParams` sert au montage depuis
+// l'URL (registre des fiches).
+export default function SoumissionDetail({ recordId, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
   const [catalog, setCatalog] = useState([])
   const [editing, setEditing] = useState(false)
@@ -166,8 +172,10 @@ export default function SoumissionDetail() {
     setDeleting(true)
     try {
       await api.documents.soumissions.delete(id)
-      if (soumission.project_id) navigate(`/projects/${soumission.project_id}`, { state: { tab: 'soumissions' } })
-      else navigate(-1)
+      // La fiche supprimée n'a plus rien à montrer : on referme le panneau.
+      if (onClose) onClose()
+      else if (soumission.project_id) navigate(`/projects/${soumission.project_id}`, { state: { tab: 'soumissions' } })
+      else navigate('/pipeline')
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
       setDeleting(false)
@@ -227,16 +235,12 @@ export default function SoumissionDetail() {
 
   const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400 bg-white'
 
-  if (loading) return <Layout><Spinner center label="Chargement…" /></Layout>
-  if (loadError && !soumission) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!soumission) return <Layout><div className="p-8 text-center text-slate-500">Soumission introuvable.</div></Layout>
-
-  // project_id case handled by the back <Link>; this only covers the no-project fallback
-  const goBack = () => navigate(-1)
+  if (loading) return <Spinner center label="Chargement…" />
+  if (loadError && !soumission) return <DetailLoadError message={loadError} onRetry={load} />
+  if (!soumission) return <div className="p-8 text-center text-slate-500">Soumission introuvable.</div>
 
   return (
-    <Layout>
-      <div className="max-w-5xl mx-auto px-4 py-6">
+    <div className="px-4 py-6">
 
         {/* Top bar */}
         <div className="flex items-center justify-between mb-6">
@@ -244,14 +248,9 @@ export default function SoumissionDetail() {
             <Link to={`/projects/${soumission.project_id}`} state={{ tab: 'soumissions' }}
               className="flex items-center gap-2 text-slate-500 hover:text-slate-700 text-sm">
               <ArrowLeft size={16} />
-              {soumission.project_name ? `Projet : ${soumission.project_name}` : 'Retour'}
+              {soumission.project_name ? `Projet : ${soumission.project_name}` : 'Projet'}
             </Link>
-          ) : (
-            <button onClick={goBack} className="flex items-center gap-2 text-slate-500 hover:text-slate-700 text-sm">
-              <ArrowLeft size={16} />
-              Retour
-            </button>
-          )}
+          ) : <div />}
 
           <div className="flex items-center gap-2">
             {!editing && isDraft && (
@@ -307,13 +306,18 @@ export default function SoumissionDetail() {
         <div className="bg-white rounded-xl border shadow-sm p-6 mb-5">
           <div className="flex items-start justify-between gap-4">
             <div className="flex-1">
-              <h1 className="text-2xl font-bold text-slate-900 mb-1">
+              <PageTitle className="mb-1">
                 {soumission.title || <span className="text-slate-400 italic font-normal">Sans titre</span>}
-              </h1>
+              </PageTitle>
               {soumission.company_name && (
-                <Link to={`/companies/${soumission.company_id}`} className="text-brand-600 hover:underline text-sm">
-                  {soumission.company_name}
-                </Link>
+                <LinkedRecordField
+                  name="company_id"
+                  value={soumission.company_id || soumission.company_name}
+                  options={[{ id: soumission.company_id || soumission.company_name, name: soumission.company_name }]}
+                  getHref={soumission.company_id ? c => `/companies/${c.id}` : undefined}
+                  disabled
+                  allowClear={false}
+                />
               )}
             </div>
             <div className="flex flex-col items-end gap-2 flex-shrink-0">
@@ -349,32 +353,36 @@ export default function SoumissionDetail() {
           </div>
 
           <div className="grid grid-cols-3 gap-4 mt-5 pt-4 border-t text-sm">
-            <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Créée le</p>
+            <Field table="soumissions" id="created_at" label="Créée le" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5">
               <p className="text-slate-700">{fmtDate(soumission.created_at)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Expiration</p>
+            </Field>
+            <Field table="soumissions" id="expiration_date" label="Expiration" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5">
               <p className="text-slate-700">{fmtDate(soumission.expiration_date)}</p>
-            </div>
-            <div>
-              <p className="text-xs text-slate-400 uppercase tracking-wider mb-0.5">Projet</p>
+            </Field>
+            <Field table="soumissions" id="project_name" label="Projet" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5">
               {soumission.project_id
-                ? <Link to={`/projects/${soumission.project_id}`} className="text-brand-500 hover:underline">{soumission.project_name || 'Projet'}</Link>
+                ? <LinkedRecordField
+                  name="project_id"
+                  value={soumission.project_id}
+                  options={[{ id: soumission.project_id, name: soumission.project_name || 'Projet' }]}
+                  getHref={p => `/projects/${p.id}`}
+                  disabled
+                  allowClear={false}
+                />
                 : <p className="text-slate-700">{soumission.project_name || '—'}</p>}
-            </div>
+            </Field>
+            <CustomDetailFields table="soumissions" record={soumission} labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5" />
           </div>
 
           {(editing || soumission.notes) && (
-            <div className="mt-4 pt-4 border-t">
-              <p className="text-xs text-slate-400 uppercase tracking-wider mb-1">Notes</p>
+            <Field table="soumissions" id="notes" label="Notes" className="mt-4 pt-4 border-t" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-1">
               {editing ? (
-                <textarea className="w-full border rounded-lg px-3 py-2 text-sm" rows={3}
+                <textarea className="input" rows={3}
                   value={form.notes} onChange={e => set('notes', e.target.value)} />
               ) : (
                 <p className="text-sm text-slate-600 whitespace-pre-wrap">{soumission.notes}</p>
               )}
-            </div>
+            </Field>
           )}
         </div>
 
@@ -406,7 +414,6 @@ export default function SoumissionDetail() {
                           options={catalog}
                           labelFn={p => isFr ? p.name_fr : (p.name_en || p.name_fr)}
                           getHref={p => `/products/${p.id}`}
-                          placeholder="Personnalisé"
                           onChange={v => selectProduct(idx, v)}
                         />
                       </td>
@@ -587,6 +594,5 @@ export default function SoumissionDetail() {
           </div>
         )}
       </div>
-    </Layout>
   )
 }

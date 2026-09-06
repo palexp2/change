@@ -7,6 +7,8 @@ import { Link } from 'react-router-dom'
 import { useToast } from '../contexts/ToastContext.jsx'
 import CopyButton from '../components/CopyButton.jsx'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { fmtNumber } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 // Collecte de factures — pour les fournisseurs qui n'envoient rien par courriel
 // et n'exposent aucune API (Amazon, Wix), un collecteur va chercher la facture
@@ -44,7 +46,7 @@ const NEED_META = {
   sans_collecteur: { label: 'Pas de collecteur', cls: 'bg-slate-100 text-slate-500 border-slate-200' },
 }
 
-const money = (v, cur) => `${Math.abs(Number(v) || 0).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${cur || ''}`.trim()
+const money = (v, cur) => `${fmtNumber(Math.abs(Number(v) || 0), { decimals: 2 })} ${cur || ''}`.trim()
 
 // Résumé d'un message d'erreur : les collecteurs journalisent un contexte
 // détaillé (voir la capture / le journal) mais l'écran ne doit montrer qu'une
@@ -228,7 +230,7 @@ function NewAccountModal({ vendors, vendorProfiles, onClose, onCreated }) {
         </div>
         <div>
           <label className={labelCls}>Secret 2FA (optionnel)</label>
-          <input className={inputCls} placeholder="JBSWY3DPEHPK3PXP" value={form.totp_secret} onChange={e => set('totp_secret', e.target.value)} />
+          <input className={inputCls} value={form.totp_secret} onChange={e => set('totp_secret', e.target.value)} />
           <p className="text-[11px] text-slate-400 mt-1">
             Le secret d'une application d'authentification. Sans lui, une tournée qui tombe sur
             un code par SMS ou courriel s'arrête et attend qu'on le saisisse ici.
@@ -240,7 +242,6 @@ function NewAccountModal({ vendors, vendorProfiles, onClose, onCreated }) {
             value={form.vendor_profile_id}
             options={(vendorProfiles || []).map(v => ({ value: v.id, label: v.name }))}
             onChange={v => set('vendor_profile_id', v || '')}
-            placeholder="— Choisir —"
           />
           <p className="text-[11px] text-slate-400 mt-1">
             C'est ce lien qui permet de partir d'une transaction bancaire et de savoir
@@ -286,8 +287,7 @@ function OtpPrompt({ account, onSent }) {
       <span className="text-sm text-amber-900 flex-1">
         <strong>{account.label}</strong> attend un code de vérification.
       </span>
-      <input className="w-28 px-2 py-1 text-sm border border-amber-300 rounded-lg bg-white tabular-nums"
-        placeholder="123456" value={code} inputMode="numeric"
+      <input className="w-28 px-2 py-1 text-sm border border-amber-300 rounded-lg bg-white tabular-nums" value={code} inputMode="numeric"
         onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
         onKeyDown={e => { if (e.key === 'Enter' && code.length >= 4) send() }} />
       <button onClick={send} disabled={sending || code.length < 4}
@@ -327,7 +327,6 @@ function ImportSessionModal({ account, onClose, onDone }) {
         </ol>
         <textarea
           className="w-full h-56 px-2.5 py-2 text-xs font-mono border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30"
-          placeholder='[{"name":"...","value":"...","domain":".wix.com", ...}]'
           value={payload} onChange={e => setPayload(e.target.value)} />
         <p className="text-[11px] text-slate-400">
           Un storageState Playwright est accepté tel quel. La session remplace celle en place ;
@@ -492,7 +491,7 @@ function AccountCard({ account, onChanged }) {
 
       {showRuns && (
         <div className="border-t border-slate-100">
-          {runs === null && <div className="px-3 py-2 text-xs text-slate-400">Chargement…</div>}
+          {runs === null && <div className="px-3 py-2 text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></div>}
           {runs?.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">Aucune tournée pour l'instant.</div>}
           {runs?.map(r => <RunRow key={r.id} run={r} />)}
         </div>
@@ -572,7 +571,7 @@ export function InvoiceCollectionPanel() {
       )}
 
       <div className="space-y-2">
-        {data === null && <div className="text-sm text-slate-400 p-3">Chargement…</div>}
+        {data === null && <div className="text-sm text-slate-400 p-3"><Spinner size="xs" label="Chargement…" /></div>}
         {data?.accounts?.length === 0 && (
           <div className="text-sm text-slate-400 p-6 text-center border border-dashed border-slate-200 rounded-xl">
             Aucun compte de collecte. En ajouter un pour qu'Amazon ou Wix soit ramassé automatiquement chaque nuit.

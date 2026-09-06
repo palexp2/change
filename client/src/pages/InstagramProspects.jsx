@@ -9,9 +9,10 @@
 // syncInstagramProspects). Cocher est réversible → aucun dialogue de
 // confirmation, la ligne se grise au clic et l'enregistrement suit derrière.
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { RefreshCw, ExternalLink, Instagram, Search, ChevronDown, ChevronRight, Trash2, Check, Circle } from 'lucide-react'
+import { RefreshCw, ExternalLink, Search, ChevronDown, ChevronRight, Trash2, Check, Circle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -270,9 +271,7 @@ export default function InstagramProspects() {
       <div className="max-w-4xl mx-auto p-6 space-y-4">
         <header className="flex items-start gap-3 flex-wrap">
           <div className="flex-1 min-w-0">
-            <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-2">
-              <Instagram size={20} className="text-slate-400" /> Prospects Instagram
-            </h1>
+            <PageTitle>Prospects Instagram</PageTitle>
             <p className="mt-0.5 text-sm text-slate-500">
               {data
                 ? <>{data.pending} personne{data.pending > 1 ? 's' : ''} à contacter · {data.total} au total</>
@@ -310,7 +309,6 @@ export default function InstagramProspects() {
             <input
               value={q}
               onChange={e => setQ(e.target.value)}
-              placeholder="Rechercher un nom d'usager, un nom, un commentaire…"
               className="w-full pl-8 pr-3 py-1.5 text-sm bg-white border border-slate-200 rounded-md
                 focus:border-brand-400 focus:outline-none focus:ring-1 focus:ring-brand-400/30"
             />

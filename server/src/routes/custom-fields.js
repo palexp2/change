@@ -1,11 +1,19 @@
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
+import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
 import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
 import { runRuleActionForRecord } from '../services/fieldRuleEngine.js'
 import { findLabelConflict, labelConflictError } from '../utils/fieldLabels.js'
+import { isColumnWritable } from '../services/customFieldWritability.js'
+import { invalidateColumnsCache } from '../db/changeLog.js'
+import { erpTableForAirtableTableId } from '../services/airtableTableMap.js'
+import { writebackModuleForTable, PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
+import { purgedNativeFields, clearFieldTombstone } from '../services/fieldPurge.js'
+import { planTypeConversion, applyTypeConversion, convertSingleValue } from '../services/fieldTypeConvert.js'
+import { LINKABLE_TABLES } from '../services/recordLinks.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -22,7 +30,7 @@ router.use(requireAuth)
 // Note : la lecture du cache client (bootstrap.js) lit la table physique via
 // PRAGMA, donc les colonnes cf_* remontent au front de façon identique pour
 // toutes ces tables. L'édition inline d'un champ kind='data' reste pilotée par
-// la route dédiée de chaque table (whitelist via getActiveCustomColumns) — déjà
+// la route dédiée de chaque table (whitelist via getWritableCustomColumns) — déjà
 // branchée pour projects ; à brancher au besoin sur les autres routes.
 const ALLOWED_TABLES = new Set([
   'projects', 'factures',
@@ -31,8 +39,13 @@ const ALLOWED_TABLES = new Set([
   'returns', 'sale_receipts', 'serial_numbers', 'interactions',
   // Fusion avec l'ancien système airtable_field_defs (voir migration schema.js) —
   // tables qui n'avaient jusqu'ici que des champs Airtable, jamais de champ custom.
-  'order_items', 'abonnements', 'retours', 'return_items', 'adresses',
-  'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items', 'company_serials',
+  // ATTENTION : ce sont des VRAIES tables SQL, pas des clés de vue DataTable.
+  // Les vues 'retours' → returns et 'abonnements' → subscriptions passent par
+  // l'alias client (sqlTableForView, customFieldDisplay.jsx). 'company_serials'
+  // est une jointure embarquée (fiche entreprise) sans table propre — pas de
+  // champ custom possible.
+  'order_items', 'subscriptions', 'return_items', 'adresses',
+  'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items',
   // Paiements clients (encaissements + remboursements) — page « Paiements ».
   'payments',
   // Mouvements de numéros de série — champs créés depuis /airtable/fields/serial_changes.
@@ -310,15 +323,93 @@ router.get('/:erpTable', (req, res) => {
   const { erpTable } = req.params
   if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée pour les champs custom' })
   const rows = db.prepare(
-    `SELECT id, name, column_name, type, decimals, sort_order,
-            kind, formula_expr, lookup_fk, lookup_target_table, lookup_target_column, result_type,
-            rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
-            link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
-     FROM custom_fields
-     WHERE erp_table=? AND deleted_at IS NULL AND kind <> 'native'
-     ORDER BY sort_order, created_at`
+    `SELECT cf.id, cf.name, cf.column_name, cf.type, cf.decimals, cf.sort_order,
+            cf.kind, cf.formula_expr, cf.lookup_fk, cf.lookup_target_table, cf.lookup_target_column, cf.result_type,
+            cf.rollup_target_table, cf.rollup_target_fk, cf.rollup_target_column, cf.rollup_agg, cf.view_error, cf.options, cf.default_value,
+            cf.link_target_table, cf.link_group_id, cf.link_role, cf.link_single, cf.source, cf.airtable_mapping_id,
+            cf.description,
+            m.id AS mapping_id, m.import_disabled, m.options AS mapping_options
+     FROM custom_fields cf
+     LEFT JOIN airtable_field_mappings m
+       ON m.erp_table = cf.erp_table AND m.column_name = cf.column_name
+     WHERE cf.erp_table=? AND cf.deleted_at IS NULL AND cf.kind <> 'native'
+     ORDER BY cf.sort_order, cf.created_at`
   ).all(erpTable)
-  res.json({ data: rows })
+  // `writable` : règle d'éditabilité unique (services/customFieldWritability.js)
+  // — un champ Airtable en 'pull' avec import actif est en lecture seule côté
+  // ERP (toute écriture serait écrasée au prochain sync). Le client s'en sert
+  // pour désactiver l'édition inline (customFieldToColumn).
+  const wbModule = writebackModuleForTable(erpTable)
+  const data = rows.map(({ mapping_id, import_disabled, mapping_options, ...row }) => {
+    // `record_link` / `record_link_target` : la valeur de ce champ est-elle un
+    // identifiant d'enregistrement, et vers quelle table ? Le client s'en sert
+    // pour l'afficher en lien cliquable (cf. LinkedRecordsValue).
+    //
+    //  - champ lien Airtable : la table cible vit sur le mapping
+    //    (`link_target_table`) ; absente = la colonne garde les record IDs
+    //    Airtable bruts, que recordLinks.js retrouve par miroir sans indice.
+    //  - LOOKUP qui rapatrie un champ lien ou une colonne FK : la valeur copiée
+    //    reste un identifiant, donc elle reste navigable — c'est la table du
+    //    champ SOURCE qui compte, pas celle traversée par le lookup.
+    //
+    // À ne pas confondre avec `link_target_table` (colonne custom_fields : vraie
+    // relation ERP avec champ inverse, cf. schema.js).
+    let recordLink = false
+    let target = null
+    // Identité stockée dans la colonne : id Boréal quand le mapping a une table
+    // cible (la sync traduit à l'import), record ID Airtable sinon. L'éditeur de
+    // lien doit écrire la MÊME identité que les valeurs déjà là — sans quoi une
+    // colonne finirait avec les deux, et les jointures sur airtable_id
+    // tomberaient (cf. journal-entries.js, fin de mois).
+    let identity = null
+    let mopts = null
+    if (mapping_options) {
+      try { mopts = JSON.parse(mapping_options) } catch { mopts = null }
+      target = mopts?.link_target_table || null
+    }
+    let cfOpts = null
+    try { cfOpts = JSON.parse(row.options || 'null') } catch { cfOpts = null }
+    if (cfOpts?.airtable_link_hint) {
+      recordLink = true
+      identity = target ? 'erp' : 'airtable'
+      // Mapping sans table cible : la table visée reste connue — c'est celle que
+      // miroite `linked_table_id`. On la publie pour l'affichage et pour
+      // proposer des candidats à l'association, sans toucher au mapping (le
+      // renseigner réécrirait les valeurs stockées).
+      if (!target) target = erpTableForAirtableTableId(mopts?.linked_table_id)
+    }
+    else if (row.kind === 'lookup' && row.lookup_target_table && row.lookup_target_column) {
+      const hit = recordLinkTargetOf(row.lookup_target_table, row.lookup_target_column)
+      if (hit) { recordLink = true; target = hit.table }
+    }
+    // Champ `data` dont la COLONNE est une clé étrangère (ex. « Contact » des
+    // retours, ex-natif contact_id adopté par la migration 027) : la valeur est
+    // un id ERP, donc navigable. Sans ça un champ adossé à une FK s'affiche en
+    // identifiant brut, alors que la règle « champs référence » du CLAUDE.md
+    // veut un lien cliquable vers la fiche visée.
+    else if (row.kind === 'data') {
+      const hit = recordLinkTargetOf(erpTable, row.column_name)
+      if (hit) { recordLink = true; target = hit.table; identity = 'erp' }
+    }
+    // Décimales d'un nombre importé d'Airtable : tant que l'utilisateur n'en a
+    // pas fixé (colonne NULL), on publie la précision déclarée côté Airtable
+    // (options.precision du mapping, posée par la sync). Le client (tableau et
+    // modal de champ) voit ainsi la MÊME valeur effective — avant, le modal
+    // affichait « 2 » par défaut alors que la cellule rendait la valeur brute.
+    let decimals = row.decimals
+    if (decimals == null && row.type === 'number' && Number.isInteger(mopts?.precision)) {
+      decimals = Math.max(0, Math.min(5, mopts.precision))
+    }
+    return {
+      ...row,
+      decimals,
+      record_link: recordLink,
+      record_link_target: target,
+      record_link_identity: identity,
+      writable: isColumnWritable(erpTable, { ...row, mapping_id, import_disabled }, wbModule),
+    }
+  })
+  res.json({ data })
 })
 
 // ── Champs NATIFS (kind='native') ────────────────────────────────────────────
@@ -341,6 +432,78 @@ const NATIVE_FIELD_RE = /^[a-zA-Z0-9_]{1,80}$/
 // Types d'affichage supportés par applyFieldOverrides côté client. 'boolean'
 // reste accepté en entrée (ancien vocabulaire) mais est stocké 'checkbox'.
 const NATIVE_TYPES = new Set(['text', 'number', 'currency', 'date', 'checkbox', 'url', 'phone'])
+// …plus la famille « lien vers une autre table » : `link:<table ERP>`. La cible
+// est portée par le type lui-même — un champ natif n'a pas d'autre endroit où
+// la ranger, et ça garde le réglage réversible d'un simple changement de type.
+// Ne sont acceptées que les tables qui ont une fiche à ouvrir.
+const NATIVE_LINK_RE = /^link:([a-z0-9_]{1,64})$/
+export function isNativeType(t) {
+  if (NATIVE_TYPES.has(t)) return true
+  const m = NATIVE_LINK_RE.exec(String(t || ''))
+  return !!m && LINKABLE_TABLES.includes(m[1])
+}
+
+// Config des CHOIX d'un champ natif de type Sélection (tableDefs.js déclare la
+// liste des valeurs possibles ; l'utilisateur la personnalise ici).
+//
+// Différence essentielle avec un champ perso : la VALEUR stockée en base ne
+// bouge jamais — les syncs (Airtable, Stripe…) et le code serveur continuent
+// d'écrire et de comparer « En attente ». Un choix natif porte donc deux
+// choses distinctes :
+//   value : la valeur réellement stockée dans la colonne (figée)
+//   label : ce que l'utilisateur veut voir à l'écran (renommage cosmétique)
+// plus une couleur d'affichage optionnelle (`null` = couleur d'origine, celle
+// que la page rendait déjà). L'ORDRE du tableau est l'ordre d'affichage.
+// Retirer un choix le sort des sélecteurs ; les lignes qui portent encore la
+// valeur continuent de l'afficher telle quelle.
+function normalizeNativeSelectOptions(raw) {
+  if (raw == null || raw === '') return null // « pas de config » (réinitialisation)
+  let obj = raw
+  if (typeof obj === 'string') {
+    try { obj = JSON.parse(obj) } catch { throw new Error('Choix invalides (JSON attendu)') }
+  }
+  if (!obj || typeof obj !== 'object') throw new Error('Choix invalides')
+  const inChoices = Array.isArray(obj.choices) ? obj.choices : []
+  if (inChoices.length > 300) throw new Error('Trop de choix (300 maximum)')
+  const seen = new Set()
+  const choices = []
+  for (const c of inChoices) {
+    // Un choix neuf n'a pas encore de valeur : c'est son libellé qui la fixe,
+    // une fois pour toutes.
+    const label = String(c?.label ?? '').trim()
+    const value = String(c?.value ?? label).trim()
+    if (!value) continue // choix vide (ligne en cours de saisie) — ignoré
+    if (value.length > 200 || label.length > 200) throw new Error('Choix trop long (200 caractères maximum)')
+    if (seen.has(value)) throw new Error(`Choix en double : « ${value} »`)
+    seen.add(value)
+    choices.push({ value, label: label || value, color: SELECT_COLORS.has(c?.color) ? c.color : null })
+  }
+  if (choices.length === 0) return null
+  return { choices }
+}
+
+// Fusionne la config de choix avec ce qui est déjà enregistré : `options` porte
+// parfois d'autres drapeaux sur un champ natif (ex. airtable_link_hint), qu'un
+// enregistrement des choix n'a aucune raison d'effacer.
+function mergeNativeOptions(existingJson, nextChoicesObj) {
+  let base = null
+  if (existingJson) { try { base = JSON.parse(existingJson) } catch { base = null } }
+  const rest = (base && typeof base === 'object') ? { ...base } : {}
+  delete rest.choices
+  if (!nextChoicesObj) return Object.keys(rest).length ? JSON.stringify(rest) : null
+  return JSON.stringify({ ...rest, ...nextChoicesObj })
+}
+
+// Description libre d'un champ (infobulle « ? » de l'en-tête de colonne).
+// `null` / vide = pas de description. Texte brut, 500 caractères maximum.
+const DESCRIPTION_MAX = 500
+function normalizeDescription(raw) {
+  if (raw == null) return null
+  if (typeof raw !== 'string') throw new Error('Description invalide')
+  const d = raw.trim()
+  if (d.length > DESCRIPTION_MAX) throw new Error(`Description trop longue (${DESCRIPTION_MAX} caractères maximum)`)
+  return d || null
+}
 
 function nativeParams(req, res) {
   const { erpTable, fieldId } = req.params
@@ -358,6 +521,10 @@ function nativeRow(r) {
     type: r.type || null,
     decimals: r.decimals,
     country_code: r.country_code,
+    // Choix personnalisés d'un natif de type Sélection (JSON string, comme pour
+    // les champs perso) — null quand rien n'est personnalisé.
+    options: r.options || null,
+    description: r.description || null,
     sort_order: r.sort_order,
     hidden: r.hidden === 1,
   }
@@ -366,20 +533,65 @@ function nativeRow(r) {
 router.get('/:erpTable/native', (req, res) => {
   const p = nativeParams(req, res)
   if (!p) return
+  // Trois familles de lignes :
+  //   1. kind='native' vivantes — personnalisations classiques (label/type).
+  //   2. lignes soft-SUPPRIMÉES dont la colonne n'est pas préfixée cf_ — champs
+  //      natifs, ADOPTÉS ou CONVERTIS depuis une colonne native. Sans elles,
+  //      supprimer un tel champ ressusciterait sa définition codée en dur
+  //      (tableDefs.js) : la ligne revient ici avec hidden=true, ce qui retire la
+  //      définition de partout côté client. La corbeille (deleted_at=NULL) la
+  //      restaure complète.
   const rows = db.prepare(
-    `SELECT column_name, name, type, decimals, country_code, sort_order, hidden
+    `SELECT column_name, name, type, decimals, country_code, options, description, sort_order, hidden, deleted_at
      FROM custom_fields
-     WHERE erp_table=? AND deleted_at IS NULL AND kind='native'`
+     WHERE erp_table=? AND (
+       (deleted_at IS NULL AND kind='native')
+       OR (deleted_at IS NOT NULL AND column_name NOT LIKE 'cf\\_%' ESCAPE '\\')
+     )`
   ).all(p.erpTable)
-  res.json({ data: rows.map(nativeRow) })
+  const data = rows.map(r => nativeRow(r.deleted_at ? { ...r, hidden: 1 } : r))
+  //   3. champs PURGÉS — vidés de la corbeille, donc sans ligne custom_fields.
+  //      Leur pierre tombale vit dans `purged_fields` et survit à la purge :
+  //      sans elle, vider la corbeille ferait revenir le champ (sa définition
+  //      est codée dans tableDefs.js). Une purge est définitive, la corbeille
+  //      n'a plus rien à restaurer.
+  const known = new Set(data.map(r => r.field_id))
+  for (const t of purgedNativeFields(p.erpTable)) {
+    if (known.has(t.column_name)) continue
+    data.push(nativeRow({ column_name: t.column_name, name: t.label, hidden: 1, sort_order: null }))
+  }
+  res.json({ data })
 })
 
-// Upsert d'une personnalisation. Body : { label?, type?, decimals?, country_code? }
-// — au moins l'un des trois aspects requis (l'ordre passe par PATCH .../native/order).
+// Upsert d'une personnalisation. Body : { label?, type?, decimals?, country_code?, options?, description? }
+// — au moins l'un de ces aspects requis (l'ordre passe par PATCH .../native/order).
+//
+// Chaque aspect n'est touché que s'il est PRÉSENT dans le body : la clé absente
+// laisse la valeur enregistrée, la clé à `null` l'efface. Sans cette règle,
+// enregistrer les choix d'une Sélection effacerait le renommage du champ (et
+// inversement), les deux gestes vivant dans deux endroits de la modale.
 router.put('/:erpTable/native/:fieldId', (req, res) => {
   const p = nativeParams(req, res)
   if (!p) return
+  // Cette colonne porte-t-elle déjà un VRAI champ (adopté, converti en
+  // lookup/rollup…) ? Alors ce n'est plus une personnalisation cosmétique : la
+  // personnaliser ici écraserait `kind` et remettrait le champ en 'native',
+  // cassant sa configuration jusqu'au prochain démarrage. On refuse — le champ
+  // s'édite par sa propre fiche (PUT /api/custom-fields/:id).
+  const owner = db.prepare(
+    `SELECT kind FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
+  ).get(p.erpTable, p.fieldId)
+  if (owner && owner.kind && owner.kind !== 'native') {
+    return res.status(409).json({ error: 'Champ personnalisé — à modifier depuis sa fiche de champ, pas comme champ natif' })
+  }
   const { label, type, decimals, country_code } = req.body || {}
+  const has = key => Object.prototype.hasOwnProperty.call(req.body || {}, key)
+  const hasOptions = has('options')
+  let cleanOptions = null
+  if (hasOptions) {
+    try { cleanOptions = normalizeNativeSelectOptions(req.body.options) }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+  }
 
   let cleanLabel = null
   if (label != null) {
@@ -391,8 +603,8 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
   let cleanType = null
   if (type != null) {
     cleanType = type === 'boolean' ? 'checkbox' : type
-    if (!NATIVE_TYPES.has(cleanType)) {
-      return res.status(400).json({ error: `Type invalide (${[...NATIVE_TYPES].join(', ')})` })
+    if (!isNativeType(cleanType)) {
+      return res.status(400).json({ error: `Type invalide (${[...NATIVE_TYPES].join(', ')}, link:<table>)` })
     }
   }
   let cleanDecimals = null
@@ -408,8 +620,14 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
     }
     cleanCountryCode = country_code
   }
-  if (cleanLabel == null && cleanType == null && cleanCountryCode == null) {
-    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type ou indicatif requis' })
+  const hasDescription = has('description')
+  let cleanDescription = null
+  if (hasDescription) {
+    try { cleanDescription = normalizeDescription(req.body.description) }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+  }
+  if (cleanLabel == null && cleanType == null && cleanCountryCode == null && !hasOptions && !hasDescription) {
+    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type, indicatif, choix ou description requis' })
   }
 
   // Unicité du libellé dans la table : deux champs homonymes rendent tout
@@ -422,28 +640,40 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
   // Le sort_order existant est préservé : renommer un champ ne doit jamais le
   // déplacer. Une ligne absente naît sans ordre explicite (NULL).
   const existing = db.prepare(
-    `SELECT id, sort_order FROM custom_fields WHERE erp_table=? AND column_name=?`
+    `SELECT id, sort_order, name, type, decimals, country_code, options, description FROM custom_fields WHERE erp_table=? AND column_name=?`
   ).get(p.erpTable, p.fieldId)
+  // Aspect absent du body → on garde ce qui est déjà enregistré.
+  const nextOptions = hasOptions ? mergeNativeOptions(existing?.options, cleanOptions) : (existing?.options || null)
+  const nextName = has('label') ? (cleanLabel || '') : (existing?.name || '')
+  const nextType = has('type') ? (cleanType || '') : (existing?.type || '')
+  const nextDecimals = has('decimals') ? cleanDecimals : (existing?.decimals ?? null)
+  const nextCountryCode = has('country_code') ? cleanCountryCode : (existing?.country_code || null)
+  const nextDescription = hasDescription ? cleanDescription : (existing?.description || null)
+
+  // Personnaliser un champ purgé le fait revenir : geste explicite, la pierre
+  // tombale n'a plus de raison d'être (sinon le champ resterait invisible sans
+  // que rien ne l'explique).
+  clearFieldTombstone(p.erpTable, p.fieldId)
 
   if (existing) {
     db.prepare(`
       UPDATE custom_fields
-      SET name=?, type=?, decimals=?, country_code=?, kind='native', deleted_at=NULL,
+      SET name=?, type=?, decimals=?, country_code=?, options=?, description=?, kind='native', deleted_at=NULL,
           updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
-    `).run(cleanLabel || '', cleanType || '', cleanDecimals, cleanCountryCode, existing.id)
+    `).run(nextName, nextType, nextDecimals, nextCountryCode, nextOptions, nextDescription, existing.id)
   } else {
     // sort_order explicitement NULL : la colonne a un DEFAULT 0, or un champ
     // seulement renommé n'a AUCUN ordre choisi. Avec 0, applyFieldOrder le
     // considérerait comme ordonné et le ferait remonter en tête du tableau.
     db.prepare(`
       INSERT INTO custom_fields
-        (id, erp_table, name, column_name, type, decimals, country_code, sort_order, kind, source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'native', 'native')
-    `).run(uuid(), p.erpTable, cleanLabel || '', p.fieldId, cleanType || '', cleanDecimals, cleanCountryCode)
+        (id, erp_table, name, column_name, type, decimals, country_code, options, description, sort_order, kind, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'native', 'native')
+    `).run(newRecordId(), p.erpTable, nextName, p.fieldId, nextType, nextDecimals, nextCountryCode, nextOptions, nextDescription)
   }
 
-  res.json({ data: { field_id: p.fieldId, label: cleanLabel, type: cleanType, decimals: cleanDecimals, country_code: cleanCountryCode } })
+  res.json({ data: { field_id: p.fieldId, label: nextName || null, type: nextType || null, decimals: nextDecimals, country_code: nextCountryCode, options: nextOptions, description: nextDescription } })
 })
 
 // PATCH /:erpTable/native/order — retirée avec le réordonnancement des champs
@@ -451,31 +681,49 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
 // Les `sort_order` déjà en base restent lus par la liste des champs natifs et
 // pilotent toujours l'ordre d'affichage (applyFieldOrder côté client).
 
-// « Supprimer » un champ natif = le masquer partout, réversible. La colonne SQL
-// et les données ne sont jamais détruites : des routes serveur, des syncs et les
-// fiches détail lisent ces colonnes. Body : { hidden: true|false }.
+// Supprimer un champ natif = une VRAIE suppression : la ligne custom_fields est
+// soft-deletée et part à la corbeille (Admin → Corbeille), exactement comme un
+// champ perso. Le champ ne survit nulle part dans l'interface — pas de section
+// « champs masqués » où il traînerait. Seule la colonne SQL reste : des routes
+// serveur, des syncs et des fiches détail la lisent, et la donnée n'est jamais
+// détruite.
+//
+// Le drapeau du body reste `hidden` : côté client un champ supprimé se lit comme
+// un champ masqué (il sort des tableaux, panneaux, filtres, tris, sélecteurs), et
+// c'est sous ce drapeau que le GET ci-dessus republie les lignes supprimées.
+// Body : { hidden: true|false, label? } — `label` sert de libellé de corbeille
+// pour un natif jamais renommé (le serveur ne connaît pas tableDefs.js).
 router.patch('/:erpTable/native/:fieldId/hidden', (req, res) => {
   const p = nativeParams(req, res)
   if (!p) return
   const hidden = req.body?.hidden
   if (typeof hidden !== 'boolean') return res.status(400).json({ error: 'hidden doit être un booléen' })
+  const label = typeof req.body?.label === 'string' ? req.body.label.trim().slice(0, 120) : ''
+
+  // « Remettre » un champ (hidden:false) efface aussi sa pierre tombale de
+  // purge : sans ça, un champ purgé puis remis resterait masqué pour toujours.
+  if (!hidden) clearFieldTombstone(p.erpTable, p.fieldId)
 
   const existing = db.prepare(
     `SELECT id FROM custom_fields WHERE erp_table=? AND column_name=?`
   ).get(p.erpTable, p.fieldId)
   if (existing) {
+    // `name` complété seulement s'il est vide : un champ renommé garde son nom.
     db.prepare(`
-      UPDATE custom_fields SET hidden=?, deleted_at=NULL,
-             updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      UPDATE custom_fields
+      SET hidden=0,
+          name = CASE WHEN name IS NULL OR name='' THEN ? ELSE name END,
+          deleted_at=?,
+          updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
-    `).run(hidden ? 1 : 0, existing.id)
+    `).run(label, hidden ? new Date().toISOString() : null, existing.id)
   } else if (hidden) {
-    // sort_order NULL : masquer un champ ne choisit pas sa position (voir le PUT).
+    // sort_order NULL : supprimer un champ ne choisit pas sa position (voir le PUT).
     db.prepare(`
       INSERT INTO custom_fields
-        (id, erp_table, name, column_name, type, sort_order, hidden, kind, source)
-      VALUES (?, ?, '', ?, '', NULL, 1, 'native', 'native')
-    `).run(uuid(), p.erpTable, p.fieldId)
+        (id, erp_table, name, column_name, type, sort_order, hidden, kind, source, deleted_at)
+      VALUES (?, ?, ?, ?, '', NULL, 0, 'native', 'native', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(newRecordId(), p.erpTable, label, p.fieldId)
   }
   res.json({ data: { field_id: p.fieldId, hidden } })
 })
@@ -496,7 +744,7 @@ router.delete('/:erpTable/native/:fieldId', (req, res) => {
   // retour à l'original : ce sont des décisions distinctes du renommage/type.
   if (row.sort_order != null || row.hidden === 1) {
     db.prepare(`
-      UPDATE custom_fields SET name='', type='', decimals=NULL, country_code=NULL,
+      UPDATE custom_fields SET name='', type='', decimals=NULL, country_code=NULL, options=NULL, description=NULL,
              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=?
     `).run(row.id)
@@ -536,11 +784,15 @@ class FieldError extends Error {
 }
 const fieldError = (status, message) => new FieldError(status, message)
 
-const RESULT_TYPES = ['text', 'number', 'date']
+// 'url' est un type d'AFFICHAGE : la valeur reste du texte (colonne/vue
+// inchangées), elle est simplement rendue en lien cliquable côté client quand
+// c'est une URL valide.
+const RESULT_TYPES = ['text', 'number', 'date', 'url']
+const RESULT_TYPE_ERROR = "result_type doit être 'text', 'number', 'date' ou 'url'"
 function requireResultType(value, { fallback = null } = {}) {
   const rt = value || fallback
   if (!RESULT_TYPES.includes(rt)) {
-    throw fieldError(400, "result_type doit être 'text', 'number' ou 'date'")
+    throw fieldError(400, RESULT_TYPE_ERROR)
   }
   return rt
 }
@@ -670,7 +922,7 @@ const CF_INSERT_COLUMNS = [
   'lookup_fk', 'lookup_target_table', 'lookup_target_column',
   'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg',
   'link_target_table', 'link_group_id', 'link_role', 'link_single',
-  'source', 'airtable_mapping_id',
+  'source', 'airtable_mapping_id', 'description',
 ]
 
 function nextSortOrder(erpTable) {
@@ -698,7 +950,7 @@ const FIELD_SELECT = `
   SELECT id, name, column_name, type, kind, decimals, sort_order, options, default_value,
          formula_expr, result_type, lookup_fk, lookup_target_table, lookup_target_column,
          rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
-         link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
+         link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id, description
   FROM custom_fields WHERE id=?`
 
 // Crée un champ de n'importe quel kind. Lève une FieldError (status + message)
@@ -723,12 +975,17 @@ function createField(erpTable, body, { adoptColumn = null, extra = {} } = {}) {
   catch (e) { throw e instanceof FieldError ? e : fieldError(400, e.message) }
   if (built?.error) throw fieldError(400, built.error)
 
+  // Description facultative (infobulle de l'en-tête de colonne), tous kinds.
+  let description
+  try { description = normalizeDescription(body?.description) }
+  catch (e) { throw fieldError(400, e.message) }
+
   const columnName = adoptColumn
     || (spec.virtual
       ? ensureUniqueVirtualColumnName(erpTable, slugify(name))
       : ensureUniqueColumnName(erpTable, slugify(name)))
 
-  const id = uuid()
+  const id = newRecordId()
   const sortOrder = nextSortOrder(erpTable)
   const tx = db.transaction(() => {
     if (!spec.virtual && !adoptColumn) {
@@ -736,7 +993,7 @@ function createField(erpTable, body, { adoptColumn = null, extra = {} } = {}) {
     }
     insertFieldRow({
       id, erpTable, name, columnName, type: built.type, kind, sortOrder,
-      columns: { ...built.columns, ...extra },
+      columns: { ...built.columns, ...(description ? { description } : {}), ...extra },
     })
     if (spec.regenerate) {
       // La régénération résout les dépendances entre champs et détecte les
@@ -788,8 +1045,8 @@ function createLinkPair(erpTable, body) {
   catch (e) { throw fieldError(400, e.message) }
 
   const card = LINK_RELATIONSHIPS[relationship]
-  const groupId = uuid()
-  const sourceId = uuid()
+  const groupId = newRecordId()
+  const sourceId = newRecordId()
   const sourceCol = ensureUniqueVirtualColumnName(erpTable, slugify(name))
   // Nom du champ inverse : par défaut, le nom de la table source.
   const inverseName = String(body?.inverse_name || '').trim() || erpTable
@@ -803,7 +1060,7 @@ function createLinkPair(erpTable, body) {
     })
     if (createInverse) {
       insertFieldRow({
-        id: uuid(), erpTable: targetTable, name: inverseName, columnName: inverseCol, type: 'link', kind: 'link',
+        id: newRecordId(), erpTable: targetTable, name: inverseName, columnName: inverseCol, type: 'link', kind: 'link',
         sortOrder: nextSortOrder(targetTable),
         columns: { result_type: 'text', link_target_table: erpTable, link_group_id: groupId, link_role: 'target', link_single: card.inverse_single },
       })
@@ -869,7 +1126,7 @@ router.post('/:erpTable/duplicate', (req, res) => {
   }
 
   const type = (src && src.type) || 'text'
-  const id = uuid()
+  const id = newRecordId()
   const lastSortRow = db.prepare(
     `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
   ).get(erpTable)
@@ -881,12 +1138,12 @@ router.post('/:erpTable/duplicate', (req, res) => {
       INSERT INTO custom_fields
         (id, erp_table, name, column_name, type, decimals, sort_order, options, kind,
          formula_expr, lookup_fk, lookup_target_table, lookup_target_column, result_type,
-         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
+         rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, description, source)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
     `).run(
       id, erpTable, name, columnName, type, src.decimals, sortOrder, src.options, src.kind,
       src.formula_expr, src.lookup_fk, src.lookup_target_table, src.lookup_target_column, src.result_type,
-      src.rollup_target_table, src.rollup_target_fk, src.rollup_target_column, src.rollup_agg,
+      src.rollup_target_table, src.rollup_target_fk, src.rollup_target_column, src.rollup_agg, src.description ?? null,
     )
     regenerateView(erpTable)
   } else {
@@ -899,10 +1156,10 @@ router.post('/:erpTable/duplicate', (req, res) => {
       if (withValues) db.exec(`UPDATE ${erpTable} SET ${columnName} = ${fieldId}`)
       db.prepare(`
         INSERT INTO custom_fields
-          (id, erp_table, name, column_name, type, decimals, sort_order, options, default_value, kind, source)
-        VALUES (?,?,?,?,?,?,?,?,?,'data','native')
+          (id, erp_table, name, column_name, type, decimals, sort_order, options, default_value, description, kind, source)
+        VALUES (?,?,?,?,?,?,?,?,?,?,'data','native')
       `).run(id, erpTable, name, columnName, type, src?.decimals ?? null, sortOrder,
-        src?.options ?? null, src?.default_value ?? null)
+        src?.options ?? null, src?.default_value ?? null, src?.description ?? null)
     })
     tx()
   }
@@ -947,7 +1204,7 @@ router.post('/:erpTable/adopt', (req, res) => {
     catch (e) { return res.status(400).json({ error: e.message }) }
   }
 
-  const id = uuid()
+  const id = newRecordId()
   const lastSortRow = db.prepare(
     `SELECT MAX(sort_order) AS m FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL`
   ).get(erpTable)
@@ -1059,17 +1316,42 @@ router.get('/link/:fieldId/options', (req, res) => {
 })
 
 // Types de données valides pour un champ kind='data' (aligné sur POST :erpTable).
-const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox'])
+// 'attachment' : fichiers déposés (PDF, images…). La colonne TEXT porte un
+// tableau JSON de descripteurs ; les octets vivent sous uploads/attachments/
+// fields/ et s'écrivent par la route dédiée (routes/custom-field-files.js).
+const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'attachment'])
+
+// Options propres à chaque type de donnée. Les options n'appartiennent jamais au
+// champ mais à son TYPE : des choix de sélection sous un champ devenu « Nombre »
+// ne veulent plus rien dire, donc un changement de type les remplace toujours.
+function optionsJsonFor(type, raw) {
+  if (type === 'single_select' || type === 'multi_select') return normalizeSelectOptions(raw).json
+  if (type === 'duration') return normalizeDurationOptions(raw).json
+  if (type === 'currency') return normalizeCurrencyOptions(raw).json
+  if (type === 'phone') return normalizePhoneOptions(raw).json
+  if (type === 'date') return normalizeDateOptions(raw).json
+  return null
+}
+// Options par défaut d'un type quand le changement n'en fournit pas. Une
+// sélection sans liste reste sans liste : ses choix se dérivent des données
+// (fieldTypeConvert.js) ou se saisissent ensuite.
+function defaultOptionsJsonFor(type) {
+  if (type === 'single_select' || type === 'multi_select') return null
+  try { return optionsJsonFor(type, null) } catch { return null }
+}
 
 // PUT /api/custom-fields/:id — modifie nom, décimales, et (selon le kind)
 // l'expression formule ou la config lookup. Le `column_name` et le `kind` ne
-// peuvent jamais changer. Le `type` est figé pour les champs `source='native'`
-// (comportement historique) MAIS est pleinement modifiable pour les champs
-// `source='airtable'` (colonne adoptée depuis un mapping Airtable) : l'utilisateur
-// a le plein contrôle sur le rendu de la colonne — n'importe quel type de donnée
-// est accepté. Le changement est purement métadonnée (aucun ALTER TABLE) : la
-// colonne physique existe déjà et SQLite est typé dynamiquement, donc le
-// re-typage ne touche jamais les valeurs déjà stockées.
+// peuvent jamais changer.
+//
+// Le `type` d'un champ de donnée, lui, se change librement — et les VALEURS
+// suivent (services/fieldTypeConvert.js) : chaque valeur passe par un pivot
+// texte puis est relue dans le type visé. Ce qui ne se relit pas n'est jamais
+// écrasé en douce : la route répond 409 avec le décompte et des exemples, et
+// l'appelant outrepasse avec `force_convert: true` (ces valeurs-là sont alors
+// vidées). Si l'affinité SQLite de la colonne change (texte ↔ nombre ↔ booléen),
+// la colonne physique est refaite — sans quoi un champ « Nombre » trierait
+// encore ses valeurs comme du texte.
 router.put('/:id', (req, res) => {
   const existing = db.prepare(`SELECT * FROM custom_fields WHERE id=?`).get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Champ introuvable' })
@@ -1136,19 +1418,59 @@ router.put('/:id', (req, res) => {
     if (conflict) return res.status(409).json({ error: labelConflictError(conflict) })
     updates.push('name=?'); values.push(n)
   }
+  let retype = null
   if (!wantedKind && 'type' in (req.body || {}) && req.body.type !== existing.type) {
-    if (existing.source !== 'airtable' || existing.kind !== 'data') {
-      return res.status(400).json({ error: 'Le type ne peut pas être modifié après création' })
+    if (existing.kind !== 'data') {
+      return res.status(400).json({
+        error: 'Le type ne se change que sur un champ de donnée — pour un champ calculé, changez sa nature (formule, lookup, rollup)',
+      })
     }
     if (!DATA_TYPES.has(req.body.type)) {
       return res.status(400).json({ error: 'Type invalide' })
     }
-    updates.push('type=?'); values.push(req.body.type)
-    // Une devise fraîchement choisie démarre à 2 décimales si non précisé —
-    // même défaut qu'à la création (CustomFieldModal envoie decimals à part).
-    if (req.body.type === 'currency' && existing.decimals == null && !('decimals' in (req.body || {}))) {
-      updates.push('decimals=?'); values.push(2)
+    const toType = req.body.type
+    let plan
+    try { plan = planTypeConversion(existing, toType, req.body.options) }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+    // Avertissement OUTREPASSABLE : on refuse une première fois en disant
+    // exactement ce qui serait perdu, plutôt que de vider des cellules sans
+    // que personne ne l'ait demandé.
+    if (plan.unconvertible > 0 && req.body.force_convert !== true) {
+      return res.status(409).json({
+        error: `${plan.unconvertible} valeur${plan.unconvertible > 1 ? 's' : ''} ne se convertit pas`,
+        retype: {
+          from: existing.type, to: toType, total: plan.total, filled: plan.filled,
+          converted: plan.converted, unconvertible: plan.unconvertible, samples: plan.samples,
+        },
+      })
     }
+    retype = plan
+    updates.push('type=?'); values.push(toType)
+    let optsJson
+    try {
+      optsJson = req.body.options != null
+        ? optionsJsonFor(toType, req.body.options)
+        : (plan.derivedOptions ? JSON.stringify(plan.derivedOptions) : defaultOptionsJsonFor(toType))
+    } catch (e) { return res.status(400).json({ error: e.message }) }
+    updates.push('options=?'); values.push(optsJson)
+    // Décimales : propres à nombre/devise. Si le corps en fournit, c'est le bloc
+    // dédié plus bas qui les écrit (une seule assignation par colonne).
+    if (!('decimals' in (req.body || {}))) {
+      updates.push('decimals=?')
+      values.push(toType === 'number' || toType === 'currency' ? (existing.decimals ?? 2) : null)
+    }
+    // La valeur par défaut suit le même chemin que les données : « Oui » sur une
+    // case devient 1, un défaut intraduisible disparaît.
+    const dv = convertSingleValue(existing.default_value, existing.type, existing.options, toType, optsJson)
+    updates.push('default_value=?')
+    values.push(dv.ok && dv.value != null && dv.value !== '' ? String(dv.value) : null)
+  }
+  // Description libre — éditable sur tout kind, y compris pendant une conversion.
+  if ('description' in (req.body || {})) {
+    let d
+    try { d = normalizeDescription(req.body.description) }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+    updates.push('description=?'); values.push(d)
   }
   if (!wantedKind && 'decimals' in (req.body || {})) {
     // Prend en compte un changement de type dans la même requête (ex: number → currency).
@@ -1202,7 +1524,7 @@ router.put('/:id', (req, res) => {
                 String(merged.rollup_agg).toUpperCase())
     viewDirty = true
   }
-  // result_type pilote l'affichage / le type de colonne (texte, nombre, date).
+  // result_type pilote l'affichage / le type de colonne (texte, nombre, date, URL).
   // Éditable sur les champs calculés ; notamment un rollup ARRAY/ARRAYUNIQUE
   // bascule en 'text' (liste de valeurs), un rollup numérique reste en 'number'.
   if (!wantedKind && 'result_type' in (req.body || {})) {
@@ -1210,8 +1532,8 @@ router.put('/:id', (req, res) => {
       return res.status(400).json({ error: 'result_type applicable seulement aux champs formule, lookup ou rollup' })
     }
     const rt = req.body.result_type
-    if (!['text', 'number', 'date'].includes(rt)) {
-      return res.status(400).json({ error: "result_type doit être 'text', 'number' ou 'date'" })
+    if (!RESULT_TYPES.includes(rt)) {
+      return res.status(400).json({ error: RESULT_TYPE_ERROR })
     }
     updates.push('result_type=?'); values.push(rt)
   }
@@ -1221,7 +1543,11 @@ router.put('/:id', (req, res) => {
   // sorte qu'aucune cellule ne devient orpheline. Les choix retirés conservent
   // leur valeur en base (pas de perte de donnée silencieuse).
   let cellRenames = []
-  if ('options' in (req.body || {}) && existing.type === 'duration') {
+  if (retype) {
+    // Rien ici : le changement de type a déjà posé les options du NOUVEAU type.
+    // Les branches ci-dessous raisonnent sur `existing.type` (l'ancien) et
+    // écriraient une seconde fois la même colonne.
+  } else if ('options' in (req.body || {}) && existing.type === 'duration') {
     // Duration : la seule option éditable est le format d'affichage.
     updates.push('options=?'); values.push(normalizeDurationOptions(req.body.options).json)
   } else if ('options' in (req.body || {}) && existing.type === 'currency') {
@@ -1263,7 +1589,7 @@ router.put('/:id', (req, res) => {
 
   // Édition de la valeur par défaut (text/number/currency/url). Le single_select
   // gère son défaut via `options.default_id`, pas par cette colonne.
-  if ('default_value' in (req.body || {})) {
+  if (!retype && 'default_value' in (req.body || {})) {
     if (existing.kind !== 'data' || existing.type === 'single_select') {
       return res.status(400).json({ error: 'Valeur par défaut applicable seulement aux champs texte, nombre, devise, URL, durée ou case à cocher' })
     }
@@ -1278,6 +1604,12 @@ router.put('/:id', (req, res) => {
   values.push(req.params.id)
 
   const tx = db.transaction(() => {
+    // Les valeurs d'abord : si la colonne doit être refaite (affinité), elle est
+    // détruite/recréée ici, et la vue régénérée dans le même mouvement.
+    if (retype) {
+      applyTypeConversion(existing, retype)
+      if (retype.rebuild) viewDirty = false
+    }
     db.prepare(`UPDATE custom_fields SET ${updates.join(', ')} WHERE id=?`).run(...values)
     // Propage les renommages de choix aux valeurs déjà saisies.
     for (const r of cellRenames) {
@@ -1308,9 +1640,18 @@ router.put('/:id', (req, res) => {
     SELECT id, name, column_name, type, decimals, kind, formula_expr,
            lookup_fk, lookup_target_table, lookup_target_column, result_type, sort_order,
            rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
-           link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id
+           link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id, description
     FROM custom_fields WHERE id=?
   `).get(req.params.id)
+  // Bilan de conversion : le client s'en sert pour dire ce qui a été converti,
+  // ce qui a été vidé, et pour afficher les choix dérivés des données.
+  if (retype) {
+    updated.retype = {
+      from: retype.from, to: retype.to, total: retype.total, filled: retype.filled,
+      converted: retype.converted, cleared: retype.unconvertible,
+      rebuilt: retype.rebuild, derived_choices: retype.derivedOptions ? retype.derivedOptions.choices.length : 0,
+    }
+  }
   res.json(updated)
 })
 
@@ -1327,7 +1668,10 @@ router.delete('/:id', (req, res) => {
     // l'impression que la suppression n'avait rien fait. Les valeurs déjà
     // importées sont conservées (la corbeille des champs peut tout restaurer,
     // et le mapping se réactive en re-sélectionnant le champ Airtable).
-    if (existing.source === 'airtable' && existing.column_name) {
+    // Idem pour un champ CALCULÉ mappé vers Airtable (sens push seulement) : sa
+    // colonne virtuelle disparaît de la vue <table>_v, le write-back n'aurait
+    // plus rien à pousser — on coupe le mapping plutôt que de le laisser pendre.
+    if ((existing.source === 'airtable' || PUSH_ONLY_CF_KINDS.has(existing.kind)) && existing.column_name) {
       db.prepare(
         `UPDATE airtable_field_mappings SET import_disabled=1 WHERE erp_table=? AND column_name=?`
       ).run(existing.erp_table, existing.column_name)
@@ -1354,20 +1698,16 @@ router.delete('/:id', (req, res) => {
     }
   })
   tx()
+  // La colonne sort du snapshot client (voir droppedFieldColumns) : sans cette
+  // invalidation, un champ kind='data' supprimé continuerait d'être envoyé
+  // jusqu'au prochain redémarrage — aucune vue n'est régénérée dans ce cas.
+  invalidateColumnsCache()
   res.json({ ok: true })
 })
 
-// GET /api/custom-fields/all/columns/:erpTable — utilitaire interne :
-// retourne juste les noms de colonnes actives (pour whitelist update côté
-// routes/projects par ex). Non exposé au client.
-export function getActiveCustomColumns(erpTable) {
-  // Seuls les champs kind='data' ont une colonne physique inscriptible. Les
-  // champs virtuels (formula/lookup/auto) vivent dans la VUE et sont en lecture
-  // seule — les exposer en whitelist d'UPDATE casserait le PATCH (colonne
-  // inexistante sur la table physique).
-  return db.prepare(
-    `SELECT column_name, type, decimals FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL AND kind='data'`
-  ).all(erpTable)
-}
+// La whitelist d'update des routes d'entité (projects, payments…) vit dans
+// services/customFieldWritability.js (getWritableCustomColumns) : seuls les
+// champs kind='data' ÉDITABLES selon la règle d'éditabilité unique — un champ
+// Airtable en import seul est en lecture seule côté ERP.
 
 export default router

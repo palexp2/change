@@ -23,6 +23,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
 router.use(requireAuth)
 
+const pad2 = n => String(n).padStart(2, '0')
+// Le ramassage est une date/heure locale d'entrepôt (le coursier passe à 9h
+// heure de Montréal) : on la garde en date-only + « HH:MM », sans conversion UTC.
+function fmtPickupDate(d) {
+  if (!d?.year || !d?.month || !d?.day) return null
+  return `${d.year}-${pad2(d.month)}-${pad2(d.day)}`
+}
+function fmtPickupTime(t) {
+  if (t?.hour == null) return null
+  return `${pad2(t.hour)}:${pad2(t.minute || 0)}`
+}
+
 // Load shipment with full address + company info + contact attaché à l'adresse
 // (le contact de l'adresse prime sur l'email/tel de la company — c'est lui le
 // destinataire physique du colis).
@@ -330,9 +342,25 @@ router.post('/pickup/:shipmentId', async (req, res) => {
     const result = await schedulePickup(shipment.novoxpress_shipment_id, {
       date, ready_at, ready_until, quantity, weight, pickup_location, pickup_instructions
     })
-    db.prepare('UPDATE shipments SET novoxpress_pickup_id = ? WHERE id = ?')
-      .run(result.pickup_id || null, req.params.shipmentId)
-    res.json({ pickup_id: result.pickup_id, message: result.message })
+    // On mémorise ce qui a été commandé : Novoxpress n'expose aucun endpoint
+    // pour relire un ramassage, c'est notre seule source pour afficher la date,
+    // la fenêtre horaire et les consignes sur la fiche envoi.
+    const details = {
+      pickup_id: result.pickup_id || null,
+      date: fmtPickupDate(date),
+      ready_at: fmtPickupTime(ready_at),
+      ready_until: fmtPickupTime(ready_until),
+      quantity: Number(quantity) || 1,
+      weight: weight != null ? String(weight) : null,
+      pickup_location: pickup_location || 'OutsideDoor',
+      pickup_instructions: pickup_instructions || '',
+      scheduled_at: new Date().toISOString(),
+      scheduled_by: req.user?.name || null,
+      message: result.message || null,
+    }
+    db.prepare('UPDATE shipments SET novoxpress_pickup_id = ?, novoxpress_pickup_details = ? WHERE id = ?')
+      .run(result.pickup_id || null, JSON.stringify(details), req.params.shipmentId)
+    res.json({ pickup_id: result.pickup_id, message: result.message, details })
   } catch (e) {
     console.error('Novoxpress pickup error:', e.message)
     res.status(502).json({ error: e.message })
@@ -349,7 +377,8 @@ router.delete('/pickup/:shipmentId', async (req, res) => {
 
   try {
     await cancelPickup(shipment.novoxpress_pickup_id)
-    db.prepare('UPDATE shipments SET novoxpress_pickup_id = NULL WHERE id = ?').run(req.params.shipmentId)
+    db.prepare('UPDATE shipments SET novoxpress_pickup_id = NULL, novoxpress_pickup_details = NULL WHERE id = ?')
+      .run(req.params.shipmentId)
     res.json({ success: true })
   } catch (e) {
     console.error('Novoxpress cancel-pickup error:', e.message)

@@ -1,8 +1,10 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireHROrAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { readRelation } from '../services/customFieldsView.js'
+import { parsePage } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireHROrAdmin)
@@ -14,9 +16,8 @@ router.get('/sync-config', (req, res) => {
 })
 
 router.get('/', (req, res) => {
-  const { q, page = 1, limit = 50 } = req.query
-  const limitVal = parseInt(limit)
-  const offset = (parseInt(page) - 1) * limitVal
+  const { q } = req.query
+  const { page, limitVal, offset } = parsePage(req.query, 50)
   let where = ''
   const params = []
   if (q) {
@@ -36,7 +37,7 @@ router.get('/', (req, res) => {
 })
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM employees WHERE id=?')
+  const row = db.prepare(`SELECT * FROM ${readRelation('employees')} WHERE id=?`)
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
@@ -53,7 +54,7 @@ const ALLOWED = [
 router.post('/', (req, res) => {
   const { first_name, last_name } = req.body
   if (!first_name || !last_name) return res.status(400).json({ error: 'Prénom et nom requis' })
-  const id = randomUUID()
+  const id = newRecordId()
   const cols = ['id', ...ALLOWED.filter(k => k in req.body)]
   const vals = [id, ...ALLOWED.filter(k => k in req.body).map(k => req.body[k] ?? null)]
   const placeholders = cols.map(() => '?').join(',')
@@ -79,12 +80,43 @@ router.patch('/:id', (req, res) => {
   res.json(updated)
 })
 
+// Tables qui pointent vers un employé par clé étrangère : tant qu'une ligne
+// subsiste, SQLite refuse le DELETE. L'échec remontait en 500 « FOREIGN KEY
+// constraint failed » — de l'extérieur, le bouton « Supprimer » paraissait
+// simplement inerte. On dit d'abord ce qui serait emporté (409), et on ne
+// purge que si l'utilisateur a tranché (?force=1).
+const DEPENDENTS = [
+  { table: 'paie_items', one: 'ligne de paie', many: 'lignes de paie' },
+  { table: 'hour_bank_entries', one: 'entrée de banque d\'heures', many: 'entrées de banque d\'heures' },
+  { table: 'vacations', one: 'vacance', many: 'vacances' },
+  { table: 'rd_month_hours', one: 'mois de R&D', many: 'mois de R&D' },
+]
+
 router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM employees WHERE id=?').get(req.params.id)
+  const id = req.params.id
+  const existing = db.prepare('SELECT id, airtable_id FROM employees WHERE id=?').get(id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  db.prepare('DELETE FROM employees WHERE id=?').run(req.params.id)
-  emitEntity('employee', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
-  res.json({ ok: true })
+  const force = req.query.force === '1' || req.query.force === 'true'
+
+  const blockers = DEPENDENTS
+    .map(d => ({ ...d, count: db.prepare(`SELECT COUNT(*) c FROM ${d.table} WHERE employee_id=?`).get(id).c }))
+    .filter(d => d.count > 0)
+  if (blockers.length && !force) {
+    return res.status(409).json({
+      error: blockers.map(d => `${d.count} ${d.count > 1 ? d.many : d.one}`).join(', '),
+      dependents: blockers.map(({ table, count }) => ({ table, count })),
+    })
+  }
+
+  db.transaction(() => {
+    for (const d of DEPENDENTS) db.prepare(`DELETE FROM ${d.table} WHERE employee_id=?`).run(id)
+    // Un compte utilisateur ne disparaît pas avec la fiche : on le détache.
+    db.prepare('UPDATE users SET employee_id=NULL WHERE employee_id=?').run(id)
+    db.prepare('DELETE FROM employees WHERE id=?').run(id)
+  })()
+
+  emitEntity('employee', 'deleted', id, { id }, req.user?.id)
+  res.json({ ok: true, from_airtable: !!existing.airtable_id })
 })
 
 export default router

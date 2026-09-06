@@ -7,6 +7,7 @@ import db from '../db/database.js'
 import { execFileSync } from 'child_process'
 import { existsSync, statSync } from 'fs'
 import { join } from 'path'
+import { uploadsPath } from '../config/uploads.js'
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -214,7 +215,9 @@ function buildRegenContext({ qc, company, contact, lostProject, lang }) {
     const parts = [lostProject.project_number]
     if (lostMonth) parts.push(`fermé en ${lostMonth}`)
     if (lostProject.value_cad) parts.push(`valeur estimée ${lostProject.value_cad} CAD`)
-    if (lostProject.refusal_reason) parts.push(`raison: ${lostProject.refusal_reason}`)
+    // « Raison du refus » est un champ personnalisé depuis la migration 025
+    // (la colonne native refusal_reason a été droppée).
+    if (lostProject.raison_du_refus) parts.push(`raison: ${lostProject.raison_du_refus}`)
     lines.push(`Projet perdu : ${parts.join(', ')}`)
   }
   if (businessModels.length) lines.push(`Modèles d'affaires : ${businessModels.join(', ')}`)
@@ -243,7 +246,7 @@ function buildRegenContext({ qc, company, contact, lostProject, lang }) {
 // Cache par token (clé = token, valeur = { storedName, mtimeMs, text }) :
 // invalidé automatiquement si le fichier est remplacé/édité.
 
-const PUBLIC_UPLOADS_DIR = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'public')
+const PUBLIC_UPLOADS_DIR = uploadsPath('public')
 
 const PDF_REF_RE = /\{\{pdf:([a-f0-9]{16,64})(?:\|([^}]*))?\}\}/g
 
@@ -334,7 +337,7 @@ export async function regenerateEmail({ qcId, temperature = 0.7, generalRules, s
   `).get(qc.company_id)
 
   const lostProject = db.prepare(`
-    SELECT id, name AS project_number, status, close_date, value_cad, refusal_reason
+    SELECT id, name AS project_number, status, close_date, value_cad, raison_du_refus
     FROM projects
     WHERE company_id = ? AND status = 'Perdu'
     ORDER BY COALESCE(close_date, created_at) DESC
@@ -572,7 +575,7 @@ export function buildRelanceList() {
     LIMIT 1
   `)
   const projStmt = db.prepare(`
-    SELECT id, name AS project_number, status, close_date, value_cad, refusal_reason
+    SELECT id, name AS project_number, status, close_date, value_cad, raison_du_refus
     FROM projects
     WHERE company_id = ? AND status = 'Perdu'
     ORDER BY COALESCE(close_date, created_at) DESC

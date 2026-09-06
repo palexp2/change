@@ -80,7 +80,6 @@ export default function Setup() {
                   value={form.company_name}
                   onChange={handleChange}
                   className="input"
-                  placeholder="Orisha Technologies"
                   required
                 />
               </div>
@@ -91,7 +90,6 @@ export default function Setup() {
                   value={form.admin_name}
                   onChange={handleChange}
                   className="input"
-                  placeholder="Jean Tremblay"
                   required
                 />
               </div>
@@ -103,7 +101,6 @@ export default function Setup() {
                   value={form.email}
                   onChange={handleChange}
                   className="input"
-                  placeholder="admin@orisha.io"
                   required
                 />
               </div>
@@ -115,7 +112,6 @@ export default function Setup() {
                   value={form.password}
                   onChange={handleChange}
                   className="input"
-                  placeholder="Minimum 8 caractères"
                   required
                 />
               </div>
@@ -127,7 +123,6 @@ export default function Setup() {
                   value={form.confirm_password}
                   onChange={handleChange}
                   className="input"
-                  placeholder="Répéter le mot de passe"
                   required
                 />
               </div>

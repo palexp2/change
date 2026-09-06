@@ -7,6 +7,7 @@ import { stripBankNoise } from './vendorFromBankLabel.js'
 import { parseSessionPayload, sessionCoversDomain } from './session.js'
 // index.js ouvre la base au chargement : on n'importe ici que le collecteur.
 import simplex, { parseSimplexDate, parseSimplexAmount, parseSimplexRows } from './simplex.js'
+import fedex, { parseFedexDate, parseFedexAmount, parseFedexRows } from './fedex.js'
 
 // Vecteur officiel RFC 6238 (secret ASCII « 12345678901234567890 », T = 59 s).
 test('generateTotp suit le vecteur RFC 6238', () => {
@@ -187,6 +188,60 @@ test('le collecteur Simplex respecte le contrat attendu par l’orchestrateur', 
   assert.equal(simplex.label, 'Simplex Wireless')
   assert.equal(typeof simplex.list, 'function')
   assert.ok(simplex.fields.username && simplex.fields.password)
+})
+
+test('parseFedexDate lit le mm/jj américain de FBO', () => {
+  // FBO écrit en anglais : 09/12/2026 = 12 septembre, pas 9 décembre.
+  assert.equal(parseFedexDate('09/12/2026'), '2026-09-12')
+  // Un premier nombre > 12 ne peut être qu'un jour : l'ordre se retourne.
+  assert.equal(parseFedexDate('31/07/2026'), '2026-07-31')
+  assert.equal(parseFedexDate('Sep 12, 2026'), '2026-09-12')
+  assert.equal(parseFedexDate('2026-09-12'), '2026-09-12')
+  assert.equal(parseFedexDate('aucune date'), null)
+})
+
+test('parseFedexAmount ne confond pas la fin d’une date avec des milliers', () => {
+  assert.equal(parseFedexAmount('2026-07-31 128.74 $'), 128.74)
+  assert.equal(parseFedexAmount('Total $1,284.05'), 1284.05)
+  assert.equal(parseFedexAmount('aucun montant'), null)
+})
+
+test('parseFedexRows identifie la facture par son numéro à 9 chiffres', () => {
+  const docs = parseFedexRows([
+    { index: 0, href: '', text: 'Download PDF', row: 'Invoice 812345678 09/12/2026 $1,284.05 Due' },
+    // Numéro sans étiquette : le gabarit à 9 chiffres suffit.
+    { index: 1, href: '/fedexbillingonline/invoice/812345679.pdf', text: 'PDF', row: '812345679 09/05/2026 $942.10' },
+    { index: 2, href: '', text: '', row: 'Total balance due' },
+  ])
+  assert.deepEqual(docs.map(d => d.externalId), ['fedex:812345678', 'fedex:812345679'])
+  assert.equal(docs[0].date, '2026-09-12')
+  assert.equal(docs[0].amount, 1284.05)
+  assert.equal(docs[0].currency, 'CAD')
+  // Ligne sans lien : c'est son index (et son numéro) qui permettront de la recliquer.
+  assert.equal(docs[0].index, 0)
+  assert.equal(docs[1].href, '/fedexbillingonline/invoice/812345679.pdf')
+})
+
+test('parseFedexRows ne prend pas une date pour un numéro de facture', () => {
+  const docs = parseFedexRows([
+    { index: 0, href: '', text: '', row: '09/12/2026 $128.74' },
+  ])
+  assert.equal(docs[0].externalId, 'fedex:2026-09-12')
+})
+
+test('parseFedexRows dédoublonne la même facture vue en lien et en ligne', () => {
+  const docs = parseFedexRows([
+    { index: 0, href: '/fedexbillingonline/invoice/812345678.pdf', text: 'PDF', row: 'Invoice 812345678 09/12/2026 $1,284.05' },
+    { index: 1, href: '', text: '', row: '812345678 09/12/2026 $1,284.05' },
+  ])
+  assert.equal(docs.length, 1)
+  assert.equal(docs[0].href, '/fedexbillingonline/invoice/812345678.pdf')
+})
+
+test('le collecteur FedEx respecte le contrat attendu par l’orchestrateur', () => {
+  assert.equal(fedex.label, 'FedEx')
+  assert.equal(typeof fedex.list, 'function')
+  assert.ok(fedex.fields.username && fedex.fields.password)
 })
 
 test('isDue espace les nouvelles tentatives puis abandonne', () => {

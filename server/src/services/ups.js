@@ -12,8 +12,11 @@ import {
   parseShipmentResults,
   parseTracking,
   serviceName,
+  normalizeCountry,
   DEFAULT_HS_CODE,
+  ORISHA_WORKSHOP,
 } from './upsPayload.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // Service UPS — côté effets (réseau, disque, DB). Toute la construction de
 // payload et le parsing de réponse vivent dans upsPayload.js (pur, testé).
@@ -22,7 +25,7 @@ import {
 // rafraîchissement de suivi passe par logSync('ups', …), succès comme échec,
 // avec le message brut de l'API UPS en cas d'erreur.
 
-const LABELS_DIR = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')
+const LABELS_DIR = uploadsPath('labels')
 
 export { isUpsConfigured }
 
@@ -197,41 +200,76 @@ export async function createReturnLabel(ctx, returnId, { packages, service_code,
   }
 }
 
-// ── Comparaison de tarifs pour un envoi sortant ──────────────────────────────
-export async function getShipmentRates(ctx, shipmentId, { packages, currency } = {}) {
+// ── Comparaison de tarifs ────────────────────────────────────────────────────
+// Un seul chemin pour les deux sens : `inbound` bascule ShipFrom/ShipTo (retour
+// client → atelier) sans rien changer au reste (compte payeur, repli sur les
+// tarifs publics, douane si le client est hors Canada).
+async function fetchRates(ctx, { packages, currency, customsItems, inbound = false, label } = {}) {
   assertConfigured()
   const cfg = getConfig()
   const started = Date.now()
 
-  const customsItems = shipmentCustomsItems(shipmentId)
-  const payload = buildRateRequest(ctx, {
+  const buildPayload = negotiatedRates => buildRateRequest(ctx, {
     accountNumber: cfg.account_number,
     packages,
     currency: currency || 'CAD',
     customsItems,
+    negotiatedRates,
+    inbound,
   })
+  const endpoint = `/api/rating/${cfg.rating_version || 'v1'}/Shop`
 
+  let payload = buildPayload(true)
   let data
   try {
-    data = await upsRequest('POST', `/api/rating/${cfg.rating_version || 'v1'}/Shop`, {
-      body: payload,
-      context: `Rating /api/rating/${cfg.rating_version || 'v1'}/Shop`,
-    })
+    data = await upsRequest('POST', endpoint, { body: payload, context: `Rating ${endpoint}` })
   } catch (e) {
-    logSync('ups', 'manual', { status: 'error', durationMs: Date.now() - started, error: `Tarifs envoi ${shipmentId} : ${e.message}` })
-    if (!e.sentPayload) e.sentPayload = payload
-    throw e
+    // Un compte sans entente tarifaire négociée fait rejeter
+    // NegotiatedRatesIndicator : on retente une fois aux tarifs publics plutôt
+    // que de laisser l'utilisateur sans aucun tarif. Si ça échoue aussi, c'est
+    // la PREMIÈRE erreur (la plus complète) qui remonte.
+    try {
+      payload = buildPayload(false)
+      data = await upsRequest('POST', endpoint, { body: payload, context: `Rating ${endpoint}` })
+    } catch {
+      logSync('ups', 'manual', { status: 'error', durationMs: Date.now() - started, error: `${label} : ${e.message}` })
+      if (!e.sentPayload) e.sentPayload = payload
+      throw e
+    }
   }
 
   const rates = parseRates(data)
   logSync('ups', 'manual', { status: 'success', modified: rates.length, durationMs: Date.now() - started })
-  const international = payload.RateRequest.Shipment.ShipTo.Address.CountryCode !== 'CA'
+  // Douane dès que le client est hors Canada, peu importe le sens du colis.
+  const international = normalizeCountry(ctx.address_country) !== ORISHA_WORKSHOP.country
   return {
     rates,
     sent: payload,
     environment: cfg.environment,
     customs: international ? customsItems : null,
   }
+}
+
+// Envoi sortant (Orisha → client).
+export async function getShipmentRates(ctx, shipmentId, { packages, currency } = {}) {
+  return await fetchRates(ctx, {
+    packages,
+    currency,
+    customsItems: shipmentCustomsItems(shipmentId),
+    label: `Tarifs envoi ${shipmentId}`,
+  })
+}
+
+// Retour (client → atelier Orisha) — sert à comparer les tarifs Novoxpress
+// d'une étiquette de retour avec le tarif UPS direct. Aucun achat.
+export async function getReturnRates(ctx, returnId, { packages, currency } = {}) {
+  return await fetchRates(ctx, {
+    packages,
+    currency,
+    customsItems: returnCustomsItems(returnId),
+    inbound: true,
+    label: `Tarifs retour ${returnId}`,
+  })
 }
 
 // ── Suivi ───────────────────────────────────────────────────────────────────

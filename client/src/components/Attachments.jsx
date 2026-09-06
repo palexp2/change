@@ -5,6 +5,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 
 import { formatBytes } from '../utils/formatters.js'
+import Spinner from './Spinner.jsx'
 
 function isImage(ct, name) {
   if (ct && ct.startsWith('image/')) return true
@@ -126,7 +127,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
   const list = (
     loading ? (
       <div className="flex items-center gap-2 text-sm text-slate-400 py-3">
-        <Loader2 size={14} className="animate-spin" /> Chargement…
+        <Spinner size="xs" label="Chargement…" />
       </div>
     ) : items.length === 0 ? (
       <p className="text-sm text-slate-400 py-2">Aucune pièce jointe.</p>

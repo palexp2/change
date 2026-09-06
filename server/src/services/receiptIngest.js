@@ -1,18 +1,18 @@
-import { v4 as uuid } from 'uuid'
 import { join } from 'path'
+import { newRecordId } from '../utils/recordId.js'
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { writeFileSync } from 'fs'
 import db from '../db/database.js'
 import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
 import { emitEntity } from './realtimeEmitters.js'
+import { ensureUploadsDir } from '../config/uploads.js'
 
 // Point d'entrée commun « un fichier de facture → un reçu en extraction ».
 // Utilisé par les collecteurs de portails (services/scrapers/*) ; le chemin
 // Gmail garde le sien parce qu'il porte des colonnes de dédup propres au
 // courriel (gmail_message_id, rfc822_message_id).
 
-const receiptsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
-if (!existsSync(receiptsDir)) mkdirSync(receiptsDir, { recursive: true })
+const receiptsDir = ensureUploadsDir('receipts')
 
 export function sha256(buffer) {
   return createHash('sha256').update(buffer).digest('hex')
@@ -39,7 +39,7 @@ export function ingestReceiptBuffer({ buffer, originalName, ext = '.pdf', source
   const existing = db.prepare('SELECT id FROM sale_receipts WHERE content_sha256=?').get(hash)
   if (existing) return { status: 'duplicate', id: existing.id, hash }
 
-  const id = uuid()
+  const id = newRecordId()
   const storedName = `${id}${ext}`
   const filePath = join(receiptsDir, storedName)
   writeFileSync(filePath, buffer)

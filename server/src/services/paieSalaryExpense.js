@@ -25,6 +25,7 @@ import {
 } from './paieRepartition.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { round2 } from '../utils/money.js'
+import { findBankDebit, shiftDate, linkTxnToQbEntity } from './bankDebitLookup.js'
 
 
 // Remboursements de dépenses de la paie, par employé (source : paie_items).
@@ -80,6 +81,91 @@ export function estimatePaieBankAmount(paieId) {
 // MÊME dépense : on la sort des remboursements pour ne la compter qu'une fois,
 // sur le compte téléphone (76000, code TPS/TVQ). Pas de ligne téléphone si la
 // paie ne contient pas ce remboursement.
+// ── Le débit de la paie au relevé bancaire ───────────────────────────────────
+// Le « montant passé au compte BNC » se lisait sur le relevé et se recopiait à
+// la main dans le dashboard. La paie sort du compte 2 à 4 jours après la fin de
+// période, sous un libellé constant (« COMPTE DIVERS DT NETHRIS PAIE ») et une
+// fois par quinzaine : la banque branchée le donne sans ambiguïté.
+//
+// Rien n'est déduit de force : deux candidats et le montant attendu ne tranche
+// pas → on rend les deux, l'écran demande de choisir. Aucune paie ne peut
+// emprunter le débit d'une autre (les transactions déjà liées sont écartées).
+export function findPaieBankDebit(paieId) {
+  const paie = db.prepare('SELECT * FROM paies WHERE id=?').get(paieId)
+  if (!paie) throw new Error('Paie introuvable')
+  const cfg = getPaieRepartitionConfig()
+
+  // Paie déjà rattachée : SON débit fait foi, sans repasser par la recherche.
+  // Sinon un rattachement fait à la main hors de la fenêtre habituelle (paie
+  // débitée en retard, période corrigée après coup) disparaîtrait de l'écran.
+  if (paie.bank_txn_id) {
+    const own = db.prepare(`
+      SELECT id, txn_date, amount, description, details, pending
+      FROM bank_transactions WHERE id=? AND deleted_at IS NULL
+    `).get(paie.bank_txn_id)
+    if (own) {
+      return {
+        match: {
+          id: own.id, txn_date: own.txn_date, amount: round2(Math.abs(own.amount)),
+          label: own.details || own.description || '', pending: !!own.pending, delta_pct: null,
+        },
+        candidates: [], stale_since: null, linked_txn_id: paie.bank_txn_id,
+      }
+    }
+  }
+
+  if (!cfg.bank_label_pattern || !paie.period_end) {
+    return { match: null, candidates: [], stale_since: null, linked_txn_id: paie.bank_txn_id || null }
+  }
+  const linked = db.prepare('SELECT bank_txn_id FROM paies WHERE bank_txn_id IS NOT NULL AND id != ?')
+    .all(paieId).map(r => r.bank_txn_id)
+  const hint = Number(paie.total_with_charges_and_reimb) > 0
+    ? Number(paie.total_with_charges_and_reimb)
+    : estimatePaieBankAmount(paieId)
+
+  const found = findBankDebit({
+    accountName: cfg.bank_account_name,
+    pattern: cfg.bank_label_pattern,
+    from: shiftDate(paie.period_end, -Math.abs(Number(cfg.bank_window_before_days) || 0)),
+    to: shiftDate(paie.period_end, Math.abs(Number(cfg.bank_window_after_days) || 10)),
+    amountHint: hint,
+    excludeTxnIds: linked,
+  })
+  return { ...found, linked_txn_id: null }
+}
+
+// Rattache le débit trouvé à la paie (sans rien publier). Appelé quand une
+// nouvelle transaction arrive de la banque : la comptabilisation est alors
+// « prête à publier », le clic humain reste requis.
+export function attachPaieBankDebit(paieId, txnId) {
+  db.prepare("UPDATE paies SET bank_txn_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+    .run(txnId || null, paieId)
+  return txnId || null
+}
+
+// Passe sur les paies terminées et pas encore comptabilisées, et rattache
+// celles dont le débit vient d'apparaître au relevé. Aucune publication QB —
+// c'est volontaire : une écriture comptable ne part jamais toute seule.
+export function linkPaiesToBankDebits() {
+  const paies = db.prepare(`
+    SELECT id, period_end FROM paies
+    WHERE salary_purchase_id IS NULL AND bank_txn_id IS NULL
+      AND period_end IS NOT NULL AND period_end <= date('now')
+      AND period_end >= date('now', '-90 days')
+    ORDER BY period_end
+  `).all()
+  const linked = []
+  for (const p of paies) {
+    let found
+    try { found = findPaieBankDebit(p.id) } catch { continue }
+    if (found.match && !found.match.pending) {
+      attachPaieBankDebit(p.id, found.match.id)
+      linked.push({ paie_id: p.id, period_end: p.period_end, txn_id: found.match.id, amount: found.match.amount })
+    }
+  }
+  return linked
+}
+
 export function paieDeductions(paieId, input = {}) {
   const cfg = getPaieRepartitionConfig()
   const warnings = []
@@ -383,6 +469,16 @@ export async function pushPaieSalaryExpense(paieId, input = {}) {
       throw new Error('Automation sys_paie_repartition inactive — l\'activer avant de publier')
     }
     const preview = computePaieSalaryExpense(paieId, input)
+    // Garde-fou anti-typo : quand la publication se réclame d'un débit du
+    // relevé, le montant publié doit être CE débit, au cent près. Sinon la
+    // dépense QB ne correspondrait pas au mouvement qu'elle prétend expliquer.
+    if (input.bank_txn_id) {
+      const txn = db.prepare('SELECT amount, txn_date FROM bank_transactions WHERE id=? AND deleted_at IS NULL').get(input.bank_txn_id)
+      if (!txn) throw new Error('Transaction bancaire introuvable')
+      if (Math.abs(Math.abs(txn.amount) - preview.bank_amount) > 0.01) {
+        throw new Error(`Le montant publié (${preview.bank_amount.toFixed(2)} $) diffère du débit bancaire lié (${Math.abs(txn.amount).toFixed(2)} $ le ${txn.txn_date})`)
+      }
+    }
     if (preview.paie.salary_purchase_id) {
       return { skipped: 'déjà publiée', qb_purchase_id: preview.paie.salary_purchase_id, qb_purchase_url: preview.paie.salary_purchase_url }
     }
@@ -397,8 +493,13 @@ export async function pushPaieSalaryExpense(paieId, input = {}) {
     // organismes et les remboursements de dépenses » : on le pose sur la paie
     // et on le pousse dans la colonne Airtable correspondante (onglet Paies, RH).
     db.prepare(`UPDATE paies SET salary_purchase_id=?, salary_purchase_pushed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
-                total_with_charges_and_reimb=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-      .run(purchaseId, preview.bank_amount, paieId)
+                total_with_charges_and_reimb=?, bank_txn_id=COALESCE(?, bank_txn_id),
+                updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+      .run(purchaseId, preview.bank_amount, input.bank_txn_id || null, paieId)
+    // La ligne du relevé porte désormais la dépense : elle passe
+    // « comptabilisée » au rapprochement sans attendre l'audit QuickBooks.
+    const bankTxnId = input.bank_txn_id || preview.paie.bank_txn_id
+    if (bankTxnId) linkTxnToQbEntity(bankTxnId, { qbTxnId: purchaseId, qbTxnType: 'purchase' })
     const { writeBackRecord } = await import('./airtableWriteback.js')
     writeBackRecord('paies', paieId, ['total_with_charges_and_reimb'])
       .catch(e => console.error('Paie salary-expense write-back error:', e.message))

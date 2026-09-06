@@ -113,11 +113,19 @@ function open() {
       return
     }
 
-    // Channel-routed event
-    if (msg.channel && state.channelHandlers.has(msg.channel)) {
-      const handlers = state.channelHandlers.get(msg.channel)
+    // Événement routé par canal. Le serveur tague le message avec TOUS les
+    // canaux auxquels cette socket est abonnée (`channels`) : une fiche ouverte
+    // par-dessus sa liste écoute `order:<id>` ET `orders:list`, et les deux
+    // handlers doivent tourner. `channel` seul est le repli.
+    const chans = Array.isArray(msg.channels) && msg.channels.length
+      ? msg.channels
+      : (msg.channel ? [msg.channel] : [])
+    for (const ch of chans) {
+      const handlers = state.channelHandlers.get(ch)
+      if (!handlers) continue
       for (const fn of handlers) {
-        try { fn(msg) } catch (e) { console.error('realtime handler error', e) }
+        try { fn(chans.length > 1 ? { ...msg, channel: ch } : msg) }
+        catch (e) { console.error('realtime handler error', e) }
       }
     }
   }

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Plus, Tag, X, Search } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -158,7 +159,7 @@ export default function CodesActivite() {
       <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center gap-3 mb-6">
           <Tag size={20} className="text-slate-400" />
-          <h1 className="text-2xl font-bold text-slate-900">Codes d'activité</h1>
+          <PageTitle>Codes d'activité</PageTitle>
           <span className="text-sm text-slate-400">— utilisés dans les feuilles de temps</span>
         </div>
 
@@ -166,18 +167,18 @@ export default function CodesActivite() {
           <h2 className="text-sm font-semibold text-slate-700 mb-3">Ajouter un code</h2>
           <form onSubmit={handleAdd} className="grid grid-cols-8 gap-3">
             <div className="col-span-3">
-              <label className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1 block">Nom *</label>
-              <input className={inp} value={newName} onChange={e => setNewName(e.target.value)} placeholder="Ex. Formation, Administration…" required />
+              <label className="label">Nom *</label>
+              <input className={inp} value={newName} onChange={e => setNewName(e.target.value)} required />
             </div>
             <div className="col-span-2 flex flex-col">
-              <label className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1 block">Payable</label>
+              <label className="label">Payable</label>
               <label className="flex items-center gap-2 text-sm text-slate-700 h-[30px] cursor-pointer">
                 <input type="checkbox" checked={newPayable} onChange={e => setNewPayable(e.target.checked)} className="rounded" />
                 Heures rémunérées
               </label>
             </div>
             <div className="col-span-2 flex flex-col">
-              <label className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1 block">RSDE</label>
+              <label className="label">RSDE</label>
               <label className="flex items-center gap-2 text-sm text-slate-700 h-[30px] cursor-pointer" title="Pré-coche la case RSDE des entrées qui utilisent ce code">
                 <input type="checkbox" checked={newRsde} onChange={e => setNewRsde(e.target.checked)} className="rounded" />
                 Pré-coché RSDE
@@ -332,7 +333,6 @@ function UserChipsPicker({ codeId, users, assigned, onChange }) {
             <input
               autoFocus
               className="w-full text-sm focus:outline-none"
-              placeholder="Rechercher un employé…"
               value={query}
               onChange={e => { setQuery(e.target.value); setHighlightIdx(0) }}
               onKeyDown={e => {

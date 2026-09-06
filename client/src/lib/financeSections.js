@@ -1,5 +1,5 @@
 import {
-  Landmark, ListChecks, BookUser, Wallet, CalendarCheck,
+  Landmark, BookUser, Wallet, CalendarCheck,
   Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, FlaskConical,
 } from 'lucide-react'
 
@@ -13,7 +13,6 @@ import {
 // Layout — importer les pages ici créerait un cycle.
 export const FINANCE_SECTIONS = [
   { to: '/comptabilite',     label: 'Dashboard comptabilité',   icon: Landmark,       group: 'Pilotage' },
-  { to: '/travaux',          label: 'Travaux',                  icon: ListChecks,     group: 'Pilotage' },
 
   { to: '/paiements-emis',   label: 'Paiements émis',           icon: Banknote,       group: 'Trésorerie' },
   { to: '/rapprochement',    label: 'Rapprochement bancaire',   icon: ArrowLeftRight, group: 'Trésorerie' },

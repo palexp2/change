@@ -1,11 +1,14 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { newRecordId } from '../utils/recordId.js';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
 import { emitCompany } from '../services/realtimeEmitters.js';
 import { findCompanyDuplicates } from '../utils/duplicateMatch.js';
+import { readRelation } from '../services/customFieldsView.js'
+import { parsePage } from '../utils/pagination.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -29,10 +32,8 @@ router.get('/duplicates', (req, res) => {
 
 // GET /api/companies
 router.get('/', (req, res) => {
-  const { search, lifecycle_phase, type, farm_province, shipping_province, page = 1, limit = 50 } = req.query;
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { search, lifecycle_phase, type, farm_province, shipping_province } = req.query;
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50);
   let where = 'WHERE c.deleted_at IS NULL';
   const params = [];
 
@@ -96,7 +97,7 @@ router.get('/', (req, res) => {
 
 // GET /api/companies/:id
 router.get('/:id', (req, res) => {
-  const company = db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id);
+  const company = db.prepare(`SELECT * FROM ${readRelation('companies')} WHERE id = ?`).get(req.params.id);
   if (!company) return res.status(404).json({ error: 'Company not found' });
 
   // Liste les contacts liés via la jointure (inclut les contacts dont
@@ -140,7 +141,7 @@ router.post('/', (req, res) => {
   const { name, type, lifecycle_phase, phone, email, website, address, city, province, country, notes, currency, language } = req.body;
   if (name === undefined || name === null) return res.status(400).json({ error: 'Name is required' });
 
-  const id = uuidv4();
+  const id = newRecordId();
   db.prepare(
     `INSERT INTO companies (id, name, type, lifecycle_phase, phone, email, website, address, city, province, country, notes, currency, language)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -157,25 +158,12 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM companies WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Company not found' });
 
-  const allowed = ['name','type','lifecycle_phase','phone','email','website','address','city','province','country','notes','currency','language','is_vendeur_orisha'];
-  const sets = [];
-  const params = [];
-  for (const key of allowed) {
-    if (Object.prototype.hasOwnProperty.call(req.body, key)) {
-      sets.push(`${key}=?`);
-      const v = req.body[key];
-      // Booléens : on accepte 0/1, true/false, '0'/'1' — on stocke en 0/1.
-      if (key === 'is_vendeur_orisha') {
-        params.push(v === true || v === 1 || v === '1' ? 1 : 0);
-      } else {
-        params.push(v === '' ? null : v);
-      }
-    }
-  }
-  if (sets.length > 0) {
-    sets.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')");
-    params.push(req.params.id);
-    db.prepare(`UPDATE companies SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  const { setClause, values } = buildPartialUpdate(req.body, {
+    allowed: ['name','type','lifecycle_phase','phone','email','website','address','city','province','country','notes','currency','language','is_vendeur_orisha'],
+    coerce: { is_vendeur_orisha: v => (v === true || v === 1 || v === '1' ? 1 : 0) },
+  });
+  if (setClause) {
+    db.prepare(`UPDATE companies SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id);
     emitCompany('updated', req.params.id, req.user?.id);
   }
 
@@ -190,7 +178,7 @@ router.get('/:id/returns', (req, res) => {
            o.order_number,
            (SELECT COUNT(*) FROM return_items ri WHERE ri.return_id = r.id) as items_count
     FROM returns r
-    LEFT JOIN contacts ct ON r.contact_id = ct.id
+    LEFT JOIN contacts ct ON r.contact = ct.id
     LEFT JOIN orders o ON r.order_id = o.id
     WHERE r.company_id = ?
     ORDER BY r.created_at DESC

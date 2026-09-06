@@ -4,6 +4,7 @@ import { RefreshCw, ExternalLink, CheckCircle2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, STRIPE_PAYOUT_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
@@ -70,7 +71,7 @@ export default function StripePayouts() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Stripe Payouts</h1>
+            <PageTitle>Stripe Payouts</PageTitle>
             <p className="text-xs text-slate-500 mt-0.5">Virements Stripe → banque. Pousser vers QuickBooks en tant que Deposit.</p>
           </div>
           <div className="flex items-center gap-2">

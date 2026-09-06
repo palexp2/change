@@ -3,34 +3,29 @@ import { Link } from 'react-router-dom'
 import { RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useAuth } from '../lib/auth.jsx'
+import Spinner from '../components/Spinner.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
 }
 
-function money(n) {
-  if (n == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 2 }).format(n)
-}
-
-function num(n, digits = 2) {
-  if (n == null) return '—'
-  return Number(n).toLocaleString('fr-CA', { minimumFractionDigits: 0, maximumFractionDigits: digits })
-}
+const num = (n, digits = 2) => fmtNumber(n, { minimumFractionDigits: 0, maximumFractionDigits: digits })
 
 const RENDERS_PAIES = {
   period_end: row => <span className="text-slate-700">{fmtDate(row.period_end)}</span>,
   timesheets_deadline: row => <span className="text-slate-500">{row.timesheets_deadline || '—'}</span>,
-  total_with_charges_and_reimb: row => <span className="font-medium">{money(row.total_with_charges_and_reimb)}</span>,
-  total_regular_amount: row => <span className="text-slate-700">{money(row.total_regular_amount)}</span>,
+  total_with_charges_and_reimb: row => <span className="font-medium">{fmtMoney(row.total_with_charges_and_reimb)}</span>,
+  total_regular_amount: row => <span className="text-slate-700">{fmtMoney(row.total_regular_amount)}</span>,
   total_regular_hours: row => <span className="text-slate-700">{num(row.total_regular_hours)}</span>,
   timesheets_sent: row => bool(row, 'timesheets_sent'),
   includes_hourly: row => bool(row, 'includes_hourly'),
@@ -46,14 +41,14 @@ const COLUMNS_PAIES = TABLE_COLUMN_META.paies.map(meta => ({ ...meta, render: RE
 const RENDERS_PAIE_ITEMS = {
   employee_name:           row => <span>{row.first_name} {row.last_name}</span>,
   accounting_department:   row => <span className="text-slate-500">{row.accounting_department || '—'}</span>,
-  hourly_rate:             row => <span className="tabular-nums">{money(row.hourly_rate)}</span>,
+  hourly_rate:             row => <span className="tabular-nums">{fmtMoney(row.hourly_rate)}</span>,
   regular_hours:           row => <span className="tabular-nums">{num(row.regular_hours)}</span>,
   holiday_hours:           row => <span className="tabular-nums">{num(row.holiday_hours)}</span>,
-  vacation:                row => <span className="tabular-nums">{money(row.vacation)}</span>,
-  commission:              row => <span className="tabular-nums">{money(row.commission)}</span>,
-  expense_reimb:           row => <span className="tabular-nums">{money(row.expense_reimb)}</span>,
-  holiday_1_20:            row => <span className="tabular-nums">{money(row.holiday_1_20)}</span>,
-  insurance_gains:         row => <span className="tabular-nums">{money(row.insurance_gains)}</span>,
+  vacation:                row => <span className="tabular-nums">{fmtMoney(row.vacation)}</span>,
+  commission:              row => <span className="tabular-nums">{fmtMoney(row.commission)}</span>,
+  expense_reimb:           row => <span className="tabular-nums">{fmtMoney(row.expense_reimb)}</span>,
+  holiday_1_20:            row => <span className="tabular-nums">{fmtMoney(row.holiday_1_20)}</span>,
+  insurance_gains:         row => <span className="tabular-nums">{fmtMoney(row.insurance_gains)}</span>,
   rsde_pct:                row => <span className="tabular-nums">{row.rsde_pct == null ? '—' : `${num(row.rsde_pct)} %`}</span>,
   paid_leave:              row => <span className="text-slate-600">{row.paid_leave || '—'}</span>,
   period_end:              row => <span className="text-slate-700">{fmtDate(row.period_end)}</span>,
@@ -205,7 +200,7 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
           </div>
           <div>
             <label className="label">Date limite correction FdT</label>
-            <input value={form.timesheets_deadline || ''} onChange={f('timesheets_deadline')} onBlur={blurSave('timesheets_deadline')} className="input" placeholder="ex. Mardi 11h AM" />
+            <input value={form.timesheets_deadline || ''} onChange={f('timesheets_deadline')} onBlur={blurSave('timesheets_deadline')} className="input" />
           </div>
           <div>
             <label className="label">Total paie (optionnel)</label>
@@ -340,8 +335,8 @@ function PaieRepartitionSection({ paie }) {
         <>
           <div className="flex flex-wrap items-end gap-4 text-sm mb-2">
             <div>
-              <div className="text-xs text-slate-500">Total paie − remb. ({money(preview.reimb)})</div>
-              <div className="font-medium tabular-nums">{money(preview.total)} → base {money(preview.base)}</div>
+              <div className="text-xs text-slate-500">Total paie − remb. ({fmtMoney(preview.reimb)})</div>
+              <div className="font-medium tabular-nums">{fmtMoney(preview.total)} → base {fmtMoney(preview.base)}</div>
             </div>
             <div>
               <label className="text-xs text-slate-500 block">Téléphone Martin (76000)</label>
@@ -367,7 +362,7 @@ function PaieRepartitionSection({ paie }) {
                   <td className="py-1 pr-3 text-xs text-slate-500">{l.type === 'Debit' ? 'Débit' : 'Crédit'}</td>
                   <td className="py-1 pr-3 font-mono text-xs">{l.acctnum}</td>
                   <td className="py-1 pr-3 text-slate-600">{l.label}</td>
-                  <td className="py-1 text-right tabular-nums font-medium">{money(l.amount)}</td>
+                  <td className="py-1 text-right tabular-nums font-medium">{fmtMoney(l.amount)}</td>
                 </tr>
               ))}
             </tbody>
@@ -381,7 +376,9 @@ function PaieRepartitionSection({ paie }) {
   )
 }
 
-function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
+// Fiche paie rendue dans le side-peek de la liste : le drawer fournit déjà le
+// titre et la fermeture, la fiche ne porte donc pas de bouton « Fermer ».
+function PaieDetail({ paie, onEdit, onDeleted }) {
   const { addToast } = useToast()
   const { user } = useAuth()
   const isHR = ['admin', 'rh'].includes(user?.role)
@@ -421,16 +418,22 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
     }
   }
 
-  if (!detail) return <p className="text-sm text-slate-400">Chargement…</p>
+  if (!detail) return <p className="p-5 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></p>
 
   const totalHeuresReg = detail.items.reduce((s, i) => s + (i.regular_hours || 0), 0)
   const totalMontantReg = detail.items.reduce((s, i) => s + ((i.regular_hours || 0) * (i.hourly_rate || 0)), 0)
   const totalCommissions = detail.items.reduce((s, i) => s + (i.commission || 0), 0)
   const totalRemb = detail.items.reduce((s, i) => s + (i.expense_reimb || 0), 0)
 
+  // Panneau latéral : plus étroit qu'une modale, les blocs de chiffres tiennent
+  // sur 2 colonnes.
+  const statsGrid = 'grid grid-cols-2 gap-x-6 gap-y-3 text-sm'
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-4 gap-3 text-sm">
+    // pb généreux : les actions de pied de fiche arrivent dans le coin bas-droit
+    // du panneau, là où flotte le bouton de feedback — on leur laisse la place.
+    <div className="p-5 pb-24 space-y-4">
+      <div className={statsGrid}>
         <div>
           <div className="text-xs text-slate-500">Période</div>
           <div className="font-medium">
@@ -443,31 +446,27 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
           <div className="font-medium">{detail.status || '—'}</div>
         </div>
         <div>
-          <div className="text-xs text-slate-500">Items</div>
-          <div className="font-medium">{detail.items.length}</div>
-        </div>
-        <div>
           <div className="text-xs text-slate-500">Total paie (Airtable)</div>
-          <div className="font-medium">{money(detail.total_with_charges_and_reimb)}</div>
+          <div className="font-medium">{fmtMoney(detail.total_with_charges_and_reimb)}</div>
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-3 text-sm border-t border-slate-200 pt-3">
+      <div className={`${statsGrid} border-t border-slate-200 pt-3`}>
         <div>
           <div className="text-xs text-slate-500">Heures régulières</div>
           <div className="font-medium">{num(totalHeuresReg)}</div>
         </div>
         <div>
           <div className="text-xs text-slate-500">$ heures régulières</div>
-          <div className="font-medium">{money(totalMontantReg)}</div>
+          <div className="font-medium">{fmtMoney(totalMontantReg)}</div>
         </div>
         <div>
           <div className="text-xs text-slate-500">Commissions</div>
-          <div className="font-medium">{money(totalCommissions)}</div>
+          <div className="font-medium">{fmtMoney(totalCommissions)}</div>
         </div>
         <div>
           <div className="text-xs text-slate-500">Remb. dépenses</div>
-          <div className="font-medium">{money(totalRemb)}</div>
+          <div className="font-medium">{fmtMoney(totalRemb)}</div>
         </div>
       </div>
 
@@ -526,7 +525,6 @@ function PaieDetail({ paie, onEdit, onDeleted, onClose }) {
               <Pencil size={13} /> Modifier
             </button>
           )}
-          <button onClick={onClose} className="btn-primary">Fermer</button>
         </div>
       </div>
     </div>
@@ -538,7 +536,6 @@ export default function Paies() {
   const isHR = ['admin', 'rh'].includes(user?.role)
   const [paies, setPaies] = useState([])
   const [loading, setLoading] = useState(true)
-  const [selected, setSelected] = useState(null)
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
 
@@ -559,7 +556,6 @@ export default function Paies() {
   }
 
   function openEdit(paie) {
-    setSelected(null)
     setEditing(paie)
     setShowForm(true)
   }
@@ -574,7 +570,7 @@ export default function Paies() {
     <Layout>
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">{isHR ? 'Paies' : 'Mes bulletins de paie'}</h1>
+          <PageTitle>{isHR ? 'Paies' : 'Mes bulletins de paie'}</PageTitle>
           <div className="flex items-center gap-2">
             {isHR && (
               <>
@@ -592,19 +588,21 @@ export default function Paies() {
           columns={COLUMNS_PAIES}
           data={paies}
           loading={loading}
-          onRowClick={row => setSelected(row)}
+          peek={{
+            title: row => `Paie — ${fmtDate(row.period_end)}${row.number ? ` (#${row.number})` : ''}`,
+            subtitle: row => row.status || '',
+            width: 860,
+            render: (row, { close }) => (
+              <PaieDetail
+                paie={row}
+                onEdit={paie => { close(); openEdit(paie) }}
+                onDeleted={() => { close(); load() }}
+              />
+            ),
+          }}
           searchFields={['status', 'number', 'total_with_charges_and_reimb', 'total_regular_amount']}
         />
       </div>
-
-      <Modal
-        isOpen={!!selected}
-        title={selected ? `Paie — ${fmtDate(selected.period_end)}${selected.number ? ` (#${selected.number})` : ''}` : ''}
-        onClose={() => setSelected(null)}
-        size="xl"
-      >
-        {selected && <PaieDetail paie={selected} onEdit={openEdit} onClose={() => setSelected(null)} onDeleted={() => { setSelected(null); load() }} />}
-      </Modal>
 
       <Modal
         isOpen={showForm}

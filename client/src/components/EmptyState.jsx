@@ -30,19 +30,19 @@ export default function EmptyState({
   return (
     <div
       data-testid="empty-state"
-      className={`flex flex-col items-center justify-center text-center ${compact ? 'py-10 px-4' : 'py-16 px-6'} ${className}`}
+      className={`flex flex-col items-center justify-center text-center ${compact ? 'py-7 px-4' : 'py-10 px-6'} ${className}`}
     >
       <div
-        className={`flex items-center justify-center rounded-full bg-slate-100 text-slate-400 mb-4 ${compact ? 'w-12 h-12' : 'w-16 h-16'}`}
+        className={`flex items-center justify-center rounded-full bg-slate-100 text-slate-400 mb-3 ${compact ? 'w-10 h-10' : 'w-12 h-12'}`}
       >
-        {Icon && <Icon size={compact ? 22 : 28} strokeWidth={1.75} />}
+        {Icon && <Icon size={compact ? 18 : 22} strokeWidth={1.75} />}
       </div>
-      <p className={`font-medium text-slate-600 ${compact ? 'text-sm' : 'text-base'}`}>{title}</p>
+      <p className={`font-medium text-slate-600 ${compact ? 'text-sm' : 'text-[15px]'}`}>{title}</p>
       {description && (
-        <p className="mt-1 text-sm text-slate-400 max-w-sm leading-relaxed">{description}</p>
+        <p className="mt-1 text-[13px] text-slate-400 max-w-sm leading-relaxed">{description}</p>
       )}
       {(cta || secondaryCta) && (
-        <div className="mt-5 flex items-center gap-2">
+        <div className="mt-4 flex items-center gap-2">
           {cta && (cta.to ? (
             <Link to={cta.to} className="btn-primary btn-sm">
               {CtaIcon && <CtaIcon size={14} />}{cta.label}

@@ -3,14 +3,16 @@ import { Link } from 'react-router-dom'
 import { Plus, RefreshCw, Landmark, ShieldAlert, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, List, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { fmtDate, localISODate } from '../lib/formatDate.js'
+import { fmtDate, fmtDateTime, fmtDayShort, localISODate } from '../lib/formatDate.js'
 import { fmtMoney, formatRelativeTime, parseAmountInput } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
 import { MissingReceiptsSection } from './VendorSubscriptions.jsx'
+import Spinner from '../components/Spinner.jsx'
 
-const fmtCad = (n, digits = 0) => fmtMoney(n, 'CAD', { maximumFractionDigits: digits, minimumFractionDigits: digits })
+const fmtCad = (n, digits = 0) => fmtMoney(n, 'CAD', { decimals: digits })
 
 function Card({ title, description, icon: Icon, iconClass = 'bg-slate-100 text-slate-500', actions, children, testId, className = '' }) {
   return (
@@ -139,7 +141,6 @@ function RecurringModal({ item, onClose, onChanged }) {
           <label className={labelCls}>Remplacée par les factures du fournisseur</label>
           <input
             className={inputCls}
-            placeholder="ex. Inverness — laisser vide si la récurrente est la seule source"
             value={form.vendor_match ?? ''}
             onChange={e => set('vendor_match', e.target.value)}
             onBlur={e => save('vendor_match', e.target.value.trim() === '' ? null : e.target.value.trim())}
@@ -244,7 +245,7 @@ function BillPeekModal({ peek, onClose }) {
   return (
     <Modal isOpen={!!peek} title="Mouvement projeté — facture fournisseur" onClose={onClose}>
       {error && <p className="text-sm text-rose-600">{error}</p>}
-      {!achat && !error && <div className="h-24 flex items-center justify-center text-sm text-slate-400">Chargement…</div>}
+      {!achat && !error && <div className="h-24 flex items-center justify-center text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>}
       {achat && (
         <div className="space-y-4">
           <div>
@@ -838,7 +839,6 @@ export function TreasuryProjectionSection() {
               value={balanceInput}
               onChange={e => setBalanceInput(e.target.value)}
               onKeyDown={e => { if (e.key === 'Enter') noteBalance() }}
-              placeholder="Corriger le solde"
               className="w-40 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30"
               data-testid="treasury-balance-input"
             />
@@ -851,7 +851,7 @@ export function TreasuryProjectionSection() {
         }
         className="mb-6"
       >
-        {!proj && <div className="h-24 flex items-center justify-center text-sm text-slate-400">Chargement…</div>}
+        {!proj && <div className="h-24 flex items-center justify-center text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>}
 
         {proj && (
           <>
@@ -861,7 +861,10 @@ export function TreasuryProjectionSection() {
                 label="Solde BNC noté"
                 value={entry ? fmtCad(entry.balance, 0) : '—'}
                 sub={entry
-                  ? [formatRelativeTime(entry.noted_at), sheet?.last_run && !sheet.last_run.error ? `fichier lu ${formatRelativeTime(sheet.last_run.executed_at)}` : null]
+                  ? [entry.source === 'plaid' ? `banque · ${formatRelativeTime(entry.noted_at)}` : formatRelativeTime(entry.noted_at),
+                    // Le fichier Drive ne vaut plus la peine d'être mentionné
+                    // quand la banque donne le solde elle-même.
+                    entry.source !== 'plaid' && sheet?.last_run && !sheet.last_run.error ? `fichier lu ${formatRelativeTime(sheet.last_run.executed_at)}` : null]
                     .filter(Boolean).join(' · ')
                   : 'aucune saisie'}
                 tone={entry && !proj.balance_stale ? 'slate' : 'amber'}
@@ -1051,10 +1054,11 @@ function PaieComptabilisationCard() {
   const [paies, setPaies] = useState([])
   const [paieId, setPaieId] = useState('')
   const [loaded, setLoaded] = useState(false)
-  // Montant saisi à la main = le débit réellement vu au compte BNC (pas de
-  // pré-remplissage, demande utilisateur — le total Airtable/l'estimation ne
-  // servent que de repère). Seule la date est pré-remplie (« Débité » Airtable).
+  // Le montant EST le débit vu au compte BNC. Il se recopiait du relevé à la
+  // main ; depuis que la banque est branchée, on le propose (`bankDebit`) et
+  // le champ reste modifiable — modifier délie la transaction proposée.
   const [bankAmount, setBankAmount] = useState('')
+  const [bankDebit, setBankDebit] = useState(null)
   const [txnDate, setTxnDate] = useState(() => localISODate())
   // Téléphone Martin : détecté dans les items de la paie (remboursement de
   // dépense de 25 $ de Martin, une fois par mois) — jamais saisi ici, jamais
@@ -1107,14 +1111,24 @@ function PaieComptabilisationCard() {
     const date = p.debited_date || localISODate()
     setTxnDate(date)
     // Paie déjà comptabilisée : on remet le montant débité enregistré pour
-    // revoir la ventilation telle qu'elle est dans QuickBooks. Sinon vide — le
-    // montant BNC se saisit toujours à la main.
+    // revoir la ventilation telle qu'elle est dans QuickBooks.
     const booked = p.salary_purchase_id && Number(p.total_with_charges_and_reimb) > 0
       ? String(p.total_with_charges_and_reimb) : ''
     setBankAmount(booked)
     setDeductions(null)
+    setBankDebit(null)
     api.paies.salaryExpenseDeductions(p.id).then(setDeductions).catch(() => setDeductions(null))
     if (booked) loadPreview({ paieId: p.id, bankAmount: booked, txnDate: date })
+    // Le débit de cette paie au relevé : montant et date proposés d'office.
+    // Une transaction encore en attente est proposée mais bloque la
+    // publication (son montant peut changer avant confirmation).
+    api.paies.salaryExpenseBankDebit(p.id).then(d => {
+      setBankDebit(d)
+      if (booked || !d?.match) return
+      setBankAmount(String(d.match.amount))
+      setTxnDate(d.match.txn_date)
+      loadPreview({ paieId: p.id, bankAmount: String(d.match.amount), txnDate: d.match.txn_date })
+    }).catch(() => setBankDebit(null))
   }
 
   // Libellé de période : « du X au Y » quand le début est connu, sinon l'ancien format.
@@ -1178,6 +1192,9 @@ function PaieComptabilisationCard() {
     try {
       const out = await api.paies.salaryExpensePush(paieId, {
         bank_amount: parseAmountInput(bankAmount), txn_date: txnDate,
+        // Rattachée seulement si le montant publié est toujours celui du
+        // relevé : sinon la dépense n'explique plus ce mouvement.
+        bank_txn_id: matchedDebit ? bankDebit.match.id : null,
       })
       setPushed({ id: out.qb_purchase_id, url: out.qb_purchase_url })
       setPaies(ps => ps.map(p => p.id === paieId ? { ...p, salary_purchase_id: out.qb_purchase_id } : p))
@@ -1189,6 +1206,9 @@ function PaieComptabilisationCard() {
     }
   }
 
+  // Le montant affiché est-il encore celui du relevé ? (au cent près)
+  const matchedDebit = !!bankDebit?.match
+    && Math.abs((parseAmountInput(bankAmount) || 0) - bankDebit.match.amount) < 0.005
   const alreadyPushed = pushed?.id || paie?.salary_purchase_id
   const alreadyPushedUrl = pushed?.url || paie?.salary_purchase_url
   const inputCls = 'px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30'
@@ -1211,7 +1231,7 @@ function PaieComptabilisationCard() {
       <>
       <div className="flex flex-wrap items-start gap-3 mb-3">
         <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Paie à comptabiliser</label>
+          <label className="label">Paie à comptabiliser</label>
           {/* Les paies à comptabiliser (période terminée, pas de dépense QB) plus
               la dernière comptabilisée (marquée ✓, pour la revoir ou la
               corriger). Une seule option → libellé fixe. */}
@@ -1229,13 +1249,47 @@ function PaieComptabilisationCard() {
           )}
         </div>
         <div className="w-80">
-          <label className="block text-xs font-medium text-slate-500 mb-1">Montant passé au compte BNC</label>
+          <label className="label">Montant passé au compte BNC</label>
           <input type="text" inputMode="decimal" className={`${inputCls} w-40`} data-testid="compta-paie-amount"
-            value={bankAmount} placeholder="ex. 23 570,19"
+            value={bankAmount}
             onChange={e => { setBankAmount(e.target.value); setPushed(null) }}
             onBlur={e => loadPreview({ bankAmount: e.target.value })}
             onKeyDown={e => { if (e.key === 'Enter') loadPreview() }} />
-          {airtableTotal != null && (
+          {/* D'où vient le montant. Le relevé fait foi quand il l'a ; sinon le
+              total Airtable sert de repère, comme avant. */}
+          {bankDebit?.match ? (
+            <p className={`text-[11px] mt-0.5 ${matchedDebit ? 'text-slate-500' : 'text-amber-700'}`}
+              data-testid="compta-paie-bank-debit">
+              {matchedDebit
+                ? `Débit BNC du ${fmtDayShort(bankDebit.match.txn_date)}${bankDebit.match.pending ? ' — en attente à la banque' : ''}`
+                : `Différent du débit BNC vu le ${fmtDayShort(bankDebit.match.txn_date)} : ${fmtCad(bankDebit.match.amount, 2)}`}
+              {' · '}
+              <Link to="/rapprochement" className="underline underline-offset-2 hover:text-slate-700">relevé</Link>
+            </p>
+          ) : bankDebit && bankDebit.candidates?.length > 1 ? (
+            <div className="mt-0.5" data-testid="compta-paie-bank-debit">
+              <p className="text-[11px] text-amber-700">Plusieurs débits possibles — choisir&nbsp;:</p>
+              <select className={`${inputCls} w-full mt-0.5 text-xs`}
+                value={matchedDebit ? bankDebit.match.id : ''}
+                onChange={e => {
+                  const c = bankDebit.candidates.find(x => x.id === e.target.value)
+                  if (!c) return
+                  setBankDebit(d => ({ ...d, match: c }))
+                  setBankAmount(String(c.amount)); setTxnDate(c.txn_date)
+                  loadPreview({ bankAmount: String(c.amount), txnDate: c.txn_date })
+                }}>
+                <option value="">—</option>
+                {bankDebit.candidates.map(c => (
+                  <option key={c.id} value={c.id}>{fmtDayShort(c.txn_date)} · {fmtCad(c.amount, 2)}</option>
+                ))}
+              </select>
+            </div>
+          ) : bankDebit && bankDebit.stale_since ? (
+            <p className="text-[11px] text-slate-400 mt-0.5" data-testid="compta-paie-bank-debit">
+              Aucun débit de paie au relevé{bankDebit.stale_since ? ` (à jour au ${fmtDayShort(bankDebit.stale_since)})` : ''}
+              {airtableTotal != null && ` · repère Airtable ${fmtCad(airtableTotal, 2)}`}
+            </p>
+          ) : airtableTotal != null && (
             <p className="text-[11px] text-slate-400 mt-0.5" title="À titre de repère — le montant à saisir est le débit réellement vu au compte BNC">
               Repère — total Airtable : {fmtCad(airtableTotal, 2)}
             </p>
@@ -1260,7 +1314,7 @@ function PaieComptabilisationCard() {
                     remboursement manquant à la publication. */}
                 <button type="button" onClick={refreshDeductions} disabled={refreshing}
                   data-testid="compta-paie-deductions-refresh"
-                  title={`Rafraîchir depuis Airtable${deductions.synced_at ? ` — dernier sync des items de paie : ${new Date(deductions.synced_at).toLocaleString('fr-CA')}` : ''}`}
+                  title={`Rafraîchir depuis Airtable${deductions.synced_at ? ` — dernier sync des items de paie : ${fmtDateTime(deductions.synced_at)}` : ''}`}
                   className="px-2 py-1.5 text-slate-400 hover:text-slate-600 disabled:opacity-50">
                   <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
                 </button>
@@ -1321,10 +1375,14 @@ function PaieComptabilisationCard() {
           )}
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Date (débit bancaire)</label>
+          <label className="label">Date (débit bancaire)</label>
           <input type="date" className={inputCls} value={txnDate}
             onChange={e => { setTxnDate(e.target.value); loadPreview({ txnDate: e.target.value }) }} />
-          {paie?.debited_date && txnDate === paie.debited_date && (
+          {bankDebit?.match && txnDate === bankDebit.match.txn_date ? (
+            <p className="text-[11px] text-slate-400 mt-0.5" title="Jour du débit au compte BNC, lu à la banque">
+              Jour du débit au relevé
+            </p>
+          ) : paie?.debited_date && txnDate === paie.debited_date && (
             <p className="text-[11px] text-slate-400 mt-0.5" title="Colonne « Débité » des items de paie dans Airtable">
               Date « Débité » (Airtable)
             </p>
@@ -1353,8 +1411,10 @@ function PaieComptabilisationCard() {
             </div>
           ) : (
             // Action transactionnelle (publication QB) : bouton volontaire.
-            <button onClick={push} disabled={pushing || !preview} data-testid="compta-paie-push"
-              title={!preview ? 'Saisis le montant passé au compte BNC pour publier' : undefined}
+            <button onClick={push} disabled={pushing || !preview || (matchedDebit && bankDebit.match.pending)} data-testid="compta-paie-push"
+              title={matchedDebit && bankDebit.match.pending
+                ? 'Le débit est encore en attente à la banque — son montant peut changer'
+                : (!preview ? 'Saisis le montant passé au compte BNC pour publier' : undefined)}
               className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50 whitespace-nowrap">
               {pushing ? 'Publication…' : 'Pousser dans QuickBooks'}
             </button>
@@ -1393,7 +1453,7 @@ function PaieComptabilisationCard() {
         </div>
       )}
       {!preview && !error && (
-        <p className="text-xs text-slate-400">Inscris le montant passé au compte BNC (la date « Débité » est pré-remplie depuis Airtable) : la dépense QuickBooks est créée et le total reporté dans Airtable.</p>
+        <p className="text-xs text-slate-400">Le montant et la date viennent du débit au compte BNC dès qu'il paraît au relevé ; sinon inscris-les. La dépense QuickBooks est créée et le total reporté dans Airtable.</p>
       )}
       </>
       )}
@@ -1408,6 +1468,9 @@ function PaieComptabilisationCard() {
 function AgaRepartitionCard() {
   const [amount, setAmount] = useState('')
   const [txnDate, setTxnDate] = useState(() => localISODate())
+  // Le prélèvement mensuel au relevé BNC (2 737,95 $ depuis avril 2026, mais
+  // il change quand un employé assuré entre ou sort) : proposé, jamais imposé.
+  const [bankDebit, setBankDebit] = useState(null)
   const [preview, setPreview] = useState(null)
   const [error, setError] = useState(null)
   const [pushing, setPushing] = useState(false)
@@ -1426,10 +1489,23 @@ function AgaRepartitionCard() {
     }
   }
 
+  // Prélèvement du mois pas encore comptabilisé : montant et date proposés.
+  useEffect(() => {
+    api.paies.agaBankDebit().then(d => {
+      setBankDebit(d)
+      if (!d?.match || d.match.pending) return
+      setAmount(String(d.match.amount))
+      setTxnDate(d.match.txn_date)
+      loadPreview(String(d.match.amount))
+    }).catch(() => setBankDebit(null))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function push() {
     setPushing(true)
     try {
-      const out = await api.paies.agaRepartitionPush(parseAmountInput(amount), txnDate)
+      const out = await api.paies.agaRepartitionPush(parseAmountInput(amount), txnDate,
+        matchedDebit ? bankDebit.match.id : null)
       setPushed({ id: out.qb_purchase_id, url: out.qb_purchase_url })
       addToast({ message: `Dépense publiée (#${out.qb_purchase_id})`, type: 'success' })
     } catch (e) {
@@ -1438,6 +1514,9 @@ function AgaRepartitionCard() {
       setPushing(false)
     }
   }
+
+  const matchedDebit = !!bankDebit?.match
+    && Math.abs((parseAmountInput(amount) || 0) - bankDebit.match.amount) < 0.005
 
   return (
     <Card
@@ -1449,7 +1528,7 @@ function AgaRepartitionCard() {
     >
       <div className="flex items-end gap-3 mb-3">
         <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Montant du prélèvement AGA (CAD)</label>
+          <label className="label">Montant du prélèvement AGA (CAD)</label>
           {/* type="text" + inputMode : un input number rejette la virgule décimale
               du clavier fr-CA (la valeur arrive vide). parseAmountInput normalise. */}
           <input type="text" inputMode="decimal" data-testid="compta-aga-amount"
@@ -1457,11 +1536,18 @@ function AgaRepartitionCard() {
             onChange={e => { setAmount(e.target.value); setPushed(null) }}
             onBlur={e => loadPreview(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') loadPreview() }}
-            placeholder="ex. 2 737,95"
             className="w-44 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
+          {bankDebit?.match && (
+            <p className={`text-[11px] mt-0.5 ${matchedDebit ? 'text-slate-500' : 'text-amber-700'}`}
+              data-testid="compta-aga-bank-debit">
+              {matchedDebit
+                ? `Prélèvement du ${fmtDayShort(bankDebit.match.txn_date)}${bankDebit.match.pending ? ' — en attente' : ''}`
+                : `Relevé : ${fmtCad(bankDebit.match.amount, 2)} le ${fmtDayShort(bankDebit.match.txn_date)}`}
+            </p>
+          )}
         </div>
         <div>
-          <label className="block text-xs font-medium text-slate-500 mb-1">Date du prélèvement</label>
+          <label className="label">Date du prélèvement</label>
           <input type="date" value={txnDate}
             onChange={e => { setTxnDate(e.target.value); setPushed(null) }}
             className="px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30" />
@@ -1590,7 +1676,7 @@ function AnomaliesCard() {
         </button>
       )}
     >
-      {rows === null && <p className="text-xs text-slate-400">Chargement…</p>}
+      {rows === null && <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
       {rows && rows.length === 0 && (
         <p className="text-xs text-slate-400 flex items-center gap-1.5"><CheckCircle2 size={13} className="text-green-500" /> Aucune anomalie ouverte.</p>
       )}
@@ -1644,7 +1730,7 @@ function CardCeilingRow({ card, onChanged }) {
   const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30'
   const field = (k, label, props = {}) => (
     <div>
-      <label className="block text-[11px] font-medium text-slate-500 mb-1">{label}</label>
+      <label className="label">{label}</label>
       <input
         className={inputCls}
         value={form[k] ?? ''}
@@ -1760,7 +1846,7 @@ function CardCeilingsCard() {
         </button>
       )}
     >
-      {data === null && <p className="text-xs text-slate-400">Chargement…</p>}
+      {data === null && <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
       {data && cards.length === 0 && <p className="text-xs text-slate-400">Aucune carte suivie.</p>}
       <div className="divide-y divide-slate-100">
         {cards.map(c => <CardCeilingRow key={c.id} card={c} onChanged={() => load(true)} />)}
@@ -1774,7 +1860,7 @@ export default function ComptaDashboard() {
     <Layout>
       <div className="p-6 max-w-7xl">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Dashboard comptabilité</h1>
+          <PageTitle>Dashboard comptabilité</PageTitle>
           <p className="text-xs text-slate-500 mt-0.5">
             Trésorerie, projection BNC et reçus manquants.
           </p>

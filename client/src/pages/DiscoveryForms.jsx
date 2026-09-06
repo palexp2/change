@@ -3,11 +3,12 @@ import { Link } from 'react-router-dom'
 import { Plus, ExternalLink, Copy, Check } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import { useUndoableDelete } from '../lib/undoableDelete.js'
+import DiscoveryFormDetail from './DiscoveryFormDetail.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -64,7 +65,7 @@ export default function DiscoveryForms() {
   const [companies, setCompanies] = useState([])
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
-  const undoableDelete = useUndoableDelete()
+  const { addToast } = useToast()
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -100,14 +101,14 @@ export default function DiscoveryForms() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Formulaires de découverte</h1>
+            <PageTitle>System builder</PageTitle>
             <p className="text-sm text-slate-500 mt-0.5">
-              {forms.length} formulaire{forms.length !== 1 ? 's' : ''}
+              {forms.length} système{forms.length !== 1 ? 's' : ''}
             </p>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowModal(true)} className="btn-primary">
-              <Plus size={16} /> Nouveau formulaire
+              <Plus size={16} /> Nouveau système
             </button>
           </div>
         </div>
@@ -118,20 +119,23 @@ export default function DiscoveryForms() {
           columns={COLUMNS}
           data={forms}
           loading={loading}
+          peek={{
+            title: row => row.company_name || 'System builder',
+            subtitle: row => (row.status === 'submitted' ? 'Soumis' : 'En cours'),
+            to: row => `/discovery-forms/${row.id}`,
+            render: (row, { close }) => <DiscoveryFormDetail recordId={row.id} embedded onClose={close} onDeleted={load} />,
+          }}
           searchFields={['company_name', 'status']}
           onBulkDelete={async (ids) => {
-            await undoableDelete({
-              table: 'discovery_forms',
-              ids,
-              deleteFn: () => Promise.all(ids.map(id => api.discoveryForms.delete(id))),
-              label: `${ids.length} formulaire${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`,
-              onChange: load,
-            })
+            // Suppression définitive (la table n'est pas soft-delete) : pas de toast « Annuler ».
+            await Promise.all(ids.map(id => api.discoveryForms.delete(id)))
+            await load()
+            addToast({ message: `${ids.length} système${ids.length > 1 ? 's' : ''} supprimé${ids.length > 1 ? 's' : ''}`, type: 'success' })
           }}
         />
       </div>
 
-      <Modal isOpen={showModal} title="Nouveau formulaire de découverte" onClose={() => setShowModal(false)}>
+      <Modal isOpen={showModal} title="Nouveau système" onClose={() => setShowModal(false)}>
         <CreateForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
     </Layout>
@@ -171,7 +175,6 @@ function CreateForm({ companies, onSave, onClose }) {
           options={companies}
           labelFn={c => c.name}
           getHref={c => `/companies/${c.id}`}
-          placeholder="Rechercher une entreprise…"
           onChange={setCompanyId}
         />
       </div>
@@ -198,8 +201,8 @@ function CreateForm({ companies, onSave, onClose }) {
         </div>
       </div>
       <div className="text-sm text-slate-600 bg-slate-50 rounded-lg p-3">
-        Le formulaire générera <strong>{total}</strong> carte{total !== 1 ? 's' : ''} de serre.
-        À la création, un lien public court sera généré et le formulaire s'ouvrira dans un nouvel onglet.
+        <strong>{total}</strong> carte{total !== 1 ? 's' : ''} de serre. Un lien public court sera
+        généré et s'ouvrira dans un nouvel onglet.
       </div>
       <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
         <button type="button" onClick={onClose} className="btn-ghost">Annuler</button>

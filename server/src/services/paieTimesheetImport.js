@@ -1,5 +1,5 @@
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 
 // Calcule les bornes de la période de paie.
 // Règle: paies de 14 jours. period_start = paie précédente.period_end + 1 jour si disponible,
@@ -124,7 +124,7 @@ export function importTimesheetsForPaie(paieId) {
       if (contractualHours) {
         const diff = Math.round((totalHours - (Number(item.regular_hours) || 0)) * 100) / 100
         if (Math.abs(diff) > 0.009) {
-          const bankId = uuidv4()
+          const bankId = newRecordId()
           const label = diff > 0 ? 'excédent' : 'déficit'
           insertBank.run(
             bankId, employee.id, paieId, item.id, end, diff,

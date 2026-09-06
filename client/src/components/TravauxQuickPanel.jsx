@@ -37,42 +37,6 @@ const Ctx = createContext(null)
 /** État partagé du panneau : le bouton déclencheur vit dans la barre de gauche. */
 export function useTravauxQuick() { return useContext(Ctx) }
 
-/**
- * Bouton d'ouverture, à poser dans le chrome de l'app (en-tête de la sidebar,
- * rail replié, en-tête mobile). Pastille violette = des questions attendent une
- * réponse ; sinon le nombre d'items vivants dans la file.
- */
-export function TravauxQuickButton({ compact = false, className = '' }) {
-  const ctx = useTravauxQuick()
-  if (!ctx) return null
-  const { open, setOpen, askingCount, activeCount } = ctx
-  const badge = askingCount || activeCount
-  return (
-    <button
-      type="button"
-      data-testid="travaux-quick-button"
-      data-asking={askingCount ? '1' : '0'}
-      onClick={() => setOpen(o => !o)}
-      title={askingCount
-        ? `File de travaux — ${askingCount} question${askingCount > 1 ? 's' : ''} à répondre (⌘/Ctrl + /)`
-        : 'File de travaux — ajouter un prompt, voir la file (⌘/Ctrl + /)'}
-      aria-label="File de travaux"
-      aria-expanded={open}
-      className={`relative rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors
-        ${compact ? 'p-2' : 'p-1.5'} ${open ? 'text-brand-700 bg-brand-50' : ''} ${className}`}
-    >
-      <ListOrdered size={compact ? 16 : 15} />
-      {!!badge && (
-        <span
-          data-testid="travaux-quick-badge"
-          className={`absolute -top-0.5 -right-0.5 min-w-[15px] h-[15px] px-1 rounded-full text-[9px] font-semibold
-            leading-[15px] text-white ring-2 ring-white ${askingCount ? 'bg-violet-600' : 'bg-slate-400'}`}
-        >{badge > 9 ? '9+' : badge}</span>
-      )}
-    </button>
-  )
-}
-
 /** Une ligne de file, repliée : rang, pastille d'état, titre. */
 function QueueLine({ p, index }) {
   return (
@@ -245,7 +209,6 @@ function QuickPanel({ onClose, data, load }) {
                 data-testid="travaux-quick-input"
                 className={`${inputCls} w-full`}
                 rows={3}
-                placeholder="Décris la tâche — la page où tu es est jointe automatiquement…"
                 value={text}
                 onChange={e => setText(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit() }}
@@ -375,13 +338,15 @@ export function TravauxQuickProvider({ children }) {
   const [open, setOpen] = useState(false)
 
   // `active=1` : la file vivante seulement (la réponse complète embarque tout
-  // l'historique et ses fils — trop lourde pour un panneau global). Sondage lent
-  // seulement quand le panneau est ouvert ; sinon le temps réel suffit à la
-  // pastille. Erreurs silencieuses : c'est une lecture de fond.
+  // l'historique et ses fils — trop lourde pour un panneau global). Panneau
+  // ouvert : sondage serré. Panneau fermé : le temps réel porte l'essentiel,
+  // mais ce compte alimente aussi la pastille permanente de l'icône « Travaux »
+  // du rail — un filet lent évite qu'un chiffre périmé y reste affiché après une
+  // coupure de la connexion temps réel. Erreurs silencieuses : lecture de fond.
   const { data, load } = useTravauxPrompts({
     activeOnly: true,
     enabled: !!user,
-    pollMs: open ? 20_000 : 0,
+    pollMs: open ? 20_000 : 60_000,
   })
 
   useEffect(() => {

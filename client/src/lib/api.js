@@ -219,9 +219,10 @@ export const api = {
     get: (id) => get(`/projects/${id}`),
     create: (data) => post('/projects', data),
     update: (id, data) => put(`/projects/${id}`, data),
-    updateStatus: (id, status, refusal_reason) => patch(`/projects/${id}/status`, { status, refusal_reason }),
+    updateStatus: (id, status) => patch(`/projects/${id}/status`, { status }),
     delete: (id) => del(`/projects/${id}`),
     vendeurOptions: () => get('/projects/vendeur-options'),
+    commissions: (id) => get(`/projects/${id}/commissions`),
   },
 
   // Products
@@ -232,6 +233,11 @@ export const api = {
     update: (id, data) => put(`/products/${id}`, data),
     adjustStock: (id, data) => post(`/products/${id}/stock`, data),
     delete: (id) => del(`/products/${id}`),
+    // Ce qui empêche la suppression (BOM, envois, achats liés) — sert à griser
+    // le bouton avant même de tenter le DELETE (qui répond 409).
+    // getFresh : le verdict change dès qu'un BOM/envoi/achat bouge ailleurs,
+    // le cache 30 s du prefetch le rendrait faux.
+    deleteCheck: (id) => getFresh(`/products/${id}/delete-check`),
     poPrefill: (id) => get(`/products/${id}/purchase-order/prefill`),
     poSendEmail: (id, data) => post(`/products/${id}/purchase-order/send-email`, data),
     poPdfBlob: async (id, po) => {
@@ -245,6 +251,13 @@ export const api = {
       return await res.blob()
     },
     refreshInstallationDocs: (id) => post(`/products/${id}/refresh-installation-docs`, {}),
+    // Image de la fiche : jusqu'ici elle ne pouvait venir que du miroir Airtable.
+    uploadImage: (id, file) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      return uploadRequest(`/products/${id}/image`, fd)
+    },
+    deleteImage: (id) => del(`/products/${id}/image`),
   },
 
   // Orders
@@ -262,6 +275,9 @@ export const api = {
     reorderItems: (orderId, order) => patch(`/orders/${orderId}/items/reorder`, order),
     deleteItem: (orderId, itemId) => del(`/orders/${orderId}/items/${itemId}`),
     scan: (orderId, value, mode = 'add') => post(`/orders/${orderId}/scan`, { value, mode }),
+    // Recalcule et re-gèle le coût des lignes déjà envoyées (Pièces + valeur de
+    // fabrication de chaque numéro de série).
+    recomputeShippedCosts: (id) => post(`/orders/${id}/recompute-shipped-costs`, {}),
     delete: (id) => del(`/orders/${id}`),
     generateBonLivraison: (id) => post(`/orders/${id}/bon-livraison`, {}),
     generateInstallationDocsBlob: async (id) => {
@@ -329,6 +345,9 @@ export const api = {
     balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
     bankAccounts: (params = {}) => get('/dashboard/bank-accounts?' + new URLSearchParams(params)),
     bankAccountsHistory: (params = {}) => get('/dashboard/bank-accounts/history?' + new URLSearchParams(params)),
+    revenueByMonth: (params = {}) => get('/dashboard/revenue-by-month?' + new URLSearchParams(params)),
+    incomeStatement: (params = {}) => get('/dashboard/income-statement?' + new URLSearchParams(params)),
+    productivity: (params = {}) => get('/dashboard/productivity?' + new URLSearchParams(params)),
     deferredRevenue: () => get('/dashboard/deferred-revenue'),
     agingReceivables: () => get('/dashboard/aging-receivables'),
   },
@@ -381,6 +400,15 @@ export const api = {
     // de configuration. Le `sort_order` déjà enregistré reste lu (applyFieldOrder).
   },
 
+  // Configuration des formulaires d'ajout de record (mode édition du formulaire).
+  formConfigs: {
+    get: (table) => get(`/form-configs/${encodeURIComponent(table)}`),
+    save: (table, fields) => put(`/form-configs/${encodeURIComponent(table)}`, { fields }),
+    // Catalogue des champs du registre proposables en plus de ceux déclarés par
+    // la page (cf. server/src/services/formFieldCatalog.js).
+    availableFields: (table) => get(`/form-configs/${encodeURIComponent(table)}/fields`),
+  },
+
   // Interactions
   interactions: {
     list: (params = {}, signal) => signal
@@ -406,6 +434,8 @@ export const api = {
     saveConfig: (connector, data) => put(`/connectors/config/${connector}`, data),
     syncGmail: () => post('/connectors/sync/gmail'),
     gmailAccounts: () => get('/connectors/gmail/accounts'),
+    gmailMyMailbox: () => getFresh('/connectors/google/my-mailbox'),
+    gmailDisconnectMine: () => del('/connectors/google/my-mailbox'),
     postmarkInfo: () => get('/connectors/postmark'),
     postmarkSetDefault: (default_from) => put('/connectors/postmark/default', { default_from }),
     syncDrive: () => post('/connectors/sync/drive'),
@@ -427,6 +457,24 @@ export const api = {
     qbDisconnectMine: () => del('/connectors/quickbooks/my-connection'),
     qbConnections: () => get('/connectors/quickbooks/connections'),
     qbDisconnectUser: (accountKey) => del(`/connectors/quickbooks/connections/${accountKey}`),
+  },
+
+  // Plaid — connexion bancaire directe (rapprochement en temps quasi réel)
+  plaid: {
+    status: () => get('/plaid/status'),
+    linkToken: () => post('/plaid/link-token'),
+    exchange: (public_token) => post('/plaid/exchange', { public_token }),
+    linkAccount: (bankAccountId, plaid_account_id, plaid_item_id) =>
+      post(`/plaid/accounts/${bankAccountId}/link`, { plaid_account_id, plaid_item_id }),
+    sync: (itemId) => post(`/plaid/sync/${itemId}`),
+    // État par compte : fraîcheur, comptes mappés mais vides, santé vue de
+    // chez Plaid (la banque répond-elle encore ?).
+    syncStatus: () => get('/plaid/sync-status'),
+    // Relit tout l'historique disponible (compte mappé après coup).
+    resetCursor: (itemId) => post(`/plaid/items/${itemId}/reset-cursor`, {}),
+    // Demande à la banque d'être interrogée tout de suite.
+    refresh: (itemId) => post(`/plaid/items/${itemId}/refresh`, {}),
+    removeItem: (itemId) => del(`/plaid/items/${itemId}`),
   },
 
   // Stripe
@@ -466,20 +514,11 @@ export const api = {
     saveConfig: (data) => put('/ups/config', data),
     deleteConfig: () => del('/ups/config'),
     test: () => post('/ups/test'),
+    returnRates: (returnId, data) => post(`/ups/returns/${returnId}/rates`, data),
     createReturnLabel: (returnId, data) => post(`/ups/returns/${returnId}/return-label`, data),
     sendReturnLabel: (returnId, to) => post(`/ups/returns/${returnId}/return-label/send`, { to }),
     shipmentRates: (shipmentId, data) => post(`/ups/shipments/${shipmentId}/rates`, data),
     trackShipment: (shipmentId) => post(`/ups/shipments/${shipmentId}/track`),
-  },
-
-  // Purolator — étiquettes sortantes (ERP → Purolator uniquement), tarifs et suivi.
-  purolator: {
-    status: () => get('/purolator/status'),
-    saveConfig: (data) => put('/purolator/config', data),
-    deleteConfig: () => del('/purolator/config'),
-    shipmentRates: (shipmentId, data) => post(`/purolator/shipments/${shipmentId}/rates`, data),
-    createLabel: (shipmentId, data) => post(`/purolator/shipments/${shipmentId}/label`, data),
-    trackShipment: (shipmentId) => post(`/purolator/shipments/${shipmentId}/track`),
   },
 
   // DigiKey — commandes + factures rapatriées par l'API (sens unique DigiKey → ERP)
@@ -525,6 +564,9 @@ export const api = {
     // Modules à mapping « cœur » + table ERP alimentée (onglets Airtable de la
     // modale de configuration des champs).
     coreMapModules: () => get('/connectors/airtable/core-map-modules'),
+    // Table lue en direct dans Airtable (hors miroir) : son mapping fixé en code,
+    // affiché en lecture seule sur /champs. `null` si la table n'en est pas une.
+    directSource: (table) => get(`/connectors/airtable/direct-source/${table}`),
     moduleMappingData: (module) => get(`/connectors/airtable/module-fields/${module}/mapping-data`),
     moduleAirtableFields: (module) => get(`/connectors/airtable/module-fields/${module}/airtable-fields`),
     setModuleFieldMapping: (module, data) =>
@@ -566,10 +608,24 @@ export const api = {
     // Duplique un champ (structure + valeurs par défaut). La copie n'hérite
     // jamais du lien vers une source externe — voir la route serveur.
     duplicate: (erpTable, data) => post(`/custom-fields/${erpTable}/duplicate`, data),
-    // Masquage GLOBAL d'un champ natif — l'équivalent d'une suppression pour un
-    // champ dont la colonne SQL ne peut pas disparaître. Réversible.
-    setNativeHidden: (erpTable, fieldId, hidden) =>
-      patch(`/custom-fields/${encodeURIComponent(erpTable)}/native/${encodeURIComponent(fieldId)}/hidden`, { hidden }),
+    // Suppression d'un champ natif : la ligne part à la corbeille et le champ
+    // disparaît de partout (le drapeau garde son nom historique `hidden`, c'est
+    // ainsi que le serveur republie les champs supprimés). `label` sert de
+    // libellé dans la corbeille — le serveur ignore tableDefs.js.
+    setNativeHidden: (erpTable, fieldId, hidden, label) =>
+      patch(`/custom-fields/${encodeURIComponent(erpTable)}/native/${encodeURIComponent(fieldId)}/hidden`, { hidden, label }),
+    // Champ de type « Attachement » : les fichiers s'écrivent par leur route
+    // dédiée, qui met la cellule à jour elle-même et renvoie la nouvelle liste.
+    files: {
+      list: (fieldId, recordId) => get(`/custom-field-files/${fieldId}/${recordId}`),
+      upload: (fieldId, recordId, fileList) => {
+        const fd = new FormData()
+        for (const f of fileList) fd.append('file', f)
+        return uploadRequest(`/custom-field-files/${fieldId}/${recordId}`, fd)
+      },
+      remove: (fieldId, recordId, fileId) =>
+        del(`/custom-field-files/${fieldId}/${recordId}/${encodeURIComponent(fileId)}`),
+    },
   },
 
   // Views (config + pills)
@@ -695,7 +751,8 @@ export const api = {
     retryLabelPdf: (id) => post(`/retours/${id}/return-label/retry-pdf`),
     diagnostic: (id, data) => post(`/retours/${id}/diagnostic`, data),
     generateMemo: (id) => post(`/retours/${id}/memo`),
-    sendInstructions: (id, to) => post(`/retours/${id}/send-instructions`, { to }),
+    instructionsEmail: (id) => get(`/retours/${id}/instructions-email`),
+    sendInstructions: (id, data) => post(`/retours/${id}/send-instructions`, data),
     bulkFromSerials: (data) => post('/retours/bulk-from-serials', data),
   },
 
@@ -728,7 +785,7 @@ export const api = {
     get: (id) => get(`/employees/${id}`),
     create: (data) => post('/employees', data),
     update: (id, data) => patch(`/employees/${id}`, data),
-    delete: (id) => del(`/employees/${id}`),
+    delete: (id, { force } = {}) => del(`/employees/${id}${force ? '?force=1' : ''}`),
     syncConfig: () => get('/employees/sync-config'),
     saveSyncConfig: (data) => put('/connectors/airtable/module-config/employees', data),
     sync: () => post('/connectors/sync/employees'),
@@ -823,8 +880,11 @@ export const api = {
     salaryExpenseUpdate: (id, data = {}) => post(`/paies/${id}/salary-expense/update`, data),
     salaryExpensePreview: (id, data = {}) => post(`/paies/${id}/salary-expense/preview`, data),
     salaryExpensePush: (id, data = {}) => post(`/paies/${id}/salary-expense/push`, data),
+    // Le débit de la paie au relevé bancaire (montant et date à proposer).
+    salaryExpenseBankDebit: (id) => get(`/paies/${id}/salary-expense/bank-debit`),
     agaRepartitionPreview: (amount, txn_date = null) => post('/paies/aga-repartition/preview', { amount, txn_date }),
-    agaRepartitionPush: (amount, txn_date = null) => post('/paies/aga-repartition/push', { amount, txn_date }),
+    agaRepartitionPush: (amount, txn_date = null, bank_txn_id = null) => post('/paies/aga-repartition/push', { amount, txn_date, bank_txn_id }),
+    agaBankDebit: () => get('/paies/aga-repartition/bank-debit'),
     saveSyncConfig: (data) => put('/connectors/airtable/module-config/paies', data),
     sync: () => post('/connectors/sync/paies'),
     syncItems: () => post('/connectors/sync/paie_items'),
@@ -867,7 +927,8 @@ export const api = {
     update: (id, data) => patch(`/shipments/${id}`, data),
     delete: (id) => del(`/shipments/${id}`),
     weeklyStats: () => get('/shipments/stats/weekly'),
-    sendTracking: (id, to) => post(`/shipments/${id}/send-tracking`, { to }),
+    trackingEmailPreview: (id) => get(`/shipments/${id}/tracking-email`),
+    sendTracking: (id, data) => post(`/shipments/${id}/send-tracking`, data),
     generateBonLivraison: (id) => post(`/shipments/${id}/bon-livraison`, {}),
   },
 
@@ -1016,13 +1077,25 @@ export const api = {
       return get(`/bank/accounts/${accountId}/qb-compare${qs ? `?${qs}` : ''}`)
     },
     reconcileAuto: (accountId) => post(`/bank/accounts/${accountId}/reconcile-auto`, {}),
+    qbAudit: (accountId, sinceDays = null) => post(`/bank/accounts/${accountId}/qb-audit`, { sinceDays }),
     qbAccounts: () => get('/bank/qb-accounts'),
     qbLink: (accountId) => post(`/bank/accounts/${accountId}/qb-link`, {}),
     suggestions: (txnId) => get(`/bank/transactions/${txnId}/suggestions`),
     match: (txnId, data) => post(`/bank/transactions/${txnId}/match`, data),
+    // « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture.
+    addDefaults: (txnId) => get(`/bank/transactions/${txnId}/add-defaults`),
+    taxCodeRate: (taxCodeId) => get(`/bank/tax-code-rate/${taxCodeId}`),
+    addExpense: (txnId, data) => post(`/bank/transactions/${txnId}/add-expense`, data),
+    // « Transfert » : les deux moitiés d'un mouvement interne.
+    transferCandidates: (txnId) => get(`/bank/transactions/${txnId}/transfer-candidates`),
+    transfer: (txnId, data) => post(`/bank/transactions/${txnId}/transfer`, data),
+    unlinkTransfer: (txnId) => del(`/bank/transactions/${txnId}/transfer`),
     reconcile: (ids, unreconcile = false) => post('/bank/transactions/reconcile', { ids, unreconcile }),
     updateTransaction: (id, data) => patch(`/bank/transactions/${id}`, data),
     deleteTransaction: (id) => del(`/bank/transactions/${id}`),
+    // Doublons hérités de TRX_Orisha sur un compte branché à Plaid.
+    mergePlaidDuplicates: (accountId, dryRun = true) =>
+      post(`/bank/accounts/${accountId}/merge-plaid-duplicates`, { dry_run: dryRun }),
     trxSheetStatus: () => get('/bank/trx-sheet/status'),
     trxSheetSync: (dryRun = false) => post('/bank/trx-sheet/sync', { dryRun }),
   },
@@ -1090,7 +1163,6 @@ export const api = {
     piecesSlackSend: (month) => post(`/month-end/pieces/${month}/slack`, {}),
   },
 
-  // Dettes à long terme : cédules de remboursement + comptabilisation QB
   marketingBudget: {
     expenses: (status = 'all') => get(`/marketing-budget/expenses?status=${status}`),
     decide: (id, status) => patch(`/marketing-budget/expenses/${id}`, { status }),
@@ -1151,29 +1223,6 @@ export const api = {
   mapaq: {
     preview: (opts) => post('/mapaq/preview', opts || {}),
     createProspects: (entries) => post('/mapaq/prospects', { entries }),
-  },
-
-  // Registre des entreprises du Québec — miroir local, en LECTURE SEULE côté
-  // registre. Les seuls appels qui écrivent touchent l'ERP : `link` (le NEQ
-  // porté par la fiche entreprise) et `createProspects`.
-  // `getFresh` partout en lecture : la correspondance et la liste de prospects
-  // changent dès qu'on lie un NEQ ou qu'on crée une entreprise, et le cache
-  // prefetch (TTL 30 s) rendait l'écran aveugle à sa propre action.
-  req: {
-    status: () => getFresh('/req/status'),
-    search: (q, limit) => getFresh(`/req/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ''}`),
-    entreprise: (neq) => get(`/req/entreprises/${encodeURIComponent(neq)}`),
-    match: (companyId) => getFresh(`/req/match/${companyId}`),
-    link: (companyId, neq) => put(`/req/link/${companyId}`, { neq }),
-    prospects: (params = {}) => {
-      const qs = new URLSearchParams(
-        Object.entries(params).filter(([, v]) => v !== '' && v != null),
-      ).toString()
-      return getFresh(`/req/prospects${qs ? `?${qs}` : ''}`)
-    },
-    createProspects: (neqs) => post('/req/prospects', { neqs }),
-    import: (opts) => post('/req/import', opts || {}),
-    removeEntreprise: (neq) => del(`/req/entreprises/${encodeURIComponent(neq)}`),
   },
 
   // Douanes — relevé CARM (GCRA) de l'ASFC + appariement aux reçus
@@ -1273,6 +1322,26 @@ export const api = {
     query: (q) => get(`/search?q=${encodeURIComponent(q)}`),
   },
 
+  // Résolution d'identifiants d'enregistrement (id ERP ou record ID Airtable)
+  // en libellé + URL de fiche — cf. server/src/services/recordLinks.js. Sans
+  // cache prefetch : chaque lot de clés est unique, et useRecordLinks.js tient
+  // déjà son propre cache mémoire.
+  recordLinks: {
+    // `byLabel` : les clés qui ne sont pas des identifiants sont aussi cherchées
+    // comme libellés dans la table cible (colonnes qui portent un nom, pas un id).
+    resolve: (keys, table, byLabel = false) => getFresh(
+      `/record-links?keys=${encodeURIComponent(keys.join(','))}${table ? `&table=${encodeURIComponent(table)}` : ''}`
+      + (byLabel ? '&by_label=1' : '')
+    ),
+    // Tables proposables comme cible d'un champ affiché « Lien vers … ».
+    tables: () => getFresh('/record-links/tables'),
+    // Candidats à une association (éditeur de lien d'une cellule de DataTable).
+    search: (table, q, limit) => getFresh(
+      `/record-links/search?table=${encodeURIComponent(table)}`
+      + `${q ? `&q=${encodeURIComponent(q)}` : ''}${limit ? `&limit=${limit}` : ''}`
+    ),
+  },
+
   // API de mutation générique (phase 1) — pilotée par un registre de schémas
   // côté serveur (server/src/db/recordRegistry.js). `table` est le nom SQL réel
   // (ex. 'activity_codes', 'vacations'). Couvre uniquement les tables CRUD
@@ -1358,7 +1427,10 @@ export const api = {
     runnerStatus: ()         => getFresh('/agent/runner/status'),
     // Journal d'exécution d'une tâche en cours : lu à la demande, jamais caché.
     streamLog:    (id)       => getFresh(`/agent/tasks/${id}/stream-log`),
-    getUsage:     ()         => get('/agent/usage'),
+    // Quotas Claude : pollés toutes les 30 s avec leur propre cache (voir
+    // ClaudeUsage.jsx) — le cache prefetch (TTL 30 s) doublerait le délai de
+    // rafraîchissement en resservant la réponse précédente.
+    getUsage:     ()         => getFresh('/agent/usage'),
     createTask:   (data)     => post('/agent/tasks', data),
     updateTask:   (id, data) => patch(`/agent/tasks/${id}`, data),
     deleteTask:   (id)       => del(`/agent/tasks/${id}`),
@@ -1386,6 +1458,9 @@ export const api = {
     deletePrompt:  (id)        => del(`/travaux/prompts/${id}`),
     reorderPrompts:(ids)       => post('/travaux/prompts/reorder', { ids }),
     promptFirst:   (id)        => post(`/travaux/prompts/${id}/first`, {}),
+    // Arrêt d'une exécution EN COURS : tue le process, la carte passe à 'blocked'
+    // (agent_status 'stopped') dès que le poll serveur détecte la mort du process.
+    stopPrompt:    (id)        => post(`/travaux/prompts/${id}/stop`, {}),
     advanceQueue:  ()          => post('/travaux/prompts/advance', {}),
     // Pause de la file : rien de nouveau ne démarre, l'exécution en cours va au bout.
     getQueuePause: ()          => getFresh('/travaux/queue/pause'),
@@ -1470,6 +1545,8 @@ export const api = {
   // Journal des nouveautés — état de la garde « toute modif est documentée »
   changelog: {
     status: () => get('/changelog/status'),
+    // { "<date>|<titre>": { name, source, requestTitle, requestDate } }
+    requesters: () => get('/changelog/requesters'),
   },
 
   anomalies: {
@@ -1526,6 +1603,12 @@ export const api = {
     convertibleSoumissions: (companyId) => get(`/stripe-invoices/companies/${companyId}/convertible-soumissions`),
     soumissionItems: (id) => get(`/stripe-invoices/soumissions/${id}/items`),
     shippingProvince: (companyId) => get(`/stripe-invoices/companies/${companyId}/shipping-province`),
+  },
+
+  // Création manuelle d'un abonnement Stripe depuis la fiche entreprise.
+  stripeSubscriptions: {
+    billingContext: (companyId) => get(`/stripe-subscriptions/companies/${companyId}/billing-context`),
+    create: (data) => post('/stripe-subscriptions', data),
   },
 
   // Météo au site (GeoMet ECCC / National Weather Service) — lecture seule.

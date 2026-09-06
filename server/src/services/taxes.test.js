@@ -1,6 +1,6 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
-import { computeCanadaTaxes } from './taxes.js'
+import { computeCanadaTaxes, isCanada, resolveInvoiceTaxes, suggestTaxRegime, taxesForRegime } from './taxes.js'
 
 describe('computeCanadaTaxes', () => {
   test('Hors Canada → 0 taxe', () => {
@@ -71,5 +71,49 @@ describe('computeCanadaTaxes', () => {
 
   test('Province inconnue dans Canada → 0 taxe (refus implicite)', () => {
     assert.deepStrictEqual(computeCanadaTaxes({ province: 'XYZ', country: 'Canada', subtotal: 100 }), [])
+  })
+})
+
+describe('Régimes de taxe nommés', () => {
+  test('La suggestion suit la province, et vaut le calcul automatique', () => {
+    const cases = { QC: 'qc', Ontario: 'hst_on', NS: 'hst_ns', AB: 'gst', SK: 'gst' }
+    for (const [province, expected] of Object.entries(cases)) {
+      assert.strictEqual(suggestTaxRegime({ province, country: 'Canada' }), expected, province)
+      assert.deepStrictEqual(
+        taxesForRegime(expected, 100),
+        computeCanadaTaxes({ province, country: 'Canada', subtotal: 100 }),
+        province,
+      )
+    }
+  })
+
+  test('Hors Canada ou province inconnue → régime « aucune taxe »', () => {
+    assert.strictEqual(suggestTaxRegime({ province: 'NY', country: 'USA' }), 'none')
+    assert.strictEqual(suggestTaxRegime({ province: 'XYZ', country: 'Canada' }), 'none')
+    assert.deepStrictEqual(taxesForRegime('none', 100), [])
+  })
+
+  test('Exonération autochtone : régime « none » sur une adresse québécoise', () => {
+    // Le choix de l'utilisateur prime sur la province.
+    assert.deepStrictEqual(resolveInvoiceTaxes({ province: 'QC', country: 'Canada', subtotal: 100, taxRegime: 'none' }), [])
+  })
+
+  test('Régime absent (factures d\'avant le champ) → calcul par province', () => {
+    assert.deepStrictEqual(
+      resolveInvoiceTaxes({ province: 'QC', country: 'Canada', subtotal: 100, taxRegime: null }),
+      computeCanadaTaxes({ province: 'QC', country: 'Canada', subtotal: 100 }),
+    )
+  })
+
+  test('Un régime choisi ignore la province (TVH ON sur une adresse AB)', () => {
+    const r = resolveInvoiceTaxes({ province: 'AB', country: 'Canada', subtotal: 200, taxRegime: 'hst_on' })
+    assert.strictEqual(r.length, 1)
+    assert.strictEqual(r[0].percentage, 13)
+    assert.strictEqual(r[0].amount, 26)
+  })
+
+  test('isCanada reconnaît les formes usuelles', () => {
+    assert.ok(isCanada('Canada') && isCanada('CA') && isCanada(' canada '))
+    assert.ok(!isCanada('USA') && !isCanada(null))
   })
 })

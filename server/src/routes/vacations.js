@@ -1,9 +1,10 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { vacationBalance } from '../services/vacationBalance.js'
+import { buildPartialUpdate, toBoolDefaultTrue } from '../utils/partialUpdate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -43,7 +44,7 @@ router.post('/', (req, res) => {
   if (!employee_id) return res.status(400).json({ error: 'employee_id requis' })
   const emp = db.prepare('SELECT id FROM employees WHERE id = ?').get(employee_id)
   if (!emp) return res.status(400).json({ error: 'Employé introuvable' })
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO vacations (id, employee_id, start_date, end_date, paid, notes)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -65,23 +66,9 @@ const PATCHABLE = new Set(['start_date', 'end_date', 'paid', 'notes'])
 router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM vacations WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  const updates = []
-  const params = []
-  for (const [k, rawV] of Object.entries(req.body || {})) {
-    if (!PATCHABLE.has(k)) continue
-    let v = rawV
-    if (k === 'paid') {
-      v = v === 0 || v === false || v === '0' ? 0 : 1
-    } else if (v === '' || v === undefined) {
-      v = null
-    }
-    updates.push(`${k} = ?`)
-    params.push(v)
-  }
-  if (!updates.length) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
-  updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
-  params.push(req.params.id)
-  db.prepare(`UPDATE vacations SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  const { setClause, values } = buildPartialUpdate(req.body || {}, { allowed: [...PATCHABLE], coerce: { paid: toBoolDefaultTrue } })
+  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+  db.prepare(`UPDATE vacations SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
   const updated = db.prepare('SELECT * FROM vacations WHERE id = ?').get(req.params.id)
   emitEntity('vacation', 'updated', req.params.id, updated, req.user?.id)
   res.json(updated)

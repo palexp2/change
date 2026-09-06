@@ -1,7 +1,7 @@
 import { Router } from 'express';
+import { newRecordId } from '../utils/recordId.js';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
-import { v4 as uuidv4 } from 'uuid';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { JWT_SECRET } from '../config/secrets.js';
@@ -65,7 +65,7 @@ router.post('/setup', async (req, res) => {
     return res.status(400).json({ error: 'Password must be at least 8 characters' });
   }
 
-  const userId = uuidv4();
+  const userId = newRecordId();
   const passwordHash = await bcrypt.hash(password, 10);
 
   db.prepare('INSERT INTO users (id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)')
@@ -131,6 +131,26 @@ function validNavOrder(obj) {
   ));
 }
 
+// Signets du menu de gauche : liste ordonnée de { to, label } (cf. migration 018).
+function readNavBookmarks(userId) {
+  const row = db.prepare('SELECT nav_bookmarks FROM users WHERE id = ?').get(userId);
+  let list = [];
+  try { list = JSON.parse(row?.nav_bookmarks || '[]'); } catch { list = []; }
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((b) => b && typeof b.to === 'string')
+    .map((b) => ({ to: b.to, label: typeof b.label === 'string' ? b.label : b.to }));
+}
+
+function validNavBookmarks(list) {
+  if (!Array.isArray(list) || list.length > 50) return false;
+  return list.every((b) => (
+    b && typeof b === 'object' && !Array.isArray(b)
+    && typeof b.to === 'string' && b.to.startsWith('/') && b.to.length <= 300
+    && (b.label === undefined || (typeof b.label === 'string' && b.label.length <= 120))
+  ));
+}
+
 function readDecimalPreferences(userId) {
   const row = db.prepare('SELECT decimal_preferences FROM users WHERE id = ?').get(userId);
   let prefs = {};
@@ -146,6 +166,31 @@ function readPeekWidth(userId) {
   return Number.isInteger(w) && w > 0 ? w : null;
 }
 
+// Largeurs du side-peek par ressource : { "orders": 1100, "contacts": 560 }.
+// `peek_width` (scalaire, historique) reste le repli pour les ressources sans
+// entrée — voir migration 013.
+function readPeekWidths(userId) {
+  const row = db.prepare('SELECT peek_widths FROM users WHERE id = ?').get(userId);
+  let widths = {};
+  try { widths = JSON.parse(row?.peek_widths || '{}'); } catch { widths = {}; }
+  if (!widths || typeof widths !== 'object' || Array.isArray(widths)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(widths)) {
+    if (Number.isInteger(v) && v >= 320 && v <= 2000) out[k] = v;
+  }
+  return out;
+}
+
+function validPeekWidths(obj) {
+  if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
+  const entries = Object.entries(obj);
+  if (entries.length > 100) return false;
+  return entries.every(([k, v]) => (
+    typeof k === 'string' && k.length > 0 && k.length <= 64
+    && Number.isInteger(v) && v >= 320 && v <= 2000
+  ));
+}
+
 function validDecimalPreferences(obj) {
   if (obj === null || typeof obj !== 'object' || Array.isArray(obj)) return false;
   return Object.entries(obj).every(([k, v]) => (
@@ -159,14 +204,16 @@ router.get('/preferences', requireAuth, (req, res) => {
   res.json({
     nav_hidden: readNavHidden(req.user.id),
     nav_order: readNavOrder(req.user.id),
+    nav_bookmarks: readNavBookmarks(req.user.id),
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
+    peek_widths: readPeekWidths(req.user.id),
   });
 });
 
 // PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, largeur side-peek, etc.)
 router.patch('/preferences', requireAuth, (req, res) => {
-  const { nav_hidden, nav_order, decimal_preferences, peek_width } = req.body || {};
+  const { nav_hidden, nav_order, nav_bookmarks, decimal_preferences, peek_width, peek_widths } = req.body || {};
   if (nav_hidden !== undefined) {
     if (!Array.isArray(nav_hidden) || !nav_hidden.every((k) => typeof k === 'string')) {
       return res.status(400).json({ error: 'nav_hidden doit être un tableau de chaînes' });
@@ -178,6 +225,13 @@ router.patch('/preferences', requireAuth, (req, res) => {
       return res.status(400).json({ error: 'nav_order doit être un objet { "conteneur": ["clé", …] }' });
     }
     db.prepare('UPDATE users SET nav_order = ? WHERE id = ?').run(JSON.stringify(nav_order), req.user.id);
+  }
+  if (nav_bookmarks !== undefined) {
+    if (!validNavBookmarks(nav_bookmarks)) {
+      return res.status(400).json({ error: 'nav_bookmarks doit être un tableau de { to, label }' });
+    }
+    const clean = nav_bookmarks.map((b) => ({ to: b.to, label: (b.label || b.to).slice(0, 120) }));
+    db.prepare('UPDATE users SET nav_bookmarks = ? WHERE id = ?').run(JSON.stringify(clean), req.user.id);
   }
   if (decimal_preferences !== undefined) {
     if (!validDecimalPreferences(decimal_preferences)) {
@@ -192,11 +246,23 @@ router.patch('/preferences', requireAuth, (req, res) => {
     }
     db.prepare('UPDATE users SET peek_width = ? WHERE id = ?').run(w, req.user.id);
   }
+  // Fusion et non remplacement : le client n'envoie que la ressource qu'il
+  // vient de redimensionner, sans écraser les largeurs posées ailleurs (autre
+  // navigateur, autre onglet).
+  if (peek_widths !== undefined) {
+    if (!validPeekWidths(peek_widths)) {
+      return res.status(400).json({ error: 'peek_widths doit être un objet { "ressource": entier de pixels 320-2000 }' });
+    }
+    const merged = { ...readPeekWidths(req.user.id), ...peek_widths };
+    db.prepare('UPDATE users SET peek_widths = ? WHERE id = ?').run(JSON.stringify(merged), req.user.id);
+  }
   res.json({
     nav_hidden: readNavHidden(req.user.id),
     nav_order: readNavOrder(req.user.id),
+    nav_bookmarks: readNavBookmarks(req.user.id),
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
+    peek_widths: readPeekWidths(req.user.id),
   });
 });
 

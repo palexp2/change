@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { parsePage } from '../utils/pagination.js'
 
 const router = Router()
 
@@ -9,10 +10,7 @@ router.use(requireAuth)
 // Feed des opérations — journal d'activité paginé (qui / quoi / quand).
 // Supporte ?limit=all (cf. CLAUDE.md) pour charger tout via loadProgressive.
 router.get('/', (req, res) => {
-  const { page = 1, limit = 100 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 100)
 
   const total = db.prepare('SELECT COUNT(*) AS c FROM activity_log').get().c
   const rows = db.prepare(`

@@ -3,24 +3,26 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Settings,
   ChevronRight, ChevronDown, LogOut, Menu, X,
-  Search, ExternalLink, Sparkles, Bot,
-  PanelLeftClose, PanelLeftOpen, GripVertical,
+  Search, ExternalLink, Sparkles, ListChecks,
+  GripVertical, Bookmark, BookmarkPlus, BookmarkMinus,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useNavPrefs } from '../lib/navPrefs.jsx'
-import { defaultNavItems, applyNavOrder, navKey } from '../lib/navItems.js'
+import { defaultNavItems, applyNavOrder, navKey, findNavEntry } from '../lib/navItems.js'
+import { currentPageTitle } from '../lib/currentPageTitle.js'
 import { getSubsections, resolveSubsections } from '../lib/navSubsections.js'
+import { SETTINGS_ROUTE } from '../lib/settingsSections.js'
 import { NAV_TAB_CLAIMS } from '../lib/financeSections.js'
 import { api } from '../lib/api.js'
 import { prefetch } from '../lib/prefetch.js'
 import { connect as realtimeConnect, disconnect as realtimeDisconnect } from '../lib/realtime.js'
-import { hasUnseenChangelog, CHANGELOG_SEEN_EVENT } from '../lib/changelog.js'
+import { startRecordLive, stopRecordLive } from '../lib/recordLive.jsx'
 import { Modal } from './Modal.jsx'
 import { KeyboardShortcutsModal } from './KeyboardShortcutsModal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 import { FeedbackFab } from './FeedbackFab.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
-import { TravauxQuickButton } from './TravauxQuickPanel.jsx'
+import { useTravauxQuick } from './TravauxQuickPanel.jsx'
 import { Logo } from './Logo.jsx'
 
 // Raccourcis clavier de navigation globaux — source unique de vérité.
@@ -76,7 +78,7 @@ function useHoverPrefetch(to) {
 }
 
 // `compact` : dimensions des sous-items d'un groupe (vs ligne pleine hauteur).
-function NavItem({ to, href, external, icon: Icon, label, compact = false }) {
+function NavItem({ to, href, external, icon: Icon, label, compact = false, badge, badgeTone, badgeTitle }) {
   const hover = useHoverPrefetch(to)
   if (external) {
     return (
@@ -109,6 +111,7 @@ function NavItem({ to, href, external, icon: Icon, label, compact = false }) {
     >
       <Icon size={16} className="flex-shrink-0" />
       <span className="flex-1">{label}</span>
+      <NavBadge item={{ to, badge, badgeTone, badgeTitle }} inRail={false} />
     </NavLink>
   )
 }
@@ -119,6 +122,33 @@ function NavItem({ to, href, external, icon: Icon, label, compact = false }) {
 // se fermerait et emporterait l'enfant. Chaque panneau ouvert s'annonce donc à
 // son parent, qui compte les rectangles de ses descendants comme « dedans ».
 const FlyoutChainContext = createContext(null)
+
+// ── Un seul menu de section à la fois ───────────────────────────────────────
+// Un panneau s'ouvre dès que la souris touche son icône, mais ne se referme que
+// lorsqu'elle s'éloigne franchement (tolérance de quelques pixels autour de
+// l'icône et du panneau, cf. useFlyoutDismiss). En glissant d'une section à sa
+// voisine — ou en s'arrêtant dans l'interstice entre deux icônes — l'ancienne
+// se croyait encore survolée pendant que la nouvelle s'ouvrait : deux menus
+// superposés à l'écran. Les panneaux de premier niveau du rail s'inscrivent
+// donc ici, et toute ouverture referme les autres sans délai. Les sous-menus
+// imbriqués ne s'inscrivent pas : ils vivent avec leur parent.
+const openRailMenus = new Set()
+
+function useExclusiveRailMenu(open, close) {
+  const closeRef = useRef(close)
+  closeRef.current = close
+  // Avant la peinture : jamais une image avec deux menus.
+  useLayoutEffect(() => {
+    if (!open) return
+    const self = { close: () => closeRef.current() }
+    for (const other of [...openRailMenus]) {
+      openRailMenus.delete(other)
+      other.close()
+    }
+    openRailMenus.add(self)
+    return () => { openRailMenus.delete(self) }
+  }, [open])
+}
 
 function useFlyoutChain(panelRef, open) {
   const parent = useContext(FlyoutChainContext)
@@ -143,12 +173,18 @@ function useFlyoutChain(panelRef, open) {
 // Position d'un panneau à droite de son déclencheur : remonté s'il déborderait
 // en bas, rabattu à gauche s'il déborderait à droite (tiroir mobile, sous-menu
 // de sous-menu).
+//
+// `maxHeight` : toujours la hauteur utile de la fenêtre, jamais « du haut du
+// panneau jusqu'en bas ». Sinon un déclencheur du bas du rail (la roue dentée)
+// s'enferme dans un cercle vicieux : le panneau est bridé par sa position, on
+// mesure sa hauteur tronquée, elle « tient » déjà en bas, donc il n'est jamais
+// remonté — la roue dentée n'affichait plus qu'un liseré de sous-menu.
 function useFlyoutPosition(triggerRef, panelRef, open) {
   const [pos, setPos] = useState(null)
 
   const seed = () => {
     const r = triggerRef.current?.getBoundingClientRect()
-    if (r) setPos({ top: r.top, left: r.right + 4 })
+    if (r) setPos({ top: r.top, left: r.right + 4, maxHeight: window.innerHeight - 16 })
   }
 
   useLayoutEffect(() => {
@@ -156,10 +192,15 @@ function useFlyoutPosition(triggerRef, panelRef, open) {
     const t = triggerRef.current?.getBoundingClientRect()
     const p = panelRef.current
     if (!t || !p) return
-    const { offsetWidth: w, offsetHeight: h } = p
+    const w = p.offsetWidth
+    // Hauteur naturelle : offsetHeight est déjà rogné par le maxHeight du rendu
+    // précédent, scrollHeight rend le contenu complet.
+    const avail = window.innerHeight - 16
+    const h = Math.min(Math.max(p.scrollHeight, p.offsetHeight), avail)
     setPos({
       top: Math.max(8, Math.min(t.top, window.innerHeight - h - 8)),
       left: t.right + w + 8 > window.innerWidth ? Math.max(8, t.left - w - 4) : t.right + 4,
+      maxHeight: avail,
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open])
@@ -217,6 +258,9 @@ function useFlyoutDismiss({ open, pinned, triggerRef, panelRef, childRects, clos
  * `variant` :
  *   - 'flyout'  : dans un panneau flottant
  *   - 'group'   : sous-item compact d'un groupe de la sidebar
+ *   - 'rail'    : icône seule dans le rail — le panneau porte le titre de la
+ *                 page et s'ouvre même sans sous-section (il tient alors le
+ *                 rôle d'infobulle)
  */
 // Une entrée peut viser un onglet précis d'une page (`?onglet=`). L'état actif
 // de react-router ne regarde que le chemin : sans ça, « Comptes prépayés » et
@@ -232,8 +276,34 @@ function tabAwareActive(to, location, isActive) {
   return isActive && !claims.includes(currentTab)
 }
 
+/**
+ * Compteur posé sur une entrée de navigation (`item.badge`). Dans le rail réduit
+ * aux icônes, c'est le seul moyen de savoir qu'il se passe quelque chose derrière
+ * l'icône : la pastille se pose dans le coin. Dans le menu déplié, elle suit le
+ * libellé. Ton violet quand Claude attend une réponse (même code couleur que la
+ * pastille « À répondre » de /travaux), vert de marque sinon.
+ */
+function NavBadge({ item, inRail }) {
+  const n = item.badge || 0
+  if (!n) return null
+  const tone = item.badgeTone === 'ask' ? 'bg-violet-600' : 'bg-brand-600'
+  return (
+    <span
+      data-testid={`nav-badge-${item.to}`}
+      title={item.badgeTitle}
+      className={`${inRail ? 'absolute -top-0.5 -right-0.5' : 'flex-shrink-0'}
+       inline-flex items-center justify-center min-w-[15px] h-[15px] px-1
+       rounded-full text-white text-[9px] font-semibold leading-none ${tone}`}
+    >
+      {n > 99 ? '99+' : n}
+    </span>
+  )
+}
+
 function NavRow({ item, variant }) {
   const hover = useHoverPrefetch(item.to)
+  // Certaines sous-sections sont réservées aux admins (Paramètres).
+  const { user } = useAuth()
   const [items, setItems] = useState(null)
   const [open, setOpen] = useState(false)
   const rowRef = useRef(null)
@@ -242,30 +312,49 @@ function NavRow({ item, variant }) {
   const { chain, childRects } = useFlyoutChain(panelRef, open)
   const [pos, seedPos] = useFlyoutPosition(rowRef, panelRef, open)
   const hasSubsections = !!getSubsections(item.to)
+  const inFlyout = variant === 'flyout'
+  const inRail = variant === 'rail'
+  // Réordonner le rail au glisser-déposer : pendant un glissement de section,
+  // ouvrir un panneau masquerait la ligne visée (le calcul de cible passe par
+  // elementFromPoint). Les panneaux restent donc fermés le temps du geste.
+  const rootDrag = useContext(NavReorderContext)?.drag?.container === 'root'
 
   useFlyoutDismiss({ open, pinned: false, triggerRef: rowRef, panelRef, childRects, close: () => setOpen(false) })
+  // Seules les icônes du rail sont des menus de premier niveau : les lignes de
+  // panneau (variantes 'flyout'/'group') sont des sous-menus de leur parent.
+  useExclusiveRailMenu(inRail && open, () => setOpen(false))
   useEffect(() => { setOpen(false) }, [location.pathname, location.search])
+  useEffect(() => { if (rootDrag) setOpen(false) }, [rootDrag])
 
   const pendingRef = useRef(false)
   function onEnter() {
     hover.onMouseEnter?.()
-    if (!hasSubsections) return
+    if (rootDrag) return
+    if (!hasSubsections) {
+      // Dans le rail, le panneau porte le titre : il s'ouvre quand même.
+      if (inRail) { seedPos(); setOpen(true) }
+      return
+    }
     seedPos()
     if (items) { setOpen(true); return }
     if (pendingRef.current) return
     pendingRef.current = true
-    resolveSubsections(item.to).then(list => {
+    resolveSubsections(item.to, { isAdmin: user?.role === 'admin' }).then(list => {
       pendingRef.current = false
       setItems(list)
-      if (list.length) setOpen(true)
+      setOpen(true)
     })
   }
 
-  const inFlyout = variant === 'flyout'
   const cls = ({ isActive: routerActive }) => {
     const isActive = tabAwareActive(item.to, location, routerActive)
     // `nav-active` porte la teinte de section héritée (`--nav-accent`, posée
     // par NavGroup ; vert de marque par défaut hors groupe).
+    if (inRail) {
+      // `relative` : la pastille de compteur (item.badge) se pose dans le coin.
+      return `relative flex items-center justify-center w-9 h-9 rounded-lg transition-colors
+       ${isActive ? 'nav-active' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'}`
+    }
     return `flex items-center gap-2.5 rounded-md text-sm font-medium transition-colors
      ${inFlyout ? 'px-3 py-2 mx-1' : 'px-3 py-1.5'}
      ${isActive
@@ -284,16 +373,19 @@ function NavRow({ item, variant }) {
         // page, un mousemove synthétique peut refermer le panneau sans que
         // mouseenter ne se re-déclenche (la bordure n'est jamais re-croisée).
         // Tout mouvement au-dessus de la ligne rouvre donc le sous-menu.
-        onMouseMove={() => { if (hasSubsections && !open) onEnter() }}
+        onMouseMove={() => { if ((hasSubsections || inRail) && !open) onEnter() }}
         onMouseLeave={hover.onMouseLeave}
+        title={inRail ? item.label : undefined}
+        aria-label={inRail ? item.label : undefined}
         className={cls}
       >
-        <item.icon size={inFlyout ? 15 : 14} className="flex-shrink-0" />
-        <span className="flex-1">{item.label}</span>
-        {hasSubsections && <ChevronRight size={11} className="flex-shrink-0 opacity-50" />}
+        <item.icon size={inRail ? 18 : inFlyout ? 15 : 14} className="flex-shrink-0" />
+        {!inRail && <span className="flex-1">{item.label}</span>}
+        <NavBadge item={item} inRail={inRail} />
+        {hasSubsections && !inRail && <ChevronRight size={11} className="flex-shrink-0 opacity-50" />}
       </NavLink>
 
-      {open && items?.length > 0 && (
+      {open && (inRail || items?.length > 0) && (
         <FlyoutChainContext.Provider value={chain}>
           <div
             ref={panelRef}
@@ -302,15 +394,17 @@ function NavRow({ item, variant }) {
             data-testid="nav-subsection-panel"
             data-nav-flyout=""
             data-route={item.to}
-            className="fixed bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 min-w-52 max-w-72 z-[210] overflow-y-auto"
+            className={`fixed bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 max-w-72 z-[210] overflow-y-auto ${items?.length ? 'min-w-52' : ''}`}
             style={pos
-              ? { top: pos.top, left: pos.left, maxHeight: `calc(100vh - ${pos.top + 8}px)` }
+              ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight }
               : { top: 0, left: 0, visibility: 'hidden' }}
           >
-            <p className="px-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider truncate">
+            <p className={items?.length
+              ? 'px-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider truncate'
+              : 'px-3 py-0.5 text-[13px] font-medium text-slate-700 whitespace-nowrap'}>
               {item.label}
             </p>
-            {items.map(sub => (
+            {items?.map(sub => (
               <NavLink
                 key={sub.to}
                 to={sub.to}
@@ -417,7 +511,7 @@ function NavFlyoutItem({ icon: Icon, label, groups }) {
           data-nav-flyout=""
           className="fixed bg-white rounded-xl shadow-xl border border-slate-200 py-2 min-w-56 z-[200] overflow-y-auto"
           style={pos
-            ? { top: pos.top, left: pos.left, maxHeight: `calc(100vh - ${pos.top + 8}px)` }
+            ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight }
             : { top: 0, left: 0, visibility: 'hidden' }}
         >
           <FlyoutChainContext.Provider value={chain}>
@@ -520,7 +614,10 @@ function NavReorderProvider({ items, order, setOrder, children }) {
 }
 
 // Enveloppe une ligne de menu : poignée de glissement + trait d'insertion.
-function NavSortable({ container, itemKey, children }) {
+// `rail` : dans le rail d'icônes, la ligne occupe toute la largeur et l'icône
+// est centrée — la poignée se loge dans la marge de gauche au lieu de mordre
+// sur l'icône (où elle volerait le clic de navigation).
+function NavSortable({ container, itemKey, rail = false, children }) {
   const ctx = useContext(NavReorderContext)
   if (!ctx || !itemKey) return children
   const { drag, start } = ctx
@@ -531,7 +628,7 @@ function NavSortable({ container, itemKey, children }) {
     <div
       data-nav-sortable={itemKey}
       data-nav-container={container}
-      className={`relative group/sortable ${dragging ? 'opacity-40' : ''}`}
+      className={`relative group/sortable ${rail ? 'w-full flex justify-center' : ''} ${dragging ? 'opacity-40' : ''}`}
     >
       {children}
       {/* Poignée et trait d'insertion rendus APRÈS la ligne : ils sont
@@ -543,7 +640,7 @@ function NavSortable({ container, itemKey, children }) {
         title="Glisser pour réordonner"
         data-testid={`nav-drag-${itemKey}`}
         onPointerDown={(e) => { if (e.button === 0) start(container, itemKey, e) }}
-        className={`absolute left-0 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center w-3 h-5
+        className={`absolute left-0 top-1/2 -translate-y-1/2 z-20 flex items-center justify-center h-5 ${rail ? 'w-2.5' : 'w-3'}
           text-slate-300 hover:text-slate-500 cursor-grab active:cursor-grabbing transition-opacity
           ${drag ? 'opacity-100' : 'opacity-0 group-hover/sortable:opacity-100'}`}
       >
@@ -663,9 +760,281 @@ function NavGroup({ group, icon: Icon, items, accent }) {
   )
 }
 
+// ── Rail de sections ────────────────────────────────────────────────────────
+// Sur desktop, la barre latérale est un rail permanent : une icône par grande
+// section, rien d'autre. Le survol d'une icône ouvre le menu de la section
+// juste à côté — son titre, puis ses pages cliquables. Rien ne se déplie sur
+// place, le contenu de la page ne bouge jamais.
+
+function RailNavLink({ item }) {
+  return <NavRow item={item} variant="rail" />
+}
+
+// Lien externe (ex. Admin Chatbot) réduit à son icône.
+function RailExternalLink({ href, icon: Icon, label }) {
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={label}
+      aria-label={label}
+      data-testid="nav-external"
+      className="flex items-center justify-center w-9 h-9 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+    >
+      <Icon size={18} />
+    </a>
+  )
+}
+
+function RailGroup({ group, icon: Icon, items, accent }) {
+  const [open, setOpen] = useState(false)
+  const [pinned, setPinned] = useState(false)
+  const triggerRef = useRef(null)
+  const panelRef = useRef(null)
+  const location = useLocation()
+  const drag = useContext(NavReorderContext)?.drag
+  const { chain, childRects } = useFlyoutChain(panelRef, open)
+  const [pos, seedPos] = useFlyoutPosition(triggerRef, panelRef, open)
+
+  const isActive = items.some(item => navItemMatches(location.pathname, item))
+  // Teinte de section, comme dans le menu déplié : posée ici, héritée par les
+  // entrées du panneau (cf. `.nav-active` dans index.css).
+  const accentVar = accent ? { '--nav-accent': `var(--acc-${accent})` } : undefined
+
+  const openMenu = () => { seedPos(); setOpen(true) }
+  const close = () => { setOpen(false); setPinned(false) }
+  // Glisser-déposer : un glissement DANS le panneau doit le garder ouvert
+  // (épinglé), un glissement du rail lui-même doit le fermer — ouvert, il
+  // masquerait les lignes visées.
+  const rootDrag = drag?.container === 'root'
+  const innerDrag = drag?.container === `group:${group}`
+  useFlyoutDismiss({ open, pinned: pinned || innerDrag, triggerRef, panelRef, childRects, close })
+  useExclusiveRailMenu(open, close)
+  useEffect(() => { if (rootDrag) { setOpen(false); setPinned(false) } }, [rootDrag])
+  useEffect(() => { setOpen(false); setPinned(false) }, [location.pathname, location.search])
+
+  return (
+    // `my-0.5` : un peu d'air autour des sections à menu survolable, pour les
+    // détacher des entrées à plat du rail (qui n'ont que le `gap` de la nav).
+    <div style={accentVar} className="my-0.5">
+      <button
+        ref={triggerRef}
+        type="button"
+        onMouseEnter={() => { if (!rootDrag) openMenu() }}
+        onMouseMove={() => { if (!open && !rootDrag) openMenu() }}
+        onFocus={openMenu}
+        onClick={() => {
+          // Au doigt il n'y a pas de survol : le tap ouvre puis referme.
+          if (open && pinned) { close(); return }
+          if (!open) openMenu()
+          setPinned(true)
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={group}
+        title={group}
+        data-testid="rail-section"
+        data-section={group}
+        className={`flex items-center justify-center w-9 h-9 rounded-lg transition-colors
+          ${isActive ? 'nav-active' : 'text-slate-500 hover:bg-slate-100'}`}
+      >
+        {/* Section éteinte : l'icône garde la teinte de section, c'est le seul
+            repère quand il n'y a pas de libellé. */}
+        <Icon size={18} style={isActive ? undefined : { color: 'rgb(var(--nav-accent))' }} />
+      </button>
+
+      {open && (
+        <div
+          ref={panelRef}
+          role="menu"
+          aria-label={group}
+          data-testid="rail-section-panel"
+          data-nav-flyout=""
+          className="fixed bg-white rounded-xl shadow-xl border border-slate-200 py-2 min-w-56 z-[200] overflow-y-auto"
+          style={{
+            ...accentVar,
+            ...(pos
+              ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight }
+              : { top: 0, left: 0, visibility: 'hidden' }),
+          }}
+        >
+          <p
+            className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider"
+            style={{ color: 'rgb(var(--nav-accent))' }}
+          >
+            {group}
+          </p>
+          <FlyoutChainContext.Provider value={chain}>
+            {items.map(item => (
+              <NavSortable key={item.to || item.href} container={`group:${group}`} itemKey={item.to || item.href}>
+                {item.flyoutGroups
+                  ? <NavFlyoutItem {...item} groups={item.flyoutGroups} />
+                  : item.external
+                    ? <NavItem {...item} compact />
+                    : <FlyoutNavLink item={item} />}
+              </NavSortable>
+            ))}
+          </FlyoutChainContext.Provider>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Signets ─────────────────────────────────────────────────────────────────
+// Le menu porte les grandes sections ; une page précise et souvent revisitée
+// (une configuration de champs, une vue filtrée, une fiche) n'y a pas d'entrée.
+// Le signet l'épingle sous l'icône du tableau de bord, sans toucher au menu
+// canonique. Préférence par utilisateur (nav_bookmarks), autosauvegardée.
+
+// Nom du signet : le titre affiché par la page (cf. lib/currentPageTitle.js),
+// sinon l'entrée de menu qui possède la route, sinon l'URL elle-même.
+function bookmarkLabelFor(location) {
+  const key = location.pathname + location.search
+  return currentPageTitle(key) || findNavEntry(location.pathname)?.label || key
+}
+
+function BookmarkRows({ bookmarks, here, onRemove, compact = false }) {
+  return bookmarks.map(b => {
+    const Icon = findNavEntry(b.to.split('?')[0])?.icon || Bookmark
+    const isHere = b.to === here
+    return (
+      <div key={b.to} className="relative group/bm">
+        <NavLink
+          to={b.to}
+          title={b.label}
+          className={`flex items-center gap-2 px-3 py-1.5 mx-1 pr-7 rounded-md text-sm transition-colors
+            ${isHere ? 'nav-active font-medium' : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'}`}
+        >
+          <Icon size={compact ? 13 : 14} className="flex-shrink-0" />
+          <span className="truncate">{b.label}</span>
+        </NavLink>
+        <button
+          type="button"
+          onClick={(e) => { e.preventDefault(); onRemove(b) }}
+          title="Retirer des signets"
+          aria-label="Retirer des signets"
+          className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 hover:text-slate-700
+            opacity-0 group-hover/bm:opacity-100 transition-opacity"
+        >
+          <X size={12} />
+        </button>
+      </div>
+    )
+  })
+}
+
+function BookmarkToggle({ marked, onClick, className = '' }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      data-testid="nav-bookmark-toggle"
+      className={`flex items-center gap-2 w-full px-3 py-1.5 rounded-md text-[13px]
+        text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition-colors ${className}`}
+    >
+      {marked ? <BookmarkMinus size={14} /> : <BookmarkPlus size={14} />}
+      {marked ? 'Retirer cette page' : 'Ajouter cette page'}
+    </button>
+  )
+}
+
+// Rail : une icône, le panneau des signets au survol (même mécanique que les
+// sections, cf. RailGroup).
+function RailBookmarks() {
+  const { bookmarks, isBookmarked, toggleBookmark } = useNavPrefs()
+  const [open, setOpen] = useState(false)
+  const [pinned, setPinned] = useState(false)
+  const triggerRef = useRef(null)
+  const panelRef = useRef(null)
+  const location = useLocation()
+  const { chain, childRects } = useFlyoutChain(panelRef, open)
+  const [pos, seedPos] = useFlyoutPosition(triggerRef, panelRef, open)
+
+  const here = location.pathname + location.search
+  const marked = isBookmarked(here)
+
+  const openMenu = () => { seedPos(); setOpen(true) }
+  const close = () => { setOpen(false); setPinned(false) }
+  useFlyoutDismiss({ open, pinned, triggerRef, panelRef, childRects, close })
+  useExclusiveRailMenu(open, close)
+  useEffect(() => { close() }, [location.pathname, location.search])
+
+  return (
+    <div>
+      <button
+        ref={triggerRef}
+        type="button"
+        onMouseEnter={openMenu}
+        onMouseMove={() => { if (!open) openMenu() }}
+        onFocus={openMenu}
+        onClick={() => {
+          // Au doigt il n'y a pas de survol : le tap ouvre puis referme.
+          if (open && pinned) { close(); return }
+          if (!open) openMenu()
+          setPinned(true)
+        }}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="Signets"
+        title="Signets"
+        data-testid="rail-bookmarks"
+        className={`flex items-center justify-center w-9 h-9 flex-shrink-0 rounded-lg transition-colors
+          ${marked ? 'text-brand-600' : 'text-slate-500'} hover:text-slate-800 hover:bg-slate-100`}
+      >
+        <Bookmark size={17} fill={marked ? 'currentColor' : 'none'} />
+      </button>
+
+      {open && (
+        <div
+          ref={panelRef}
+          role="menu"
+          aria-label="Signets"
+          data-testid="nav-bookmarks-panel"
+          data-nav-flyout=""
+          className="fixed bg-white rounded-xl shadow-xl border border-slate-200 py-2 min-w-56 max-w-72 z-[200] overflow-y-auto"
+          style={pos
+            ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight }
+            : { top: 0, left: 0, visibility: 'hidden' }}
+        >
+          <p className="px-3 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">Signets</p>
+          <FlyoutChainContext.Provider value={chain}>
+            <BookmarkRows bookmarks={bookmarks} here={here} onRemove={toggleBookmark} />
+          </FlyoutChainContext.Provider>
+          <div className={bookmarks.length ? 'mt-1 pt-1 border-t border-slate-100' : ''}>
+            <BookmarkToggle
+              marked={marked}
+              onClick={() => toggleBookmark({ to: here, label: bookmarkLabelFor(location) })}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Tiroir mobile : pas de survol au doigt, la liste est déjà dépliée.
+function MobileBookmarks() {
+  const { bookmarks, isBookmarked, toggleBookmark } = useNavPrefs()
+  const location = useLocation()
+  const here = location.pathname + location.search
+  return (
+    <div className="pb-1 mb-1 border-b border-slate-100">
+      <p className="px-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Signets</p>
+      <BookmarkRows bookmarks={bookmarks} here={here} onRemove={toggleBookmark} compact />
+      <BookmarkToggle
+        marked={isBookmarked(here)}
+        onClick={() => toggleBookmark({ to: here, label: bookmarkLabelFor(location) })}
+      />
+    </div>
+  )
+}
+
 // Ligne de compte en bas de la sidebar : avatar + nom, menu au survol
-// (Nouveautés, Paramètres perso, Déconnexion) qui s'ouvre au-dessus.
-function UserAvatarMenu({ user, roleLabel, onLogout, hasUnseenNews }) {
+// (identité + Déconnexion) qui s'ouvre au-dessus.
+// `compact` : dans le rail, l'avatar seul (le nom n'a pas la place).
+function UserAvatarMenu({ user, roleLabel, onLogout, compact = false }) {
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState(null)
   const triggerRef = useRef(null)
@@ -702,27 +1071,28 @@ function UserAvatarMenu({ user, roleLabel, onLogout, hasUnseenNews }) {
     }
   }, [open])
 
+  // Dans le rail, ce menu est au même niveau que ceux des sections : il les
+  // ferme en s'ouvrant, et se ferme quand l'une d'elles s'ouvre.
+  useExclusiveRailMenu(compact && open, () => setOpen(false))
+
   return (
     <>
       <div
         ref={triggerRef}
         data-testid="user-avatar-trigger"
         onMouseEnter={openMenu}
-        className="flex items-center gap-2.5 px-2 py-1.5 rounded-lg cursor-pointer hover:bg-slate-100 transition-colors"
+        title={compact ? user?.name : undefined}
+        className={`flex items-center rounded-lg cursor-pointer hover:bg-slate-100 transition-colors
+          ${compact ? 'justify-center w-9 h-9' : 'gap-2.5 px-2 py-1.5'}`}
       >
         <div className="relative w-7 h-7 flex-shrink-0 bg-gradient-to-br from-brand-500 to-emerald-700 rounded-full flex items-center justify-center">
           <span className="text-white text-[11px] font-semibold tracking-tight">{initials}</span>
-          {hasUnseenNews && (
-            <span
-              data-testid="changelog-badge"
-              className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 bg-amber-400 rounded-full ring-2 ring-white"
-              title="Nouveautés disponibles"
-            />
-          )}
         </div>
-        <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-medium text-slate-700 truncate">{user?.name}</div>
-        </div>
+        {!compact && (
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] font-medium text-slate-700 truncate">{user?.name}</div>
+          </div>
+        )}
       </div>
 
       {open && pos && (
@@ -735,30 +1105,12 @@ function UserAvatarMenu({ user, roleLabel, onLogout, hasUnseenNews }) {
             <div className="text-slate-800 text-sm font-medium truncate">{user?.name}</div>
             <div className="text-slate-500 text-xs mt-0.5">{roleLabel[user?.role] || user?.role}</div>
           </div>
-          <NavLink
-            to="/changelog"
-            data-testid="user-menu-changelog"
-            onClick={() => setOpen(false)}
-            className="flex items-center gap-2.5 w-full px-3 py-2 mt-1 mx-1 rounded-md text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            style={{ width: 'calc(100% - 0.5rem)' }}
-          >
-            <Sparkles size={14} />
-            <span className="flex-1 text-left">Nouveautés</span>
-            {hasUnseenNews && <span className="w-2 h-2 bg-amber-400 rounded-full" />}
-          </NavLink>
-          <NavLink
-            to="/settings"
-            data-testid="user-menu-settings"
-            onClick={() => setOpen(false)}
-            className="flex items-center gap-2.5 w-full px-3 py-2 mx-1 rounded-md text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-            style={{ width: 'calc(100% - 0.5rem)' }}
-          >
-            <Settings size={14} />
-            Paramètres
-          </NavLink>
+          {/* Ni les nouveautés ni les paramètres ne sont ici : ils ont leur
+              propre entrée dans la barre latérale, juste au-dessus. Ce menu ne
+              garde que ce qui touche au compte. */}
           <button
             onClick={onLogout}
-            className="flex items-center gap-2.5 w-full px-3 py-2 mx-1 rounded-md text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+            className="flex items-center gap-2.5 w-full px-3 py-2 mt-1 mx-1 rounded-md text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
             style={{ width: 'calc(100% - 0.5rem)' }}
           >
             <LogOut size={14} />
@@ -799,7 +1151,7 @@ function ChangePasswordModal({ onClose }) {
       </div>
       <div>
         <label className="label">Nouveau mot de passe</label>
-        <input type="password" value={form.next} onChange={e => setForm(f => ({ ...f, next: e.target.value }))} className="input" placeholder="Minimum 8 caractères" required />
+        <input type="password" value={form.next} onChange={e => setForm(f => ({ ...f, next: e.target.value }))} className="input" required />
       </div>
       <div>
         <label className="label">Confirmer</label>
@@ -816,84 +1168,46 @@ function ChangePasswordModal({ onClose }) {
 
 export function Layout({ children }) {
   const navigate = useNavigate()
-  // Sidebar façon Claude : repliable en un mince rail (logo, réouverture,
-  // recherche). L'état survit aux rechargements.
-  const [collapsed, setCollapsed] = useState(() => {
-    try { return window.localStorage.getItem('erp.sidebar.collapsed') === '1' } catch { return false }
-  })
-  // Menu replié : le survol du rail le rouvre en surimpression (façon Claude),
-  // et il se referme dès que la souris le quitte. Rien n'est persisté — c'est un
-  // coup d'œil, pas un changement d'état.
-  const [peek, setPeek] = useState(false)
+  // Sur desktop la barre latérale est TOUJOURS repliée : un rail d'icônes, une
+  // par grande section, et le menu de la section au survol (cf. RailGroup). Il
+  // n'y a donc plus d'état déplié/replié à persister. Le menu complet, avec
+  // libellés, ne subsiste que dans le tiroir mobile.
   const [mobileOpen, setMobileOpen] = useState(false)
   const [showChangePw, setShowChangePw] = useState(false)
   const [showSearch, setShowSearch] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const { user, logout } = useAuth()
   const { isHidden, order, setOrder } = useNavPrefs()
-  const [hasUnseenNews, setHasUnseenNews] = useState(() => hasUnseenChangelog())
-  const location = useLocation()
-  const railRef = useRef(null)
-  const peekRef = useRef(null)
-  const peekArmRef = useRef(null)
-
-  function setSidebarCollapsed(next) {
-    try { window.localStorage.setItem('erp.sidebar.collapsed', next ? '1' : '0') } catch {}
-    setCollapsed(next)
-    if (!next) setPeek(false)
-  }
-
-  function toggleSidebar() {
-    setSidebarCollapsed(!collapsed)
-  }
-
-  // Court délai d'intention : balayer l'écran de gauche à droite ne doit pas
-  // faire jaillir le menu.
-  function armPeek() {
-    if (peek || peekArmRef.current) return
-    peekArmRef.current = setTimeout(() => { peekArmRef.current = null; setPeek(true) }, 90)
-  }
-  function cancelPeekArm() {
-    if (peekArmRef.current) { clearTimeout(peekArmRef.current); peekArmRef.current = null }
-  }
-
-  // Fermeture du coup d'œil : la souris doit avoir quitté le panneau, le rail ET
-  // les sous-menus flottants (qui vivent hors du panneau, en position fixe).
-  useEffect(() => {
-    if (!peek) return
-    let closeTimer = null
-    const inside = (e, r) => r && e.clientX >= r.left - 4 && e.clientX <= r.right + 4 && e.clientY >= r.top - 4 && e.clientY <= r.bottom + 4
-    function onMove(e) {
-      const hit = e.target?.closest?.('[data-nav-flyout]')
-        || inside(e, peekRef.current?.getBoundingClientRect())
-        || inside(e, railRef.current?.getBoundingClientRect())
-      if (hit) {
-        if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
-      } else if (!closeTimer) {
-        closeTimer = setTimeout(() => setPeek(false), 180)
-      }
+  // Compteur des files de travaux : la lecture temps réel vit déjà dans le
+  // provider du panneau rapide (monté au-dessus des routes), on ne rajoute donc
+  // aucun appel. Les DEUX files sont comptées — l'icône dit « il reste du
+  // travail », peu importe de quelle section il vient. Les items « de côté » n'y
+  // sont pas : rien ne démarrera tant qu'on ne les aura pas remis en file.
+  const travauxQuick = useTravauxQuick()
+  const travauxItem = useMemo(() => {
+    const asking = travauxQuick?.askingCount || 0
+    const active = travauxQuick?.activeCount || 0
+    const total = asking + active
+    return {
+      to: '/travaux',
+      icon: ListChecks,
+      label: 'Travaux',
+      badge: total,
+      badgeTone: asking ? 'ask' : 'busy',
+      badgeTitle: total
+        ? [`${total} en file`, asking ? `dont ${asking} en attente de ta réponse` : null].filter(Boolean).join(' — ')
+        : undefined,
     }
-    function onKey(e) { if (e.key === 'Escape') setPeek(false) }
-    document.addEventListener('mousemove', onMove)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousemove', onMove)
-      document.removeEventListener('keydown', onKey)
-      if (closeTimer) clearTimeout(closeTimer)
-    }
-  }, [peek])
+  }, [travauxQuick?.askingCount, travauxQuick?.activeCount])
 
-  // Naviguer depuis le coup d'œil le referme (la page demandée reste en vue).
-  useEffect(() => { setPeek(false); cancelPeekArm() }, [location.pathname, location.search])
-  useEffect(() => () => cancelPeekArm(), [])
+  // Roue dentée : simple lien vers la page. Ses sections ne s'ouvrent pas au
+  // survol dans le menu de gauche — on les voit une fois sur la page
+  // (cf. lib/settingsSections.js).
+  const settingsItem = { to: SETTINGS_ROUTE, icon: Settings, label: 'Paramètres' }
 
-  // Pastille « nouveautés » : initialisée depuis localStorage, retirée quand la
-  // page Changelog émet l'événement `changelog:seen` au montage.
-  useEffect(() => {
-    const onSeen = () => setHasUnseenNews(false)
-    window.addEventListener(CHANGELOG_SEEN_EVENT, onSeen)
-    return () => window.removeEventListener(CHANGELOG_SEEN_EVENT, onSeen)
-  }, [])
+  // Nouveautés : entrée à part entière de la barre latérale (avant, elle était
+  // enfouie dans le menu du compte, où personne n'allait la chercher).
+  const changelogItem = { to: '/changelog', icon: Sparkles, label: 'Nouveautés' }
 
   // Raccourcis clavier globaux
   useEffect(() => {
@@ -936,9 +1250,13 @@ export function Layout({ children }) {
   // WebSocket global — connexion + reconnexion gérées par lib/realtime.js.
   // CustomEvents back-compat (agent:task:*, sync:progress) sont re-dispatchés
   // par la lib pour ne pas casser les écouteurs existants.
+  // `startRecordLive` : l'abonnement unique qui fait qu'une modification venue
+  // d'ailleurs (Airtable, un collègue) apparaît sans rafraîchir la page, et que
+  // le champ touché porte sa pastille quelques secondes.
   useEffect(() => {
     realtimeConnect()
-    return () => realtimeDisconnect()
+    startRecordLive()
+    return () => { stopRecordLive(); realtimeDisconnect() }
   }, [])
 
   const roleLabel = { admin: 'Admin', rh: 'RH', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
@@ -965,30 +1283,18 @@ export function Layout({ children }) {
     })
     .filter(Boolean)
 
-  // Contenu de la sidebar (partagé desktop / tiroir mobile). Rendu par appel
-  // direct (pas un composant JSX) : défini pendant le render, il perdrait son
-  // état à chaque frappe s'il était monté comme composant.
-  const sidebarBody = ({ mobile = false, peeking = false } = {}) => (
-    <div className={`flex flex-col h-full bg-white ${mobile ? 'w-72' : 'w-60'}`}>
-      {/* En-tête : logo + repli */}
+  // Menu complet du tiroir mobile (pas de survol au doigt : tout est déplié).
+  // Rendu par appel direct (pas un composant JSX) : défini pendant le render,
+  // il perdrait son état à chaque frappe s'il était monté comme composant.
+  const sidebarBody = () => (
+    <div className="flex flex-col h-full bg-white w-72">
+      {/* En-tête : logo */}
       <div className="flex items-center h-14 px-3 border-b border-slate-100 flex-shrink-0 gap-2">
         <NavLink to="/dashboard" className="flex items-center gap-2 min-w-0" title="Tableau de bord">
           <Logo size={24} className="text-brand-600 flex-shrink-0" />
           <span className="text-[15px] font-semibold text-slate-800 tracking-tight">Boréal</span>
         </NavLink>
-        {/* File de travaux : joignable depuis n'importe quelle page (⌘/Ctrl + /). */}
-        <TravauxQuickButton className="ml-auto" />
-        <ThemeToggle />
-        {!mobile && (
-          <button
-            onClick={() => setSidebarCollapsed(!peeking && !collapsed)}
-            data-testid={peeking ? 'sidebar-pin' : 'sidebar-collapse'}
-            title={peeking ? 'Garder le menu ouvert' : 'Replier le menu'}
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors"
-          >
-            {peeking ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-          </button>
-        )}
+        <div className="ml-auto"><ThemeToggle /></div>
       </div>
 
       {/* Recherche unifiée : pages/sections ET contenu, dans la même palette */}
@@ -1006,6 +1312,7 @@ export function Layout({ children }) {
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-1.5 px-2 space-y-0.5">
+        <MobileBookmarks />
         {filteredNavItems.map(item => (
           <NavSortable key={navKey(item)} container="root" itemKey={navKey(item)}>
             {item.group ? <NavGroup {...item} /> : <NavItem {...item} />}
@@ -1013,18 +1320,71 @@ export function Layout({ children }) {
         ))}
       </nav>
 
-      {/* Bas de barre : Agent, Admin, compte */}
+      {/* Bas de barre : Travaux, Paramètres, compte */}
       <div className="border-t border-slate-100 py-2 px-2 space-y-0.5 flex-shrink-0">
-        {/* Agent visible par tous : suggestions + correctifs (bulle d'aide).
-            Lien simple, sans sous-menu — la page Agent mène elle-même à ses
-            travaux. */}
-        <NavItem to="/agent" icon={Bot} label="Agent" />
-        {user?.role === 'admin' && (
-          <NavItem to="/admin" icon={Settings} label="Admin" />
-        )}
+        {/* Travaux visible par tous : file de prompts pour l'agent, suggestions,
+            réglages — touche toute la plateforme, pas seulement la compta, d'où
+            une entrée à plat plutôt qu'un sous-menu de l'Espace finance. */}
+        <NavItem {...travauxItem} />
+        <NavItem {...changelogItem} />
+        <NavItem {...settingsItem} />
         <div className="pt-1">
-          <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} hasUnseenNews={hasUnseenNews} />
+          <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} />
         </div>
+      </div>
+    </div>
+  )
+
+  // Rail desktop : une icône par grande section, le menu de la section au
+  // survol (titre + pages, cf. RailGroup). Le logo, la recherche et le compte
+  // encadrent la liste, comme dans l'ancien menu déplié.
+  const sidebarRail = () => (
+    <div
+      data-testid="sidebar-rail"
+      className="flex flex-col items-center w-14 h-full py-2.5 gap-1"
+    >
+      <NavLink
+        to="/dashboard"
+        title="Tableau de bord"
+        aria-label="Tableau de bord"
+        className="flex items-center justify-center w-9 h-9 mb-0.5 flex-shrink-0"
+      >
+        <Logo size={22} className="text-brand-600" />
+      </NavLink>
+      {/* Signets, juste sous l'icône du tableau de bord. */}
+      <RailBookmarks />
+      <button
+        data-testid="sidebar-search"
+        onClick={() => setShowSearch(true)}
+        title="Rechercher (⌘K)"
+        aria-label="Rechercher"
+        className="flex items-center justify-center w-9 h-9 flex-shrink-0 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
+      >
+        <Search size={17} />
+      </button>
+
+      <nav className="flex-1 min-h-0 w-full overflow-y-auto overflow-x-hidden flex flex-col items-center gap-1 py-1">
+        {filteredNavItems.map(item => (
+          <NavSortable key={navKey(item)} container="root" itemKey={navKey(item)} rail>
+            {item.group
+              ? <RailGroup {...item} />
+              : item.external
+                ? <RailExternalLink {...item} />
+                : <RailNavLink item={item} />}
+          </NavSortable>
+        ))}
+      </nav>
+
+      {/* Bas de rail : Travaux, Paramètres, compte */}
+      <div className="flex flex-col items-center gap-1 pt-1.5 w-full border-t border-slate-100 flex-shrink-0">
+        {/* Travaux visible par tous : file de prompts pour l'agent, suggestions,
+            réglages — touche toute la plateforme, pas seulement la compta, d'où
+            une entrée à plat plutôt qu'un sous-menu de l'Espace finance. */}
+        <RailNavLink item={travauxItem} />
+        <RailNavLink item={changelogItem} />
+        <RailNavLink item={settingsItem} />
+        <ThemeToggle compact />
+        <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} compact />
       </div>
     </div>
   )
@@ -1032,80 +1392,20 @@ export function Layout({ children }) {
   return (
     <NavReorderProvider items={orderedNavItems} order={order} setOrder={setOrder}>
     <div className="flex h-screen overflow-hidden bg-slate-50">
-      {/* Sidebar desktop — repliable en rail */}
+      {/* Sidebar desktop — rail d'icônes permanent, menus au survol */}
       <div
         data-testid="app-sidebar"
-        className={`hidden md:flex relative flex-shrink-0 bg-white border-r border-slate-200 transition-[width] duration-200 overflow-hidden ${collapsed ? 'w-12' : 'w-60'}`}
+        className="hidden md:flex flex-shrink-0 bg-white border-r border-slate-200 w-14"
       >
-        {collapsed ? (
-          // Rail replié : logo, réouverture, recherche — rien d'autre, tout
-          // l'écran reste à la tâche en cours. Le survol du rail rouvre le menu
-          // en surimpression le temps d'un coup d'œil.
-          <div
-            ref={railRef}
-            data-testid="sidebar-rail"
-            onMouseEnter={armPeek}
-            onMouseMove={armPeek}
-            onMouseLeave={cancelPeekArm}
-            className="flex flex-col items-center w-12 py-3 gap-1.5"
-          >
-            <Logo size={22} className="text-brand-600 mb-1" />
-            <button
-              onClick={toggleSidebar}
-              data-testid="sidebar-reopen"
-              title="Ouvrir le menu"
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-            >
-              <PanelLeftOpen size={16} />
-            </button>
-            <button
-              onClick={() => setShowSearch(true)}
-              title="Rechercher (⌘K)"
-              className="p-2 rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition-colors"
-            >
-              <Search size={16} />
-            </button>
-            <TravauxQuickButton compact />
-            <ThemeToggle compact />
-          </div>
-        ) : (
-          <>
-            {sidebarBody({})}
-            {/* Barre verticale de repli, sur toute la hauteur du bord droit :
-                cliquer n'importe où le long de la sidebar la replie. */}
-            <button
-              type="button"
-              data-testid="sidebar-collapse-edge"
-              onClick={toggleSidebar}
-              title="Replier le menu"
-              aria-label="Replier le menu"
-              className="absolute inset-y-0 right-0 w-1.5 z-10 group cursor-w-resize"
-            >
-              <span className="absolute inset-y-0 right-0 w-[3px] group-hover:bg-brand-500/60 transition-colors" />
-            </button>
-          </>
-        )}
+        {sidebarRail()}
       </div>
-
-      {/* Coup d'œil au survol du rail : le menu complet par-dessus la page, sans
-          pousser le contenu ni changer l'état replié. Décalé de la largeur du
-          rail, qui reste visible et cliquable (son bouton épingle le menu). */}
-      {collapsed && peek && (
-        <div
-          ref={peekRef}
-          data-testid="sidebar-peek"
-          className="hidden md:block fixed left-12 top-0 bottom-0 z-[120] w-60 bg-white border-r border-slate-200 shadow-2xl"
-        >
-          {sidebarBody({ peeking: true })}
-        </div>
-      )}
 
       {/* Mobile sidebar */}
       {mobileOpen && (
         <div className="fixed inset-0 z-50 md:hidden">
           <div className="fixed inset-0 bg-black/40" onClick={() => setMobileOpen(false)} />
           <div className="fixed left-0 top-0 bottom-0 z-50 flex shadow-2xl">
-            {sidebarBody({ mobile: true })}
+            {sidebarBody()}
             <button
               onClick={() => setMobileOpen(false)}
               className="absolute top-4 right-4 text-slate-500"
@@ -1124,8 +1424,7 @@ export function Layout({ children }) {
             <Menu size={20} />
           </button>
           <Logo size={24} className="text-brand-600" />
-          <TravauxQuickButton compact className="ml-auto" />
-          <ThemeToggle compact />
+          <div className="ml-auto"><ThemeToggle compact /></div>
         </div>
 
         {/* Page content */}

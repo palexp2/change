@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -90,7 +90,7 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   const error = validate(req.body)
   if (error) return res.status(400).json({ error })
-  const id = randomUUID()
+  const id = newRecordId()
   const b = req.body
   db.prepare(`
     INSERT INTO vendor_subscriptions

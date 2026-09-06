@@ -3,6 +3,7 @@ import { Plus, Trash2, ChevronDown, Check } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
+import Spinner from './Spinner.jsx'
 
 export function TaxMappingModal({ isOpen, onClose }) {
   const [mappings, setMappings] = useState([])
@@ -112,7 +113,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
         <div>
           <h3 className="text-sm font-semibold text-slate-900 mb-2">Mappings actifs</h3>
           {loading ? (
-            <div className="text-sm text-slate-500">Chargement…</div>
+            <div className="text-sm text-slate-500"><Spinner size="xs" label="Chargement…" /></div>
           ) : mappings.length === 0 ? (
             <div className="text-sm text-slate-400 italic">Aucun mapping configuré</div>
           ) : (
@@ -167,7 +168,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
         <form onSubmit={handleSave} className="border-t border-slate-200 pt-4 space-y-3">
           <h3 className="text-sm font-semibold text-slate-900">Ajouter / mettre à jour</h3>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">
+            <label className="label">
               Stripe Tax IDs <span className="text-slate-400 font-normal">(cocher un ou plusieurs pour un taux combiné)</span>
             </label>
             {knownStripeTaxIds.length > 0 && (
@@ -194,7 +195,6 @@ export function TaxMappingModal({ isOpen, onClose }) {
             <div className="flex gap-2 mt-2">
               <input
                 type="text"
-                placeholder="txr_... (saisie manuelle)"
                 value={manualTaxId}
                 onChange={e => setManualTaxId(e.target.value)}
                 onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addManualTaxId() } }}
@@ -227,7 +227,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
             )}
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">QB Tax Code</label>
+            <label className="label">QB Tax Code</label>
             <QbTaxCodeCombobox
               value={form.qb_tax_code}
               onChange={v => setForm({ ...form, qb_tax_code: v })}
@@ -236,10 +236,9 @@ export function TaxMappingModal({ isOpen, onClose }) {
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-slate-500 mb-1">Description (optionnel)</label>
+            <label className="label">Description (optionnel)</label>
             <input
               type="text"
-              placeholder="Ex: TPS+TVQ Québec"
               value={form.stripe_tax_description}
               onChange={e => setForm({ ...form, stripe_tax_description: e.target.value })}
               className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
@@ -323,7 +322,6 @@ function QbTaxCodeCombobox({ value, onChange, options, error }) {
             autoFocus
             value={query}
             onChange={e => setQuery(e.target.value)}
-            placeholder="Rechercher…"
             className="px-2 py-1.5 text-sm border-b border-slate-100 focus:outline-none"
           />
           <div className="overflow-y-auto">

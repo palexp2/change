@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Zap, Plus, Lock, Webhook } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { api } from '../lib/api.js'
@@ -23,7 +24,7 @@ const OP_SYMBOLS = { eq: '=', ne: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤
 import { AUTOMATION_ACTION_LABELS as ACTION_LABELS } from '../components/Badge.jsx'
 
 // Human-readable "condition → action" summary, so every trigger is consultable
-// at a glance from the list (e.g. orders.nombre_d_items > 1 → Script).
+// at a glance from the list (e.g. orders.items_count > 1 → Script).
 function triggerSummary(row) {
   if (row.kind !== 'field_rule') return null
   let tc = {}
@@ -135,9 +136,7 @@ export function AutomationsContent() {
   return (
     <>
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-xl font-semibold flex items-center gap-2">
-          <Zap size={22} /> Automations
-        </h1>
+        <PageTitle>Automations</PageTitle>
         <div className="flex items-center gap-2">
           <button onClick={() => navigate('/automations/new?kind=field_rule')}
             className="flex items-center gap-1.5 px-4 py-2 text-sm bg-white border border-brand-200 text-brand-700 rounded-lg hover:bg-brand-50">

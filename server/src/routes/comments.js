@@ -8,7 +8,7 @@
 // jour en temps réel sur le canal `comments:<type>:<id>`.
 
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { emit } from '../services/realtime.js'
@@ -103,7 +103,7 @@ router.post('/', (req, res) => {
   }
 
   const mentions = validateMentions(req.body.mentions)
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(
     `INSERT INTO record_comments (id, record_type, record_id, author_id, body, mentions)
      VALUES (?, ?, ?, ?, ?, ?)`

@@ -2,6 +2,59 @@
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
     {
+      "date": "2026-09-06",
+      "title": "Uniformisation des \u00e9crans",
+      "category": "G\u00e9n\u00e9ral",
+      "requester": "Charles Rousseau",
+      "changes": [
+        { "type": "improved", "text": "Montants, nombres et dates s'affichent de la m\u00eame fa\u00e7on partout (m\u00eame nombre de d\u00e9cimales, m\u00eame format)." },
+        { "type": "improved", "text": "Champs de saisie, libell\u00e9s, bandeaux d'erreur et indicateurs de chargement ont un seul style dans toute l'app." },
+        { "type": "improved", "text": "Les listes pagin\u00e9es et les modifications partielles passent par un m\u00eame m\u00e9canisme c\u00f4t\u00e9 serveur : comportement identique d'une table \u00e0 l'autre." }
+      ]
+    },
+    {
+      "date": "2026-09-06",
+      "title": "La paie prend son montant \u00e0 la banque",
+      "category": "Comptabilit\u00e9",
+      "changes": [
+        { "type": "new", "text": "Comptabilisation de la paie : le montant pass\u00e9 au compte BNC et sa date sont propos\u00e9s d\u00e8s que le d\u00e9bit para\u00eet au relev\u00e9 \u2014 plus besoin d'aller le recopier. Le champ reste modifiable ; le modifier signale l'\u00e9cart avec le mouvement vu au compte." },
+        { "type": "new", "text": "Publier est refus\u00e9 si le montant ne correspond pas au d\u00e9bit auquel la d\u00e9pense se rattache, et attend qu'une transaction encore en attente \u00e0 la banque soit confirm\u00e9e." },
+        { "type": "new", "text": "Assurance collective (AGA) : le pr\u00e9l\u00e8vement du mois est propos\u00e9 de la m\u00eame fa\u00e7on." },
+        { "type": "improved", "text": "Publier depuis l'ERP marque tout de suite la ligne du relev\u00e9 comme comptabilis\u00e9e, sans attendre la v\u00e9rification QuickBooks." },
+        { "type": "improved", "text": "Rien n'est publi\u00e9 tout seul dans QuickBooks : le rapprochement pr\u00e9pare, le clic d\u00e9cide." }
+      ]
+    },
+    {
+      "date": "2026-09-06",
+      "title": "Solde BNC relev\u00e9 automatiquement",
+      "category": "Comptabilit\u00e9",
+      "changes": [
+        { "type": "new", "text": "Le solde qui sert \u00e0 la projection de tr\u00e9sorerie est lu directement au compte \u00e0 chaque passage \u2014 la saisie \u00e0 la main devient un rattrapage. La tuile indique quand le chiffre vient de la banque." },
+        { "type": "improved", "text": "C'est le solde disponible qui est retenu, marge comprise : le compte ch\u00e8ques est balay\u00e9 et son solde courant ne veut rien dire." }
+      ]
+    },
+    {
+      "date": "2026-09-06",
+      "title": "Dettes \u00e0 long terme : voir l'argent sortir",
+      "category": "Comptabilit\u00e9",
+      "changes": [
+        { "type": "new", "text": "Chaque versement affiche \u00ab pass\u00e9 le\u2026 \u00bb quand le pr\u00e9l\u00e8vement para\u00eet au relev\u00e9, et \u00ab pas encore vu \u00e0 la banque \u00bb s'il tarde de plus de trois jours. Comptabilis\u00e9 dans QuickBooks ne voulait pas dire sorti du compte." },
+        { "type": "new", "text": "Chaque dette porte le libell\u00e9 sous lequel son pr\u00e9l\u00e8vement appara\u00eet au relev\u00e9, modifiable sur la fiche." }
+      ]
+    },
+    {
+      "date": "2026-09-06",
+      "title": "Connexion bancaire plus fiable",
+      "category": "Comptabilit\u00e9",
+      "changes": [
+        { "type": "fixed", "text": "Les transactions n'arrivaient que sur avis de la banque : un avis perdu et la lecture s'arr\u00eatait sans que rien ne le signale. Une relecture a lieu maintenant toutes les 30 minutes." },
+        { "type": "new", "text": "Connecteurs : on voit depuis quand la banque n'a plus rien livr\u00e9, on peut lui demander de r\u00e9pondre tout de suite, et relire tout l'historique d'un compte associ\u00e9 apr\u00e8s coup (il restait vide sans \u00e7a)." },
+        { "type": "new", "text": "Rapprochement bancaire : les mouvements pr\u00e9sents en double (banque + ancien fichier TRX_Orisha) se fusionnent en un clic, en gardant statut et lien QuickBooks." },
+        { "type": "improved", "text": "L'import d'un relev\u00e9 par collage dispara\u00eet sur un compte branch\u00e9 \u00e0 la banque \u2014 il n'y cr\u00e9ait que des doublons." },
+        { "type": "fixed", "text": "Un paiement n'est plus coch\u00e9 \u00ab pass\u00e9 \u00bb sur la foi d'une transaction encore en attente, dont le montant peut changer." }
+      ]
+    },
+    {
       "date": "2026-08-31",
       "title": "Fondations : chargement et sauvegarde unifi\u00e9s",
       "category": "G\u00e9n\u00e9ral",

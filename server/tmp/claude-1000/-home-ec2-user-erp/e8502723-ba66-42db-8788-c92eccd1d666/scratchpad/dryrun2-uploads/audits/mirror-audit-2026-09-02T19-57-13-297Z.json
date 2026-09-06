@@ -1,0 +1,300 @@
+{
+  "generated_at": "2026-09-02T19:57:13.297Z",
+  "options": {
+    "values": true,
+    "mirrors": [
+      "assemblages",
+      "adresses"
+    ],
+    "maxExamples": 3
+  },
+  "mirrors": [
+    {
+      "id": "adresses",
+      "erp_table": "adresses",
+      "sync": "full",
+      "status": "ok",
+      "errors": [],
+      "base_id": "appB4Fehk9jYd4s4B",
+      "table_id": "tbl6uymIZgJd388Vg",
+      "last_synced_at": "2026-09-02T14:30:15.471Z",
+      "airtable_name": "Adresses",
+      "airtable_field_count": 30,
+      "core_key_count": 8,
+      "orphan_mappings": [],
+      "field_states": {
+        "core": 8,
+        "mirrored": 22
+      },
+      "core_uncomparable": 8,
+      "unmapped_fields": [],
+      "incomparable_fields": [
+        {
+          "field": "Adresse",
+          "erp_column": "line1",
+          "state": "core",
+          "role": "computed",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Ville",
+          "erp_column": "city",
+          "state": "core",
+          "role": "scalar",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "State",
+          "erp_column": "province",
+          "state": "core",
+          "role": "scalar",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Zip code",
+          "erp_column": "postal_code",
+          "state": "core",
+          "role": "scalar",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Pays",
+          "erp_column": "country",
+          "state": "core",
+          "role": "scalar",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Entreprise (Adresse de livraison)",
+          "erp_column": null,
+          "state": "core",
+          "role": "link",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Contact",
+          "erp_column": null,
+          "state": "core",
+          "role": "link",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Commandes (adresse de livaison)",
+          "erp_column": "commandes_adresse_de_livaison",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Envois (adresse de destination)",
+          "erp_column": "envois_adresse_de_destination",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Items retours (adresse de livaison)",
+          "erp_column": "items_retours_adresse_de_livaison",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Projets (adresse de la ferme)",
+          "erp_column": "projets_adresse_de_la_ferme_2",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "PO (adresse de livraison)",
+          "erp_column": "po_adresse_de_livraison",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Employés et partenaires (adresse de livraison)",
+          "erp_column": "employes_et_partenaires_adresse_de_livraison",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Commandes (adresse de la ferme)",
+          "erp_column": "commandes_adresse_de_la_ferme",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Envois (adresse de départ)",
+          "erp_column": "envois_adresse_de_depart",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Entreprise (adresse de la ferme)",
+          "erp_column": "entreprise_adresse_de_la_ferme_2",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Entreprise (adresse de factuation)",
+          "erp_column": "entreprise_adresse_de_factuation",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Type d'adresse",
+          "erp_column": "address_type",
+          "state": "core",
+          "role": "computed",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Employés et partenaires (adresse de facturation)",
+          "erp_column": "employes_et_partenaires_adresse_de_facturation",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        }
+      ],
+      "airtable_records": 1661,
+      "erp_records": 1678,
+      "erp_records_with_airtable_id": 1663,
+      "missing_in_erp": [],
+      "orphan_in_erp": [
+        "recIFwKlEQJqML0Qf",
+        "recjcWp4k2Oe72ZP6"
+      ],
+      "values_compared": true,
+      "compared_field_count": 11,
+      "records_with_divergence": 0,
+      "value_divergences": [],
+      "divergent_value_count": 0
+    },
+    {
+      "id": "assemblages",
+      "erp_table": "assemblages",
+      "sync": "full",
+      "status": "ok",
+      "errors": [],
+      "base_id": "appB4Fehk9jYd4s4B",
+      "table_id": "tblijaEcJj1oRKCGy",
+      "last_synced_at": "2026-08-28T18:58:18.305Z",
+      "airtable_name": "Assemblage",
+      "airtable_field_count": 11,
+      "core_key_count": 3,
+      "orphan_mappings": [],
+      "field_states": {
+        "core": 3,
+        "mirrored": 8
+      },
+      "core_uncomparable": 3,
+      "unmapped_fields": [],
+      "incomparable_fields": [
+        {
+          "field": "Date",
+          "erp_column": "assembled_at",
+          "state": "core",
+          "role": "scalar",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Produit",
+          "erp_column": null,
+          "state": "core",
+          "role": "link",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "Quantités fabriqués",
+          "erp_column": "qty_produced",
+          "state": "core",
+          "role": "scalar",
+          "reason": "field_map cœur — transformation dans le code, non auditable"
+        },
+        {
+          "field": "# de série",
+          "erp_column": "de_serie_2",
+          "state": "mirrored",
+          "role": "link",
+          "reason": "type multipleRecordLinks — valeur non comparable"
+        },
+        {
+          "field": "Image",
+          "erp_column": "image_2",
+          "state": "mirrored",
+          "reason": "pièce jointe image — miroir local"
+        }
+      ],
+      "airtable_records": 952,
+      "erp_records": 952,
+      "erp_records_with_airtable_id": 952,
+      "missing_in_erp": [],
+      "orphan_in_erp": [],
+      "values_compared": true,
+      "compared_field_count": 6,
+      "records_with_divergence": 0,
+      "value_divergences": [],
+      "divergent_value_count": 0
+    }
+  ],
+  "totals": {
+    "mirrors": 2,
+    "airtable_records": 2613,
+    "erp_records": 2630,
+    "erp_records_with_airtable_id": 2615,
+    "missing_in_erp": 0,
+    "orphan_in_erp": 2,
+    "airtable_fields": 41,
+    "mapped_fields": 41,
+    "unmapped_fields": 0,
+    "core_keys": 11,
+    "core_uncomparable": 11,
+    "orphan_mappings": 0,
+    "divergent_values": 0,
+    "divergent_values_computed": 0,
+    "records_with_divergence": 0
+  },
+  "registry": {
+    "refresh": {
+      "refreshed_at": "2026-09-02T19:57:07.351Z",
+      "bases": 2,
+      "mirrors": {
+        "mirrored": 22,
+        "paused": 2,
+        "excluded": 0,
+        "undecided": 32
+      },
+      "fields": {
+        "mirrored": 634,
+        "core": 198,
+        "excluded": 181,
+        "unmapped": 246,
+        "broken": 1
+      },
+      "orphan_mappings": 43,
+      "core_keys": 206,
+      "preserved_user_decisions": 0
+    },
+    "counters": {
+      "mirrors": {
+        "mirrored": 22,
+        "paused": 2,
+        "undecided": 32
+      },
+      "fields": {
+        "broken": 1,
+        "core": 198,
+        "excluded": 181,
+        "mirrored": 634,
+        "unmapped": 246
+      }
+    }
+  }
+}

@@ -1,5 +1,6 @@
 import { Router } from 'express'
-import { randomUUID, timingSafeEqual } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
+import { timingSafeEqual } from 'crypto'
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
@@ -12,7 +13,7 @@ import {
   getSettings, setSettings, readBacklog, addBacklogItem, deleteBacklogItem,
   updateBacklogItem, generateInstantProposal, approveBacklogItem,
   requestReply, PROMPT_TEMPLATE_DEFAULTS, DEFAULT_GENERAL_PROMPT,
-  getSessionLimitResetAt, getAgentModelState,
+  getSessionLimitResetAt, getAgentModelState, stopRunningTask,
 } from '../services/taskRunner.js'
 
 function safeEqualSecret(provided, expected) {
@@ -58,7 +59,7 @@ router.post('/tasks/internal', (req, res) => {
   if (!description) return res.status(400).json({ error: 'description required' })
   const now = new Date().toISOString()
   const task = {
-    id: randomUUID(), description, status: 'pending', priority,
+    id: newRecordId(), description, status: 'pending', priority,
     user_comment: null, agent_result: null, messages: [],
     created_at: now, updated_at: now, completed_at: null,
   }
@@ -122,7 +123,7 @@ router.put('/claude-md', requireAdmin, (req, res) => {
 
 // ─── Suggestions (bulle d'aide / page agent) ──────────────────────────────────
 router.get('/backlog', (req, res) => res.json(readBacklog()))
-router.post('/backlog', (req, res) => {
+router.post('/backlog', async (req, res) => {
   const text = (req.body.text || '').trim()
   if (!text) return res.status(400).json({ error: 'text required' })
   // Toujours opus/effort élevé, implémentation directe sans proposition ni
@@ -135,7 +136,7 @@ router.post('/backlog', (req, res) => {
     preset: 'deep',
     mode: req.body.mode === 'question' ? 'question' : 'implement',
   })
-  const { item: updatedItem } = approveBacklogItem(item.id) || {}
+  const { item: updatedItem } = await approveBacklogItem(item.id, { userId: req.user?.id || null }) || {}
   res.status(201).json(updatedItem || item)
 })
 // Relancer une proposition instantanée en échec.
@@ -147,8 +148,11 @@ router.post('/backlog/:id/retry', (req, res) => {
 })
 // Approuver le correctif proposé → crée la tâche d'implémentation (préréglage
 // modèle/effort de la suggestion) et réveille le runner.
-router.post('/backlog/:id/approve', (req, res) => {
-  const result = approveBacklogItem(req.params.id, { comment: (req.body?.comment || '').trim() })
+router.post('/backlog/:id/approve', async (req, res) => {
+  const result = await approveBacklogItem(req.params.id, {
+    comment: (req.body?.comment || '').trim(),
+    userId: req.user?.id || null,
+  })
   if (!result) return res.status(404).json({ error: 'not found' })
   res.json(result)
 })
@@ -163,7 +167,7 @@ router.post('/tasks', (req, res) => {
   if (!description) return res.status(400).json({ error: 'description required' })
   const now = new Date().toISOString()
   const task = {
-    id: randomUUID(), description, status: 'approved', priority,
+    id: newRecordId(), description, status: 'approved', priority,
     user_comment: null, agent_result: null, messages: [],
     created_at: now, updated_at: now, completed_at: null,
   }
@@ -191,14 +195,8 @@ router.patch('/tasks/:id', (req, res) => {
   for (const key of allowed) {
     if (key in req.body) task[key] = req.body[key]
   }
-  // Appréciation de l'implémentation (1 à 5 étoiles, null = retirée).
-  if ('rating' in req.body) {
-    const r = req.body.rating
-    if (r !== null && !(Number.isInteger(r) && r >= 1 && r <= 5)) {
-      return res.status(400).json({ error: 'rating doit être un entier de 1 à 5 ou null' })
-    }
-    task.rating = r
-  }
+  // L'appréciation (étoiles) des implémentations a été retirée : `rating` n'est
+  // plus ni écrit ni lu — les valeurs déjà stockées restent inertes.
   if (req.body.status === 'done' && tasks[idx].status !== 'done') {
     task.completed_at = new Date().toISOString()
   }
@@ -231,15 +229,16 @@ router.post('/tasks/:id/message', (req, res) => {
 })
 
 // GET /api/agent/usage — quotas de l'abonnement Claude (fenêtre glissante de 5 h,
-// total hebdomadaire, plafond hebdo d'un modèle) + jetons consommés, agrégés depuis
-// les transcriptions locales de Claude Code. Résultat mis en cache 60 s.
+// total hebdomadaire, plafond hebdo d'un modèle). Résultat mis en cache 60 s.
 //
 // On y joint l'état de l'ordonnanceur : quand une exécution s'est heurtée au quota,
 // le runner se met en pause tout seul jusqu'à la réinitialisation. Sans cette
 // information, la page Travaux montrait une file immobile sans dire pourquoi.
 router.get('/usage', async (req, res) => {
   try {
-    const usage = await getClaudeUsage()
+    // Une page regarde les jauges : réponse immédiate (cache servi même périmé) et
+    // cache entretenu en fond tant qu'on l'interroge — voir claudeUsage.js.
+    const usage = await getClaudeUsage({ keepWarm: true })
     const at = getSessionLimitResetAt()
     res.json({
       ...usage,
@@ -261,6 +260,15 @@ router.get('/runner/status', (req, res) => {
 // GET buffered stream chunks for a task
 router.get('/tasks/:id/stream-log', (req, res) => {
   res.json({ chunks: getStreamBuffer(req.params.id) })
+})
+
+// POST /api/agent/tasks/:id/stop — arrête une exécution en cours (tue le process,
+// le statut final ('stopped') est posé par monitorExecution() dès que le process
+// meurt, quelques secondes plus tard — voir taskRunner.js).
+router.post('/tasks/:id/stop', (req, res) => {
+  const out = stopRunningTask(req.params.id)
+  if (!out.ok) return res.status(409).json({ error: out.error })
+  res.json({ ok: true })
 })
 
 // DELETE a task

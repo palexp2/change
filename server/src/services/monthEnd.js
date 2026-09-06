@@ -21,8 +21,8 @@
 // Les mois publiés sont matérialisés avec pushed_at + qb_je_id ; les mois
 // historiques importés des fichiers portent pushed_at sans qb_je_id (déjà
 // comptabilisés à la main dans QB avant la reprise par l'ERP).
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
@@ -449,7 +449,7 @@ export async function publishProvisionMonth(provisionId, month, { userId = null 
       `).run(ev.amount, JSON.stringify(ev.detail), now, now, existing.id)
       if (r.changes !== 1) throw new Error('Ce mois est déjà comptabilisé')
     } else {
-      rowId = randomUUID()
+      rowId = newRecordId()
       try {
         db.prepare(`
           INSERT INTO month_end_provision_months (id, provision_id, month, amount, inputs, computed, source, pushed_at)
@@ -598,7 +598,7 @@ export function updateProvisionMonth(provisionId, month, patch = {}) {
     db.prepare(`
       INSERT INTO month_end_provision_months (id, provision_id, month, inputs, override_amount, source)
       VALUES (?,?,?,?,?,?)
-    `).run(randomUUID(), provisionId, month, JSON.stringify(inputs), override, override != null ? 'manuel' : 'auto')
+    `).run(newRecordId(), provisionId, month, JSON.stringify(inputs), override, override != null ? 'manuel' : 'auto')
   }
   return evaluateProvisionMonth(provision, month)
 }

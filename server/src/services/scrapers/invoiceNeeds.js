@@ -1,5 +1,5 @@
-import { v4 as uuid } from 'uuid'
 import db from '../../db/database.js'
+import { newRecordId } from '../../utils/recordId.js'
 import { resolveVendorFromBankLabel } from './vendorFromBankLabel.js'
 import { nowIso } from '../../utils/datetime.js'
 
@@ -108,6 +108,8 @@ function openTransactions(sinceDate) {
     WHERE t.deleted_at IS NULL
       AND t.amount < 0
       AND t.matched_id IS NULL
+      -- Un virement interne n'a pas de facture à aller chercher.
+      AND t.transfer_txn_id IS NULL
       AND t.status IN ('a_traiter', 'facture_recue')
       AND t.txn_date >= ?
     ORDER BY t.txn_date DESC
@@ -146,7 +148,7 @@ export function refreshInvoiceNeeds({ lookbackDays = 120 } = {}) {
       const hit = resolveVendorFromBankLabel(t.label)
       if (!hit) continue // fournisseur inconnu : rien à proposer, on ne crée pas de bruit
       const accountId = byProfile.get(hit.profile.id) || null
-      upsert.run(uuid(), t.id, accountId, hit.profile.id, t.amount, t.currency, t.txn_date,
+      upsert.run(newRecordId(), t.id, accountId, hit.profile.id, t.amount, t.currency, t.txn_date,
         accountId ? 'en_attente' : 'sans_collecteur', nowIso())
       if (accountId) withCollector++
       else without++

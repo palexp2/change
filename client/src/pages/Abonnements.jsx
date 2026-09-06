@@ -4,6 +4,7 @@ import { ExternalLink, RefreshCw, CreditCard, SlidersHorizontal } from 'lucide-r
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { StripeSubscriptionFieldMapModal } from '../components/StripeFieldMapModal.jsx'
@@ -152,7 +153,7 @@ export default function Abonnements() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Abonnements</h1>
+            <PageTitle>Abonnements</PageTitle>
           </div>
           <div className="flex items-center gap-2">
             {stripeConfigured && (

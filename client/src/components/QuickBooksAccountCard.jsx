@@ -8,8 +8,9 @@ import { useConfirm } from './ConfirmProvider.jsx'
 // sont attribuées à SON compte QuickBooks dans l'« Historique de vérification »
 // (au lieu du compte principal par défaut).
 //
-// Réutilisé à deux endroits : la page /settings (accessible à tous) et l'onglet
-// admin Connecteurs. La connexion se rattache toujours à l'utilisateur ERP courant.
+// Réutilisé à deux endroits : la section QuickBooks des Paramètres (accessible à
+// tous) et la section Connecteurs (admin). La connexion se rattache toujours à
+// l'utilisateur ERP courant.
 export default function QuickBooksAccountCard() {
   const [status, setStatus] = useState(null)
   const confirm = useConfirm()

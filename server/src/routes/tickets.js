@@ -1,6 +1,7 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
-import db from '../db/database.js';
+import { newRecordId } from '../utils/recordId.js';
+import db from '../db/database.js'
+import { readRelation } from '../services/customFieldsView.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
@@ -9,6 +10,8 @@ import { emitEntity } from '../services/realtimeEmitters.js';
 import { notifyAssignment } from '../services/notifications.js';
 import { surveyEligibility, getSurveyByTicket, sendTicketSurvey, surveyUrl } from '../services/ticketSurveys.js';
 import { writeBackRecord } from '../services/airtableWriteback.js';
+import { deleteTicketCascade } from '../services/ticketDelete.js';
+import { parsePage } from '../utils/pagination.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -20,16 +23,14 @@ router.use(requireAuth);
 const SURVEY_JOIN = `
      LEFT JOIN ticket_surveys tsv ON tsv.ticket_id = t.id AND tsv.deleted_at IS NULL`
 const SURVEY_COLS = `,
-      tsv.rating as survey_rating, tsv.send_status as survey_send_status,
+      tsv.send_status as survey_send_status,
       tsv.responded_at as survey_responded_at, tsv.sent_at as survey_sent_at`
 
 function buildTicketRow(id) {
   const r = db.prepare(
-    `SELECT t.*, c.name as company_name, u.name as assigned_name,
+    `SELECT t.*,
       ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
-     FROM tickets t
-     LEFT JOIN companies c ON t.company_id = c.id
-     LEFT JOIN users u ON t.assigned_to = u.id
+     FROM ${readRelation('tickets')} t
      LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
      WHERE t.id = ?`
   ).get(id)
@@ -46,15 +47,15 @@ router.get('/meta', (req, res) => {
 
 // GET /api/tickets
 router.get('/', (req, res) => {
-  const { search, status, type, company_id, assigned_to, page = 1, limit = 50 } = req.query;
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { search, status, type, company_id, assigned_to } = req.query;
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50);
   let where = 'WHERE 1=1';
   const params = [];
 
   if (search) {
-    where += ' AND (t.title LIKE ? OR c.name LIKE ?)';
+    // EXISTS plutôt que JOIN : indépendant de la jointure retirée et de la
+    // colonne company_name de la vue (supprimable par l'utilisateur).
+    where += ' AND (t.title LIKE ? OR EXISTS (SELECT 1 FROM companies c WHERE c.id = t.company_id AND c.name LIKE ?))';
     const q = `%${search}%`;
     params.push(q, q);
   }
@@ -76,15 +77,13 @@ router.get('/', (req, res) => {
   }
 
   const total = db.prepare(
-    `SELECT COUNT(*) as c FROM tickets t LEFT JOIN companies c ON t.company_id = c.id ${where}`
+    `SELECT COUNT(*) as c FROM ${readRelation('tickets')} t ${where}`
   ).get(...params).c;
 
   const tickets = db.prepare(
-    `SELECT t.*, c.name as company_name, u.name as assigned_name,
+    `SELECT t.*,
       ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
-     FROM tickets t
-     LEFT JOIN companies c ON t.company_id = c.id
-     LEFT JOIN users u ON t.assigned_to = u.id
+     FROM ${readRelation('tickets')} t
      LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
      ${where}
      ORDER BY t.created_at DESC
@@ -161,11 +160,9 @@ router.post('/:id/survey', async (req, res) => {
 // GET /api/tickets/:id
 router.get('/:id', (req, res) => {
   const ticket = db.prepare(
-    `SELECT t.*, c.name as company_name, u.name as assigned_name,
+    `SELECT t.*,
       ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
-     FROM tickets t
-     LEFT JOIN companies c ON t.company_id = c.id
-     LEFT JOIN users u ON t.assigned_to = u.id
+     FROM ${readRelation('tickets')} t
      LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
      WHERE t.id = ?`
   ).get(req.params.id);
@@ -179,7 +176,7 @@ router.post('/', (req, res) => {
   const { company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes } = req.body;
   const fkErr = checkForeignKeys({ company_id, contact_id });
   if (fkErr) return res.status(400).json({ error: fkErr.message });
-  const id = uuidv4();
+  const id = newRecordId();
   db.prepare(
     `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -251,11 +248,12 @@ router.patch('/:id/status', (req, res) => {
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
-  const tx = db.transaction((id) => {
-    db.prepare(`UPDATE tasks SET ticket_id = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE ticket_id = ?`).run(id);
-    db.prepare('DELETE FROM tickets WHERE id = ?').run(id);
-  });
-  tx(req.params.id);
+  try {
+    deleteTicketCascade(db, req.params.id);
+  } catch (err) {
+    console.error('[tickets] delete failed', req.params.id, err);
+    return res.status(409).json({ error: 'Impossible de supprimer ce billet : des données liées y font encore référence.' });
+  }
   emitEntity('ticket', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ message: 'Deleted' });
 });

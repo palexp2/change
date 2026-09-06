@@ -1,12 +1,15 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Link, useSearchParams, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { X, FileText, SlidersHorizontal, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
+import { FieldAirtableMapping } from '../components/FieldAirtableMapping.jsx'
 import { StripeFieldMapModal } from '../components/StripeFieldMapModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -205,17 +208,7 @@ export default function Factures() {
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [companyPeek, setCompanyPeek] = useState(null) // { id, name } — side-peek entreprise
 
-  // Ouverture du side-peek demandée par la fiche plein écran (« revenir au
-  // panneau latéral ») — l'id voyage via location.state.peekId. Consommée une
-  // fois le drawer ouvert, et le state d'historique est nettoyé pour qu'un
-  // refresh ne rouvre pas le drawer.
-  const location = useLocation()
-  const navigate = useNavigate()
-  const [peekOpenId, setPeekOpenId] = useState(() => location.state?.peekId ?? null)
-  const consumePeekOpen = useCallback(() => {
-    setPeekOpenId(null)
-    navigate(location.pathname + location.search, { replace: true, state: null })
-  }, [navigate, location.pathname, location.search])
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   const customFieldsByColumn = useMemo(() => {
     const m = new Map()
@@ -342,7 +335,7 @@ export default function Factures() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold text-slate-900">Factures clients</h1>
+            <PageTitle>Factures clients</PageTitle>
             <ReimportIndicator stripeBatch={stripeBatch} airtableSync={airtableSync} />
           </div>
           <div className="flex items-center gap-2">
@@ -412,7 +405,6 @@ export default function Factures() {
       <AbonnementDetailModal
         abonnement={subscriptionModal}
         onClose={() => setSubscriptionModal(null)}
-        variant="peek"
       />
 
       {/* Side-peek entreprise (clic sur la colonne « Entreprise ») */}
@@ -433,6 +425,13 @@ export default function Factures() {
         onClose={() => setCustomFieldModal(null)}
         erpTable="factures"
         editing={customFieldModal?.editing || null}
+        mappingSlot={customFieldModal?.editing ? (
+          <FieldAirtableMapping
+            table="factures"
+            column={customFieldModal.editing.column_name}
+            cfKind={customFieldModal.editing.kind}
+          />
+        ) : null}
         onSaved={async () => { await reloadCustomFields(); load() }}
         onDeleted={async () => { await reloadCustomFields(); load() }}
       />

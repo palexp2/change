@@ -44,7 +44,6 @@ export default function Login() {
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 className="input"
-                placeholder="votre@courriel.com"
                 required
                 autoFocus
               />
@@ -56,7 +55,6 @@ export default function Login() {
                 value={password}
                 onChange={e => setPassword(e.target.value)}
                 className="input"
-                placeholder="••••••••"
                 required
               />
             </div>

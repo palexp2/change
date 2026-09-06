@@ -25,16 +25,40 @@ db.pragma('busy_timeout = 10000');
 db.pragma('wal_autocheckpoint = 2000');
 
 // Accent-insensitive search helper available in all queries
-db.function('unaccent', (str) => {
+function unaccent(str) {
   if (str == null) return ''
   return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
-})
+}
+db.function('unaccent', unaccent)
 
-// Fonctions de formule fa\u00e7on Airtable (SWITCH, DATEADD, MID, SUBSTITUTE\u2026) \u2014
-// disponibles dans toutes les requ\u00eates, notamment les expressions des champs
-// calcul\u00e9s (kind='formula') expos\u00e9s via les VUES <table>_v. Voir
+// Fonctions de formule façon Airtable (SWITCH, DATEADD, MID, SUBSTITUTE…) —
+// disponibles dans toutes les requêtes, notamment les expressions des champs
+// calculés (kind='formula') exposés via les VUES <table>_v. Voir
 // services/formulaEngine.js. N'enregistre que les noms absents de SQLite, jamais
-// un agr\u00e9gat (SUM/COUNT/MIN/MAX/AVG restent natifs pour les rollups).
+// un agrégat (SUM/COUNT/MIN/MAX/AVG restent natifs pour les rollups).
 registerFormulaFunctions(db)
+
+// Connexion de LECTURE dédiée, à usage jetable.
+//
+// better-sqlite3 est synchrone : tant qu'un `stmt.iterate()` n'est pas épuisé,
+// sa connexion est « busy » et TOUTE autre requête sur cette connexion lève
+// « This database connection is busy executing a query ». Un endpoint qui
+// streame (GET /api/bootstrap : iterate + await de contre-pression réseau)
+// garde donc l'itérateur ouvert pendant plusieurs secondes — pendant lesquelles
+// les écritures des autres requêtes échouaient (feuille de temps, vues,
+// télémétrie…). En lui donnant sa propre connexion, la connexion principale
+// reste libre.
+//
+// Une connexion par flux : deux snapshots simultanés ne doivent pas se marcher
+// dessus. Toujours refermer dans un `finally`.
+export function openReaderConnection() {
+  const conn = new Database(dbPath, { readonly: true })
+  conn.pragma('busy_timeout = 10000')
+  conn.pragma('cache_size = 10000')
+  conn.pragma('temp_store = MEMORY')
+  conn.function('unaccent', unaccent)
+  registerFormulaFunctions(conn)
+  return conn
+}
 
 export default db;

@@ -18,6 +18,8 @@ import { connect as reconnectRealtime } from '../lib/realtime.js'
 //         même traitement qu'un blip : pas de reload, resync en place.
 //       - bundle différent (vrai déploiement frontend) → message "Mise à jour
 //         de l'app en cours" puis reload pour charger le nouveau code.
+//       - indéterminé (le serveur redémarre encore, `/erp/` répond 502) → on
+//         réessaie, on ne recharge JAMAIS sur un doute. Voir bundleState().
 //
 // L'apparition est debouncée 400 ms côté serverStatus.js — les blips < 400 ms
 // (reconnexion WS, requête transiente) ne déclenchent jamais l'overlay.
@@ -29,21 +31,56 @@ import { connect as reconnectRealtime } from '../lib/realtime.js'
 // Vite content-hash les assets (dist/assets/index-XXXX.js) : si le hash de
 // index.html correspond au <script> déjà chargé, un reload ne changerait
 // rien — on l'évite pour préserver l'état de la page (modales ouvertes,
-// champs en cours d'édition). En cas de doute (fetch raté, marqueur
-// introuvable), on retourne true → comportement historique (reload).
-async function bundleChanged() {
+// champs en cours d'édition).
+//
+// Trois réponses, pas deux. L'ancienne version renvoyait `true` (= recharge) dès
+// qu'elle ne savait pas : fetch en échec, réponse non-ok, marqueur introuvable.
+// Or elle est appelée exactement quand le serveur vient de redémarrer, donc
+// pendant les quelques secondes où `/erp/` répond 502 — le « je ne sais pas »
+// était le cas NORMAL, et chaque redémarrage rechargeait tous les onglets
+// ouverts. Mesuré le 2026-09-04 : la même fiche commande rechargée toute seule à
+// HH:01 à chaque heure, 9,0 s de chargement à chaque fois, pendant que le
+// serveur finissait de démarrer.
+//
+// « Je ne sais pas » ne doit donc plus valoir « recharge ». On répond 'unknown'
+// et l'appelant réessaie plus tard, quand le serveur sait répondre.
+const BUNDLE_SAME = 'same'
+const BUNDLE_CHANGED = 'changed'
+const BUNDLE_UNKNOWN = 'unknown'
+
+async function bundleState() {
+  const current = document.querySelector('script[src*="assets/index-"]')?.getAttribute('src')
+  if (!current) return BUNDLE_UNKNOWN
   try {
-    const current = document.querySelector('script[src*="assets/index-"]')?.getAttribute('src')
-    if (!current) return true
     const res = await fetch('/erp/', { cache: 'no-store' })
-    if (!res.ok) return true
+    if (!res.ok) return BUNDLE_UNKNOWN
     const html = await res.text()
     const m = html.match(/assets\/index-[^"']+\.js/)
-    if (!m) return true
-    return !current.includes(m[0])
+    if (!m) return BUNDLE_UNKNOWN
+    return current.includes(m[0]) ? BUNDLE_SAME : BUNDLE_CHANGED
   } catch {
-    return true
+    return BUNDLE_UNKNOWN
   }
+}
+
+// Délai avant de redemander quand `/erp/` n'a pas su répondre. Assez long pour
+// laisser le serveur finir son démarrage (schéma, migrations, watchers), assez
+// court pour qu'un vrai déploiement frontend arrive dans la seconde d'après.
+const BUNDLE_RECHECK_MS = 4000
+const BUNDLE_MAX_RECHECKS = 8
+
+// Interroge `/erp/` jusqu'à obtenir une réponse exploitable. Si le serveur ne
+// sait toujours pas répondre après BUNDLE_MAX_RECHECKS tentatives, on rend
+// 'unknown' et l'appelant NE recharge PAS : au pire l'onglet reste sur l'ancien
+// bundle jusqu'à la prochaine navigation, ce qui est sans commune mesure avec
+// recharger tous les onglets ouverts à chaque redémarrage.
+async function resolveBundleState() {
+  for (let i = 0; i < BUNDLE_MAX_RECHECKS; i++) {
+    const state = await bundleState()
+    if (state !== BUNDLE_UNKNOWN) return state
+    await new Promise(r => setTimeout(r, BUNDLE_RECHECK_MS))
+  }
+  return BUNDLE_UNKNOWN
 }
 
 function describeReason(reason) {
@@ -104,10 +141,11 @@ export default function ServerOfflineOverlay() {
   useEffect(() => subscribeServerRestart((newBootId) => {
     if (bundleCheckRef.current) return // check déjà en cours
     bundleCheckRef.current = true
-    bundleChanged().then((changed) => {
-      if (!changed) {
-        // Même bundle → accepter le nouveau boot_id (sinon chaque réponse
-        // re-déclencherait ce handler) et rattraper les données manquées.
+    resolveBundleState().then((state) => {
+      if (state !== BUNDLE_CHANGED) {
+        // Même bundle, ou impossible de savoir → accepter le nouveau boot_id
+        // (sinon chaque réponse re-déclencherait ce handler) et rattraper les
+        // données manquées, sans toucher à l'état de la page.
         acceptBootId(newBootId)
         sync()
         reconnectRealtime()
@@ -142,9 +180,11 @@ export default function ServerOfflineOverlay() {
             // Serveur redémarré pendant l'outage. Reload uniquement si le
             // bundle client a changé (vrai déploiement frontend) — un pm2
             // restart sans rebuild garde le même bundle et un reload ne
-            // ferait que fermer les modales ouvertes.
-            const changed = await bundleChanged()
-            if (changed) {
+            // ferait que fermer les modales ouvertes. Tant que `/erp/` répond
+            // 502 (serveur encore en train de démarrer), on réessaie plutôt
+            // que de conclure au déploiement.
+            const state = await resolveBundleState()
+            if (state === BUNDLE_CHANGED) {
               // setRestartDetected DOIT précéder markOnline — sinon offline=false
               // démonte le composant et l'écran "Mise à jour" ne s'affiche pas.
               setRestartDetected(true)

@@ -5,6 +5,7 @@ import { getUsdCadRate } from '../services/fx.js';
 import { diffSnapshots, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js';
 import { qbGet, onQbMutation } from '../connectors/quickbooks.js';
 import { round2 } from '../utils/money.js'
+import { shippedCostSql, pieceUnitCostSql } from '../services/shippedCost.js'
 
 const router = Router();
 router.use(requireAuth);
@@ -72,7 +73,7 @@ router.get('/', (req, res) => {
 
   // Monthly revenue (orders marked Envoyée this month)
   const monthlyRevenue = safe('orders', () => db.prepare(
-    `SELECT COALESCE(SUM(oi.qty * COALESCE(oi.shipped_unit_cost, oi.unit_cost)), 0) as revenue
+    `SELECT COALESCE(SUM(${shippedCostSql('oi')}), 0) as revenue
      FROM orders o
      JOIN order_items oi ON oi.order_id = o.id
      WHERE o.status = 'Envoyée'
@@ -214,7 +215,9 @@ router.get('/', (req, res) => {
   // Revenue: SUM(factures.amount_before_tax_cad) — montant HT, taxes exclues
   //   (les taxes perçues doivent être remises au gouvernement, ce ne sont pas des revenus)
   //   linked directly to order OR via order's project (1 project = 1 order)
-  // COGS: SUM(shipped_unit_cost or unit_cost * qty) for Facturable items only
+  // COGS: coût gelé au moment de l'envoi quand il existe (services/shippedCost.js),
+  //   sinon shipped_unit_cost/unit_cost × qté — items Facturable seulement
+  //   L'override manuel (cogs_override_cad) prime sur ce calcul quand il est posé.
   // Grouped by week of last shipment, split by is_subscription
   const weeklyProfitability = safe('weeklyProfitability', () => db.prepare(`
     WITH shipped_orders AS (
@@ -223,6 +226,7 @@ router.get('/', (req, res) => {
         o.project_id,
         o.is_subscription,
         o.revenue_override_cad,
+        o.cogs_override_cad,
         date(
           MAX(s.shipped_at),
           '-' || ((CAST(strftime('%w', MAX(s.shipped_at)) AS INTEGER) + 6) % 7) || ' days'
@@ -248,6 +252,9 @@ router.get('/', (req, res) => {
             FROM factures f
             WHERE (f.order_id = so.order_id
                 OR (so.project_id IS NOT NULL AND f.project_id = so.project_id))
+              -- HT après rabais : un 1er mois offert (rabais 100 %) ne doit pas
+              -- ramener la valeur projetée de l'abonnement à 0.
+              AND COALESCE(f.amount_before_tax_cad, 0) > 0
             ORDER BY COALESCE(f.document_date, f.created_at) ASC
             LIMIT 1
           ), 0)
@@ -262,7 +269,7 @@ router.get('/', (req, res) => {
       FROM shipped_orders so
     ),
     order_cogs AS (
-      SELECT oi.order_id, SUM(COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty) AS cogs
+      SELECT oi.order_id, SUM(${shippedCostSql('oi')}) AS cogs
       FROM order_items oi
       WHERE oi.item_type = 'Facturable'
       GROUP BY oi.order_id
@@ -271,7 +278,7 @@ router.get('/', (req, res) => {
       so.week_start,
       so.is_subscription,
       SUM(COALESCE(r.revenue, 0)) AS revenue,
-      SUM(COALESCE(c.cogs, 0)) AS cogs
+      SUM(COALESCE(so.cogs_override_cad, c.cogs, 0)) AS cogs
     FROM shipped_orders so
     LEFT JOIN order_revenue r ON r.order_id = so.order_id
     LEFT JOIN order_cogs c ON c.order_id = so.order_id
@@ -285,7 +292,7 @@ router.get('/', (req, res) => {
   // Le tableau filtre ensuite côté client par fenêtre du point cliqué (ou 28j par défaut).
   const recentShippedOrders = safe('recentShippedOrders', () => db.prepare(`
     WITH order_cogs AS (
-      SELECT oi.order_id, SUM(COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty) AS cogs
+      SELECT oi.order_id, SUM(${shippedCostSql('oi')}) AS cogs
       FROM order_items oi
       WHERE oi.item_type = 'Facturable'
       GROUP BY oi.order_id
@@ -303,6 +310,7 @@ router.get('/', (req, res) => {
           FROM factures f
           WHERE (f.order_id = o.id
               OR (o.project_id IS NOT NULL AND f.project_id = o.project_id))
+            AND COALESCE(f.amount_before_tax_cad, 0) > 0
           ORDER BY COALESCE(f.document_date, f.created_at) ASC
           LIMIT 1
         ), 0)
@@ -314,7 +322,8 @@ router.get('/', (req, res) => {
               OR (o.project_id IS NOT NULL AND f.project_id = o.project_id))
         ), 0)
       END AS revenue,
-      COALESCE(cogs.cogs, 0) AS cogs
+      -- L'override manuel (cogs_override_cad) prime sur le calcul articles.
+      COALESCE(o.cogs_override_cad, cogs.cogs, 0) AS cogs
     FROM orders o
     JOIN shipments s ON s.order_id = o.id
     LEFT JOIN companies c ON c.id = o.company_id
@@ -343,6 +352,9 @@ router.get('/', (req, res) => {
   //     reflète le coût réel d'acquisition, ce que la vue UI affiche.
   // + serial_numbers by status (manufacture_value), excluding statuses that
   // aren't actually held in inventory (sold, destroyed, in-use, unknown, not built)
+  // Tout statut « Opérationnel - … » (vendu, loué, et tout futur variant) est
+  // en service chez un client : jamais dans la valeur d'inventaire. D'où le
+  // NOT LIKE en plus de la liste explicite, pour ne pas dépendre du libellé.
   const EXCLUDED_SN_STATUSES = [
     'Opérationnel - Vendu',
     'Opérationnel - Loué',
@@ -368,12 +380,14 @@ router.get('/', (req, res) => {
     FROM serial_numbers
     WHERE status IS NOT NULL AND status != ''
       AND status NOT IN (${placeholders})
+      AND status NOT LIKE 'Opérationnel%'
     GROUP BY status
     ORDER BY total_value DESC
   `).all(...EXCLUDED_SN_STATUSES), []);
 
   // Replacement rate — monthly for last 12 months
-  // Cost: manufacture_value for serialized items, unit_cost×qty otherwise
+  // Cost: coût gelé à l'envoi, sinon même règle aux coûts d'aujourd'hui
+  // (valeur de fabrication par numéro de série, coût de la pièce pour le reste)
   // Only Remplacement items on fully shipped orders
   const parkValue = safe('replacementRate', () => db.prepare(`
     SELECT COALESCE(SUM(manufacture_value), 0) AS total
@@ -394,19 +408,10 @@ router.get('/', (req, res) => {
         AND s.shipped_at IS NOT NULL
         AND s.shipped_at >= date('now', '-28 days')
       GROUP BY o.id
-    ),
-    sn_agg AS (
-      SELECT order_item_id, SUM(manufacture_value) AS total_value
-      FROM serial_numbers GROUP BY order_item_id
     )
-    SELECT COALESCE(SUM(
-      CASE WHEN sn_agg.total_value IS NOT NULL THEN sn_agg.total_value
-           ELSE COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty
-      END
-    ), 0) AS cost
+    SELECT COALESCE(SUM(${shippedCostSql('oi')}), 0) AS cost
     FROM shipped_orders so
     JOIN order_items oi ON oi.order_id = so.order_id AND oi.item_type = 'Remplacement'
-    LEFT JOIN sn_agg ON sn_agg.order_item_id = oi.id
   `).get().cost, 0);
 
   const replacementByMonth = safe('replacementRate', () => db.prepare(`
@@ -418,22 +423,13 @@ router.get('/', (req, res) => {
         AND s.shipped_at IS NOT NULL
         AND s.shipped_at >= date('now', '-12 months')
       GROUP BY o.id
-    ),
-    sn_agg AS (
-      SELECT order_item_id, SUM(manufacture_value) AS total_value
-      FROM serial_numbers GROUP BY order_item_id
     )
     SELECT
       strftime('%Y-%m', so.last_shipped_at) AS month,
-      SUM(
-        CASE WHEN sn_agg.total_value IS NOT NULL THEN sn_agg.total_value
-             ELSE COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty
-        END
-      ) AS replacement_cost,
+      SUM(${shippedCostSql('oi')}) AS replacement_cost,
       COUNT(DISTINCT so.order_id) AS nb_orders
     FROM shipped_orders so
     JOIN order_items oi ON oi.order_id = so.order_id AND oi.item_type = 'Remplacement'
-    LEFT JOIN sn_agg ON sn_agg.order_item_id = oi.id
     GROUP BY month
     ORDER BY month ASC
   `).all(), []);
@@ -499,25 +495,19 @@ router.get('/', (req, res) => {
         AND s.shipped_at IS NOT NULL
         AND s.shipped_at >= date('now', '-12 months')
       GROUP BY o.id
-    ),
-    sn_agg AS (
-      SELECT order_item_id, SUM(manufacture_value) AS total_value
-      FROM serial_numbers GROUP BY order_item_id
     )
     SELECT
+      so.order_id,
       so.order_number,
       so.company_name,
       so.shipped_at,
       p.name_fr AS product_name,
       oi.qty,
-      COALESCE(oi.shipped_unit_cost, oi.unit_cost) AS unit_cost,
-      CASE WHEN sn_agg.total_value IS NOT NULL THEN sn_agg.total_value
-           ELSE COALESCE(oi.shipped_unit_cost, oi.unit_cost) * oi.qty
-      END AS total_cost
+      ${pieceUnitCostSql('oi')} AS unit_cost,
+      ${shippedCostSql('oi')} AS total_cost
     FROM shipped_orders so
     JOIN order_items oi ON oi.order_id = so.order_id AND oi.item_type = 'Remplacement'
     LEFT JOIN products p ON p.id = oi.product_id
-    LEFT JOIN sn_agg ON sn_agg.order_item_id = oi.id
     ORDER BY so.shipped_at DESC
   `).all(), []);
 
@@ -1917,6 +1907,463 @@ router.get('/bank-accounts/history', async (req, res) => {
     res.json(payload)
   } catch (e) {
     console.error('[dashboard/bank-accounts/history]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/revenue-by-month?months=12
+// Revenus mensuels lus dans QuickBooks, ventilés par compte de revenu.
+//
+// Source : rapport ProfitAndLoss en colonnes mensuelles
+// (`summarize_column_by=Month`, méthode Accrual — le revenu est compté au mois
+// où il est CONSTATÉ, pas au mois de l'encaissement).
+//
+// Les deux comptes de revenu du plan comptable sont séparés :
+//   40000 Ventes              — ventes de matériel constatées à l'expédition
+//   41000 Revenus de service  — abonnements
+// Tout autre compte de produits est regroupé sous « Autres revenus » pour que
+// la somme des séries reste égale au total de la section Produits du rapport.
+//
+// Appariement par Id de compte (les libellés du rapport sont localisés, donc
+// non fiables comme clé) : chaque ligne de données du rapport est remontée
+// jusqu'à son compte parent via ParentRef, ce qui range un éventuel
+// sous-compte de 40000 dans la série « Ventes ».
+//
+// Cache permanent invalidé sur toute écriture QB via onQbMutation, et sur
+// `?refresh=1`. Une édition humaine directe dans l'UI QuickBooks ne déclenche
+// pas l'invalidation — utiliser ?refresh=1 dans ce cas.
+const REVENUE_ACCOUNTS = [
+  { key: 'sale', acct_num: '40000', name: 'Ventes' },
+  { key: 'subscription', acct_num: '41000', name: 'Revenus de service' },
+]
+const OTHER_REVENUE_KEY = 'other'
+
+const revenueByMonthCache = new Map()
+onQbMutation(() => revenueByMonthCache.clear())
+
+// Fenêtre glissante de `months` mois finissant par le mois courant (partiel),
+// en clés 'YYYY-MM'. Partagée par /revenue-by-month et /productivity pour que
+// les deux séries s'alignent exactement.
+function trailingMonthKeys(months) {
+  const now = new Date()
+  const keys = []
+  for (let i = months - 1; i >= 0; i--) {
+    keys.push(new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1)).toISOString().slice(0, 7))
+  }
+  return keys
+}
+
+async function computeRevenueByMonth(months, { refresh = false } = {}) {
+  const cacheKey = `m${months}`
+  if (!refresh) {
+    const hit = revenueByMonthCache.get(cacheKey)
+    if (hit) return hit
+  }
+
+  // Plan des comptes de produits : Id → { acctNum, parentId }, pour remonter
+  // les sous-comptes vers leur compte de revenu racine.
+  const accQ = new URLSearchParams({
+    query: "SELECT * FROM Account WHERE AccountType = 'Income' MAXRESULTS 300",
+  })
+  const accData = await qbGet(`/query?${accQ}`)
+  const accById = new Map()
+  for (const a of (accData.QueryResponse?.Account || [])) {
+    accById.set(String(a.Id), {
+      acctNum: String(a.AcctNum || '').trim(),
+      parentId: a.SubAccount && a.ParentRef?.value ? String(a.ParentRef.value) : null,
+    })
+  }
+
+  // Id de compte → clé de série. Remonte la chaîne des parents (bornée, une
+  // hiérarchie QB circulaire ne doit pas boucler à l'infini).
+  const byAcctNum = new Map(REVENUE_ACCOUNTS.map(a => [a.acct_num, a.key]))
+  const seriesKeyFor = (accountId) => {
+    let id = String(accountId || '')
+    for (let depth = 0; depth < 10 && id; depth++) {
+      const acc = accById.get(id)
+      if (!acc) return null
+      const key = byAcctNum.get(acc.acctNum)
+      if (key) return key
+      id = acc.parentId
+    }
+    return OTHER_REVENUE_KEY
+  }
+
+  // Fenêtre glissante : `months` mois finissant par le mois courant (partiel).
+  const now = new Date()
+  const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+  const params = new URLSearchParams({
+    accounting_method: 'Accrual',
+    summarize_column_by: 'Month',
+    start_date: start.toISOString().slice(0, 10),
+    end_date: new Date().toISOString().slice(0, 10),
+  })
+  const data = await qbGet(`/reports/ProfitAndLoss?${params}`)
+  const report = data?.Report || data
+
+  const cols = (report?.Columns?.Column || []).map(c => {
+    const meta = {}
+    for (const m of (c.MetaData || [])) meta[m.Name] = m.Value
+    return { type: c.ColType, start: meta.StartDate || null, end: meta.EndDate || null }
+  })
+  const monthCols = cols
+    .map((c, idx) => ({ ...c, idx }))
+    .filter(c => c.type === 'Money' && c.start)
+    .map(c => ({ ...c, month: c.start.slice(0, 7) }))
+
+  const keys = [...REVENUE_ACCOUNTS.map(a => a.key), OTHER_REVENUE_KEY]
+  const totals = Object.fromEntries(keys.map(k => [k, new Array(monthCols.length).fill(0)]))
+
+  // Seules les lignes de données portant un Id de compte de produits sont
+  // sommées : les en-têtes/Summary de Section double-compteraient les
+  // sous-comptes, et les sections Charges n'ont pas d'Id dans accById.
+  const walk = rows => {
+    for (const row of (rows?.Row || [])) {
+      if (row.type === 'Section') { walk(row.Rows); continue }
+      const cd = row.ColData || []
+      const accountId = String(cd[0]?.id || '')
+      if (!accountId || !accById.has(accountId)) continue
+      const key = seriesKeyFor(accountId)
+      if (!key) continue
+      monthCols.forEach((c, i) => {
+        const raw = cd[c.idx]?.value
+        const v = raw === '' || raw == null ? 0 : Number(raw)
+        if (Number.isFinite(v)) totals[key][i] += v
+      })
+    }
+  }
+  walk(report?.Rows)
+
+  const currentMonth = new Date().toISOString().slice(0, 7)
+  const series = monthCols.map((c, i) => {
+    const row = {
+      month: c.month,
+      period_end: c.end,
+      is_current_month: c.month === currentMonth,
+      total: 0,
+    }
+    for (const k of keys) {
+      row[k] = round2(totals[k][i])
+      row.total += row[k]
+    }
+    row.total = round2(row.total)
+    return row
+  })
+
+  // « Autres revenus » n'est proposé au client que s'il pèse quelque chose :
+  // sur un plan comptable à deux comptes de produits, la série reste à zéro.
+  const hasOther = series.some(m => m[OTHER_REVENUE_KEY] !== 0)
+  const accounts = [
+    ...REVENUE_ACCOUNTS,
+    ...(hasOther ? [{ key: OTHER_REVENUE_KEY, acct_num: null, name: 'Autres revenus' }] : []),
+  ]
+
+  const payload = {
+    currency: report?.Header?.Currency || 'CAD',
+    generated_at: new Date().toISOString(),
+    accounts,
+    months: series,
+  }
+  revenueByMonthCache.set(cacheKey, payload)
+  return payload
+}
+
+router.get('/revenue-by-month', async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+    res.json(await computeRevenueByMonth(months, { refresh: !!req.query.refresh }))
+  } catch (e) {
+    console.error('[dashboard/revenue-by-month]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/productivity?months=12&scope=sales|all
+//
+// Productivité mensuelle = ventes du mois (QuickBooks) ÷ heures travaillées par
+// le département des Opérations (table des paies), en $/heure.
+//
+// Ventes : mêmes chiffres que /revenue-by-month (rapport ProfitAndLoss, méthode
+// Accrual). `scope=sales` (défaut) = compte 40000 Ventes seulement ;
+// `scope=all` = tous les comptes de produits (ventes + abonnements + autres).
+//
+// Heures : Σ des heures régulières des `paie_items` dont l'employé est au
+// département « Opérations ». Les heures fériées / vacances ne sont PAS des
+// heures travaillées et n'entrent pas dans le dénominateur.
+//
+// Prorata : une période de paie est aux deux semaines et chevauche presque
+// toujours deux mois. Ses heures sont réparties entre les mois qu'elle couvre
+// au prorata du nombre de JOURS de la période tombant dans chaque mois
+// (hypothèse : effort réparti uniformément sur la période — on n'a pas le
+// détail quotidien des feuilles de temps dans la paie).
+//
+// Couverture : part des jours du mois couverts par une période de paie. Un mois
+// dont la paie n'est pas encore entrée est incomplet — ses heures sont
+// sous-estimées, donc sa productivité surestimée : il est marqué `partial` et
+// exclu des totaux.
+const OPS_DEPARTMENT = 'Opérations'
+const DAY_MS = 86400000
+
+function parseYmdUtc(s) {
+  const t = Date.parse(String(s).slice(0, 10) + 'T00:00:00Z')
+  return Number.isFinite(t) ? t : null
+}
+
+// Nombre de jours communs à deux intervalles de dates INCLUSIFS (0 si disjoints).
+function overlapDays(aStart, aEnd, bStart, bEnd) {
+  const s = Math.max(aStart, bStart)
+  const e = Math.min(aEnd, bEnd)
+  if (e < s) return 0
+  return Math.round((e - s) / DAY_MS) + 1
+}
+
+router.get('/productivity', async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+    const scope = req.query.scope === 'all' ? 'all' : 'sales'
+    const revenue = await computeRevenueByMonth(months, { refresh: !!req.query.refresh })
+    const revByMonth = new Map((revenue.months || []).map(m => [m.month, m]))
+
+    const monthKeys = trailingMonthKeys(months)
+    const bounds = monthKeys.map(key => {
+      const [y, m] = key.split('-').map(Number)
+      return {
+        month: key,
+        start: Date.UTC(y, m - 1, 1),
+        end: Date.UTC(y, m, 0),
+        days: new Date(Date.UTC(y, m, 0)).getUTCDate(),
+      }
+    })
+    const windowStart = new Date(bounds[0].start).toISOString().slice(0, 10)
+    const windowEnd = new Date(bounds[bounds.length - 1].end).toISOString().slice(0, 10)
+
+    // Heures des Opérations par période de paie. Seuls les items rattachés à une
+    // paie sont pris : eux seuls portent un début ET une fin de période, sans
+    // lesquels aucun prorata n'est possible.
+    const periods = db.prepare(`
+      SELECT p.id, p.period_start, p.period_end,
+             SUM(COALESCE(pi.regular_hours, 0)) AS hours
+      FROM paies p
+      JOIN paie_items pi ON pi.paie_id = p.id
+      JOIN employees e ON e.id = pi.employee_id
+      WHERE e.accounting_department = ?
+        AND p.period_start IS NOT NULL AND p.period_end IS NOT NULL
+        AND p.period_end >= ? AND p.period_start <= ?
+      GROUP BY p.id
+    `).all(OPS_DEPARTMENT, windowStart, windowEnd)
+
+    // Couverture : toutes les paies, même celles sans employé des Opérations —
+    // une paie sans heures d'opérations est un vrai zéro, pas un trou.
+    const allPeriods = db.prepare(`
+      SELECT period_start, period_end FROM paies
+      WHERE period_start IS NOT NULL AND period_end IS NOT NULL
+        AND period_end >= ? AND period_start <= ?
+    `).all(windowStart, windowEnd)
+
+    const hoursByMonth = Object.fromEntries(monthKeys.map(k => [k, 0]))
+    const contributingPeriods = []
+    for (const p of periods) {
+      const s = parseYmdUtc(p.period_start)
+      const e = parseYmdUtc(p.period_end)
+      if (s == null || e == null || e < s) continue
+      const len = Math.round((e - s) / DAY_MS) + 1
+      const hours = Number(p.hours) || 0
+      if (!hours) continue
+      contributingPeriods.push({ start: p.period_start, end: p.period_end, hours: round2(hours), days: len })
+      for (const b of bounds) {
+        const ov = overlapDays(s, e, b.start, b.end)
+        if (ov > 0) hoursByMonth[b.month] += hours * ov / len
+      }
+    }
+
+    const coveredByMonth = Object.fromEntries(monthKeys.map(k => [k, new Set()]))
+    for (const p of allPeriods) {
+      const s = parseYmdUtc(p.period_start)
+      const e = parseYmdUtc(p.period_end)
+      if (s == null || e == null || e < s) continue
+      for (const b of bounds) {
+        const from = Math.max(s, b.start)
+        const to = Math.min(e, b.end)
+        for (let t = from; t <= to; t += DAY_MS) coveredByMonth[b.month].add(t)
+      }
+    }
+
+    const currentMonth = new Date().toISOString().slice(0, 7)
+    const rows = bounds.map(b => {
+      const rev = revByMonth.get(b.month)
+      const sales = round2(scope === 'all' ? (rev?.total || 0) : (rev?.sale || 0))
+      const hours = round2(hoursByMonth[b.month])
+      const coverage = Math.round(coveredByMonth[b.month].size / b.days * 100)
+      const isCurrent = b.month === currentMonth
+      return {
+        month: b.month,
+        sales,
+        hours,
+        coverage_pct: coverage,
+        is_current_month: isCurrent,
+        // Mois incomplet : paie manquante (couverture < 100 %) ou mois en cours
+        // (ventes ET heures encore partielles). Le ratio reste affiché, mais
+        // grisé et hors totaux.
+        partial: isCurrent || coverage < 100,
+        productivity: hours > 0 ? round2(sales / hours) : null,
+      }
+    })
+
+    const complete = rows.filter(r => !r.partial)
+    const totalSales = round2(complete.reduce((s, r) => s + r.sales, 0))
+    const totalHours = round2(complete.reduce((s, r) => s + r.hours, 0))
+
+    res.json({
+      currency: revenue.currency || 'CAD',
+      generated_at: revenue.generated_at,
+      department: OPS_DEPARTMENT,
+      scope,
+      scope_label: scope === 'all' ? 'Tous les revenus' : 'Ventes (40000)',
+      months: rows,
+      totals: {
+        months: complete.length,
+        sales: totalSales,
+        hours: totalHours,
+        productivity: totalHours > 0 ? round2(totalSales / totalHours) : null,
+      },
+      periods_used: contributingPeriods.length,
+      // Bornes des périodes de paie réellement disponibles — sert à expliquer un
+      // mois à 0 h (aucune paie importée) plutôt que de le laisser mentir.
+      payroll_range: db.prepare(
+        'SELECT MIN(period_start) AS first_start, MAX(period_end) AS last_end FROM paies WHERE period_start IS NOT NULL'
+      ).get(),
+    })
+  } catch (e) {
+    console.error('[dashboard/productivity]', e)
+    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
+  }
+})
+
+// GET /api/dashboard/income-statement?months=12
+// État des résultats mensuel lu dans QuickBooks : rapport ProfitAndLoss en
+// colonnes mensuelles (`summarize_column_by=Month`, méthode Accrual) sur une
+// fenêtre glissante de 12 mois (~365 jours) finissant par le mois courant,
+// partiel.
+//
+// Le rapport QB est un arbre (Section > Row/Section, chaque Section ayant un
+// Header et/ou un Summary). Il est aplati en lignes de tableau :
+//   - `header`  en-tête de section (Produits, Charges…), sans montants
+//   - `data`    un compte du plan comptable
+//   - `summary` sous-total de section (dont le résultat net, group NetIncome)
+// Chaque ligne porte `parents` : la liste des ids de sections qui la
+// contiennent, pour que le client puisse replier une section. Le sous-total
+// d'une section n'a PAS cette section dans ses parents — replier garde le
+// total visible et ne cache que le détail.
+//
+// `total` = somme des mois de la fenêtre (la colonne totale du tableau).
+//
+// Cache permanent invalidé sur toute écriture QB via onQbMutation et sur
+// `?refresh=1`. Une édition humaine directe dans l'UI QuickBooks ne déclenche
+// pas l'invalidation — utiliser ?refresh=1 dans ce cas.
+const incomeStatementCache = new Map()
+onQbMutation(() => incomeStatementCache.clear())
+
+router.get('/income-statement', async (req, res) => {
+  try {
+    const months = Math.min(Math.max(parseInt(req.query.months, 10) || 12, 2), 36)
+    const cacheKey = `m${months}`
+    if (!req.query.refresh) {
+      const hit = incomeStatementCache.get(cacheKey)
+      if (hit) return res.json(hit)
+    }
+
+    const now = new Date()
+    const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - (months - 1), 1))
+    const startDate = start.toISOString().slice(0, 10)
+    const endDate = now.toISOString().slice(0, 10)
+    const params = new URLSearchParams({
+      accounting_method: 'Accrual',
+      summarize_column_by: 'Month',
+      start_date: startDate,
+      end_date: endDate,
+    })
+    const data = await qbGet(`/reports/ProfitAndLoss?${params}`)
+    const report = data?.Report || data
+
+    // Colonnes mensuelles seulement : la colonne « Total » du rapport est
+    // recalculée ici (somme des mois), elle n'a pas de StartDate.
+    const monthCols = (report?.Columns?.Column || [])
+      .map((c, idx) => {
+        const meta = {}
+        for (const m of (c.MetaData || [])) meta[m.Name] = m.Value
+        return { idx, type: c.ColType, start: meta.StartDate || null, end: meta.EndDate || null }
+      })
+      .filter(c => c.type === 'Money' && c.start)
+
+    const currentMonth = endDate.slice(0, 7)
+    const monthsOut = monthCols.map(c => ({
+      month: c.start.slice(0, 7),
+      period_end: c.end,
+      is_current_month: c.start.slice(0, 7) === currentMonth,
+    }))
+
+    const valuesOf = (colData) => monthCols.map(c => {
+      const raw = colData?.[c.idx]?.value
+      const v = raw === '' || raw == null ? 0 : Number(raw)
+      return Number.isFinite(v) ? round2(v) : 0
+    })
+    const sumOf = (arr) => round2(arr.reduce((s, v) => s + v, 0))
+
+    const rows = []
+    let seq = 0
+    const walk = (node, depth, parents) => {
+      for (const row of (node?.Row || [])) {
+        if (row.type !== 'Section') {
+          const cd = row.ColData || []
+          const values = valuesOf(cd)
+          rows.push({
+            id: `n${seq++}`, kind: 'data', label: cd[0]?.value || '',
+            account_id: cd[0]?.id || null, depth, parents,
+            values, total: sumOf(values),
+          })
+          continue
+        }
+        const label = row.Header?.ColData?.[0]?.value || ''
+        const hasChildren = !!(row.Rows?.Row?.length)
+        const id = `n${seq++}`
+        if (label) {
+          rows.push({ id, kind: 'header', label, group: row.group || null, depth, parents, collapsible: hasChildren })
+        }
+        if (hasChildren) {
+          walk(row.Rows, label ? depth + 1 : depth, label ? [...parents, id] : parents)
+        }
+        const sm = row.Summary?.ColData
+        if (sm) {
+          const values = valuesOf(sm)
+          rows.push({
+            id: `n${seq++}`, kind: 'summary', label: sm[0]?.value || label,
+            group: row.group || null, depth, parents,
+            values, total: sumOf(values),
+          })
+        }
+      }
+    }
+    walk(report?.Rows, 0, [])
+
+    const netIncome = rows.find(r => r.kind === 'summary' && r.group === 'NetIncome')
+      || rows.filter(r => r.kind === 'summary').slice(-1)[0]
+      || null
+
+    const payload = {
+      currency: report?.Header?.Currency || 'CAD',
+      generated_at: new Date().toISOString(),
+      start_date: startDate,
+      end_date: endDate,
+      months: monthsOut,
+      rows,
+      net_income: netIncome
+        ? { label: netIncome.label, values: netIncome.values, total: netIncome.total }
+        : null,
+    }
+    incomeStatementCache.set(cacheKey, payload)
+    res.json(payload)
+  } catch (e) {
+    console.error('[dashboard/income-statement]', e)
     res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
   }
 })

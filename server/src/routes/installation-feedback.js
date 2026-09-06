@@ -4,7 +4,7 @@
 // 204-style no-op. On 'stuck' or 'painful' we create a task for Marc-Antoine.
 
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { APP_URL } from '../config/appUrl.js'
@@ -66,7 +66,7 @@ router.get('/', (req, res) => {
   if (companyRow && (answer === 'stuck' || answer === 'painful')) {
     const assignee = db.prepare('SELECT id, name FROM users WHERE email = ?').get(MARC_ANTOINE_EMAIL)
     if (assignee) {
-      taskId = uuidv4()
+      taskId = newRecordId()
       const title = answer === 'stuck'
         ? `Installation bloquée — ${companyRow.name}`
         : `Installation pénible — ${companyRow.name}`

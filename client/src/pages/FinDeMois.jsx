@@ -13,14 +13,17 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { ChevronLeft, ChevronRight, CheckCircle2, AlertTriangle, XCircle, Download, Plus, Trash2, Info, RotateCw, FileSpreadsheet, Send, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useQbAccounts } from '../lib/qbAccounts.js'
 
 const MONTH_LABELS = { '01': 'Janvier', '02': 'Février', '03': 'Mars', '04': 'Avril', '05': 'Mai', '06': 'Juin', '07': 'Juillet', '08': 'Août', '09': 'Septembre', 10: 'Octobre', 11: 'Novembre', 12: 'Décembre' }
 const monthLabel = m => `${MONTH_LABELS[m.slice(5, 7)]} ${m.slice(0, 4)}`
 
-import { fmtMoney } from '../utils/formatters.js'
-const fmtHours = n => `${new Intl.NumberFormat('fr-CA', { maximumFractionDigits: 2 }).format(n || 0)} h`
+import { fmtMoney, fmtNumber } from '../utils/formatters.js'
+import { fmtDateTime } from '../lib/formatDate.js'
+import Spinner from '../components/Spinner.jsx'
+const fmtHours = n => `${fmtNumber(n, { maximumFractionDigits: 2, nullIsZero: true })} h`
 
 const inputCls = 'px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 
@@ -283,8 +286,7 @@ function HoursCard({ month, hours, fileName, onChanged }) {
       {adding ? (
         <div className="flex items-center gap-2 mt-3">
           <input autoFocus value={newName} onChange={e => setNewName(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') addRow(); if (e.key === 'Escape') setAdding(false) }}
-            placeholder="Nom de la personne" className={`${inputCls} flex-1`} />
+            onKeyDown={e => { if (e.key === 'Enter') addRow(); if (e.key === 'Escape') setAdding(false) }} className={`${inputCls} flex-1`} />
           <button onClick={addRow} className="px-3 py-1.5 text-sm text-white bg-brand-600 hover:bg-brand-700 rounded-lg">Ajouter</button>
           <button onClick={() => setAdding(false)} className="px-3 py-1.5 text-sm text-slate-500">Annuler</button>
         </div>
@@ -322,10 +324,10 @@ function ProvisionSettings({ provision, onChanged }) {
       <NumberField value={cfg[key] ?? ''} className="w-24" suffix={suffix} onSave={v => saveConfig(key, v)} />
     </label>
   )
-  const text = (label, key, placeholder, saver) => (
+  const text = (label, key, saver) => (
     <label className="flex items-center justify-between gap-2">
       <span className="text-xs text-slate-500">{label}</span>
-      <input defaultValue={(saver === saveField ? provision[key] : cfg[key]) ?? ''} placeholder={placeholder}
+      <input defaultValue={(saver === saveField ? provision[key] : cfg[key]) ?? ''}
         onBlur={e => saver(key, e.target.value)}
         className={`${inputCls} w-32`} />
     </label>
@@ -344,18 +346,18 @@ function ProvisionSettings({ provision, onChanged }) {
         <>
           {num('Taux de contribution', 'pct', '%')}
           {num('Contribution maximale', 'cap_total', '$')}
-          {text("Admissible à partir du", 'eligible_from', 'AAAA-MM-JJ', saveConfig)}
-          {text("Admissible jusqu'au", 'eligible_to', 'AAAA-MM-JJ', saveConfig)}
+          {text("Admissible à partir du", 'eligible_from', saveConfig)}
+          {text("Admissible jusqu'au", 'eligible_to', saveConfig)}
           <label className="flex items-center justify-between gap-2 md:col-span-2">
             <span className="text-xs text-slate-500">Libellé à repérer dans le relevé bancaire (détection auto des versements reçus)</span>
-            <input defaultValue={cfg.bank_match_label ?? ''} placeholder="Biotalent"
+            <input defaultValue={cfg.bank_match_label ?? ''}
               onBlur={e => saveConfig('bank_match_label', e.target.value.trim() || null)}
               className={`${inputCls} w-32`} />
           </label>
         </>
       )}
-      {text('Compte au débit (Dr)', 'debit_acctnum', '15000', saveField)}
-      {text('Compte au crédit (Cr)', 'credit_acctnum', '72000', saveField)}
+      {text('Compte au débit (Dr)', 'debit_acctnum', saveField)}
+      {text('Compte au crédit (Cr)', 'credit_acctnum', saveField)}
     </div>
   )
 }
@@ -601,7 +603,7 @@ function SubsidyReceiptsPanel({ provision }) {
         )}
       </div>
       {loading ? (
-        <div className="text-xs text-slate-400">Chargement…</div>
+        <div className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
       ) : (
         <>
           {receipts.length > 0 && (
@@ -630,9 +632,9 @@ function SubsidyReceiptsPanel({ provision }) {
             <div className="flex items-center gap-2 mb-2">
               <input type="date" value={draft.received_date} data-testid="receipt-date"
                 onChange={e => setDraft(d => ({ ...d, received_date: e.target.value }))} className={`${inputCls} w-36`} />
-              <input type="number" step="0.01" placeholder="Montant reçu" value={draft.amount} data-testid="receipt-amount"
+              <input type="number" step="0.01" value={draft.amount} data-testid="receipt-amount"
                 onChange={e => setDraft(d => ({ ...d, amount: e.target.value }))} className={`${inputCls} w-32`} />
-              <input placeholder="Note (optionnel)" value={draft.note}
+              <input value={draft.note}
                 onChange={e => setDraft(d => ({ ...d, note: e.target.value }))} className={`${inputCls} flex-1`} />
               <button onClick={addRow} data-testid="receipt-save" className="px-3 py-1.5 text-sm text-white bg-brand-600 hover:bg-brand-700 rounded-lg">Ajouter</button>
               <button onClick={() => setAdding(false)} className="px-3 py-1.5 text-sm text-slate-500">Annuler</button>
@@ -818,7 +820,7 @@ function PiecesCard({ month }) {
         </>
       }
     >
-      {!state && <div className="text-sm text-slate-400 py-2">Chargement…</div>}
+      {!state && <div className="text-sm text-slate-400 py-2"><Spinner size="xs" label="Chargement…" /></div>}
 
       {state && !computed && (
         <div className="text-sm text-slate-400 py-2">
@@ -882,7 +884,7 @@ function PiecesCard({ month }) {
                     <ExternalLink size={12} /> {state.drive_name}
                   </a>
                 )}
-                {sent && <div className="text-emerald-600">Message envoyé le {new Date(state.slack_sent_at).toLocaleString('fr-CA')}</div>}
+                {sent && <div className="text-emerald-600">Message envoyé le {fmtDateTime(state.slack_sent_at)}</div>}
               </div>
             </div>
           </div>
@@ -971,7 +973,7 @@ export default function FinDeMois() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Écritures de fin de mois</h1>
+            <PageTitle>Écritures de fin de mois</PageTitle>
             <p className="text-xs text-slate-500 mt-0.5">
               Provisions mensuelles et imputations — remplace les fichiers Provisions_mensuelles_CTB, R&D_Suivi_Feuilles de temps et FPA_Continuité.
             </p>

@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { getStripeClient, ensureStripeCustomer } from '../services/stripeInvoices.js'
 import { normalizeShortToken } from '../utils/shortToken.js'
@@ -107,7 +107,7 @@ function loadOrInitResponse(sessionId, invoice) {
     const pending = db.prepare('SELECT company_id FROM pending_invoices WHERE id=?').get(pendingId)
     companyId = pending?.company_id || null
   }
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO customer_onboarding_responses
       (id, stripe_session_id, stripe_invoice_id, pending_invoice_id, company_id, status)
@@ -279,7 +279,7 @@ router.post('/:sessionId/submit', async (req, res) => {
               .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
           } else {
             db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
-              .run(randomUUID(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
+              .run(newRecordId(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
           }
         }
 
@@ -345,7 +345,7 @@ router.post('/:sessionId/extras', async (req, res) => {
     // Create pending invoice + lier au formulaire client de façon atomique :
     // si le lien échoue, la facture ne doit pas exister orpheline (impossible à
     // retracer depuis la réponse du client, surtout une fois la Checkout Session créée).
-    const id = randomUUID()
+    const id = newRecordId()
     db.transaction(() => {
       db.prepare(`
         INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
@@ -398,103 +398,91 @@ function detectFromGreenhouses(row) {
 // GET /api/customer/post-payment/by-token/:token — payload identique à la
 // route by-session, sauf que la source des rôles est greenhouses_json.
 router.get('/by-token/:token', (req, res) => {
-  try {
-    const row = loadByToken(req.params.token)
-    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-    const ctx = loadCompanyContext(row.company_id)
-    res.json({
-      source: 'qualification',
-      session_id: null,
-      invoice: null,
-      customer_email: null,
-      detected: detectFromGreenhouses(row),
-      context: ctx,
-      response: shapeResponse(row),
-      // Côté front : le nombre de serres est verrouillé (1 carte par Helper/Chief vendu).
-      greenhouse_count_locked: true,
-    })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const row = loadByToken(req.params.token)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  const ctx = loadCompanyContext(row.company_id)
+  res.json({
+    source: 'qualification',
+    session_id: null,
+    invoice: null,
+    customer_email: null,
+    detected: detectFromGreenhouses(row),
+    context: ctx,
+    response: shapeResponse(row),
+    // Côté front : le nombre de serres est verrouillé (1 carte par Helper/Chief vendu).
+    greenhouse_count_locked: true,
+  })
 })
 
 // POST /api/customer/post-payment/by-token/:token/save — autosave partiel.
 router.post('/by-token/:token/save', (req, res) => {
-  try {
-    const row = loadByToken(req.params.token)
-    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-    if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
+  const row = loadByToken(req.params.token)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
 
-    const { updates, values } = buildPartialUpdate(req.body)
-    if (updates.length === 0) return res.json({ ok: true, saved: 0 })
-    updates.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
-    values.push(row.id)
-    db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=?`).run(...values)
-    const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
-    res.json({ ok: true, response: shapeResponse(refreshed) })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const { updates, values } = buildPartialUpdate(req.body)
+  if (updates.length === 0) return res.json({ ok: true, saved: 0 })
+  updates.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
+  values.push(row.id)
+  db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=?`).run(...values)
+  const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
+  res.json({ ok: true, response: shapeResponse(refreshed) })
 })
 
 // POST /api/customer/post-payment/by-token/:token/submit — finalise et upsert les adresses.
 router.post('/by-token/:token/submit', (req, res) => {
-  try {
-    const row = loadByToken(req.params.token)
-    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-    if (row.status === 'submitted') {
-      return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
-    }
-    if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
-
-    // Si une serre dépasse 4 zones d'irrigation, on exige soit le paiement
-    // d'autant de blocs de 4 valves supplémentaires, soit que le client baisse
-    // à 4. (L'autre chemin "aviser conseiller" se fait hors-formulaire.)
-    const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
-    const blocksNeeded = computeValveBlocksNeeded(greenhouses)
-    if (blocksNeeded > 0) {
-      let paid = false
-      if (row.extras_pending_invoice_id) {
-        const pi = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
-        paid = pi?.status === 'paid'
-      }
-      if (!paid) {
-        return res.status(400).json({
-          error: `Vous avez ${blocksNeeded} bloc(s) de 4 valves supplémentaires à payer avant de soumettre. Baissez à 4 zones par serre ou complétez le paiement plus bas dans le formulaire.`,
-          code: 'valve_blocks_unpaid',
-          valve_blocks_needed: blocksNeeded,
-        })
-      }
-    }
-
-    if (row.company_id) {
-      const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
-      const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
-      const sameAsShipping = !!row.shipping_same_as_farm
-      function upsertAddress(type, addr) {
-        if (!addr || !addr.line1 || !addr.province) return
-        const existing = db.prepare(
-          "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
-        ).get(row.company_id, type)
-        if (existing) {
-          db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-            .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
-        } else {
-          db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
-            .run(randomUUID(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
-        }
-      }
-      if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
-      if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
-      else if (ship) upsertAddress('Livraison', ship)
-    }
-
-    db.prepare(`UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(row.id)
-    const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
-    res.json({ ok: true, response: shapeResponse(refreshed) })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
+  const row = loadByToken(req.params.token)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  if (row.status === 'submitted') {
+    return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
   }
+  if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
+
+  // Si une serre dépasse 4 zones d'irrigation, on exige soit le paiement
+  // d'autant de blocs de 4 valves supplémentaires, soit que le client baisse
+  // à 4. (L'autre chemin "aviser conseiller" se fait hors-formulaire.)
+  const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+  const blocksNeeded = computeValveBlocksNeeded(greenhouses)
+  if (blocksNeeded > 0) {
+    let paid = false
+    if (row.extras_pending_invoice_id) {
+      const pi = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
+      paid = pi?.status === 'paid'
+    }
+    if (!paid) {
+      return res.status(400).json({
+        error: `Vous avez ${blocksNeeded} bloc(s) de 4 valves supplémentaires à payer avant de soumettre. Baissez à 4 zones par serre ou complétez le paiement plus bas dans le formulaire.`,
+        code: 'valve_blocks_unpaid',
+        valve_blocks_needed: blocksNeeded,
+      })
+    }
+  }
+
+  if (row.company_id) {
+    const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
+    const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
+    const sameAsShipping = !!row.shipping_same_as_farm
+    function upsertAddress(type, addr) {
+      if (!addr || !addr.line1 || !addr.province) return
+      const existing = db.prepare(
+        "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
+      ).get(row.company_id, type)
+      if (existing) {
+        db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+          .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
+      } else {
+        db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
+          .run(newRecordId(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
+      }
+    }
+    if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
+    if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
+    else if (ship) upsertAddress('Livraison', ship)
+  }
+
+  db.prepare(`UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(row.id)
+  const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
+  res.json({ ok: true, response: shapeResponse(refreshed) })
 })
 
 // POST /by-token/:token/valve-blocks-checkout — Stripe Checkout pour les blocs
@@ -506,90 +494,86 @@ router.post('/by-token/:token/submit', (req, res) => {
 // facilement dans Checkout. Pour cette option, on lui demande de contacter
 // son conseiller — le frontend affiche le message correspondant.
 router.post('/by-token/:token/valve-blocks-checkout', async (req, res) => {
-  try {
-    const row = loadByToken(req.params.token)
-    if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-    if (row.status === 'submitted') return res.status(400).json({ error: 'Formulaire déjà soumis' })
-    if (!row.company_id) return res.status(400).json({ error: 'Aucune entreprise associée' })
+  const row = loadByToken(req.params.token)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  if (row.status === 'submitted') return res.status(400).json({ error: 'Formulaire déjà soumis' })
+  if (!row.company_id) return res.status(400).json({ error: 'Aucune entreprise associée' })
 
-    const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
-    const blocksNeeded = computeValveBlocksNeeded(greenhouses)
-    if (blocksNeeded <= 0) {
-      return res.status(400).json({ error: 'Aucun bloc supplémentaire requis — toutes vos serres ont ≤ 4 zones' })
-    }
-
-    // Si on a déjà un pending_invoice payé pour ce form, refuser (évite les doublons).
-    if (row.extras_pending_invoice_id) {
-      const existing = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
-      if (existing?.status === 'paid') {
-        return res.status(400).json({ error: 'Les blocs supplémentaires ont déjà été payés' })
-      }
-    }
-
-    const product = db.prepare("SELECT id, sku, name_fr, price_cad FROM products WHERE role='valve_block_onetime' AND active=1 LIMIT 1").get()
-    if (!product) return res.status(500).json({ error: 'Produit valve_block_onetime introuvable au catalogue' })
-    const unitPrice = Number(product.price_cad || 0)
-    if (unitPrice <= 0) return res.status(500).json({ error: 'Prix du bloc de valves non configuré au catalogue' })
-
-    // Résoudre la province/pays pour les taxes (depuis l'adresse de livraison déjà saisie).
-    const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
-    const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
-    const province = ship?.province || farm?.province
-    const country = ship?.country || farm?.country || 'Canada'
-    if (!province) {
-      return res.status(400).json({ error: 'Adresse de livraison requise avant le paiement — complétez les sections du haut.' })
-    }
-
-    const items = [{
-      product_id: product.id,
-      qty: blocksNeeded,
-      unit_price: unitPrice,
-      description: `${blocksNeeded} × ${product.name_fr || 'Bloc 4 valves supplémentaires'}`,
-    }]
-
-    // Réutilise extras_pending_invoice_id si présent (et pas encore payé) pour
-    // éviter d'empiler des pending_invoices à chaque refresh du Checkout.
-    let pendingId = row.extras_pending_invoice_id
-    if (pendingId) {
-      db.prepare(`
-        UPDATE pending_invoices
-          SET items_json=?, currency='CAD', shipping_province=?, shipping_country=?,
-              status='sent', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-        WHERE id=?
-      `).run(JSON.stringify(items), province, country, pendingId)
-    } else {
-      pendingId = randomUUID()
-      db.prepare(`
-        INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
-        VALUES (?,?,?,?,?,?,?,?,?)
-      `).run(pendingId, row.company_id, 'CAD', JSON.stringify(items), province, country, 30, 'sent', null)
-      db.prepare('UPDATE customer_onboarding_responses SET extras_pending_invoice_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') WHERE id=?').run(pendingId, row.id)
-    }
-
-    const stripe = getStripeClient()
-    const { createOrRefreshCheckoutSession } = await import('../services/stripeInvoices.js')
-    const baseUrl = APP_URL
-    const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
-    const { url } = await createOrRefreshCheckoutSession({
-      stripe,
-      pending,
-      baseAppUrl: baseUrl,
-      successUrl: `${baseUrl}/erp/d/${row.public_token}?paid=1`,
-      cancelUrl: `${baseUrl}/erp/d/${row.public_token}?cancelled=1`,
-    })
-    await ensureStripeCustomerTraced(stripe, row.company_id, 'extras-by-token')
-
-    res.json({
-      ok: true,
-      pending_invoice_id: pendingId,
-      checkout_url: url,
-      blocks: blocksNeeded,
-      unit_price: unitPrice,
-      total: unitPrice * blocksNeeded,
-    })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
+  const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+  const blocksNeeded = computeValveBlocksNeeded(greenhouses)
+  if (blocksNeeded <= 0) {
+    return res.status(400).json({ error: 'Aucun bloc supplémentaire requis — toutes vos serres ont ≤ 4 zones' })
   }
+
+  // Si on a déjà un pending_invoice payé pour ce form, refuser (évite les doublons).
+  if (row.extras_pending_invoice_id) {
+    const existing = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
+    if (existing?.status === 'paid') {
+      return res.status(400).json({ error: 'Les blocs supplémentaires ont déjà été payés' })
+    }
+  }
+
+  const product = db.prepare("SELECT id, sku, name_fr, price_cad FROM products WHERE role='valve_block_onetime' AND active=1 LIMIT 1").get()
+  if (!product) return res.status(500).json({ error: 'Produit valve_block_onetime introuvable au catalogue' })
+  const unitPrice = Number(product.price_cad || 0)
+  if (unitPrice <= 0) return res.status(500).json({ error: 'Prix du bloc de valves non configuré au catalogue' })
+
+  // Résoudre la province/pays pour les taxes (depuis l'adresse de livraison déjà saisie).
+  const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
+  const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
+  const province = ship?.province || farm?.province
+  const country = ship?.country || farm?.country || 'Canada'
+  if (!province) {
+    return res.status(400).json({ error: 'Adresse de livraison requise avant le paiement — complétez les sections du haut.' })
+  }
+
+  const items = [{
+    product_id: product.id,
+    qty: blocksNeeded,
+    unit_price: unitPrice,
+    description: `${blocksNeeded} × ${product.name_fr || 'Bloc 4 valves supplémentaires'}`,
+  }]
+
+  // Réutilise extras_pending_invoice_id si présent (et pas encore payé) pour
+  // éviter d'empiler des pending_invoices à chaque refresh du Checkout.
+  let pendingId = row.extras_pending_invoice_id
+  if (pendingId) {
+    db.prepare(`
+      UPDATE pending_invoices
+        SET items_json=?, currency='CAD', shipping_province=?, shipping_country=?,
+            status='sent', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+      WHERE id=?
+    `).run(JSON.stringify(items), province, country, pendingId)
+  } else {
+    pendingId = newRecordId()
+    db.prepare(`
+      INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
+      VALUES (?,?,?,?,?,?,?,?,?)
+    `).run(pendingId, row.company_id, 'CAD', JSON.stringify(items), province, country, 30, 'sent', null)
+    db.prepare('UPDATE customer_onboarding_responses SET extras_pending_invoice_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') WHERE id=?').run(pendingId, row.id)
+  }
+
+  const stripe = getStripeClient()
+  const { createOrRefreshCheckoutSession } = await import('../services/stripeInvoices.js')
+  const baseUrl = APP_URL
+  const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
+  const { url } = await createOrRefreshCheckoutSession({
+    stripe,
+    pending,
+    baseAppUrl: baseUrl,
+    successUrl: `${baseUrl}/erp/d/${row.public_token}?paid=1`,
+    cancelUrl: `${baseUrl}/erp/d/${row.public_token}?cancelled=1`,
+  })
+  await ensureStripeCustomerTraced(stripe, row.company_id, 'extras-by-token')
+
+  res.json({
+    ok: true,
+    pending_invoice_id: pendingId,
+    checkout_url: url,
+    blocks: blocksNeeded,
+    unit_price: unitPrice,
+    total: unitPrice * blocksNeeded,
+  })
 })
 
 export default router

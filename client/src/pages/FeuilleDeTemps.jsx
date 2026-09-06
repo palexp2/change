@@ -1,14 +1,16 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { ChevronLeft, ChevronRight, Plus, Trash2, Clock, Search, Copy, Maximize2 } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Plus, Trash2, Search, Copy, Maximize2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { parseDurationToMinutes, formatMinutes, weekKey } from '../lib/duration.js'
 import { localISODate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import Spinner from '../components/Spinner.jsx'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -43,7 +45,7 @@ function minToTime(min) {
 // `onCreate(name)` (optionnel) : appelé quand l'utilisateur veut créer un item à la
 // volée depuis le menu. Doit retourner (Promise) l'id du nouvel item, qui est alors
 // sélectionné automatiquement. `createLabel` personnalise le libellé du bouton.
-function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, autoFocus, onCreate, createLabel }) {
+function RefPicker({ value, items, labelOf, onChange, disabled, autoFocus, onCreate, createLabel }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [highlightIdx, setHighlightIdx] = useState(0)
@@ -170,7 +172,7 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
         disabled={disabled}
         className={`${inp} text-left flex items-center justify-between`}
       >
-        <span className={selected ? 'text-slate-900 truncate' : 'text-slate-400 truncate'}>{selected ? labelOf(selected) : (placeholder || '—')}</span>
+        <span className={selected ? 'text-slate-900 truncate' : 'text-slate-400 truncate'}>{selected ? labelOf(selected) : '—'}</span>
         <span className="text-slate-300 text-xs ml-1 flex-shrink-0">▾</span>
       </button>
       {open && createPortal(
@@ -184,7 +186,6 @@ function RefPicker({ value, items, labelOf, placeholder, onChange, disabled, aut
             <input
               autoFocus
               className="w-full text-sm focus:outline-none"
-              placeholder="Rechercher…"
               value={query}
               onChange={e => { setQuery(e.target.value); setHighlightIdx(0) }}
               onKeyDown={e => {
@@ -349,7 +350,7 @@ function EndTimeInput({ value, startMin, onCommitDuration, disabled }) {
   )
 }
 
-function TextCell({ value, onCommit, disabled, placeholder, expandTitle = 'Description', testId }) {
+function TextCell({ value, onCommit, disabled, expandTitle = 'Description', testId }) {
   const [local, setLocal] = useState(value ?? '')
   const [focused, setFocused] = useState(false)
   const [expanded, setExpanded] = useState(false)
@@ -431,7 +432,6 @@ function TextCell({ value, onCommit, disabled, placeholder, expandTitle = 'Descr
       <input
         className={inp + (showExpand ? ' pr-7' : '')}
         value={flat}
-        placeholder={placeholder}
         onChange={e => setLocal(e.target.value)}
         onFocus={() => setFocused(true)}
         onBlur={() => { setFocused(false); if (!expanded) commit() }}
@@ -467,8 +467,7 @@ function TextCell({ value, onCommit, disabled, placeholder, expandTitle = 'Descr
             ref={taRef}
             className="w-full min-h-[110px] max-h-[45vh] px-1.5 py-1 text-sm text-slate-900 bg-transparent border-0 focus:outline-none resize-y leading-relaxed"
             value={local ?? ''}
-            placeholder={placeholder}
-            onChange={e => setLocal(e.target.value)}
+                onChange={e => setLocal(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeExpanded({ refocus: true }) }
             }}
@@ -710,8 +709,7 @@ export default function FeuilleDeTemps() {
     <Layout>
       <div className="p-6 max-w-7xl mx-auto">
         <div className="flex items-center gap-3 mb-6 flex-wrap">
-          <Clock size={20} className="text-slate-400" />
-          <h1 className="text-2xl font-bold text-slate-900">Feuille de temps</h1>
+          <PageTitle>Feuille de temps</PageTitle>
           {isAdmin && users.length > 0 ? (
             <div className="flex items-center gap-2">
               <span className="text-sm text-slate-400">—</span>
@@ -720,7 +718,6 @@ export default function FeuilleDeTemps() {
                   value={selectedUserId}
                   items={users}
                   labelOf={u => u.name}
-                  placeholder="Choisir un employé"
                   onChange={(id) => setSelectedUserId(id || user.id)}
                 />
               </div>
@@ -798,7 +795,7 @@ export default function FeuilleDeTemps() {
 
             {/* Edit area */}
             {loading ? (
-              <div className="text-sm text-slate-400">Chargement…</div>
+              <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
             ) : effectiveMode === 'simple' ? (
               <SimpleDayForm day={day} date={date} saving={savingField} onPatch={patchDay} />
             ) : (
@@ -830,15 +827,15 @@ function SimpleDayForm({ day, date: _date, saving, onPatch }) {
     <div className="card p-5">
       <div className="grid grid-cols-3 gap-4 max-w-xl">
         <div>
-          <label className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1 block">Heure de début</label>
+          <label className="label">Heure de début</label>
           <TimeTextInput value={day?.start_time || ''} onCommit={v => onPatch({ start_time: v })} disabled={saving.start_time} />
         </div>
         <div>
-          <label className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1 block">Heure de fin</label>
+          <label className="label">Heure de fin</label>
           <TimeTextInput value={day?.end_time || ''} onCommit={v => onPatch({ end_time: v })} disabled={saving.end_time} />
         </div>
         <div>
-          <label className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1 block">Temps de pause</label>
+          <label className="label">Temps de pause</label>
           <DurationInput minutes={day?.break_minutes || 0} onCommit={v => onPatch({ break_minutes: v })} disabled={saving.break_minutes} />
         </div>
       </div>
@@ -912,7 +909,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
                     )}
                   </td>
                   <td className="px-2 py-1.5">
-                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} placeholder="Code…" onChange={v => selectCode(e, v)} onCreate={onCreateCode} createLabel="Créer le code" disabled={saving[`entry-${e.id}-activity_code_id`]} autoFocus={focusEntryId === e.id} />
+                    <RefPicker value={e.activity_code_id} items={activityCodes} labelOf={a => a.name || '(sans nom)'} onChange={v => selectCode(e, v)} onCreate={onCreateCode} createLabel="Créer le code" disabled={saving[`entry-${e.id}-activity_code_id`]} autoFocus={focusEntryId === e.id} />
                   </td>
                   <td className="px-2 py-1.5">
                     <EndTimeInput
@@ -922,7 +919,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
                       disabled={saving[`entry-${e.id}-duration_minutes`]}
                     />
                   </td>
-                  <td className="px-2 py-1.5"><TextCell value={e.description} onCommit={v => onPatchEntry(e.id, { description: v })} disabled={saving[`entry-${e.id}-description`]} placeholder="Tâche / activité" expandTitle="Tâche / activité" testId={`entry-description-${e.id}`} /></td>
+                  <td className="px-2 py-1.5"><TextCell value={e.description} onCommit={v => onPatchEntry(e.id, { description: v })} disabled={saving[`entry-${e.id}-description`]} expandTitle="Tâche / activité" testId={`entry-description-${e.id}`} /></td>
                   <td className="px-2 py-1.5 text-right text-slate-500 tabular-nums">{formatMinutes(e.duration_minutes || 0)}</td>
                   <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!e.rsde} onChange={ev => onPatchEntry(e.id, { rsde: ev.target.checked ? 1 : 0 })} className="rounded" data-testid={`entry-rsde-${e.id}`} /></td>
                   <td className="px-1"><button onClick={() => onDeleteEntry(e.id)} className="p-1 text-slate-300 hover:text-red-500" title="Supprimer"><Trash2 size={14} /></button></td>

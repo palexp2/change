@@ -53,26 +53,18 @@ router.get('/:stripeId', (req, res) => {
 })
 
 router.post('/sync', async (req, res) => {
-  try {
-    const fullHistory = req.body?.fullHistory !== false
-    const result = await syncStripePayouts({ fullHistory })
-    res.json(result)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const fullHistory = req.body?.fullHistory !== false
+  const result = await syncStripePayouts({ fullHistory })
+  res.json(result)
 })
 
 // Sync balance_transactions for a specific payout
 router.post('/:stripeId/sync-transactions', async (req, res) => {
-  try {
-    const result = await syncStripeBalanceTransactions(req.params.stripeId)
-    const bts = db.prepare(
-      'SELECT stripe_id, type, amount, fee, net, currency, invoice_number, customer_name, is_subscription FROM stripe_balance_transactions WHERE payout_stripe_id=? ORDER BY created_date'
-    ).all(req.params.stripeId)
-    res.json({ ...result, transactions: bts })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
-  }
+  const result = await syncStripeBalanceTransactions(req.params.stripeId)
+  const bts = db.prepare(
+    'SELECT stripe_id, type, amount, fee, net, currency, invoice_number, customer_name, is_subscription FROM stripe_balance_transactions WHERE payout_stripe_id=? ORDER BY created_date'
+  ).all(req.params.stripeId)
+  res.json({ ...result, transactions: bts })
 })
 
 // Preview the QB Deposit payload without sending
@@ -197,16 +189,12 @@ router.post('/:stripeId/unlink-deposit', async (req, res) => {
 
 // Push deposit to QB. Requires confirm=true in body for safety.
 router.post('/:stripeId/push-deposit', async (req, res) => {
-  try {
-    if (req.body?.confirm !== true) {
-      return res.status(400).json({ error: 'Confirmation requise: envoyer { confirm: true }' })
-    }
-    const result = await pushDepositFromPayout(req.params.stripeId)
-    result.qb_deposit_url = qbEntityUrl('deposit', result.qb_deposit_id)
-    res.json(result)
-  } catch (e) {
-    res.status(500).json({ error: e.message })
+  if (req.body?.confirm !== true) {
+    return res.status(400).json({ error: 'Confirmation requise: envoyer { confirm: true }' })
   }
+  const result = await pushDepositFromPayout(req.params.stripeId)
+  result.qb_deposit_url = qbEntityUrl('deposit', result.qb_deposit_id)
+  res.json(result)
 })
 
 export default router

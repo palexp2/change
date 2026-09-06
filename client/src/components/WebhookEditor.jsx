@@ -25,7 +25,7 @@ const RESP_OPS = [
 
 const card = 'bg-white rounded-lg border p-5'
 const lbl = 'block text-xs font-medium text-gray-600 mb-1'
-const inp = 'w-full border rounded-lg px-3 py-2 text-sm bg-white'
+const inp = 'input'
 
 // Hook : colonnes d'une table ERP (mémoïsées par table, partagées entre champs).
 function useTableColumns() {
@@ -41,7 +41,7 @@ function useTableColumns() {
   return { get: (t) => cacheRef.current[t] || [], load }
 }
 
-function ColumnSelect({ table, value, onChange, columns, onNeed, placeholder = '— colonne —', disabled }) {
+function ColumnSelect({ table, value, onChange, columns, onNeed, emptyLabel = '—', disabled }) {
   useEffect(() => { if (table) onNeed(table) }, [table, onNeed])
   return (
     <SearchableSelect
@@ -50,10 +50,9 @@ function ColumnSelect({ table, value, onChange, columns, onNeed, placeholder = '
       getOptionValue={c => c.column_name}
       getOptionLabel={c => c.airtable_field_name ? `${c.airtable_field_name} (${c.column_name})` : c.column_name}
       getOptionKey={c => c.column_name}
-      emptyOption={placeholder}
+      emptyOption={emptyLabel}
       onChange={onChange}
       disabled={disabled || !table}
-      placeholder={placeholder}
       size="sm"
       className={inp + ' disabled:bg-gray-50'}
     />
@@ -184,12 +183,12 @@ export function WebhookEditor({
                       <div>
                         <label className={lbl}>Chercher le record où…</label>
                         <ColumnSelect table={s.table} value={s.match?.field} columns={tCols} onNeed={cols.load}
-                          onChange={v => setStep(i, { match: { ...s.match, field: v } })} placeholder="— champ —" />
+                          onChange={v => setStep(i, { match: { ...s.match, field: v } })} />
                       </div>
                       <div>
                         <label className={lbl}>… = la valeur du param</label>
                         <input value={s.match?.param || ''} onChange={e => setStep(i, { match: { ...s.match, param: e.target.value } })}
-                          className={inp + ' font-mono'} placeholder="ex: serial" />
+                          className={inp + ' font-mono'} />
                       </div>
                     </div>
                   )}
@@ -205,8 +204,8 @@ export function WebhookEditor({
                             {VALUE_SOURCES.filter(vs => vs.value !== 'record' || !isCreate).map(vs => <option key={vs.value} value={vs.value}>{vs.label}</option>)}
                           </select>
                           {f.source === 'record'
-                            ? <ColumnSelect table={s.table} value={f.value} columns={tCols} onNeed={cols.load} onChange={v => setField(i, fi, { value: v })} placeholder="— champ source —" />
-                            : <input value={f.value ?? ''} onChange={e => setField(i, fi, { value: e.target.value })} className={inp + ' font-mono'} placeholder={f.source === 'param' ? 'nom du param' : 'valeur'} />}
+                            ? <ColumnSelect table={s.table} value={f.value} columns={tCols} onNeed={cols.load} onChange={v => setField(i, fi, { value: v })} />
+                            : <input value={f.value ?? ''} onChange={e => setField(i, fi, { value: e.target.value })} className={inp + ' font-mono'} />}
                           <button onClick={() => setStep(i, { fields: s.fields.filter((_, k) => k !== fi) })} className="text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>
                         </div>
                       ))}
@@ -227,8 +226,7 @@ export function WebhookEditor({
               <code className="bg-gray-100 px-1 rounded">respond(status, body)</code>. Timeout : 10 s.
             </p>
             <textarea value={script || ''} onChange={e => onScriptChange(e.target.value)} rows={12}
-              className="w-full border rounded-lg px-4 py-3 font-mono text-sm bg-gray-900 text-green-400 focus:outline-none focus:ring-2 focus:ring-brand-400"
-              placeholder={"// Ex : marquer un billet résolu d'après un param\nconst rows = query('SELECT id FROM tickets WHERE title = ?', [params.title])\nif (rows[0]) update('tickets', rows[0].id, { status: 'Résolu' })\nrespond(200, { ok: true })"} />
+              className="w-full border rounded-lg px-4 py-3 font-mono text-sm bg-gray-900 text-green-400 focus:outline-none focus:ring-2 focus:ring-brand-400" />
           </div>
         )}
       </div>
@@ -244,13 +242,13 @@ export function WebhookEditor({
           <div className="space-y-2">
             {responseRules.map((r, i) => (
               <div key={i} className="grid grid-cols-[1fr_120px_1fr_90px_1.5fr_28px] gap-2 items-center">
-                <input value={r.param || ''} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, param: e.target.value } : x))} className={inp + ' font-mono'} placeholder="param" />
+                <input value={r.param || ''} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, param: e.target.value } : x))} className={inp + ' font-mono'} />
                 <select value={r.op || 'eq'} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, op: e.target.value } : x))} className={inp}>
                   {RESP_OPS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
-                <input value={r.value ?? ''} disabled={r.op === 'exists'} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, value: e.target.value } : x))} className={inp + ' disabled:bg-gray-50'} placeholder="valeur" />
+                <input value={r.value ?? ''} disabled={r.op === 'exists'} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, value: e.target.value } : x))} className={inp + ' disabled:bg-gray-50'} />
                 <input type="number" value={r.status ?? 200} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, status: Number(e.target.value) } : x))} className={inp} />
-                <input value={typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? {})} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, body: tryParse(e.target.value) } : x))} className={inp + ' font-mono'} placeholder='{"ok":true}' />
+                <input value={typeof r.body === 'string' ? r.body : JSON.stringify(r.body ?? {})} onChange={e => setRules(responseRules.map((x, j) => j === i ? { ...x, body: tryParse(e.target.value) } : x))} className={inp + ' font-mono'} />
                 <button onClick={() => setRules(responseRules.filter((_, j) => j !== i))} className="text-gray-400 hover:text-red-500"><Trash2 size={13} /></button>
               </div>
             ))}
@@ -263,7 +261,7 @@ export function WebhookEditor({
             </div>
             <div>
               <label className={lbl}>Défaut — corps</label>
-              <input value={typeof cfg.default_response?.body === 'string' ? cfg.default_response.body : JSON.stringify(cfg.default_response?.body ?? { ok: true })} onChange={e => patch({ default_response: { ...cfg.default_response, body: tryParse(e.target.value) } })} className={inp + ' font-mono'} placeholder='{"ok":true}' />
+              <input value={typeof cfg.default_response?.body === 'string' ? cfg.default_response.body : JSON.stringify(cfg.default_response?.body ?? { ok: true })} onChange={e => patch({ default_response: { ...cfg.default_response, body: tryParse(e.target.value) } })} className={inp + ' font-mono'} />
             </div>
           </div>
         </div>
@@ -282,7 +280,6 @@ export function WebhookEditor({
             getOptionValue={a => a} getOptionLabel={a => a} getOptionKey={a => a}
             emptyOption="— aucun —"
             onChange={v => patch({ failure_recipient: v || undefined })}
-            placeholder="— aucun —"
             searchPlaceholder="Rechercher une adresse…"
             size="sm"
             className={inp}

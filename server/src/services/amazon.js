@@ -1,10 +1,11 @@
 import { writeFileSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
 import { join } from 'path'
-import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { emitEntity } from './realtimeEmitters.js'
 import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
 import { amazonGet, amazonPost, amazonRequest, isAmazonConfigured } from '../connectors/amazon.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // ── Sync des factures Amazon Business ─────────────────────────────────────────
 // Récupère les factures d'achat Amazon et les fait tomber dans le pipeline
@@ -22,7 +23,7 @@ import { amazonGet, amazonPost, amazonRequest, isAmazonConfigured } from '../con
 // documentés en détail qu'une fois l'accès API approuvé. Les seams sont en place ;
 // les TODO marquent les 3 points à brancher avec les vrais champs.
 
-const receiptsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
+const receiptsDir = uploadsPath('receipts')
 
 const REPORTS_BASE = '/reports/2021-09-30'
 // TODO(onboarding): confirmer le reportType de réconciliation des factures.
@@ -85,7 +86,7 @@ async function importInvoice(inv, userId) {
   const resp = await amazonRequest('GET', `/documents/${inv.documentId}`, { accept: 'application/pdf' })
   const buffer = Buffer.from(await resp.arrayBuffer())
 
-  const id = uuid()
+  const id = newRecordId()
   const storedName = `${id}.pdf`
   const filePath = join(receiptsDir, storedName)
   writeFileSync(filePath, buffer)

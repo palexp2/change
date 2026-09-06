@@ -22,6 +22,12 @@ const BASE = '/erp/api'
 let pollTimer = null
 let inFlight = null
 let started = false
+// Empreinte de la forme du snapshot (tables + colonnes) reçue du serveur. Si le
+// serveur en renvoie une différente — typiquement un champ personnalisé ajouté,
+// donc une colonne de plus dans la vue <table>_v —, le cache local n'a pas cette
+// colonne sur les records inchangés : on refait un bootstrap complet plutôt que
+// de laisser le champ vide indéfiniment.
+let columnsSignature = null
 
 function token() {
   return localStorage.getItem('erp_token')
@@ -54,6 +60,7 @@ async function doBootstrap() {
   for (const [tableName, payload] of Object.entries(data.tables || {})) {
     hydrateTable(tableName, payload, { replace: true })
   }
+  columnsSignature = data.columns_signature || null
   setLastSyncTs(data.snapshot_ts)
   const ms = Math.round(performance.now() - start)
   console.log(`[dataSync] bootstrap loaded ${Object.keys(data.tables || {}).length} tables in ${ms}ms`)
@@ -72,6 +79,7 @@ async function hydrateFromCache() {
     for (const [tableName, payload] of Object.entries(cached.tables)) {
       hydrateTable(tableName, payload, { replace: true })
     }
+    columnsSignature = cached.columns_signature || null
     setLastSyncTs(cached.snapshot_ts)
     console.log(`[dataSync] hydrated from IndexedDB (snapshot_ts=${cached.snapshot_ts})`)
     return true
@@ -89,6 +97,13 @@ async function doDelta() {
   }
   try {
     const data = await fetchJson(`/bootstrap/delta?since=${encodeURIComponent(since)}`)
+    // La forme du snapshot a bougé (champ personnalisé créé/supprimé, colonne
+    // ajoutée au serveur) : un delta ne remplirait la nouvelle colonne que sur
+    // les records modifiés → on recharge tout.
+    if (data.columns_signature && data.columns_signature !== columnsSignature) {
+      console.warn('[dataSync] colonnes du snapshot modifiées — re-bootstrap')
+      return doBootstrap()
+    }
     let totalChanges = 0
     for (const [tableName, delta] of Object.entries(data.tables || {})) {
       applyDelta(tableName, delta)
@@ -168,6 +183,7 @@ export async function stopDataSync() {
   // veut pas hydrater avec les données du précédent (qui pourrait avoir un
   // autre rôle/visibilité).
   try { await clearSnapshot() } catch {}
+  columnsSignature = null
   started = false
 }
 

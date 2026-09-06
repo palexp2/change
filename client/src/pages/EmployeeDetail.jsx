@@ -1,10 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Plus, Trash2, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
 import { vacationBalance } from '../lib/vacationBalance.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -13,6 +13,8 @@ import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeCha
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { useFieldGate } from '../lib/fieldGate.js'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
 const DEPARTMENTS = ['R&D', 'Opérations', 'Marketing']
 const GENDERS = ['Homme', 'Femme', 'Autre']
@@ -82,9 +84,30 @@ function normalize(raw) {
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-export default function EmployeeDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
+// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
+// après suppression du record.
+export default function EmployeeDetail({ recordId, embedded = true, onClose }) {
+  // Portier des champs supprimés : un champ retiré dans /champs/employees sort
+  // aussi de cette fiche (et un renommage s'y voit).
+  const fieldGate = useFieldGate('employees')
+  const gatedSections = useMemo(
+    () => SECTIONS
+      .map(sec => ({
+        ...sec,
+        fields: fieldGate.keep(sec.fields).map(f => ({ ...f, label: fieldGate.labelFor(f.key, f.label) })),
+      }))
+      .filter(sec => sec.fields.length > 0),
+    [fieldGate],
+  )
+
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
+  const leaveRecord = () => { if (embedded) onClose?.(); else navigate('/employees') }
   const confirm = useConfirm()
   const { addToast } = useToast()
   const [form, setForm] = useState(null)
@@ -106,7 +129,7 @@ export default function EmployeeDetail() {
       setEmployee(prev => prev ? { ...prev, ...msg.payload } : msg.payload)
       setForm(prev => prev ? normalize({ ...prev, ...msg.payload }) : prev)
     } else if (verb === 'deleted') {
-      navigate('/employees')
+      leaveRecord()
     }
   })
 
@@ -132,43 +155,57 @@ export default function EmployeeDetail() {
     }
   }
 
+  // Le serveur refuse une première fois (409) si des lignes de paie, de banque
+  // d'heures… pendent à l'employé : on dit ce qui serait emporté, puis on force.
   async function handleDelete() {
     if (!(await confirm(`Supprimer ${employee.first_name} ${employee.last_name} ?`))) return
+    await runDelete(false)
+  }
+
+  async function runDelete(force) {
     try {
-      await api.employees.delete(id)
-      navigate('/employees')
+      const r = await api.employees.delete(id, { force })
+      if (r?.from_airtable) addToast({ message: 'Supprimer aussi dans Airtable, sinon la fiche revient', type: 'info' })
+      leaveRecord()
     } catch (err) {
+      if (err?.status === 409 && err.details?.dependents) {
+        if (await confirm({ message: `Supprime aussi ${err.message} ?`, confirmLabel: 'Tout supprimer' })) {
+          await runDelete(true)
+        }
+        return
+      }
       addToast({ message: err.message, type: 'error' })
     }
   }
 
   if (loadError && !employee) {
-    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
+    return shell(<DetailLoadError message={loadError} onRetry={load} />)
   }
   if (loading || !form) {
-    return <Layout><Spinner center /></Layout>
+    return shell(<Spinner center />)
   }
   if (!employee) {
-    return <Layout><div className="p-6 text-slate-500">Employé introuvable.</div></Layout>
+    return shell(<div className="p-6 text-slate-500">Employé introuvable.</div>)
   }
 
   const initials = (form.first_name?.[0] || '') + (form.last_name?.[0] || '')
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-4xl mx-auto">
+  return shell(
+      <div className={embedded ? 'p-6' : 'p-6 max-w-4xl mx-auto'}>
         <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/employees')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button onClick={() => navigate('/employees')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="w-14 h-14 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center font-semibold text-lg flex-shrink-0">
             {initials || '—'}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">
+              <PageTitle>
                 {(form.first_name || form.last_name) ? `${form.first_name || ''} ${form.last_name || ''}`.trim() : <span className="text-slate-400 italic font-normal">Sans nom</span>}
-              </h1>
+              </PageTitle>
               {!form.active && <Badge color="red">Inactif</Badge>}
               {!!form.is_salesperson && <Badge color="indigo">Vendeur</Badge>}
               {!!form.is_consultant && <Badge color="purple">Consultant</Badge>}
@@ -191,7 +228,7 @@ export default function EmployeeDetail() {
             onAllowanceChange={v => change('vacation_days_per_year', v)}
           />
 
-          {SECTIONS.map(section => (
+          {gatedSections.map(section => (
             <div key={section.title} className="card p-5">
               <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-4">{section.title}</div>
               <div className="grid grid-cols-2 gap-x-6 gap-y-4">
@@ -228,7 +265,6 @@ export default function EmployeeDetail() {
                             value={val || ''}
                             options={(field.options || []).map(o => ({ value: o, label: o }))}
                             emptyOption="—"
-                            placeholder="—"
                             onChange={v => change(field.key, v)}
                             className={inp}
                             size="sm"
@@ -264,6 +300,14 @@ export default function EmployeeDetail() {
             </div>
           ))}
 
+          <CustomDetailFields
+            table="employees"
+            record={employee}
+            labelClassName="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1"
+            gridClassName="grid grid-cols-2 gap-x-6 gap-y-4"
+            card
+          />
+
           <div className="flex justify-end pt-2">
             <button onClick={handleDelete}
               className="text-sm text-slate-400 hover:text-red-600 flex items-center gap-1.5">
@@ -272,7 +316,6 @@ export default function EmployeeDetail() {
           </div>
         </div>
       </div>
-    </Layout>
   )
 }
 
@@ -387,7 +430,6 @@ function VacationsSection({ employeeId, allowance, onAllowanceChange }) {
               className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white tabular-nums"
               value={allowance ?? ''}
               onChange={e => onAllowanceChange(e.target.value === '' ? null : parseFloat(e.target.value))}
-              placeholder="0"
               data-testid="vacation-allowance"
             />
             <span className="text-xs text-slate-400">j / an</span>
@@ -417,7 +459,7 @@ function VacationsSection({ employeeId, allowance, onAllowanceChange }) {
       </div>
 
       {loading ? (
-        <div className="text-sm text-slate-400">Chargement…</div>
+        <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
       ) : rows.length === 0 ? (
         <div className="text-sm text-slate-400 italic">Aucune vacance enregistrée.</div>
       ) : (
@@ -470,7 +512,6 @@ function VacationsSection({ employeeId, allowance, onAllowanceChange }) {
                       className={inp}
                       value={row.notes || ''}
                       onChange={e => change(row.id, 'notes', e.target.value)}
-                      placeholder="—"
                       data-testid="vacation-notes"
                     />
                   </td>

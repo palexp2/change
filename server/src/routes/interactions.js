@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import { requireAuth } from '../middleware/auth.js'
 import db from '../db/database.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
@@ -158,7 +158,7 @@ router.post('/', requireAuth, (req, res) => {
   const fkErr = checkForeignKeys({ company_id, contact_id })
   if (fkErr) return res.status(400).json({ error: fkErr.message })
 
-  const id = uuid()
+  const id = newRecordId()
   const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
 
   // Tout-ou-rien : la ligne interactions et sa ligne de détail meetings doivent
@@ -170,7 +170,7 @@ router.post('/', requireAuth, (req, res) => {
 
     if (type === 'meeting' || type === 'note') {
       db.prepare('INSERT INTO meetings (id, interaction_id, title, url, duration_minutes, notes, attendees) VALUES (?,?,?,?,?,?,?)')
-        .run(uuid(), id, title || (type === 'note' ? 'Note' : null), url || null, duration_minutes || null, notes || null, attendees || null)
+        .run(newRecordId(), id, title || (type === 'note' ? 'Note' : null), url || null, duration_minutes || null, notes || null, attendees || null)
     }
   })
   insertInteraction()

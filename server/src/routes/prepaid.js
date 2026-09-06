@@ -1,7 +1,7 @@
 // Comptes prépayés — volet 1 : soldes fournisseurs prépayés (ledger),
 // volet 2 : cédule de continuité des frais payés d'avance (#13000).
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
@@ -33,7 +33,7 @@ router.post('/accounts', (req, res) => {
   const b = req.body
   if (!b.vendor || !String(b.vendor).trim()) return res.status(400).json({ error: 'vendor requis' })
   if (b.sync_start_date && !isDate(b.sync_start_date)) return res.status(400).json({ error: 'sync_start_date invalide (YYYY-MM-DD)' })
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO prepaid_accounts (id, vendor, currency, qb_vendor_name, qb_asset_acctnum, balance_provider, sync_start_date, active, notes, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -89,7 +89,7 @@ router.post('/accounts/:id/entries', (req, res) => {
   if (!Number.isFinite(amount) || amount === 0) return res.status(400).json({ error: 'amount doit être un nombre non nul' })
   if (b.type !== 'ajustement' && amount < 0) return res.status(400).json({ error: 'amount doit être positif (le signe vient du type)' })
   const source = b.source === 'import' ? 'import' : 'manuel'
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO prepaid_ledger_entries (id, account_id, entry_date, type, amount, description, source)
     VALUES (?,?,?,?,?,?,?)
@@ -185,7 +185,7 @@ router.post('/expenses', (req, res) => {
   const error = validateExpense(req.body)
   if (error) return res.status(400).json({ error })
   const b = req.body
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO prepaid_expenses (id, label, description, payment_date, amount, currency, method, monthly_amount, amort_start, amort_end, expense_acctnum, fpa_acctnum, active, notes, created_by)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -229,7 +229,7 @@ router.post('/expenses/:id/amortizations', (req, res) => {
   const amount = Number(b.amount)
   if (!Number.isFinite(amount)) return res.status(400).json({ error: 'amount doit être un nombre' })
   const source = b.source === 'import' ? 'import' : 'manuel'
-  const id = randomUUID()
+  const id = newRecordId()
   try {
     db.prepare(`
       INSERT INTO prepaid_amortizations (id, expense_id, month, amount, source, pushed_at)

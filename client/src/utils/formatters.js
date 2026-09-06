@@ -9,22 +9,49 @@ import { fmtDate } from '../lib/formatDate.js'
 // opts :
 //   - fallback             : valeur retournée pour un montant nul/invalide (défaut '—')
 //   - zeroIsEmpty          : si true, 0 (et autres falsy) renvoie le fallback (défaut false → 0 est formaté)
-//   - maximumFractionDigits / minimumFractionDigits : transmis à Intl tels quels
+//   - nullIsZero           : si true, un montant nul/invalide est formaté comme 0 (au lieu du fallback)
+//   - cents                : si true, `amount` est en cents et divisé par 100
+//   - decimals             : fixe min et max de décimales d'un coup
+//   - maximumFractionDigits / minimumFractionDigits / notation : transmis à Intl tels quels
 //   - locale               : force la locale (défaut 'fr-CA')
+const CURRENCY_ALIASES = { EURO: 'EUR' }
+
 export function fmtMoney(amount, currency = 'CAD', opts = {}) {
-  const { fallback = '—', zeroIsEmpty = false, maximumFractionDigits, minimumFractionDigits, locale = 'fr-CA' } = opts
-  const num = Number(amount)
-  if (amount == null || amount === '' || Number.isNaN(num)) return fallback
+  const { fallback = '—', zeroIsEmpty = false, nullIsZero = false, cents = false, decimals, maximumFractionDigits, minimumFractionDigits, notation, locale = 'fr-CA' } = opts
+  let num = Number(amount)
+  if (amount == null || amount === '' || Number.isNaN(num)) {
+    if (!nullIsZero) return fallback
+    num = 0
+  }
   if (zeroIsEmpty && !num) return fallback
-  const intlOpts = { style: 'currency', currency: String(currency || 'CAD').toUpperCase() }
+  if (cents) num /= 100
+  const code = String(currency || 'CAD').toUpperCase()
+  const intlOpts = { style: 'currency', currency: CURRENCY_ALIASES[code] || code }
+  if (decimals != null) { intlOpts.maximumFractionDigits = decimals; intlOpts.minimumFractionDigits = decimals }
   if (maximumFractionDigits != null) intlOpts.maximumFractionDigits = maximumFractionDigits
   if (minimumFractionDigits != null) intlOpts.minimumFractionDigits = minimumFractionDigits
+  if (notation) intlOpts.notation = notation
   try {
     return new Intl.NumberFormat(locale, intlOpts).format(num)
   } catch {
     // Code devise invalide → on retombe sur CAD plutôt que de jeter.
     return new Intl.NumberFormat(locale, { ...intlOpts, currency: 'CAD' }).format(num)
   }
+}
+
+// Nombre sans devise, séparateurs fr-CA. Mêmes options que fmtMoney (sans devise).
+export function fmtNumber(value, opts = {}) {
+  const { fallback = '—', nullIsZero = false, decimals, maximumFractionDigits, minimumFractionDigits, locale = 'fr-CA' } = opts
+  let num = Number(value)
+  if (value == null || value === '' || !Number.isFinite(num)) {
+    if (!nullIsZero) return fallback
+    num = 0
+  }
+  const intlOpts = {}
+  if (decimals != null) { intlOpts.maximumFractionDigits = decimals; intlOpts.minimumFractionDigits = decimals }
+  if (maximumFractionDigits != null) intlOpts.maximumFractionDigits = maximumFractionDigits
+  if (minimumFractionDigits != null) intlOpts.minimumFractionDigits = minimumFractionDigits
+  return new Intl.NumberFormat(locale, intlOpts).format(num)
 }
 
 // Raccourci pour le cas le plus courant : montant en dollars canadiens.

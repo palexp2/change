@@ -26,8 +26,8 @@
 // par une facture ou une récurrente, récurrente ERP absente du fichier…) est
 // seulement RAPPORTÉ — visible sur la page Comptabilité et dans le journal de
 // l'automation sys_treasury_solde_sheet.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { fetchPmtSuiviGrid } from './pmtSuiviImport.js'
@@ -870,7 +870,7 @@ function applyPlan(plan, { userId = null } = {}) {
   const applied = { balance: null, payments: { created: 0, updated: 0, removed: 0, cleared: 0 }, recurring: { created: 0, updated: 0 } }
 
   if (plan.balance?.action === 'insert') {
-    const id = randomUUID()
+    const id = newRecordId()
     db.prepare('INSERT INTO treasury_balances (id, balance, noted_at, created_by, source) VALUES (?,?,?,?,?)')
       .run(id, r2(plan.balance.sheet.amount), plan.balance.noted_at, userId, 'solde_sheet')
     applied.balance = id
@@ -932,7 +932,7 @@ function applyPlan(plan, { userId = null } = {}) {
       db.prepare(`
         INSERT INTO recurring_outflows (id, label, amount, frequency, day_of_month, notes, active)
         VALUES (?,?,?,'monthly',?,?,1)
-      `).run(randomUUID(), r.row.label, r2(r.row.amount), r.row.day, 'Créée depuis le fichier « Maintien du solde disponible BNC »')
+      `).run(newRecordId(), r.row.label, r2(r.row.amount), r.row.day, 'Créée depuis le fichier « Maintien du solde disponible BNC »')
       applied.recurring.created++
     } else if (r.action === 'update') {
       const sets = []

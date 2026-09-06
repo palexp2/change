@@ -18,7 +18,7 @@ import {
 } from '../services/carmAccount.js'
 import { CARM_KINDS } from '../services/carmRules.js'
 import { recomputeCarm, carmImputation } from '../services/carmPosting.js'
-import { previewCarmPostings, postCarmGroups } from '../services/carmQb.js'
+import { previewCarmPostings, postCarmGroups, unpostCarmGroup } from '../services/carmQb.js'
 import { logSync } from '../services/syncLog.js'
 
 const router = Router()
@@ -279,6 +279,19 @@ router.post('/postings/post', async (req, res) => {
   try {
     const result = await postCarmGroups({ groupIds: ids, userId: req.user.id })
     res.json({ ...result, state: carmAccountState() })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Annule une écriture déjà comptabilisée (supprime la transaction QuickBooks,
+// remet ses lignes en 'a_comptabiliser') — sert à reposer une écriture avec
+// une version corrigée des règles de comptabilisation.
+router.post('/postings/:qbTxnId/unpost', async (req, res) => {
+  try {
+    const n = await unpostCarmGroup(req.params.qbTxnId)
+    recomputeCarm()
+    res.json({ ok: true, lines: n, state: carmAccountState() })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

@@ -4,6 +4,7 @@ import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { SyncDetails } from './SyncDetails.jsx'
+import Spinner from './Spinner.jsx'
 
 // Modales de mapping des champs Stripe (pendant Stripe de AirtableCoreMapModal).
 // Chaque ligne = colonne ERP fixe ← champ de l'objet Stripe choisi parmi les
@@ -95,7 +96,7 @@ function FieldRow({ f, prefix, draft, setDraft, setSavedMsg }) {
           getOptionLabel={o => o.label}
           getOptionKey={o => o.path}
           emptyOption={f.custom ? 'Non synchronisé (défaut)' : undefined}
-          placeholder={f.custom ? 'Non synchronisé' : '— Choisir un champ Stripe —'}
+          placeholder={f.custom ? 'Non synchronisé' : '—'}
           searchPlaceholder="Rechercher un champ…"
           testId={`${prefix}-${f.key}`}
         />
@@ -190,7 +191,7 @@ function StripeFieldMapPane({ onSaved, onSyncNow, config }) {
     return (
       <div className="space-y-4">
         {syncDetails}
-        <p className="text-sm text-slate-400 py-6 text-center">Chargement…</p>
+        <p className="text-sm text-slate-400 py-6 text-center"><Spinner size="xs" label="Chargement…" /></p>
       </div>
     )
   }

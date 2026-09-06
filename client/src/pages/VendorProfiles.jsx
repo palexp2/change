@@ -1,11 +1,13 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Plus, Sparkles, BookUser } from 'lucide-react'
+import { Plus, Sparkles } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -45,16 +47,15 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         value={form[k] ?? ''}
         options={options}
         onChange={v => { set(k, v || null); save(k, v || null) }}
-        placeholder="— Aucun —"
       />
       {hint && <p className="text-[11px] text-slate-400 mt-1">{hint}</p>}
     </div>
   )
 
-  const text = (k, label, { placeholder } = {}) => (
+  const text = (k, label) => (
     <div>
       <label className={labelCls}>{label}</label>
-      <input className={inputCls} value={form[k] ?? ''} placeholder={placeholder}
+      <input className={inputCls} value={form[k] ?? ''}
         onChange={e => set(k, e.target.value)}
         onBlur={e => save(k, e.target.value.trim() === '' ? null : e.target.value.trim())} />
     </div>
@@ -63,7 +64,8 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
   const taxOptions = [{ value: NO_TAX, label: '— Aucune taxe —' }, ...qb.taxCodes.map(c => ({ value: c.Id, label: c.Name }))]
 
   return (
-    <Modal isOpen onClose={onClose} title={form.name} size="lg">
+    <RecordPeekDrawer open onClose={onClose} title={form.name} width={720} peekKey="vendor_profiles">
+      <div className="px-5 py-4">
       <div className="grid grid-cols-2 gap-3">
         <div>
           <label className={labelCls}>Nom canonique</label>
@@ -105,7 +107,6 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
             value={form.payment_terms_days ?? ''}
             onChange={e => set('payment_terms_days', e.target.value === '' ? null : Number(e.target.value))}
             onBlur={e => save('payment_terms_days', e.target.value === '' ? null : Number(e.target.value))}
-            placeholder="ex. 21"
           />
         </div>
         {pick('default_tax_code_id_cad', 'Code de taxe — CAD', taxOptions)}
@@ -117,13 +118,13 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         <div className="col-span-2 pt-1">
           <p className="text-[10px] font-medium text-slate-400 uppercase tracking-wide border-t border-slate-100 pt-3">Particularités du fournisseur</p>
         </div>
-        {text('usual_currency', 'Devise habituelle', { placeholder: 'CAD, USD, CAD/USD…' })}
-        {text('payment_method', 'Mode de paiement', { placeholder: 'Master, BNC, Venn USD…' })}
+        {text('usual_currency', 'Devise habituelle')}
+        {text('payment_method', 'Mode de paiement')}
         {/* Re-proposé automatiquement dans /paiements-emis dès qu'on saisit ce
             fournisseur, et ré-appris à chaque commentaire de paiement saisi. */}
-        {text('payment_note', 'Commentaire de paiement habituel', { placeholder: 'Virement Interac, chèque post-daté…' })}
-        {text('qb_category', 'Catégorie comptable', { placeholder: '76000 Serv. web & Téléphonie' })}
-        {text('description', 'Description', { placeholder: 'Ce que fournit ce fournisseur' })}
+        {text('payment_note', 'Commentaire de paiement habituel')}
+        {text('qb_category', 'Catégorie comptable')}
+        {text('description', 'Description')}
         <div className="col-span-2">
           <label className={labelCls}>Particularités (facturation, taxes, accès…)</label>
           <textarea className={inputCls} rows={3} value={form.particularites ?? ''}
@@ -155,7 +156,8 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         </button>
         <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
       </div>
-    </Modal>
+      </div>
+    </RecordPeekDrawer>
   )
 }
 
@@ -523,7 +525,7 @@ export default function VendorProfiles() {
         <VendorTabs active="profils" />
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2"><BookUser size={22} className="text-brand-600" /> Fournisseurs</h1>
+            <PageTitle>Fournisseurs</PageTitle>
             <p className="text-xs text-slate-500 mt-0.5">
               Fiche unique par fournisseur : défauts comptables appris à chaque publication QuickBooks (vendor par devise, comptes, statut fiscal, code de taxe, échéance) et particularités (devise habituelle, mode de paiement, catégorie, facturation/taxes). Le tout pré-remplit l'extraction de données.
             </p>

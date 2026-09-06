@@ -4,16 +4,15 @@ import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 
-import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+import { fmtMoney } from '../utils/formatters.js'
 
-// Stripe stocke les montants en cents — on convertit en dollars pour l'affichage.
-const fmtMoney = (cents, currency) => fmtMoneyBase(cents == null ? null : cents / 100, currency)
 
 export default function ItemsVendus() {
   const { addToast } = useToast()
@@ -54,8 +53,8 @@ export default function ItemsVendus() {
     const RENDERS = {
       description: row => <span className="text-slate-700">{row.description || '—'}</span>,
       quantity:    row => <span className="text-slate-700">{row.quantity ?? '—'}</span>,
-      unit_amount: row => <span className="text-slate-700">{fmtMoney(row.unit_amount, row.currency)}</span>,
-      amount:      row => <span className="font-medium text-slate-700">{fmtMoney(row.amount, row.currency)}</span>,
+      unit_amount: row => <span className="text-slate-700">{fmtMoney(row.unit_amount, row.currency, { cents: true })}</span>,
+      amount:      row => <span className="font-medium text-slate-700">{fmtMoney(row.amount, row.currency, { cents: true })}</span>,
       currency:    row => <span className="font-mono text-xs text-slate-600">{row.currency || '—'}</span>,
       facture_document_number: row => row.facture_id
         ? <Link to={`/factures/${row.facture_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.facture_document_number || row.facture_invoice_id || row.facture_id}</Link>
@@ -75,7 +74,6 @@ export default function ItemsVendus() {
             options={products}
             labelFn={p => `${p.name_fr || p.name_en || '?'}${p.sku ? ` (${p.sku})` : ''}`}
             getHref={p => `/products/${p.id}`}
-            placeholder="Lier un produit"
             saving={savingId === row.id}
             onChange={newId => handleProductChange(row.id, newId)}
           />
@@ -90,7 +88,7 @@ export default function ItemsVendus() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Items vendus</h1>
+            <PageTitle>Items vendus</PageTitle>
             <p className="text-sm text-slate-500 mt-1">Lignes des factures Stripe — lie chaque item à un produit ERP.</p>
           </div>
         </div>

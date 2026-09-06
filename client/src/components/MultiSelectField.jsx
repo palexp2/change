@@ -24,8 +24,6 @@ export function MultiSelectField({
   onChange,
   saving = false,
   allowCreate = true,
-  placeholder = 'Ajouter…',
-  searchPlaceholder = 'Rechercher ou créer…',
   testId,
 }) {
   const [open, setOpen] = useState(false)
@@ -145,7 +143,6 @@ export function MultiSelectField({
           className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700 disabled:opacity-50"
         >
           <Plus size={12} />
-          {selected.length === 0 && <span>{placeholder}</span>}
         </button>
       </div>
 
@@ -173,7 +170,6 @@ export function MultiSelectField({
                 onKeyDown={onKeyDown}
                 data-testid={testId ? `${testId}-search` : undefined}
                 className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
-                placeholder={searchPlaceholder}
               />
             </div>
           </div>

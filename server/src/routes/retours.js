@@ -1,12 +1,13 @@
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
+import { readRelation } from '../services/customFieldsView.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
 import { selectReturnRate } from '../services/returnCarrier.js'
 import { buildReturnMemoPdf } from '../services/returnMemoPdf.js'
@@ -22,12 +23,13 @@ import {
   isDiagnosticAvailable,
   runDiagnostic,
 } from '../services/novoxpressDiagnostic.js'
+import { uploadsPath } from '../config/uploads.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
 router.use(requireAuth)
 
-const MEMOS_DIR = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'documents', 'retours')
+const MEMOS_DIR = uploadsPath('documents', 'retours')
 
 function getReturnAutomationConfig(id) {
   const row = db.prepare('SELECT action_config FROM automations WHERE id = ? AND deleted_at IS NULL').get(id)
@@ -35,10 +37,14 @@ function getReturnAutomationConfig(id) {
 }
 
 function getReturnWithItems(returnId) {
+  // `company_name` vient de la VUE : c'est un champ perso (lookup sur
+  // company_id) depuis la conversion du natif — plus de LEFT JOIN recopié ici,
+  // et la colonne n'est jamais nommée dans le SQL (l'utilisateur peut supprimer
+  // le champ). Le contexte d'étiquette, lui, lit `companies` en direct
+  // (services/returnContext.js) : il a besoin du nom même sans le champ.
   const row = db.prepare(`
-    SELECT r.*, co.name as company_name
-    FROM returns r
-    LEFT JOIN companies co ON r.company_id = co.id
+    SELECT r.*
+    FROM ${readRelation('returns')} r
     WHERE r.id = ?
   `).get(returnId)
   if (!row) return null
@@ -241,7 +247,7 @@ function loadAttachmentBuffer(value) {
   const idx = url.indexOf(marker)
   if (idx === -1) return null
   const relPath = url.slice(idx + marker.length)
-  const filePath = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments', relPath)
+  const filePath = uploadsPath('attachments', relPath)
   try { return fs.existsSync(filePath) ? fs.readFileSync(filePath) : null } catch { return null }
 }
 
@@ -249,31 +255,28 @@ router.post('/:id/memo', async (req, res) => {
   const ret = getReturnWithItems(req.params.id)
   if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
 
-  try {
-    const contact = ret.contact_id
-      ? db.prepare('SELECT langue FROM contacts WHERE id = ?').get(ret.contact_id)
-      : null
-    const items = (ret.items || []).map(it => ({
-      produit: (contact?.langue === 'English' ? it.poduit_a_recevoir_en_for_email_display : it.poduit_a_recevoir_fr_for_email_display) || it.product_name,
-      adresse: it.adresse_lora,
-      image: loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir),
-      transfo: loadAttachmentBuffer(it.transfo_a_recevoir_from_numero_de_serie) || loadAttachmentBuffer(it.transfo_a_recevoir_from_produit_a_recevoir),
-    }))
-    const pdfBuffer = await buildReturnMemoPdf({ langue: contact?.langue, items })
-    const filename = `memo-${req.params.id}.pdf`
-    fs.mkdirSync(MEMOS_DIR, { recursive: true })
-    fs.writeFileSync(path.join(MEMOS_DIR, filename), pdfBuffer)
+  // `ret.contact` : champ personnalisé « Contact » (ex-natif contact_id,
+  // converti par la migration 027) — il porte l'id du contact ERP.
+  const contact = ret.contact
+    ? db.prepare('SELECT langue FROM contacts WHERE id = ?').get(ret.contact)
+    : null
+  const items = (ret.items || []).map(it => ({
+    produit: (contact?.langue === 'English' ? it.poduit_a_recevoir_en_for_email_display : it.poduit_a_recevoir_fr_for_email_display) || it.product_name,
+    adresse: it.adresse_lora,
+    image: loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir),
+    transfo: loadAttachmentBuffer(it.transfo_a_recevoir_from_numero_de_serie) || loadAttachmentBuffer(it.transfo_a_recevoir_from_produit_a_recevoir),
+  }))
+  const pdfBuffer = await buildReturnMemoPdf({ langue: contact?.langue, items })
+  const filename = `memo-${req.params.id}.pdf`
+  fs.mkdirSync(MEMOS_DIR, { recursive: true })
+  fs.writeFileSync(path.join(MEMOS_DIR, filename), pdfBuffer)
 
-    db.prepare(`
-      UPDATE returns SET memo_pdf_path = ?, memo_generated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ?
-    `).run(`documents/retours/${filename}`, req.params.id)
+  db.prepare(`
+    UPDATE returns SET memo_pdf_path = ?, memo_generated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = ?
+  `).run(`documents/retours/${filename}`, req.params.id)
 
-    res.json({ memo_url: `/erp/api/retours/memos/${filename}` })
-  } catch (e) {
-    console.error('Retours memo PDF error:', e.message)
-    res.status(500).json({ error: e.message })
-  }
+  res.json({ memo_url: `/erp/api/retours/memos/${filename}` })
 })
 
 // GET /api/retours/memos/:filename — sert l'aide-mémoire (via requireAuth du routeur)
@@ -283,19 +286,15 @@ router.get('/memos/:filename', (req, res) => {
   res.sendFile(filePath)
 })
 
-// POST /api/retours/:id/send-instructions — courriel client (Postmark),
-// reproduisant l'un des 6 templates HubSpot réels (returnInstructionsTemplates.js) —
-// sélection par pays (transporteur) × langue × type de retour (immédiat/différé).
-router.post('/:id/send-instructions', async (req, res) => {
-  const started = Date.now()
-  const { to } = req.body
-  if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
+// Contexte de composition des instructions de retour. Partagé entre l'aperçu
+// (GET .../instructions-email, affiché dans la modale de composition) et
+// l'envoi réel, pour que ce que l'utilisateur voit soit exactement ce qui part.
+function loadInstructionsEmailContext(returnId) {
+  const ret = getReturnWithItems(returnId)
+  if (!ret) return { error: { status: 404, message: 'Retour introuvable' } }
 
-  const ret = getReturnWithItems(req.params.id)
-  if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
-
-  const { ctx } = buildReturnPartyContext(req.params.id, null)
-  const contact = ret.contact_id ? db.prepare('SELECT first_name, langue FROM contacts WHERE id = ?').get(ret.contact_id) : null
+  const { ctx } = buildReturnPartyContext(returnId, null)
+  const contact = ret.contact ? db.prepare('SELECT first_name, langue, email FROM contacts WHERE id = ?').get(ret.contact) : null
   // Un retour peut avoir plusieurs items avec des raisons différentes — on
   // retient la 1ère raison présente, fidèle à l'hypothèse implicite de
   // l'automatisation Airtable d'origine (un retour = une raison dominante).
@@ -306,21 +305,68 @@ router.post('/:id/send-instructions', async (req, res) => {
     lang: contact?.langue || 'French',
     returnReason,
   })
-  const html = buildReturnInstructionsHtml(template, contact?.first_name)
+
+  return {
+    ret,
+    ctx,
+    contact,
+    to: ctx?.address_contact_email || contact?.email || ctx?.company_email || null,
+    subject: template.subject,
+    html: buildReturnInstructionsHtml(template, contact?.first_name),
+  }
+}
+
+// Pièces jointes du courriel d'instructions : étiquette de retour + aide-mémoire
+// quand ils existent. Même liste pour l'aperçu (noms seulement) et l'envoi.
+function instructionsAttachments(ret, returnId) {
+  const out = []
+  if (ret.return_label_pdf_path) {
+    const labelPath = uploadsPath('labels', path.basename(ret.return_label_pdf_path))
+    if (fs.existsSync(labelPath)) out.push({ name: `etiquette-retour-${ret.n_de_retour || returnId}.pdf`, path: labelPath })
+  }
+  if (ret.memo_pdf_path) {
+    const memoPath = path.join(MEMOS_DIR, path.basename(ret.memo_pdf_path))
+    if (fs.existsSync(memoPath)) out.push({ name: `aide-memoire-${ret.n_de_retour || returnId}.pdf`, path: memoPath })
+  }
+  return out
+}
+
+// GET /api/retours/:id/instructions-email — brouillon du courriel (destinataire,
+// expéditeur, objet, corps HTML, pièces jointes) sans rien envoyer.
+router.get('/:id/instructions-email', (req, res) => {
+  const ctx = loadInstructionsEmailContext(req.params.id)
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.message })
+
+  res.json({
+    to: ctx.to,
+    from: getAutomationFrom('sys_return_instructions_email') || null,
+    subject: ctx.subject,
+    bodyHtml: ctx.html,
+    attachments: instructionsAttachments(ctx.ret, req.params.id).map(a => a.name),
+    already_sent_at: ctx.ret.instructions_sent_at || null,
+  })
+})
+
+// POST /api/retours/:id/send-instructions — courriel client (Postmark),
+// reproduisant l'un des 6 templates HubSpot réels (returnInstructionsTemplates.js) —
+// sélection par pays (transporteur) × langue × type de retour (immédiat/différé).
+// L'objet, le corps et le Cc peuvent être remplacés par ce que l'utilisateur a
+// édité dans la modale de composition (EmailComposerModal).
+router.post('/:id/send-instructions', async (req, res) => {
+  const started = Date.now()
+  const { to, cc, subject, body_html } = req.body
+  if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
+
+  const emailCtx = loadInstructionsEmailContext(req.params.id)
+  if (emailCtx.error) return res.status(emailCtx.error.status).json({ error: emailCtx.error.message })
+  const { ret } = emailCtx
+  const finalSubject = (subject && String(subject).trim()) || emailCtx.subject
+  const html = (body_html && String(body_html).trim()) || emailCtx.html
 
   const attachments = []
   try {
-    if (ret.return_label_pdf_path) {
-      const labelPath = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels', path.basename(ret.return_label_pdf_path))
-      if (fs.existsSync(labelPath)) {
-        attachments.push({ Name: `etiquette-retour-${ret.return_number || req.params.id}.pdf`, Content: fs.readFileSync(labelPath).toString('base64'), ContentType: 'application/pdf' })
-      }
-    }
-    if (ret.memo_pdf_path) {
-      const memoPath = path.join(MEMOS_DIR, path.basename(ret.memo_pdf_path))
-      if (fs.existsSync(memoPath)) {
-        attachments.push({ Name: `aide-memoire-${ret.return_number || req.params.id}.pdf`, Content: fs.readFileSync(memoPath).toString('base64'), ContentType: 'application/pdf' })
-      }
+    for (const a of instructionsAttachments(ret, req.params.id)) {
+      attachments.push({ Name: a.name, Content: fs.readFileSync(a.path).toString('base64'), ContentType: 'application/pdf' })
     }
 
     const fromAddress = getAutomationFrom('sys_return_instructions_email')
@@ -329,22 +375,23 @@ router.post('/:id/send-instructions', async (req, res) => {
     await client.sendEmail({
       From: fromAddress,
       To: to,
-      Subject: template.subject,
+      Cc: cc || undefined,
+      Subject: finalSubject,
       HtmlBody: html,
       Attachments: attachments,
     })
 
-    const interactionId = uuidv4()
-    const emailId = uuidv4()
+    const interactionId = newRecordId()
+    const emailId = newRecordId()
     db.transaction(() => {
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
         VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(interactionId, ret.contact_id || null, ret.company_id || null)
+      `).run(interactionId, ret.contact || null, ret.company_id || null)
       db.prepare(`
-        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
-        VALUES (?, ?, ?, ?, ?, ?, 1)
-      `).run(emailId, interactionId, template.subject, html, fromAddress, to)
+        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, automated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      `).run(emailId, interactionId, finalSubject, html, fromAddress, to, cc || null)
       db.prepare(`
         UPDATE returns SET instructions_sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), instructions_interaction_id = ?
         WHERE id = ?
@@ -356,12 +403,13 @@ router.post('/:id/send-instructions', async (req, res) => {
       result: [
         `Instructions de retour envoyées`,
         `  De : ${fromAddress}`,
-        `  À : ${to}`,
+        `  À : ${to}${cc ? ` (Cc : ${cc})` : ''}`,
+        `  Objet : ${finalSubject}`,
         `  Pièces jointes : ${attachments.map(a => a.Name).join(', ') || 'aucune'}`,
         `  Retour : ${req.params.id}`,
       ].join('\n'),
       duration_ms: Date.now() - started,
-      triggerData: { return_id: req.params.id, to, interaction_id: interactionId },
+      triggerData: { return_id: req.params.id, to, cc: cc || null, interaction_id: interactionId },
     })
 
     res.json({ success: true, interaction_id: interactionId, attachments: attachments.map(a => a.Name) })
@@ -385,7 +433,7 @@ router.post('/bulk-from-serials', (req, res) => {
   if (!reason) return res.status(400).json({ error: 'reason requis' })
 
   try {
-    const returnId = uuidv4()
+    const returnId = newRecordId()
     const tx = db.transaction(() => {
       db.prepare(`
         INSERT INTO returns (id, company_id, status, created_at, updated_at)
@@ -399,7 +447,7 @@ router.post('/bulk-from-serials', (req, res) => {
       const updateSerial = db.prepare(`UPDATE serial_numbers SET status = 'En retour', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
 
       for (const serialId of serial_ids) {
-        insertItem.run(uuidv4(), returnId, serialId, company_id, reason)
+        insertItem.run(newRecordId(), returnId, serialId, company_id, reason)
         updateSerial.run(serialId)
       }
     })

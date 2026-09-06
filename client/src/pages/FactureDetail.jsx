@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link, useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, X, Download, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2, PanelRight } from 'lucide-react'
+import { ArrowLeft, ExternalLink, Send, Hourglass, ChevronLeft, ChevronRight, Trash2, PanelRight } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -12,11 +12,15 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
 import { FieldGuard, FieldGuardProvider } from '../components/FieldGuard.jsx'
+import { Field } from '../components/Field.jsx'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
+import { invalidate } from '../lib/prefetch.js'
 import { useRecordKeyNav } from '../lib/useRecordKeyNav.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import AttachmentPreview from '../components/AttachmentPreview.jsx'
 
 // Champs disponibles pour le builder de règles de visibilité. Le picker
 // utilise `field` (clé du record) et `label` (humain). On expose un
@@ -89,22 +93,17 @@ function FactureNotesField({ value, onSave }) {
     }
   }
   return (
-    <div className="p-5">
-      <div className="flex items-center gap-2 mb-1">
-        <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Notes</p>
-        {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
-      </div>
+    <Field table="factures" id="notes" label="Notes" saving={saving} className="p-5">
       <textarea
         data-testid="facture-notes-input"
         value={local}
         onChange={e => setLocal(e.target.value)}
         onBlur={e => commit(e.target.value)}
-        placeholder="Ajouter une note interne sur cette facture…"
         rows={3}
         className="input text-sm w-full resize-y"
       />
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
-    </div>
+    </Field>
   )
 }
 
@@ -112,7 +111,7 @@ function FactureNotesField({ value, onSave }) {
 // (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
 // clavier prev/next). En mode route normale, l'`id` vient de l'URL.
 // `onClose` ferme le drawer (utilisé après suppression du record).
-export default function FactureDetail({ recordId, embedded = false, onClose }) {
+export default function FactureDetail({ recordId, embedded = true, onClose }) {
   const { id: paramId } = useParams()
   const id = recordId ?? paramId
   const navigate = useNavigate()
@@ -127,7 +126,6 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
   const [selectedProjectId, setSelectedProjectId] = useState('')
   const [pdfBlobUrl, setPdfBlobUrl] = useState(null)
   const [_pdfLoading, _setPdfLoading] = useState(false)
-  const [showPdfModal, setShowPdfModal] = useState(false)
   const [subscriptionModal, setSubscriptionModal] = useState(null)
   const [loadingSubscription, setLoadingSubscription] = useState(false)
   const [sendModalOpen, setSendModalOpen] = useState(false)
@@ -227,6 +225,17 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
 
   useEffect(() => { load() }, [load])
 
+  // Relit la facture après une action qui la modifie indirectement (saisie d'un
+  // paiement, écriture comptable…). L'invalidation est obligatoire : les GET
+  // sont cachés 30 s et une mutation sur une AUTRE ressource (/payments) ne
+  // purge pas /projets/factures/:id — sans ça on réécrasait l'état frais avec
+  // la version périmée du cache.
+  const refreshFacture = useCallback(async () => {
+    invalidate(`/projets/factures/${id}`)
+    const fresh = await api.factures.get(id)
+    setFacture(f => (f ? { ...f, ...fresh } : fresh))
+  }, [id])
+
   useRealtimeChannel(id ? `facture:${id}` : null, (msg) => {
     if (msg.type === 'facture:updated') setFacture(f => f ? { ...f, ...msg.payload } : f)
     else if (msg.type === 'facture:deleted') { if (embedded) onClose?.(); else navigate('/factures') }
@@ -296,9 +305,9 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
     }
   }
 
-  // En mode embarqué (side-peek), pas de Layout — le drawer fournit son propre
-  // chrome. Sinon, page pleine classique.
-  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
 
   if (loading) {
     return shell(<Spinner center />)
@@ -319,7 +328,7 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
               {/* En embarqué, le titre est déjà dans le header du drawer — on ne garde que les badges/actions. */}
-              {!embedded && <h1 className="text-2xl font-bold text-slate-900">{facture.document_number || `Facture #${id}`}</h1>}
+              {!embedded && <PageTitle>{facture.document_number || `Facture #${id}`}</PageTitle>}
               {facture.status && (
                 <Badge color={STATUS_COLORS[facture.status] || 'gray'} size="md">
                   {facture.status}
@@ -403,7 +412,7 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
           </div>
           {!embedded && (
           <div className="flex items-center gap-1">
-            {/* Miroir du bouton « ouvrir en grand » du drawer : retourne à la
+            {/* Chemin inverse du panneau latéral : retourne à la
                 liste avec cette facture ouverte en panneau latéral. */}
             <button
               onClick={() => navigate('/factures', { state: { peekId: id } })}
@@ -439,15 +448,13 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
         <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
           {/* Entreprise */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Entreprise</p>
+            <Field table="factures" id="company_name" label="Entreprise">
               <LinkedRecordField
                 name="company_id"
                 value={facture.company_id}
                 options={companies}
                 labelFn={c => c.name}
                 getHref={c => `/companies/${c.id}`}
-                placeholder="Entreprise"
                 saving={saving}
                 onChange={handleCompanyChange}
               />
@@ -460,9 +467,8 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
                   </a>
                 </p>
               )}
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Projet</p>
+            </Field>
+            <Field table="factures" id="project_name" label="Projet">
               {facture.company_id ? (
                 <LinkedRecordField
                   name="project_id"
@@ -470,21 +476,19 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
                   options={projects}
                   labelFn={p => p.name}
                   getHref={p => `/projects/${p.id}`}
-                  placeholder="Projet"
                   saving={saving}
                   onChange={handleProjectChange}
                 />
               ) : (
                 <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
               )}
-            </div>
+            </Field>
           </div>
 
           {/* Commande / Abonnement */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
             <FieldGuard fieldId="order_field" label="Commande">
-              <div data-field-id="order_field">
-                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Commande</p>
+              <Field table="factures" id="order_number" label="Commande" testId="order_field">
                 {facture.company_id ? (
                   <LinkedRecordField
                     name="order_id"
@@ -492,18 +496,17 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
                     options={orders}
                     labelFn={o => `#${o.order_number}`}
                     getHref={o => `/orders/${o.id}`}
-                    placeholder="Commande"
                     saving={saving}
                     onChange={handleOrderChange}
                   />
                 ) : (
                   <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
                 )}
-              </div>
+              </Field>
             </FieldGuard>
             <FieldGuard fieldId="subscription_field" label="Abonnement">
               <div data-field-id="subscription_field">
-                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Abonnement</p>
+                <p className="label">Abonnement</p>
                 {facture.subscription_local_id
                   ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="text-brand-600 hover:underline font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
                   : facture.subscription_id
@@ -535,62 +538,53 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
             </div>
           )}
 
-          {/* PDF thumbnail */}
+          {/* PDF thumbnail — composant partagé avec les étiquettes et bons de
+              livraison (vignette cliquable → visionneuse plein écran). */}
           {pdfBlobUrl && (
             <div className="p-5">
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-2">Aperçu</p>
-              <div
-                className="relative cursor-pointer overflow-hidden rounded-lg border border-slate-200 bg-slate-50 hover:border-brand-300 transition-colors"
-                style={{ height: 200, width: 154 }}
-                onClick={() => setShowPdfModal(true)}
-              >
-                <iframe
-                  src={`${pdfBlobUrl}#toolbar=0&navpanes=0&scrollbar=0`}
-                  className="absolute top-0 left-0 origin-top-left pointer-events-none"
-                  style={{ width: '200%', height: '200%', transform: 'scale(0.5)' }}
-                  title="Aperçu facture"
-                />
-                <div className="absolute inset-0 flex items-end justify-center pb-2 opacity-0 hover:opacity-100 transition-opacity bg-gradient-to-t from-black/20">
-                  <span className="text-xs text-white font-medium">Agrandir</span>
-                </div>
-              </div>
+              <AttachmentPreview
+                url={pdfBlobUrl}
+                fileName={`${facture.document_number}.pdf`}
+                title={facture.document_number}
+                kind="pdf"
+                size="md"
+                showFileName={false}
+                testId="facture-pdf-attachment"
+              />
             </div>
           )}
 
           {/* Dates */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5">
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Date de facturation</p>
+            <Field table="factures" id="document_date" label="Date de facturation">
               <p className="text-sm text-slate-700">{fmtDate(facture.document_date)}</p>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Date d'échéance</p>
+            </Field>
+            <Field table="factures" id="due_date" label="Date d'échéance">
               <p className="text-sm text-slate-700">{fmtDate(facture.due_date)}</p>
-            </div>
-            <div>
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Devise</p>
+            </Field>
+            <Field table="factures" id="currency" label="Devise">
               <p className="text-sm font-mono text-slate-700">{facture.currency || '—'}</p>
-            </div>
+            </Field>
             <FieldGuard fieldId="is_sent" label="Envoyée">
-              <div data-field-id="is_sent">
-                <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Envoyée</p>
+              <Field table="factures" id="is_sent" label="Envoyée" testId="is_sent">
                 {facture.is_sent ? (
                   <Badge color="green" size="sm">Envoyée</Badge>
                 ) : (
                   <span className="text-sm text-slate-400">—</span>
                 )}
-              </div>
+              </Field>
             </FieldGuard>
+            <CustomDetailFields table="factures" record={facture} />
           </div>
 
 
           {/* Solde dû */}
-          <div className="p-5">
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Solde dû</p>
+          <Field table="factures" id="balance_due" label="Solde dû" className="p-5">
             <p className={`text-sm font-medium ${facture.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
               {fmtMoney(facture.balance_due, facture.currency)}
             </p>
-          </div>
+          </Field>
 
           {/* Notes — éditable, autosave on blur */}
           <FactureNotesField
@@ -644,20 +638,16 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
                     <td className="py-2 text-right tabular-nums">−{fmtMoney(d.amount, facture.currency)}</td>
                   </tr>
                 ))}
-                {/* Sous-total avant taxes — rabais appliqué quand présent.
-                    Pour les factures Stripe, montant_avant_taxes = invoice.subtotal qui
-                    est PRE-discount; on déduit la somme des rabais affichés ci-dessus
-                    pour que le sous-total reflète bien lignes − rabais. */}
+                {/* Sous-total avant taxes — le montant stocké est DÉJÀ net de rabais :
+                    le sync Stripe prend `total_excluding_tax` (HT après rabais), pas
+                    `subtotal_excluding_tax` (voir services/stripeFactureFieldMap.js).
+                    Ne rien redéduire ici : les lignes de rabais ci-dessus expliquent
+                    l'écart entre la somme des lignes et ce sous-total, elles ne
+                    s'appliquent pas une deuxième fois. */}
                 {(() => {
-                  const storedBeforeTax = facture.montant_avant_taxes != null
+                  const displayedBeforeTax = facture.montant_avant_taxes != null
                     ? parseFloat(facture.montant_avant_taxes)
                     : facture.amount_before_tax_cad
-                  const discountSum = Array.isArray(facture.discounts)
-                    ? facture.discounts.reduce((s, d) => s + (Number(d.amount) || 0), 0)
-                    : 0
-                  const displayedBeforeTax = storedBeforeTax != null && discountSum > 0
-                    ? Number(storedBeforeTax) - discountSum
-                    : storedBeforeTax
                   return (
                     <tr className="border-t-2 border-slate-200 text-slate-700" data-testid="facture-line-subtotal">
                       <td className="pt-3 pb-2 font-medium" colSpan={4}>Avant taxes</td>
@@ -694,18 +684,12 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
           facturePaidChargeId={facture.paid_charge_id}
           facturePaidPaymentIntent={facture.paid_payment_intent}
           factureTotalAmount={facture.total_amount}
-          onFactureChanged={async () => {
-            const fresh = await api.factures.get(id)
-            setFacture(fresh)
-          }}
+          onFactureChanged={refreshFacture}
         />
 
         <FactureAccountingSection
           facture={facture}
-          onChanged={async () => {
-            const fresh = await api.factures.get(id)
-            setFacture(fresh)
-          }}
+          onChanged={refreshFacture}
         />
 
         {user?.role === 'admin' && (
@@ -745,27 +729,6 @@ export default function FactureDetail({ recordId, embedded = false, onClose }) {
           </div>
         )}
       </div>
-
-      {/* PDF viewer modal */}
-      {showPdfModal && pdfBlobUrl && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center">
-          <div className="absolute inset-0 bg-black/60" onClick={() => setShowPdfModal(false)} />
-          <div className="relative bg-white rounded-xl shadow-2xl w-[95vw] max-w-6xl h-[92vh] flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-              <span className="text-sm font-semibold text-slate-900">{facture.document_number}</span>
-              <div className="flex items-center gap-2">
-                <a href={pdfBlobUrl} download={`${facture.document_number}.pdf`} className="btn-secondary btn-sm flex items-center gap-1.5">
-                  <Download size={13} /> Télécharger
-                </a>
-                <button onClick={() => setShowPdfModal(false)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded">
-                  <X size={16} />
-                </button>
-              </div>
-            </div>
-            <iframe src={pdfBlobUrl} className="flex-1 w-full" title="Facture PDF" />
-          </div>
-        </div>
-      )}
 
       {subscriptionModal && (
         <AbonnementDetailModal abonnement={subscriptionModal} onClose={() => setSubscriptionModal(null)} />

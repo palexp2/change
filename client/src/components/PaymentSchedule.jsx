@@ -43,7 +43,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 
 // Pas de garde null historique : un montant absent s'affiche « 0,00 $ ».
-const fmtCad = (n, currency = 'CAD') => fmtMoney(Number(n) || 0, currency)
+const fmtCad = (n, currency = 'CAD') => fmtMoney(n, currency, { nullIsZero: true })
 const fmtDay = d => (d ? new Date(`${String(d).slice(0, 10)}T12:00:00`).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }) : '—')
 // « mardi 18 août » — le jour de la semaine porte la règle de la cédule, il doit
 // être écrit en toutes lettres.
@@ -112,7 +112,6 @@ function VendorParticularites({ item, onChanged }) {
       <div className="w-full">
         <textarea autoFocus rows={2} defaultValue={item.particularites || ''}
           data-testid={`schedule-particularites-input-${item.id}`}
-          placeholder="Particularité du fournisseur (ex. facture à envoyer au ctb le 30 du mois précédent)"
           className="w-full px-2 py-1 text-[11px] leading-snug text-amber-800 bg-amber-50/60 border border-amber-200 rounded-md focus:outline-none focus:ring-2 focus:ring-amber-400/30"
           onBlur={e => save(e.target.value)}
           onKeyDown={e => {
@@ -290,7 +289,6 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onAccount
               rien, et un champ encore vide non plus — seuls Entrée, un texte
               saisi puis un clic ailleurs dans la page, ou « passer » terminent. */}
           <input ref={refInput} autoFocus defaultValue={paid.reference || ''} className={`${inputXs} w-44 shrink-0`}
-            placeholder={refSpec.refPlaceholder || refSpec.refShort}
             title={`${refSpec.refLabel} — la ligne attend : tu peux aller chercher le numéro dans un autre onglet`}
             data-testid={`schedule-reference-${item.id}`}
             onBlur={e => {
@@ -374,7 +372,7 @@ function DeferredItem({ item, onChanged }) {
         <BillLink item={item} />
         <span className="shrink-0 text-slate-400">· échéance {fmtDay(item.due_date)}</span>
       </span>
-      <input defaultValue={item.defer_reason || ''} placeholder="Raison du report (ex. avoir en attente)"
+      <input defaultValue={item.defer_reason || ''}
         className={`${inputXs} flex-1 min-w-48`} data-testid={`schedule-reason-${item.id}`}
         onBlur={e => { if ((e.target.value || '') !== (item.defer_reason || '')) save({ reason: e.target.value }) }} />
       <input type="date" defaultValue={item.defer_until || ''} className={`${inputXs} w-36`}
@@ -514,8 +512,7 @@ function CardDueRow({ due, onChanged }) {
 
       {paid ? (
         <span className="flex-1 min-w-48 flex items-center gap-2" data-testid={`card-due-reference-row-${due.id}`}>
-          <input autoFocus defaultValue="" className={`${inputXs} w-44 shrink-0`}
-            placeholder="N° confirmation" title="N° de confirmation donné par la banque"
+          <input autoFocus defaultValue="" className={`${inputXs} w-44 shrink-0`} title="N° de confirmation donné par la banque"
             data-testid={`card-due-reference-${due.id}`}
             onBlur={e => finishReference(e.target.value)}
             onKeyDown={e => {
@@ -535,7 +532,7 @@ function CardDueRow({ due, onChanged }) {
 
       {!paid && (
       <span className="flex items-center gap-1 shrink-0">
-        <input inputMode="decimal" value={amount} placeholder="solde"
+        <input inputMode="decimal" value={amount}
           className={`${inputXs} w-28 text-right tabular-nums font-medium`}
           data-testid={`card-due-amount-${due.id}`}
           title="Solde à payer, relevé sur le compte de la carte — 0 si la carte n’a pas servi ce mois-ci"

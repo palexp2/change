@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { normalizeVendorKey } from './vendorProfiles.js'
 import { logSync } from './syncLog.js'
 import { round2Safe as round2 } from '../utils/money.js'
@@ -503,7 +503,7 @@ export function syncReceiptAnomalies(receiptId) {
   `)
   const tx = db.transaction(() => {
     for (const a of detected) {
-      upsert.run(randomUUID(), receiptId, a.kind, a.severity, a.message, JSON.stringify(a.details || {}), a.fingerprint)
+      upsert.run(newRecordId(), receiptId, a.kind, a.severity, a.message, JSON.stringify(a.details || {}), a.fingerprint)
     }
     // Anomalies ouvertes de ce reçu qui ne sont plus détectées → resolved. Les
     // fingerprints de paire mentionnent les deux ids : on résout aussi celles où ce
@@ -627,7 +627,7 @@ function upsertAnomaly(receiptId, a) {
       entity_id=excluded.entity_id,
       status=CASE WHEN transaction_anomalies.status='dismissed' THEN 'dismissed' ELSE 'open' END,
       updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-  `).run(randomUUID(), receiptId, a.kind, a.severity, a.message, JSON.stringify(a.details || {}), a.fingerprint)
+  `).run(newRecordId(), receiptId, a.kind, a.severity, a.message, JSON.stringify(a.details || {}), a.fingerprint)
 }
 
 function resolveAnomaly(fingerprint) {

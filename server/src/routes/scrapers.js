@@ -6,7 +6,7 @@
 // reçu. Ici : gestion des comptes (identifiants chiffrés), déclenchement,
 // réponse aux défis 2FA et consultation de l'historique des tournées.
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import { existsSync } from 'fs'
 import { join } from 'path'
 import db from '../db/database.js'
@@ -19,6 +19,7 @@ import { chromiumAvailable } from '../services/scrapers/browser.js'
 import { refreshInvoiceNeeds } from '../services/scrapers/invoiceNeeds.js'
 import { nowIso } from '../utils/datetime.js'
 import { parseLimit } from '../utils/pagination.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // Au démarrage : refermer les tournées qu'un redémarrage a laissées « en cours ».
 reapOrphanRuns()
@@ -26,7 +27,7 @@ reapOrphanRuns()
 const router = Router()
 router.use(requireAuth)
 
-const artifactsRoot = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'scrapers')
+const artifactsRoot = uploadsPath('scrapers')
 
 // Les identifiants ne ressortent JAMAIS de l'API : le front affiche seulement
 // s'ils sont présents, jamais leur valeur.
@@ -168,7 +169,7 @@ router.post('/accounts', requireAdmin, (req, res) => {
   if (!SCRAPERS[vendor]) return res.status(400).json({ error: 'Fournisseur non pris en charge' })
   if (!username || !password) return res.status(400).json({ error: 'Courriel et mot de passe requis' })
 
-  const id = uuid()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO scraper_accounts (id, vendor, label, username, password_enc, totp_secret_enc,
       lookback_days, enabled, vendor_profile_id, collect_mode, created_by)

@@ -1,8 +1,8 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
-import multer from 'multer'
+import { newRecordId } from '../utils/recordId.js'
+import { makeUpload } from '../utils/upload.js'
 import { join, extname } from 'path'
-import { existsSync, mkdirSync, unlinkSync } from 'fs'
+import { existsSync, unlinkSync } from 'fs'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { pushSaleReceiptToQB } from '../services/quickbooks.js'
@@ -10,11 +10,15 @@ import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
 import { syncReceiptAnomalies, receiptObsolescence } from '../services/transactionAnomalies.js'
+import { normalizeUploadName } from '../utils/uploadFileName.js'
 import { listTransactionTypes } from '../services/fiscalStatus.js'
 import { resolveFiscalDetection } from '../services/fiscalDetection.js'
 import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
 import { matchReceiptItems, completeLiaDescription, LIA_AUTO_THRESHOLD, LIA_SUGGEST_THRESHOLD } from '../services/purchaseLiaMatch.js'
 import { detectPrepaidStatement, attachStatementToMonthQb, monthLabel } from '../services/prepaidStatementAttach.js'
+import { readRelation } from '../services/customFieldsView.js'
+import { ensureUploadsDir } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
 
 // Construit l'URL QB d'un reçu poussé. Les rangées antérieures au toggle
 // Purchase/Bill n'ont pas de quickbooks_type ; on les traite comme 'purchase'.
@@ -110,7 +114,7 @@ function fetchSaleReceiptRow(id) {
 function logReceiptEvent(receiptId, userId, action, detail = null) {
   try {
     db.prepare('INSERT INTO sale_receipt_events (id, receipt_id, user_id, action, detail) VALUES (?,?,?,?,?)')
-      .run(randomUUID(), receiptId, userId || null, action, detail)
+      .run(newRecordId(), receiptId, userId || null, action, detail)
   } catch (e) {
     console.error('logReceiptEvent failed:', e.message)
   }
@@ -134,32 +138,21 @@ const FIELD_LABELS = {
 const router = Router()
 router.use(requireAuth)
 
-const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
-if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
+const uploadsDir = ensureUploadsDir('receipts')
 
 const ALLOWED_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf']
 
-const storage = multer.diskStorage({
+const upload = makeUpload({
   destination: uploadsDir,
-  filename: (req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname).toLowerCase()}`),
-})
-const upload = multer({
-  storage,
-  limits: { fileSize: 20 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const ext = extname(file.originalname).toLowerCase()
-    if (ALLOWED_EXT.includes(ext)) cb(null, true)
-    else cb(new Error('Type de fichier non supporté. Formats acceptés: JPG, PNG, GIF, WEBP, PDF'))
-  },
+  fileSize: 20 * 1024 * 1024,
+  allowedExt: ALLOWED_EXT,
+  rejectMessage: () => 'Type de fichier non supporté. Formats acceptés: JPG, PNG, GIF, WEBP, PDF',
 })
 
 // ── Routes ────────────────────────────────────────────────────────────────────
 
 router.get('/', (req, res) => {
-  const { page = 1, limit = 100 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { page, limit, limitVal, offset } = parsePage(req.query, 100)
   const total = db.prepare('SELECT COUNT(*) as c FROM sale_receipts WHERE deleted_at IS NULL').get().c
   const rows = db.prepare(`
     SELECT * FROM sale_receipts
@@ -178,7 +171,7 @@ router.get('/transaction-types', (req, res) => {
 })
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
+  const row = db.prepare(`SELECT * FROM ${readRelation('sale_receipts')} WHERE id=? AND deleted_at IS NULL`)
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(serializeRow(row))
@@ -321,22 +314,22 @@ router.post('/upload', upload.array('file', 20), async (req, res) => {
 
   const [first, ...rest] = files
   const ext = extname(first.originalname).toLowerCase()
-  const id = randomUUID()
+  const id = newRecordId()
   const extraPages = rest.map(f => ({
     filename: f.filename,
     file_type: extname(f.originalname).toLowerCase(),
-    original_name: f.originalname,
+    original_name: normalizeUploadName(f.originalname),
   }))
 
   // Insert with processing status
   db.prepare(`
     INSERT INTO sale_receipts (id, filename, original_name, file_type, extra_pages, status, created_by)
     VALUES (?, ?, ?, ?, ?, 'processing', ?)
-  `).run(id, first.filename, first.originalname, ext, JSON.stringify(extraPages), req.user.id)
+  `).run(id, first.filename, normalizeUploadName(first.originalname), ext, JSON.stringify(extraPages), req.user.id)
 
   const createdDetail = files.length > 1
-    ? `${first.originalname || 'document'} (+${files.length - 1} page${files.length - 1 > 1 ? 's' : ''})`
-    : (first.originalname || null)
+    ? `${normalizeUploadName(first.originalname) || 'document'} (+${files.length - 1} page${files.length - 1 > 1 ? 's' : ''})`
+    : (normalizeUploadName(first.originalname) || null)
   logReceiptEvent(id, req.user?.id, 'created', createdDetail)
 
   const created = fetchSaleReceiptRow(id)
@@ -474,23 +467,18 @@ router.get('/:id/lia-matches', (req, res) => {
   if (!rec) return res.status(404).json({ error: 'Not found' })
   let items = []
   try { items = JSON.parse(rec.items || '[]') } catch {}
-  try {
-    const { lines, candidates } = matchReceiptItems({
-      items,
-      company: rec.company,
-      vendorProfileId: rec.vendor_profile_id,
-      receiptDate: rec.receipt_date,
-      excludeReceiptId: rec.id,
-    })
-    res.json({
-      lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match, blocked_by: l.blocked_by || null })),
-      candidates,
-      thresholds: { auto: LIA_AUTO_THRESHOLD, suggest: LIA_SUGGEST_THRESHOLD },
-    })
-  } catch (e) {
-    console.error(`lia-matches ${req.params.id}:`, e.message)
-    res.status(500).json({ error: e.message })
-  }
+  const { lines, candidates } = matchReceiptItems({
+    items,
+    company: rec.company,
+    vendorProfileId: rec.vendor_profile_id,
+    receiptDate: rec.receipt_date,
+    excludeReceiptId: rec.id,
+  })
+  res.json({
+    lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match, blocked_by: l.blocked_by || null })),
+    candidates,
+    thresholds: { auto: LIA_AUTO_THRESHOLD, suggest: LIA_SUGGEST_THRESHOLD },
+  })
 })
 
 router.post('/:id/push-to-qb', async (req, res) => {

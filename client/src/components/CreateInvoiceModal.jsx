@@ -1,18 +1,21 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
-import { Plus, Trash2, ExternalLink, Search, AlertTriangle, Check } from 'lucide-react'
+import { Plus, Trash2, ExternalLink, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
+import { ProductPicker } from './ProductPicker.jsx'
 import { SendPaymentLinkModal } from './SendPaymentLinkModal.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { computeCanadaTaxes } from '../lib/taxes.js'
+import { TAX_REGIMES, isCanada, suggestTaxRegime, taxesForRegime } from '../lib/taxes.js'
 
 const inputCls = 'border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
 
 import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
+import ErrorBanner from './ErrorBanner.jsx'
+import Spinner from './Spinner.jsx'
 
 // Pas de garde null historique : un montant absent s'affichait « 0,00 $ ».
-const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(Number(n) || 0, currency)
+const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(n, currency, { nullIsZero: true })
 
 export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onClose, onCreated }) {
   const { addToast } = useToast()
@@ -30,8 +33,22 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
   const [result, setResult] = useState(null) // { invoice_number, hosted_invoice_url, status, email }
   const [sendModalOpen, setSendModalOpen] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // Taxes : régime appliqué (suggéré par la province tant que l'utilisateur n'y
+  // a pas touché) + exonération explicite, qui exige toujours un motif écrit.
+  const [taxRegime, setTaxRegime] = useState(null)
+  const [taxRegimeTouched, setTaxRegimeTouched] = useState(false)
+  const [indigenousExempt, setIndigenousExempt] = useState(false)
+  const [exemptReason, setExemptReason] = useState('')
 
   useEffect(() => { setMode(initialMode) }, [initialMode, isOpen])
+
+  // Réouverture de la modale : le choix de taxes repart du calcul automatique.
+  useEffect(() => {
+    if (!isOpen) return
+    setTaxRegimeTouched(false)
+    setIndigenousExempt(false)
+    setExemptReason('')
+  }, [isOpen])
 
   // Load shipping + products + convertible soumissions in parallel
   useEffect(() => {
@@ -71,17 +88,48 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
     if (mode === 'convert' && selectedSoumissionId) loadSoumission(selectedSoumissionId)
   }, [mode, selectedSoumissionId, loadSoumission])
 
+  // Régime suggéré par l'adresse de livraison — sert de défaut et de repère
+  // quand l'utilisateur s'en écarte.
+  const shippingCountry = shipping?.country || 'Canada'
+  const suggestedRegime = useMemo(
+    () => suggestTaxRegime({ province: shipping?.province, country: shippingCountry }),
+    [shipping?.province, shippingCountry],
+  )
+  const canadian = isCanada(shippingCountry)
+
+  // Tant que l'utilisateur n'a pas choisi, on suit la province.
+  const effectiveRegime = indigenousExempt
+    ? 'none'
+    : (taxRegimeTouched && taxRegime ? taxRegime : suggestedRegime)
+
+  // Une facture canadienne sans taxe est permise, mais jamais muette : il faut
+  // un motif d'exonération écrit (statut autochtone, export…).
+  const noTaxRegime = (TAX_REGIMES[effectiveRegime]?.rates.length || 0) === 0
+  // Tant que l'adresse n'est pas chargée, « aucune taxe » n'est pas un choix :
+  // ne rien exiger de l'utilisateur (le bouton reste bloqué par ailleurs).
+  const needsExemptReason = canadian && noTaxRegime && !shippingLoading && !!shipping?.province
+  const missingExemptReason = needsExemptReason && !exemptReason.trim()
+
   // Totals + taxes
   const { subtotal, taxes, total } = useMemo(() => {
     const sub = items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0)
-    const taxList = computeCanadaTaxes({
-      province: shipping?.province,
-      country: shipping?.country || 'Canada',
-      subtotal: sub,
-    })
+    const taxList = taxesForRegime(effectiveRegime, sub)
     const taxSum = taxList.reduce((s, t) => s + (t.amount || 0), 0)
     return { subtotal: sub, taxes: taxList, total: sub + taxSum }
-  }, [items, shipping])
+  }, [items, effectiveRegime])
+
+  function toggleIndigenousExempt(checked) {
+    setIndigenousExempt(checked)
+    if (checked) {
+      setTaxRegime('none')
+      setTaxRegimeTouched(true)
+      setExemptReason(prev => prev.trim() || 'Client autochtone — exonéré (Loi sur les Indiens), livraison sur réserve. N° de certificat : ')
+    } else {
+      setTaxRegime(suggestedRegime)
+      setTaxRegimeTouched(false)
+      setExemptReason('')
+    }
+  }
 
   function updateItem(tempId, patch) {
     setItems(arr => arr.map(it => it.tempId === tempId ? { ...it, ...patch } : it))
@@ -124,6 +172,10 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
       setError('Ajoutez au moins une ligne valide (qty > 0 et description).')
       return
     }
+    if (missingExemptReason) {
+      setError("Une facture pour un client au Canada doit porter des taxes. Pour facturer sans taxe, cochez l'exonération autochtone ou inscrivez le motif d'exonération.")
+      return
+    }
     setConfirmOpen(true)
   }
 
@@ -141,6 +193,8 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
         items: cleanItems,
         shipping_province: shipping.province,
         shipping_country: shipping.country || 'Canada',
+        tax_regime: effectiveRegime,
+        tax_exempt_reason: noTaxRegime ? exemptReason.trim() || null : null,
         send_email: false,
         due_days: Number(dueDays) || 30,
       })
@@ -182,7 +236,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
 
             {mode === 'convert' && (
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Soumission</label>
+                <label className="label">Soumission</label>
                 <SearchableSelect
                   testId="invoice-soumission-select"
                   className={`${inputCls} w-full`}
@@ -192,7 +246,6 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
                   options={soumissions}
                   getOptionValue={s => s.id}
                   getOptionLabel={s => `${s.quote_number ? `#${s.quote_number} ` : ''}${s.title || '(sans titre)'} — ${s.status} — ${fmtMoney(s.subtotal || 0, s.currency || 'CAD')} — exp. ${s.expiration_date || '∞'}`}
-                  placeholder="— Choisir une soumission —"
                   emptyOption="— Choisir une soumission —"
                   searchPlaceholder="Rechercher une soumission…"
                 />
@@ -201,9 +254,9 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
 
             {/* Shipping address summary */}
             <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
-              <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Adresse de livraison (utilisée pour les taxes)</div>
+              <div className="label">Adresse de livraison (utilisée pour les taxes)</div>
               {shippingLoading ? (
-                <span className="text-slate-400">Chargement…</span>
+                <span className="text-slate-400"><Spinner size="xs" label="Chargement…" /></span>
               ) : noShippingProvince ? (
                 <div className="flex items-start gap-2 text-amber-700">
                   <AlertTriangle size={16} className="mt-0.5 flex-shrink-0" />
@@ -241,6 +294,68 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
               </div>
             </div>
 
+            {/* Taxes */}
+            <div className="rounded-lg border border-slate-200 p-3 space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <label className="text-xs font-medium text-slate-500 uppercase tracking-wide" htmlFor="invoice-tax-regime">Taxes appliquées</label>
+                {effectiveRegime !== suggestedRegime && (
+                  <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                    Différent de la suggestion ({TAX_REGIMES[suggestedRegime]?.label || '—'})
+                  </span>
+                )}
+              </div>
+              <select
+                id="invoice-tax-regime"
+                data-testid="invoice-tax-regime"
+                className={`${inputCls} w-full`}
+                value={effectiveRegime}
+                disabled={indigenousExempt}
+                onChange={e => { setTaxRegime(e.target.value); setTaxRegimeTouched(true) }}
+              >
+                {Object.entries(TAX_REGIMES).map(([key, def]) => (
+                  <option key={key} value={key}>{def.label}{key === suggestedRegime ? ' — suggéré' : ''}</option>
+                ))}
+              </select>
+
+              <label className="flex items-start gap-2 text-sm text-slate-700">
+                <input
+                  type="checkbox"
+                  data-testid="invoice-tax-indigenous-exempt"
+                  className="rounded mt-0.5"
+                  checked={indigenousExempt}
+                  onChange={e => toggleIndigenousExempt(e.target.checked)}
+                />
+                <span>
+                  Client autochtone exonéré de taxes
+                  <span className="block text-xs text-slate-400">Exonération de la Loi sur les Indiens — la livraison doit se faire sur réserve.</span>
+                </span>
+              </label>
+
+              {needsExemptReason && (
+                <div>
+                  <label className="label" htmlFor="invoice-tax-exempt-reason">
+                    Motif d'exonération (obligatoire)
+                  </label>
+                  <textarea
+                    id="invoice-tax-exempt-reason"
+                    data-testid="invoice-tax-exempt-reason"
+                    rows={2}
+                    className={`${inputCls} w-full ${missingExemptReason ? 'border-red-300' : ''}`}
+                    value={exemptReason}
+                    onChange={e => setExemptReason(e.target.value)}
+                  />
+                  {missingExemptReason && (
+                    <div className="text-xs text-red-600 mt-1">
+                      Facturation sans taxe pour un client au Canada — inscrivez le motif pour pouvoir créer la facture.
+                    </div>
+                  )}
+                </div>
+              )}
+              {noTaxRegime && !canadian && (
+                <div className="text-xs text-slate-400">Livraison hors Canada — aucune taxe canadienne ne s'applique.</div>
+              )}
+            </div>
+
             {/* Totals */}
             <div className="rounded-lg border border-slate-200 p-3 text-sm">
               <div className="flex justify-between"><span className="text-slate-600">Sous-total</span><span className="font-medium">{fmtMoney(subtotal)}</span></div>
@@ -252,15 +367,15 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
               <div className="flex justify-between mt-1 pt-2 border-t border-slate-100 font-semibold text-slate-900">
                 <span>Total</span><span>{fmtMoney(total)}</span>
               </div>
-              {taxes.length === 0 && shipping?.province && (
-                <div className="text-xs text-slate-400 mt-1">Aucune taxe ne s'applique à cette province.</div>
+              {taxes.length === 0 && (
+                <div className="text-xs text-slate-400 mt-1">Facture sans taxe.</div>
               )}
             </div>
 
             {/* Options */}
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Échéance (jours)</label>
+                <label className="label">Échéance (jours)</label>
                 <input type="number" min={0} className={`${inputCls} w-full`} value={dueDays} onChange={e => setDueDays(e.target.value)} />
               </div>
               <div className="flex items-end">
@@ -272,14 +387,15 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
             </div>
 
             {error && (
-              <div className="rounded-lg bg-red-50 border border-red-200 p-3 text-sm text-red-700">{error}</div>
+              <ErrorBanner>{error}</ErrorBanner>
             )}
 
             <div className="flex justify-end gap-2 pt-2">
               <button onClick={onClose} className="px-3 py-2 text-sm text-slate-700 hover:bg-slate-100 rounded-lg">Annuler</button>
               <button
                 onClick={handleSubmit}
-                disabled={submitting || noShippingProvince || shippingLoading}
+                disabled={submitting || noShippingProvince || shippingLoading || missingExemptReason}
+                title={missingExemptReason ? "Inscrivez le motif d'exonération pour facturer un client canadien sans taxe" : ''}
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50"
               >
                 {submitting ? 'Création…' : 'Créer la facture'}
@@ -296,6 +412,8 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
         total={total}
         sendEmail={sendEmail}
         itemCount={cleanItems.length}
+        taxLabel={TAX_REGIMES[effectiveRegime]?.label || '—'}
+        exemptReason={noTaxRegime ? exemptReason.trim() : ''}
       />
 
       <SendPaymentLinkModal
@@ -313,7 +431,7 @@ export function CreateInvoiceModal({ companyId, initialMode = 'new', isOpen, onC
 // Modale de confirmation des side effects avant création de la facture Stripe.
 // Liste explicitement ce qui va se produire (création dans Stripe + envoi email éventuel)
 // conformément à la règle « confirmation des side effects » de CLAUDE.md.
-function ConfirmCreateModal({ isOpen, onClose, onConfirm, total, sendEmail, itemCount }) {
+function ConfirmCreateModal({ isOpen, onClose, onConfirm, total, sendEmail, itemCount, taxLabel, exemptReason }) {
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Confirmer la création de la facture" size="md">
       <div className="space-y-4" data-testid="confirm-create-invoice">
@@ -327,6 +445,10 @@ function ConfirmCreateModal({ isOpen, onClose, onConfirm, total, sendEmail, item
               Une facture <span className="font-medium">Stripe</span> de{' '}
               <span className="font-semibold">{fmtMoney(total)}</span>{' '}
               (taxes incluses, {itemCount} ligne{itemCount > 1 ? 's' : ''}) sera créée dans Stripe.
+              <span className="block text-xs text-slate-500 mt-0.5">Taxes : {taxLabel}</span>
+              {exemptReason && (
+                <span className="block text-xs text-amber-700 mt-0.5">Exonération : {exemptReason}</span>
+              )}
             </span>
           </li>
           {sendEmail && (
@@ -378,63 +500,10 @@ function ItemRow({ item, products, onChange, onPickProduct, onRemove }) {
       <div className="col-span-5">
         <ProductPicker products={products} value={item.product_id} description={item.description} onPick={onPickProduct} onChangeDescription={d => onChange({ description: d })} />
       </div>
-      <input type="number" min={0} step={0.01} className={`${inputCls} col-span-2`} value={item.qty} onChange={e => onChange({ qty: e.target.value })} placeholder="Qté" />
-      <input type="number" min={0} step={0.01} className={`${inputCls} col-span-2`} value={item.unit_price} onChange={e => onChange({ unit_price: e.target.value })} placeholder="Prix unit." />
+      <input type="number" min={0} step={0.01} className={`${inputCls} col-span-2`} value={item.qty} onChange={e => onChange({ qty: e.target.value })} />
+      <input type="number" min={0} step={0.01} className={`${inputCls} col-span-2`} value={item.unit_price} onChange={e => onChange({ unit_price: e.target.value })} />
       <div className="col-span-2 text-right pt-1.5 text-sm text-slate-700">{fmtMoney((Number(item.qty) || 0) * (Number(item.unit_price) || 0))}</div>
       <button onClick={onRemove} className="col-span-1 p-1.5 text-slate-300 hover:text-red-500" title="Retirer"><Trash2 size={14} /></button>
-    </div>
-  )
-}
-
-function ProductPicker({ products, value, description, onPick, onChangeDescription }) {
-  const [open, setOpen] = useState(false)
-  const [q, setQ] = useState('')
-  const filtered = useMemo(() => {
-    const qq = q.trim().toLowerCase()
-    if (!qq) return products.slice(0, 50)
-    return products.filter(p =>
-      (p.sku || '').toLowerCase().includes(qq) ||
-      (p.name_fr || '').toLowerCase().includes(qq) ||
-      (p.name_en || '').toLowerCase().includes(qq)
-    ).slice(0, 50)
-  }, [products, q])
-  const selected = useMemo(() => products.find(p => p.id === value), [products, value])
-
-  return (
-    <div className="relative">
-      <input
-        value={description}
-        onChange={e => onChangeDescription(e.target.value)}
-        onFocus={() => setOpen(true)}
-        className={`${inputCls} w-full`}
-        placeholder={selected?.sku ? `${selected.sku} — ${selected.name_fr || ''}` : 'Description ou produit…'}
-      />
-      {open && (
-        <div className="absolute z-30 left-0 right-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-72 flex flex-col" onMouseLeave={() => setOpen(false)}>
-          <div className="p-2 border-b border-slate-100 flex items-center gap-1.5">
-            <Search size={14} className="text-slate-400" />
-            <input autoFocus value={q} onChange={e => setQ(e.target.value)} className="flex-1 text-sm focus:outline-none" placeholder="Rechercher SKU ou nom…" />
-          </div>
-          <div className="overflow-y-auto">
-            {filtered.length === 0 ? (
-              <div className="p-3 text-xs text-slate-400">Aucun produit</div>
-            ) : filtered.map(p => (
-              <button
-                key={p.id}
-                type="button"
-                onClick={() => { onPick(p); setOpen(false); setQ('') }}
-                className={`w-full text-left px-3 py-2 text-sm hover:bg-brand-50 flex items-start gap-2 ${value === p.id ? 'bg-brand-50' : ''}`}
-              >
-                <Check size={14} className={`mt-0.5 ${value === p.id ? 'text-brand-600' : 'text-transparent'}`} />
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-slate-900 truncate">{p.name_fr || p.name_en}</div>
-                  <div className="text-xs text-slate-500 font-mono">{p.sku} · {fmtMoney(p.price_cad)}</div>
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -455,7 +524,7 @@ function SuccessView({ result, onClose }) {
       </div>
       {result.pay_url && (
         <div className="rounded-lg border border-slate-200 p-3 text-sm">
-          <div className="text-xs font-medium text-slate-500 uppercase tracking-wide mb-1">Lien de paiement permanent</div>
+          <div className="label">Lien de paiement permanent</div>
           <a href={result.pay_url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline break-all font-mono text-xs">{result.pay_url}</a>
           <div className="text-xs text-slate-400 mt-1">Ce lien reste valide pour toujours — il génère une nouvelle session Stripe Checkout au besoin.</div>
         </div>

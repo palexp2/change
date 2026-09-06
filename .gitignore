@@ -2,6 +2,10 @@ node_modules/
 client/node_modules/
 server/node_modules/
 client/dist/
+# Dossier de build temporaire et build précédent — deploy.sh construit dans
+# .dist-build puis bascule par renommage, en gardant l'ancien un cycle.
+client/.dist-build/
+client/dist.prev/
 *.db
 *.db-shm
 *.db-wal
@@ -15,6 +19,7 @@ deploy.log
 
 # Agent autonome — fichiers transitoires (le store .json reste versionné)
 .agent-pid
+.agent-pid-*
 .agent-qpid-*
 .agent-exec-*
 agent-tasks.json.tmp
@@ -28,8 +33,9 @@ server/.env*
 
 # Artéfacts temporaires de mise au point (jamais versionnés)
 _tmp_shot.js
-e2e/chk-tmp.cjs
-e2e/test-results/
 server/logs-openai-check.log
 server/src/scripts/tmp-qb-check.js
 .last-deploy-commit
+# Empreintes des sources du dernier déploiement — deploy.sh s'en sert pour ne
+# rebuilder/redémarrer que ce qui a changé.
+.deploy-fingerprints

@@ -1,11 +1,13 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { importTimesheetsForPaie } from '../services/paieTimesheetImport.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { writeBackRecord } from '../services/airtableWriteback.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
+import { readRelation } from '../services/customFieldsView.js'
+import { parsePage } from '../utils/pagination.js'
 
 function myEmployeeId(userId) {
   const row = db.prepare('SELECT employee_id FROM users WHERE id = ?').get(userId)
@@ -40,7 +42,7 @@ function buildPaieListRow(id) {
       (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id) AS total_regular_hours,
       (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id) AS total_regular_amount,
       (SELECT MAX(debited_date) FROM paie_items WHERE paie_id = p.id) AS debited_date
-    FROM paies p
+    FROM ${readRelation('paies')} p
     WHERE p.id = ?
   `).get(id)
 }
@@ -56,9 +58,8 @@ const ALLOWED = [
 ]
 
 router.get('/', (req, res) => {
-  const { q, page = 1, limit = 100 } = req.query
-  const limitVal = parseInt(limit)
-  const offset = (parseInt(page) - 1) * limitVal
+  const { q } = req.query
+  const { page, limitVal, offset } = parsePage(req.query, 100)
   const hr = isHROrAdmin(req.user)
   const empId = hr ? null : myEmployeeId(req.user.id)
   if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
@@ -76,7 +77,7 @@ router.get('/', (req, res) => {
   }
   const where = conditions.length ? 'WHERE ' + conditions.join(' AND ') : ''
 
-  const total = db.prepare(`SELECT COUNT(*) c FROM paies p ${where}`).get(...params).c
+  const total = db.prepare(`SELECT COUNT(*) c FROM ${readRelation('paies')} p ${where}`).get(...params).c
 
   // Pour les non-RH, les agrégats (total_regular_hours, items_count, etc.) sont
   // limités à leur propre paie_item afin de ne pas exposer les volumes globaux.
@@ -88,7 +89,7 @@ router.get('/', (req, res) => {
       (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_hours,
       (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_amount,
       (SELECT MAX(debited_date) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS debited_date
-    FROM paies p
+    FROM ${readRelation('paies')} p
     ${where}
     ORDER BY p.period_end DESC, p.number DESC
     LIMIT ? OFFSET ?
@@ -102,7 +103,7 @@ router.get('/', (req, res) => {
 })
 
 router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM paies WHERE id=?').get(req.params.id)
+  const row = db.prepare(`SELECT * FROM ${readRelation('paies')} WHERE id=?`).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   const hr = isHROrAdmin(req.user)
   const empId = hr ? null : myEmployeeId(req.user.id)
@@ -146,7 +147,7 @@ router.post('/', ensureHR, (req, res) => {
   if (!req.body.period_end) return res.status(400).json({ error: 'Fin de période requise' })
   const holidayError = validateNbHolidayDays(req.body)
   if (holidayError) return res.status(400).json({ error: holidayError })
-  const id = randomUUID()
+  const id = newRecordId()
   const cols = ['id', ...ALLOWED.filter(k => k in req.body)]
   const vals = [id, ...ALLOWED.filter(k => k in req.body).map(k => req.body[k] ?? null)]
   const placeholders = cols.map(() => '?').join(',')
@@ -190,7 +191,7 @@ router.post('/', ensureHR, (req, res) => {
       }
 
       insertItem.run(
-        randomUUID(), id, emp.id, startDate, hourlyRate, regularHours, holiday_1_20
+        newRecordId(), id, emp.id, startDate, hourlyRate, regularHours, holiday_1_20
       )
       created++
     }
@@ -207,7 +208,7 @@ router.post('/', ensureHR, (req, res) => {
     console.error('Import feuilles de temps (POST /paies):', e.message)
   }
 
-  const paie = db.prepare('SELECT * FROM paies WHERE id=?').get(id)
+  const paie = db.prepare(`SELECT * FROM ${readRelation('paies')} WHERE id=?`).get(id)
   emitEntity('paie', 'created', id, buildPaieListRow(id), req.user?.id)
 
   // Push à Airtable en fire-and-forget (ne pas bloquer la réponse)
@@ -224,14 +225,9 @@ router.post('/', ensureHR, (req, res) => {
 router.post('/:id/import-timesheets', ensureHR, (req, res) => {
   const paie = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!paie) return res.status(404).json({ error: 'Not found' })
-  try {
-    const result = importTimesheetsForPaie(req.params.id)
-    emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
-    res.json(result)
-  } catch (e) {
-    console.error('Import feuilles de temps:', e)
-    res.status(500).json({ error: e.message })
-  }
+  const result = importTimesheetsForPaie(req.params.id)
+  emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
+  res.json(result)
 })
 
 router.patch('/:id', ensureHR, (req, res) => {
@@ -250,7 +246,7 @@ router.patch('/:id', ensureHR, (req, res) => {
     }
   }
   db.prepare(`UPDATE paies SET ${fields.join(',')} WHERE id=?`).run(...params, req.params.id)
-  const updated = db.prepare('SELECT * FROM paies WHERE id=?').get(req.params.id)
+  const updated = db.prepare(`SELECT * FROM ${readRelation('paies')} WHERE id=?`).get(req.params.id)
   emitEntity('paie', 'updated', req.params.id, buildPaieListRow(req.params.id), req.user?.id)
 
   // Push à Airtable en fire-and-forget
@@ -277,21 +273,15 @@ router.delete('/:id', ensureHR, (req, res) => {
     `).run(paieId)
     db.prepare('DELETE FROM paies WHERE id=?').run(paieId)
   })
-  try {
-    tx(req.params.id)
-    emitEntity('paie', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
-    res.json({ ok: true })
-  } catch (err) {
-    console.error('paies DELETE failed', { id: req.params.id, error: err.message })
-    res.status(500).json({ error: err.message })
-  }
+  tx(req.params.id)
+  emitEntity('paie', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
+  res.json({ ok: true })
 })
 
 // Items list (for the paie_items table view)
 router.get('/items/list', (req, res) => {
-  const { q, page = 1, limit = 100 } = req.query
-  const limitVal = parseInt(limit)
-  const offset = (parseInt(page) - 1) * limitVal
+  const { q } = req.query
+  const { page, limitVal, offset } = parsePage(req.query, 100)
   const hr = isHROrAdmin(req.user)
   const empId = hr ? null : myEmployeeId(req.user.id)
   if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
@@ -434,6 +424,20 @@ router.post('/salary-expense/reconcile', ensureHR, async (req, res) => {
   }
 })
 
+// Le débit de cette paie au relevé bancaire (montant + date à proposer).
+// `match` = la transaction retenue, `candidates` = tous les mouvements qui
+// portent le libellé quand le choix n'est pas évident, `stale_since` = date du
+// dernier mouvement connu, pour distinguer « pas encore débitée » de « la
+// banque ne nous parle plus ».
+router.get('/:id/salary-expense/bank-debit', ensureHR, async (req, res) => {
+  try {
+    const { findPaieBankDebit } = await import('../services/paieSalaryExpense.js')
+    res.json(findPaieBankDebit(req.params.id))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
 // Publication de la dépense sur QuickBooks (idempotent par paie).
 router.post('/:id/salary-expense/push', ensureHR, async (req, res) => {
   try {
@@ -471,7 +475,17 @@ router.post('/aga-repartition/preview', ensureHR, async (req, res) => {
 router.post('/aga-repartition/push', ensureHR, async (req, res) => {
   try {
     const { pushAgaRepartition } = await import('../services/paieRepartition.js')
-    res.json(await pushAgaRepartition(req.body?.amount, req.body?.txn_date || null))
+    res.json(await pushAgaRepartition(req.body?.amount, req.body?.txn_date || null, { bankTxnId: req.body?.bank_txn_id || null }))
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+// Le prélèvement AGA du mois au relevé bancaire (montant + date à proposer).
+router.get('/aga-repartition/bank-debit', ensureHR, async (req, res) => {
+  try {
+    const { findAgaBankDebit } = await import('../services/paieRepartition.js')
+    res.json(findAgaBankDebit())
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

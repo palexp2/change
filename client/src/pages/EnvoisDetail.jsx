@@ -1,260 +1,181 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Pencil, Printer, Download, Package, Mail, XCircle, FileText, X, Trash2, RefreshCw, AlertTriangle, Truck } from 'lucide-react'
+import { ArrowLeft, Printer, Package, Mail, FileText, Trash2, RefreshCw, AlertTriangle, Truck, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Modal } from '../components/Modal.jsx'
+import EmailComposerModal from '../components/EmailComposerModal.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
-import { useUndoSend } from '../components/UndoSendProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { Badge } from '../components/Badge.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
+import NovoxpressPickupDetails from '../components/NovoxpressPickupDetails.jsx'
+import AttachmentPreview from '../components/AttachmentPreview.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
+import { trackingUrl } from '../lib/trackingUrl.js'
+import { shipmentTitle } from '../lib/shipmentLabel.js'
 
 
-function fmtCurrency(v) {
-  if (v == null) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(v)
+const FULFILLMENT_COLORS = {
+  'À prélever': 'slate',
+  'Prélevé': 'emerald',
+  "Dans l'envoi": 'indigo',
+  'Envoyé': 'green',
+  'En attente': 'amber',
 }
 
-function SendTrackingModal({ envoi, onClose, onSent }) {
-  const defaultEmail = envoi.address_contact_email || ''
-  const [to, setTo] = useState(defaultEmail)
-  const [sending, setSending] = useState(false)
-  const [error, setError] = useState('')
-  const confirm = useConfirm()
-  const scheduleSend = useUndoSend()
-  const { addToast } = useToast()
+// Colonnes du DataTable « Articles » de la fiche envoi. Méta partagée
+// (tableDefs.shipment_items) + renders spécifiques à la page. Lecture seule :
+// les lignes s'éditent sur la fiche commande.
+const ITEM_RENDERS = {
+  // Colonne « Produit » : le champ est `product_id` (comme sur la fiche commande),
+  // affiché par le nom du produit, cliquable vers sa fiche.
+  product_id: item => (item.product_id
+    ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="font-medium text-brand-600 hover:underline">{item.product_name || 'Produit'}</Link>
+    : <span className="font-medium text-slate-900">{item.product_name || '—'}</span>),
+  sku: item => item.sku
+    ? <span className="font-mono text-xs text-slate-500">{item.sku}</span>
+    : <span className="text-slate-300">—</span>,
+  line_weight_lbs: item => (item.line_weight_lbs
+    ? <span className="tabular-nums">{item.line_weight_lbs.toFixed(2)}</span>
+    : <span className="text-slate-300">—</span>),
+  weight_lbs: item => (item.weight_lbs
+    ? <span className="tabular-nums">{Number(item.weight_lbs).toFixed(2)}</span>
+    : <span className="text-slate-300">—</span>),
+  fulfillment_status: item => (item.fulfillment_status
+    ? <Badge color={FULFILLMENT_COLORS[item.fulfillment_status] || 'gray'}>{item.fulfillment_status}</Badge>
+    : <span className="text-slate-300">—</span>),
+}
+const ITEM_COLUMNS = TABLE_COLUMN_META.shipment_items.map(meta => ({ ...meta, render: ITEM_RENDERS[meta.id] }))
 
-  async function handleSend() {
-    const cleanTo = String(to || '').trim()
-    if (!cleanTo || !cleanTo.includes('@')) { setError('Adresse courriel invalide'); return }
-    setError('')
-
-    // Confirmation explicite du side effect (envoi d'un courriel client-facing).
-    setSending(true)
-    const ok = await confirm({
-      title: "Confirmer l'envoi du courriel",
-      message: (
-        <>Un courriel contenant le numéro de suivi <strong>{envoi.tracking_number}</strong> sera envoyé à <strong>{cleanTo}</strong>.</>
-      ),
-      confirmLabel: 'Envoyer',
-      danger: false,
-    })
-    if (!ok) { setSending(false); return }
-
-    // On ferme la modale et on planifie l'envoi avec une fenêtre d'annulation de 10 s.
-    onClose()
-    scheduleSend({
-      message: `Envoi du suivi à ${cleanTo}…`,
-      onRun: async () => {
-        try {
-          await api.shipments.sendTracking(envoi.id, cleanTo)
-          addToast({ message: `Courriel de suivi envoyé à ${cleanTo}`, type: 'success' })
-          onSent?.()
-        } catch (e) {
-          addToast({ message: e.message || "Erreur lors de l'envoi", type: 'error' })
-        }
-      },
-      onCancel: () => addToast({ message: 'Envoi annulé', type: 'info' }),
-    })
-  }
-
-  const contactName = [envoi.address_contact_first_name, envoi.address_contact_last_name].filter(Boolean).join(' ')
-
+// Éditeurs en ligne de la carte « Informations » : pas de modale, pas de bouton
+// « Enregistrer » — la valeur part au blur (règle autosave du CLAUDE.md).
+function InlineText({ value, saving, onSave, className = '', testId }) {
+  const [local, setLocal] = useState(value ?? '')
+  useEffect(() => { setLocal(value ?? '') }, [value])
   return (
-    <div className="space-y-4">
-      <p className="text-sm text-slate-600">
-        Un courriel contenant le numéro de suivi <span className="font-mono font-semibold text-slate-900">{envoi.tracking_number}</span> sera envoyé au destinataire.
-      </p>
-
-      <div>
-        <label className="label">Destinataire</label>
-        {contactName && (
-          <p className="text-xs text-slate-500 mb-1">{contactName}</p>
-        )}
-        <input
-          type="email"
-          className="input"
-          value={to}
-          onChange={e => setTo(e.target.value)}
-          placeholder="client@exemple.com"
-          autoFocus={!defaultEmail}
-        />
-        {!defaultEmail && (
-          <p className="text-xs text-amber-600 mt-1">Aucun courriel trouvé pour le contact de l'adresse de livraison.</p>
-        )}
-      </div>
-
-      {error && <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3">{error}</p>}
-
-      <div className="flex justify-end gap-3 pt-2">
-        <button onClick={onClose} className="btn-secondary">Annuler</button>
-        <button onClick={handleSend} disabled={sending || !to} className="btn-primary flex items-center gap-1.5">
-          {sending
-            ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Envoi…</>
-            : <><Mail size={14} /> Envoyer</>
-          }
-        </button>
-      </div>
-    </div>
+    <input
+      type="text"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => { if (e.target.value !== (value ?? '')) onSave(e.target.value) }}
+      className={`input text-sm w-full ${className}`}
+      disabled={saving}
+      data-testid={testId}
+    />
   )
 }
 
-
-function EditEnvoiModal({ envoi, adresses, onSave, onDelete, onClose }) {
-  const [form, setForm] = useState({
-    tracking_number: envoi.tracking_number || '',
-    carrier: envoi.carrier || '',
-    shipped_at: envoi.shipped_at ? envoi.shipped_at.slice(0, 10) : '',
-    notes: envoi.notes || '',
-    address_id: envoi.address_id || '',
-  })
-  const [fieldSaving, setFieldSaving] = useState({})
-  const [error, setError] = useState('')
-  const [deleting, setDeleting] = useState(false)
-
-  async function saveField(key, value) {
-    setForm(f => ({ ...f, [key]: value }))
-    setError('')
-    setFieldSaving(s => ({ ...s, [key]: true }))
-    try {
-      await onSave({ [key]: value === '' ? null : value })
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setFieldSaving(s => ({ ...s, [key]: false }))
-    }
-  }
-
-  const savingLabel = (k) => fieldSaving[k] ? ' (sauvegarde...)' : ''
-
+function InlineTextarea({ value, saving, onSave, testId }) {
+  const [local, setLocal] = useState(value ?? '')
+  const ref = useRef(null)
+  useEffect(() => { setLocal(value ?? '') }, [value])
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [local])
   return (
-    <div className="space-y-4">
-      <div>
-        <label className="label">Transporteur{savingLabel('carrier')}</label>
-        <input
-          type="text"
-          value={form.carrier}
-          onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))}
-          onBlur={e => saveField('carrier', e.target.value)}
-          className="input"
-          placeholder="ex. Purolator, FedEx, UPS…"
-        />
-      </div>
-      <div>
-        <label className="label">N° de suivi{savingLabel('tracking_number')}</label>
-        <input
-          type="text"
-          value={form.tracking_number}
-          onChange={e => setForm(f => ({ ...f, tracking_number: e.target.value }))}
-          onBlur={e => saveField('tracking_number', e.target.value)}
-          className="input"
-        />
-      </div>
-      <div>
-        <label className="label">Envoyé le{savingLabel('shipped_at')}</label>
-        <input
-          type="date"
-          value={form.shipped_at}
-          onChange={e => saveField('shipped_at', e.target.value)}
-          className="input"
-        />
-      </div>
-      <div>
-        <label className="label">Adresse de livraison{savingLabel('address_id')}</label>
-        <LinkedRecordField
-          name="address_id"
-          value={form.address_id}
-          options={adresses}
-          labelFn={fmtAdresse}
-          placeholder="Adresse"
-          onChange={v => saveField('address_id', v)}
-        />
-      </div>
-      <div>
-        <label className="label">Notes{savingLabel('notes')}</label>
-        <textarea
-          value={form.notes}
-          onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-          onBlur={e => saveField('notes', e.target.value)}
-          className="input"
-          rows={3}
-        />
-      </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-between items-center gap-3 pt-2">
-        <button
-          type="button"
-          onClick={async () => {
-            setDeleting(true)
-            try { await onDelete() }
-            catch (err) { setError(err.message); setDeleting(false) }
-          }}
-          disabled={deleting}
-          className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 hover:bg-red-50 px-3 py-1.5 rounded-lg disabled:opacity-50"
-        >
-          <Trash2 size={14} /> {deleting ? 'Suppression…' : 'Supprimer'}
-        </button>
-        <button type="button" onClick={onClose} className="btn-primary">Fermer</button>
-      </div>
-    </div>
+    <textarea
+      ref={ref}
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => { if (e.target.value !== (value ?? '')) onSave(e.target.value) }}
+      className="input text-sm w-full resize-none overflow-hidden"
+      rows={2}
+      disabled={saving}
+      data-testid={testId}
+    />
   )
 }
 
-export default function EnvoisDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
+// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
+// après suppression du record.
+export default function EnvoisDetail({ recordId, embedded = true, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
   const { record: envoi, setRecord: setEnvoi, loading, loadError, reload: load } =
     useDetailRecord(() => api.shipments.get(id), [id], { clearOnError: true })
   const [adresses, setAdresses] = useState([])
-  const [showEdit, setShowEdit] = useState(false)
+  const [commandes, setCommandes] = useState([])
+  const [fieldSaving, setFieldSaving] = useState({})
+  const { status: saveState, save } = useSaveStatus()
   const [showLabel, setShowLabel] = useState(false)
   const [showPickup, setShowPickup] = useState(false)
+  const [showPickupDetails, setShowPickupDetails] = useState(false)
   const [showSendTracking, setShowSendTracking] = useState(false)
   const [cancellingPickup, setCancellingPickup] = useState(false)
   const [novoxConfigured, setNovoxConfigured] = useState(false)
-  const [purolatorConfigured, setPurolatorConfigured] = useState(false)
   const [generatingPdf, setGeneratingPdf] = useState(false)
-  const [showPdf, setShowPdf] = useState(false)
   const [retryingPdf, setRetryingPdf] = useState(false)
-  const [refreshingTracking, setRefreshingTracking] = useState(false)
+  // La fiche pointe un PDF d'étiquette, mais le fichier n'est plus sur le
+  // serveur (vieux envois importés) : la vignette nous le dit, on retombe alors
+  // sur le même parcours que « PDF jamais téléchargé ».
+  const [labelFileMissing, setLabelFileMissing] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
+  useEffect(() => { setLabelFileMissing(false) }, [id])
+
   useEffect(() => {
     api.adresses.lookup().then(setAdresses).catch(() => {})
+    api.orders.lookup().then(setCommandes).catch(() => {})
     api.novoxpress.status().then(r => setNovoxConfigured(!!r.configured)).catch(() => {})
-    api.purolator.status().then(r => setPurolatorConfigured(!!r.configured)).catch(() => {})
   }, [])
 
   useRealtimeChannel(id ? `shipment:${id}` : null, (msg) => {
     if (msg.type === 'shipment:updated') setEnvoi(e => e ? { ...e, ...msg.payload } : e)
-    else if (msg.type === 'shipment:deleted') navigate('/envois')
+    else if (msg.type === 'shipment:deleted') { if (embedded) onClose?.(); else navigate('/envois') }
   })
 
+  // Retourne true si le ramassage a bien été annulé, pour que l'appelant
+  // (modale de détails) puisse se refermer.
   async function handleCancelPickup() {
-    if (!(await confirm('Annuler le ramassage planifié ?'))) return
+    if (!(await confirm('Annuler le ramassage planifié ?'))) return false
     setCancellingPickup(true)
     try {
       await api.novoxpress.cancelPickup(id)
       load()
+      return true
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
+      return false
     } finally {
       setCancellingPickup(false)
     }
   }
 
-  async function handleUpdate(form) {
-    await api.shipments.update(id, form)
-    load()
+  // Autosave d'un champ de la carte « Informations ». Le PATCH renvoie la ligne
+  // complète (adresse jointe comprise) : on la fusionne plutôt que de recharger,
+  // pour ne pas faire clignoter la fiche à chaque blur.
+  async function saveField(key, value) {
+    const clean = value === '' ? null : value
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      await save(async () => {
+        const updated = await api.shipments.update(id, { [key]: clean })
+        setEnvoi(e => (e ? { ...e, ...updated } : e))
+      })
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
   }
 
   async function handleDelete() {
@@ -268,16 +189,21 @@ export default function EnvoisDetail() {
     if (!ok) return
     await api.shipments.delete(id)
     addToast({ message: 'Envoi supprimé', type: 'success' })
-    navigate('/envois')
+    if (embedded) onClose?.()
+    else navigate('/envois')
   }
 
   // Re-télécharge le PDF d'une étiquette déjà achetée (achat OK mais PDF non
-  // récupéré, ex. 403 du CDN). Ne re-facture pas — réutilise le shipment Novoxpress.
+  // récupéré, ex. 403 du CDN). Ne re-facture pas — réutilise l'expédition déjà
+  // créée chez Novoxpress.
   async function handleRetryLabelPdf() {
     setRetryingPdf(true)
     try {
       await api.novoxpress.retryLabelPdf(id)
       addToast({ message: 'Étiquette PDF récupérée', type: 'success' })
+      // Le nom du fichier ne change pas : sans ce reset, la vignette resterait
+      // masquée alors que le PDF est de nouveau là.
+      setLabelFileMissing(false)
       load()
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
@@ -286,74 +212,101 @@ export default function EnvoisDetail() {
     }
   }
 
-  // Rafraîchit le statut du colis via la Tracking API UPS et le stocke sur
-  // l'envoi. Erreur UPS → toast avec le message brut de l'API (jamais muet).
-  async function handleRefreshTracking() {
-    setRefreshingTracking(true)
-    try {
-      const t = await api.ups.trackShipment(id)
-      addToast({ message: t.status ? `Statut UPS : ${t.status}` : 'UPS n\'a retourné aucun statut pour ce suivi', type: t.status ? 'success' : 'info' })
-      load()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setRefreshingTracking(false)
-    }
-  }
-
   async function handleGenerateBonLivraison() {
     setGeneratingPdf(true)
     try { await api.shipments.generateBonLivraison(id); await load() }
+    catch (e) { addToast({ message: e.message || 'Génération impossible', type: 'error' }) }
     finally { setGeneratingPdf(false) }
   }
 
-  if (loading) {
-    return (
-      <Layout>
-        <Spinner center />
-      </Layout>
-    )
-  }
-  if (loadError && !envoi) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!envoi) return <Layout><div className="p-6 text-slate-500">Envoi introuvable.</div></Layout>
+  if (loading) return shell(<Spinner center />)
+  if (loadError && !envoi) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!envoi) return shell(<div className="p-6 text-slate-500">Envoi introuvable.</div>)
 
-  return (
-    <Layout>
-      <div className="p-6 max-w-5xl mx-auto">
+  // Étiquette achetée chez Novoxpress mais PDF pas récupéré (403 du CDN) ou
+  // fichier disparu du serveur : dans les deux cas, il est re-téléchargeable.
+  const missingLabelPdf = !envoi.label_pdf_path || labelFileMissing
+  const pendingPdfLabel = missingLabelPdf && novoxConfigured && envoi.novoxpress_shipment_id
+
+  // Suivi sur le site du transporteur (null si transporteur inconnu / pas de numéro).
+  const trackingLink = trackingUrl(envoi.carrier, envoi.tracking_number)
+
+  // Lignes du DataTable Articles : poids de ligne pré-calculé pour qu'il soit
+  // triable / filtrable / totalisable comme un vrai champ.
+  const itemRows = (envoi.order_items || []).map(item => ({
+    ...item,
+    line_weight_lbs: (item.weight_lbs || 0) * (item.qty || 0),
+  }))
+  const totalWeight = itemRows.reduce((sum, item) => sum + item.line_weight_lbs, 0)
+
+  return shell(
+    <>
+      <div className={embedded ? 'p-6' : 'p-6 max-w-5xl mx-auto'}>
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
-          <button
-            onClick={() => navigate('/envois')}
-            className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
-          >
-            <ArrowLeft size={18} />
-          </button>
+          {!embedded && (
+            <button
+              onClick={() => navigate('/envois')}
+              className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
+            >
+              <ArrowLeft size={18} />
+            </button>
+          )}
           <div className="flex-1">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">
-                {envoi.tracking_number ? `Envoi ${envoi.tracking_number}` : 'Envoi'}
-              </h1>
+              {/* En panneau, l'en-tête du drawer porte déjà le titre : on ne le
+                  répète pas. Hors panneau, l'envoi se nomme par son # d'envoi. */}
+              {!embedded && <PageTitle>{shipmentTitle(envoi)}</PageTitle>}
+              <SaveStatus status={saveState} />
             </div>
             {envoi.company_name && envoi.company_id && (
               <div className="text-sm text-slate-500 mt-1">
-                <Link to={`/companies/${envoi.company_id}`} className="text-brand-600 hover:underline">
-                  {envoi.company_name}
-                </Link>
+                <LinkedRecordField
+                  name="company_id"
+                  value={envoi.company_id}
+                  options={[{ id: envoi.company_id, name: envoi.company_name }]}
+                  getHref={c => `/companies/${c.id}`}
+                  disabled
+                  allowClear={false}
+                />
               </div>
             )}
           </div>
           <div className="flex items-center gap-2">
+            {/* Suivi chez le transporteur : seulement si on sait construire
+                l'URL à partir du libellé du transporteur (sinon le numéro
+                reste consultable dans la carte « Informations »). */}
+            {trackingLink && (
+              <a
+                href={trackingLink}
+                target="_blank"
+                rel="noreferrer"
+                className="btn-secondary flex items-center gap-1.5 text-sm"
+                title={`Suivre ${envoi.tracking_number} sur le site de ${envoi.carrier}`}
+                data-testid="envoi-track-link"
+              >
+                <Truck size={14} /> Suivre l'envoi
+                <ExternalLink size={12} className="text-slate-400" />
+              </a>
+            )}
             {/* Étiquette déjà achetée mais PDF non récupéré (ex. 403 du CDN) :
                 proposer la récupération du PDF, PAS un nouvel achat. */}
-            {novoxConfigured && envoi.novoxpress_shipment_id && !envoi.label_pdf_path ? (
-              <button onClick={handleRetryLabelPdf} disabled={retryingPdf} className="btn-primary flex items-center gap-1.5 text-sm">
+            {pendingPdfLabel ? (
+              <button
+                onClick={() => handleRetryLabelPdf()}
+                disabled={retryingPdf}
+                className="btn-primary flex items-center gap-1.5 text-sm"
+                data-testid="retry-label-pdf"
+              >
                 <RefreshCw size={14} className={retryingPdf ? 'animate-spin' : ''} />
                 {retryingPdf ? 'Récupération…' : 'Récupérer le PDF'}
               </button>
-            ) : (novoxConfigured || purolatorConfigured) && envoi.address_id && (
+            ) : novoxConfigured && envoi.address_id && !envoi.label_pdf_path && (
+              /* Pas de bouton une fois l'étiquette achetée : la modale est un
+                 achat (elle refacture), et le PDF déjà obtenu s'ouvre depuis la
+                 vignette « Étiquette » plus bas dans la fiche. */
               <button onClick={() => setShowLabel(true)} className="btn-primary flex items-center gap-1.5 text-sm">
-                <Printer size={14} />
-                {envoi.label_pdf_path ? 'Réimprimer' : 'Créer étiquette'}
+                <Printer size={14} /> Créer étiquette
               </button>
             )}
             {novoxConfigured && envoi.novoxpress_shipment_id && !envoi.novoxpress_pickup_id && (
@@ -366,239 +319,260 @@ export default function EnvoisDetail() {
                 <Mail size={14} /> Envoyer le suivi
               </button>
             )}
-            {envoi.tracking_number && (
-              <button
-                onClick={handleRefreshTracking}
-                disabled={refreshingTracking}
-                className="btn-secondary flex items-center gap-1.5 text-sm"
-                data-testid="ups-refresh-tracking"
-              >
-                <Truck size={14} className={refreshingTracking ? 'animate-pulse' : ''} />
-                {refreshingTracking ? 'Suivi UPS…' : 'Rafraîchir le suivi UPS'}
-              </button>
-            )}
-            <button onClick={handleGenerateBonLivraison} disabled={generatingPdf} className="btn-secondary flex items-center gap-1.5 text-sm">
-              <FileText size={14} />
-              {generatingPdf ? 'Génération...' : envoi.bon_livraison_path ? 'Régénérer BL' : 'Bon de livraison'}
-            </button>
-            <button onClick={() => setShowEdit(true)} className="btn-secondary flex items-center gap-1.5">
-              <Pencil size={14} /> Modifier
+            {/* Plus de bouton « Bon de livraison » ici : le BL est une pièce
+                jointe de la fiche (comme l'étiquette) — la vignette et la
+                génération vivent dans le champ « Bon de livraison ». */}
+            {/* Plus de bouton « Modifier » : les champs de la fiche s'éditent
+                directement en ligne. Reste la suppression, qui n'est pas une
+                édition de champ. */}
+            <button
+              onClick={handleDelete}
+              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+              title="Supprimer l'envoi"
+              aria-label="Supprimer l'envoi"
+              data-testid="envoi-delete"
+            >
+              <Trash2 size={16} />
             </button>
           </div>
         </div>
 
-        {/* Informations */}
-        <div className="card p-5 mb-4">
-          <h2 className="font-semibold text-slate-900 mb-4">Informations</h2>
-          <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-            <div>
-              <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Commande</dt>
-              <dd>
-                {envoi.order_id
-                  ? <Link to={`/orders/${envoi.order_id}`} className="text-brand-600 hover:underline font-medium">#{envoi.order_number}</Link>
-                  : <span className="text-slate-400">—</span>
-                }
-              </dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Transporteur</dt>
-              <dd className="text-slate-700">{envoi.carrier || '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">N° de suivi</dt>
-              <dd className="font-mono text-slate-700">{envoi.tracking_number || '—'}</dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Envoyé le</dt>
-              <dd className="text-slate-700">{fmtDate(envoi.shipped_at)}</dd>
-            </div>
-            <div>
-              <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Créé le</dt>
-              <dd className="text-slate-700">{fmtDate(envoi.created_at)}</dd>
-            </div>
-            {envoi.ups_tracking_status && (
-              <div className="col-span-2 md:col-span-3" data-testid="ups-tracking-status">
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Statut UPS</dt>
-                <dd className="text-slate-700">
-                  {envoi.ups_tracking_status}
-                  {envoi.ups_tracking_last_activity && (
-                    <span className="text-slate-500"> — {envoi.ups_tracking_last_activity}</span>
-                  )}
-                  {envoi.ups_tracking_checked_at && (
-                    <span className="text-xs text-slate-400 block mt-0.5">Vérifié le {fmtDate(envoi.ups_tracking_checked_at)}</span>
-                  )}
-                </dd>
-              </div>
-            )}
-            {(envoi.address_line1 || envoi.address_city) && (
-              <div className="col-span-2 md:col-span-3">
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Adresse de livraison</dt>
-                <dd className="text-slate-700 space-y-0.5">
+        {/* Informations — édition en ligne (autosave au blur). L'ordre des
+            champs et ceux qu'on garde se règlent dans la fiche elle-même
+            (« Personnaliser les champs » : en-tête du panneau latéral, ou au
+            survol de la carte sur la page pleine). */}
+        <DetailFieldGrid entityType="shipments" record={envoi} className="card p-5 mb-4" testId="envoi-fields">
+          <DetailField id="order_id" label="Commande" saving={fieldSaving.order_id}>
+            {/* Rattachement modifiable ET déliable, synchronisé dans les deux
+                sens avec Airtable (« Commande lié »). Changer de commande
+                détache les lignes qui n'en font pas partie — la fiche retombe
+                alors sur les articles de la nouvelle commande ; délier détache
+                toutes les lignes et laisse l'envoi sans commande (son bon de
+                livraison ne peut plus être généré jusqu'au rattachement). */}
+            <LinkedRecordField
+              name="order_id"
+              value={envoi.order_id || ''}
+              /* Avant le chargement de la liste, la commande courante suffit à
+                 afficher le lien — sinon la fiche clignote sur « Commande ». */
+              options={commandes.length ? commandes : (envoi.order_id
+                ? [{ id: envoi.order_id, order_number: envoi.order_number, company_name: envoi.company_name }]
+                : [])}
+              labelFn={o => `#${o.order_number}${o.company_name ? ` — ${o.company_name}` : ''}`}
+              saving={!!fieldSaving.order_id}
+              /* Rechargement après coup : le PATCH renvoie la ligne de l'envoi,
+                 pas ses articles — sans ça le tableau « Articles » resterait
+                 celui de l'ancienne commande. */
+              onChange={async v => { await saveField('order_id', v); load() }}
+              getHref={o => `/orders/${o.id}`}
+            />
+          </DetailField>
+          <DetailField id="carrier" label="Transporteur" saving={fieldSaving.carrier}>
+            <InlineText
+              value={envoi.carrier}
+              saving={!!fieldSaving.carrier}
+              onSave={v => saveField('carrier', v)}
+              testId="envoi-field-carrier"
+            />
+          </DetailField>
+          <DetailField id="tracking_number" label="N° de suivi" saving={fieldSaving.tracking_number}>
+            <InlineText
+              value={envoi.tracking_number}
+              saving={!!fieldSaving.tracking_number}
+              onSave={v => saveField('tracking_number', v)}
+              className="font-mono"
+              testId="envoi-field-tracking_number"
+            />
+          </DetailField>
+          <DetailField id="shipped_at" label="Envoyé le" saving={fieldSaving.shipped_at}>
+            <input
+              type="date"
+              value={envoi.shipped_at ? envoi.shipped_at.slice(0, 10) : ''}
+              onChange={e => saveField('shipped_at', e.target.value)}
+              className="input text-sm w-full"
+              disabled={!!fieldSaving.shipped_at}
+              data-testid="envoi-field-shipped_at"
+            />
+          </DetailField>
+          <DetailField id="created_at" label="Créé le">
+            <div className="text-sm text-slate-700">{fmtDate(envoi.created_at)}</div>
+          </DetailField>
+          <DetailField id="address_id" label="Adresse de livraison" span2 saving={fieldSaving.address_id}>
+            <div className="space-y-1.5">
+              <LinkedRecordField
+                name="address_id"
+                value={envoi.address_id || ''}
+                options={adresses}
+                labelFn={fmtAdresse}
+                saving={!!fieldSaving.address_id}
+                onChange={v => saveField('address_id', v)}
+                getHref={a => `/adresses/${a.id}`}
+              />
+              {(envoi.address_contact_first_name || envoi.address_contact_last_name || envoi.address_contact_email || envoi.address_contact_phone || envoi.address_contact_mobile) && (
+                <div className="text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-0.5">
                   {(envoi.address_contact_first_name || envoi.address_contact_last_name) && (
-                    <div className="font-medium">
+                    <span className="font-medium text-slate-600">
                       {[envoi.address_contact_first_name, envoi.address_contact_last_name].filter(Boolean).join(' ')}
-                    </div>
+                    </span>
                   )}
-                  <div>{envoi.address_line1 || [envoi.address_city, envoi.address_province, envoi.address_postal_code, envoi.address_country].filter(Boolean).join(', ')}</div>
-                  {(envoi.address_contact_email || envoi.address_contact_phone || envoi.address_contact_mobile) && (
-                    <div className="text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-0.5 mt-1">
-                      {envoi.address_contact_email && <span>{envoi.address_contact_email}</span>}
-                      {(envoi.address_contact_phone || envoi.address_contact_mobile) && (
-                        <span>{envoi.address_contact_phone || envoi.address_contact_mobile}</span>
-                      )}
-                    </div>
+                  {envoi.address_contact_email && <span>{envoi.address_contact_email}</span>}
+                  {(envoi.address_contact_phone || envoi.address_contact_mobile) && (
+                    <span>{envoi.address_contact_phone || envoi.address_contact_mobile}</span>
                   )}
-                </dd>
+                </div>
+              )}
+            </div>
+          </DetailField>
+          <DetailField id="notes" label="Notes" span2 saving={fieldSaving.notes}>
+            <InlineTextarea
+              value={envoi.notes}
+              saving={!!fieldSaving.notes}
+              onSave={v => saveField('notes', v)}
+              testId="envoi-field-notes"
+            />
+          </DetailField>
+          {envoi.ups_tracking_status && (
+            <DetailField id="ups_tracking_status" label="Statut UPS" span2 testId="ups-tracking-status">
+              <div className="text-sm text-slate-700">
+                {envoi.ups_tracking_status}
+                {envoi.ups_tracking_last_activity && (
+                  <span className="text-slate-500"> — {envoi.ups_tracking_last_activity}</span>
+                )}
+                {envoi.ups_tracking_checked_at && (
+                  <span className="text-xs text-slate-400 block mt-0.5">Vérifié le {fmtDate(envoi.ups_tracking_checked_at)}</span>
+                )}
               </div>
-            )}
-            {envoi.notes && (
-              <div className="col-span-2 md:col-span-3">
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Notes</dt>
-                <dd className="text-slate-700 whitespace-pre-wrap">{envoi.notes}</dd>
-              </div>
-            )}
-            {envoi.label_pdf_path ? (
-              <div>
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Étiquette</dt>
-                <dd>
-                  <a
-                    href={`/erp/api/novoxpress/labels/${envoi.label_pdf_path}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 text-sm text-brand-600 hover:underline font-medium"
-                  >
-                    <Download size={13} /> Télécharger PDF
-                  </a>
-                </dd>
-              </div>
-            ) : envoi.novoxpress_shipment_id && (
-              <div className="col-span-2 md:col-span-3">
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Étiquette</dt>
-                <dd className="inline-flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                  <AlertTriangle size={15} className="text-amber-600 mt-0.5 shrink-0" />
-                  <span>
-                    Étiquette <span className="font-medium">achetée</span> (Novoxpress {envoi.novoxpress_shipment_id}),
-                    mais le PDF n'a pas pu être téléchargé. Utilisez « Récupérer le PDF » — aucune nouvelle facturation.
-                  </span>
-                </dd>
-              </div>
-            )}
-            {envoi.novoxpress_pickup_id && (
-              <div className="col-span-2 md:col-span-3">
-                <dt className="text-slate-500 text-xs font-medium uppercase tracking-wide mb-1">Ramassage</dt>
-                <dd className="flex items-center gap-2">
-                  <span className="inline-flex items-center gap-1.5 text-sm text-brand-700 bg-brand-50 border border-brand-200 rounded-lg px-2.5 py-1">
-                    <Package size={13} /> Planifié · {envoi.novoxpress_pickup_id}
-                  </span>
-                  <button
-                    onClick={handleCancelPickup}
-                    disabled={cancellingPickup}
-                    className="inline-flex items-center gap-1 text-xs text-red-600 hover:text-red-700 hover:underline disabled:opacity-50"
-                  >
-                    <XCircle size={12} /> {cancellingPickup ? 'Annulation…' : 'Annuler le ramassage'}
-                  </button>
-                </dd>
-              </div>
-            )}
-          </dl>
-        </div>
-
-        {/* Articles de la commande */}
-        <div className="card overflow-hidden">
-          <div className="px-5 py-4 border-b border-slate-200">
-            <h2 className="font-semibold text-slate-900">
-              {envoi.items_fallback ? 'Articles de la commande' : "Articles de l'envoi"} ({envoi.order_items?.length || 0})
-            </h2>
-          </div>
-          {!envoi.order_items?.length ? (
-            <p className="text-center py-10 text-slate-400">Aucun article sur cette commande</p>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50">
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">Produit</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500">SKU</th>
-                  <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Qté</th>
-                  <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Coût unitaire</th>
-                  <th className="text-right px-4 py-3 text-xs font-semibold text-slate-500">Poids (lbs)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {envoi.order_items.map((item, i) => {
-                  const lineWeight = (item.weight_lbs || 0) * (item.qty || 0)
-                  return (
-                    <tr key={item.id || i} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
-                      <td className="px-4 py-3 font-medium text-slate-900">
-                        {item.product_id
-                          ? <Link to={`/products/${item.product_id}`} className="text-brand-600 hover:underline">{item.product_name || 'Produit'}</Link>
-                          : (item.product_name || '—')}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs text-slate-500">{item.sku || '—'}</td>
-                      <td className="px-4 py-3 text-right text-slate-700">{item.qty ?? '—'}</td>
-                      <td className="px-4 py-3 text-right text-slate-500 hidden sm:table-cell">{fmtCurrency(item.unit_cost)}</td>
-                      <td className="px-4 py-3 text-right text-slate-500">
-                        {item.weight_lbs ? `${lineWeight.toFixed(2)} lbs` : '—'}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-              <tfoot>
-                <tr className="border-t-2 border-slate-200 bg-slate-50">
-                  <td colSpan={4} className="px-4 py-3 text-xs font-semibold text-slate-500 text-right hidden sm:table-cell">Poids total</td>
-                  <td colSpan={4} className="px-4 py-3 text-xs font-semibold text-slate-500 text-right sm:hidden">Poids total</td>
-                  <td className="px-4 py-3 text-right font-semibold text-slate-700">
-                    {(() => {
-                      const total = envoi.order_items.reduce((sum, item) => sum + (item.weight_lbs || 0) * (item.qty || 0), 0)
-                      return total > 0 ? `${total.toFixed(2)} lbs` : '—'
-                    })()}
-                  </td>
-                </tr>
-              </tfoot>
-            </table>
+            </DetailField>
           )}
+          {envoi.label_pdf_path && !labelFileMissing ? (
+            <DetailField id="label_pdf_path" label="Étiquette">
+              {/* Vignette du PDF plutôt qu'un lien : on voit l'étiquette sans
+                  quitter la fiche, un clic l'ouvre en grand. Si le fichier a
+                  disparu du serveur, la vignette le signale et on bascule sur
+                  l'encadré de récupération ci-dessous. */}
+              <AttachmentPreview
+                url={`/erp/api/novoxpress/labels/${envoi.label_pdf_path}`}
+                fileName={envoi.label_pdf_path}
+                downloadName={`etiquette-${envoi.tracking_number || envoi.id}.pdf`}
+                title="Étiquette d'expédition"
+                kind="pdf"
+                testId="envoi-label-attachment"
+                onUnavailable={reason => { if (reason === 'missing') setLabelFileMissing(true) }}
+              />
+            </DetailField>
+          ) : envoi.novoxpress_shipment_id ? (
+            <DetailField id="label_pdf_path" label="Étiquette" span2>
+              <div className="inline-flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+                <span>
+                  Étiquette <span className="font-medium">achetée</span> (Novoxpress {envoi.novoxpress_shipment_id}),
+                  {labelFileMissing
+                    ? " mais le PDF n'est plus sur le serveur."
+                    : " mais le PDF n'a pas pu être téléchargé."}
+                  {' '}Utilisez « Récupérer le PDF » — aucune nouvelle facturation.
+                </span>
+              </div>
+            </DetailField>
+          ) : labelFileMissing ? (
+            <DetailField id="label_pdf_path" label="Étiquette" span2>
+              <div className="inline-flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                <AlertTriangle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+                <span>Le PDF de l'étiquette n'est plus sur le serveur.</span>
+              </div>
+            </DetailField>
+          ) : null}
+          {/* Bon de livraison — pièce jointe de la fiche, au même titre que
+              l'étiquette : la vignette remplace l'ancien bouton d'en-tête.
+              Tant que le PDF n'existe pas, l'emplacement vide sert lui-même
+              de déclencheur de génération. */}
+          <DetailField id="bon_livraison_path" label="Bon de livraison">
+            {envoi.bon_livraison_path ? (
+              <div className="space-y-1">
+                <AttachmentPreview
+                  url={`/erp/api/bons-livraison/${envoi.bon_livraison_path.replace('bons-livraison/', '')}`}
+                  fileName={envoi.bon_livraison_path.split('/').pop()}
+                  downloadName={`bon-livraison-${envoi.order_number || envoi.id}.pdf`}
+                  title={`Bon de livraison — Commande #${envoi.order_number}`}
+                  kind="pdf"
+                  testId="envoi-bl-attachment"
+                />
+                <button
+                  type="button"
+                  onClick={handleGenerateBonLivraison}
+                  disabled={generatingPdf || !envoi.order_id}
+                  title={envoi.order_id ? undefined : 'Envoi sans commande'}
+                  className="block text-xs text-slate-500 hover:text-brand-600 disabled:opacity-50"
+                  data-testid="envoi-bl-regenerate"
+                >
+                  {generatingPdf ? 'Génération…' : 'Régénérer'}
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={handleGenerateBonLivraison}
+                /* Le BL est celui d'une commande : sans rattachement, il n'y a
+                   ni numéro, ni client, ni articles à imprimer. */
+                disabled={generatingPdf || !envoi.order_id}
+                title={envoi.order_id ? 'Générer le bon de livraison' : 'Envoi sans commande'}
+                className="flex flex-col items-center justify-center gap-1 w-[92px] h-[120px] rounded-lg border border-dashed border-slate-300 bg-slate-50 text-slate-400 hover:border-brand-300 hover:text-brand-600 disabled:opacity-50 transition-colors"
+                data-testid="envoi-bl-generate"
+              >
+                {generatingPdf
+                  ? <RefreshCw size={16} className="animate-spin" />
+                  : <FileText size={16} />}
+                <span className="text-[11px] text-center px-1">{generatingPdf ? 'Génération…' : 'Générer'}</span>
+              </button>
+            )}
+          </DetailField>
+          {envoi.novoxpress_pickup_id && (
+            <DetailField id="novoxpress_pickup_id" label="Ramassage" span2>
+              <div className="flex items-center gap-2">
+                {/* La pastille ouvre les détails du ramassage (date, fenêtre,
+                    emplacement, consignes) — l'annulation vit désormais dans
+                    cette modale, pour ne pas la mettre à un clic d'un survol. */}
+                <button
+                  type="button"
+                  onClick={() => setShowPickupDetails(true)}
+                  className="inline-flex items-center gap-1.5 text-sm text-brand-700 bg-brand-50 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-100 hover:border-brand-300 transition-colors"
+                  title="Voir les détails du ramassage"
+                  data-testid="envoi-pickup-pill"
+                >
+                  <Package size={13} /> Planifié · {envoi.novoxpress_pickup_id}
+                </button>
+              </div>
+            </DetailField>
+          )}
+        </DetailFieldGrid>
+
+        {/* Articles — DataTable standard (vues, filtres, tri, groupement,
+            recherche, totaux en pied). Lecture seule : les lignes appartiennent
+            à la commande et s'éditent sur sa fiche. */}
+        <div>
+          <div className="flex items-baseline gap-2 mb-2">
+            <h2 className="font-semibold text-slate-900">
+              {envoi.items_fallback ? 'Articles de la commande' : "Articles de l'envoi"} ({itemRows.length})
+            </h2>
+            {totalWeight > 0 && (
+              <span className="text-sm text-slate-500" data-testid="envoi-items-total-weight">
+                Poids total {totalWeight.toFixed(2)} lbs
+              </span>
+            )}
+          </div>
+          <DataTable
+            table="shipment_items"
+            columns={ITEM_COLUMNS}
+            data={itemRows}
+            searchFields={['product_name', 'sku']}
+            height={Math.max(180, Math.min(100 + itemRows.length * 32, 480))}
+            emptyState={{
+              icon: Package,
+              title: 'Aucun article',
+              description: "Cette commande n'a aucun article à expédier.",
+            }}
+          />
         </div>
 
-        {/* Bon de livraison */}
-        {envoi.bon_livraison_path && (() => {
-          const pdfUrl = `/erp/api/bons-livraison/${envoi.bon_livraison_path.replace('bons-livraison/', '')}`
-          return (
-            <div className="card p-5 mt-4">
-              <h2 className="font-semibold text-slate-900 text-sm mb-3">Bon de livraison</h2>
-              <button onClick={() => setShowPdf(true)} className="group relative w-40 h-52 bg-white border border-slate-200 rounded-lg overflow-hidden hover:border-brand-400 hover:shadow-md transition-all">
-                <iframe src={`${pdfUrl}#toolbar=0&navpanes=0&scrollbar=0`} className="w-[200%] h-[200%] origin-top-left scale-50 pointer-events-none" title="Aperçu bon de livraison" />
-                <div className="absolute inset-0 bg-transparent group-hover:bg-brand-600/5 transition-colors flex items-center justify-center">
-                  <span className="opacity-0 group-hover:opacity-100 bg-brand-600 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg transition-opacity">Ouvrir</span>
-                </div>
-              </button>
-            </div>
-          )
-        })()}
       </div>
-
-      {/* PDF viewer modal */}
-      {showPdf && envoi.bon_livraison_path && (() => {
-        const pdfUrl = `/erp/api/bons-livraison/${envoi.bon_livraison_path.replace('bons-livraison/', '')}`
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center">
-            <div className="absolute inset-0 bg-black/60" onClick={() => setShowPdf(false)} />
-            <div className="relative bg-white rounded-xl shadow-2xl w-[95vw] max-w-6xl h-[92vh] flex flex-col overflow-hidden">
-              <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
-                <span className="text-sm font-semibold text-slate-900">Bon de livraison — Commande #{envoi.order_number}</span>
-                <div className="flex items-center gap-2">
-                  <a href={pdfUrl} download className="btn-secondary btn-sm flex items-center gap-1.5"><Download size={13} /> Télécharger</a>
-                  <button onClick={() => setShowPdf(false)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded"><X size={16} /></button>
-                </div>
-              </div>
-              <iframe src={pdfUrl} className="flex-1 w-full" title="Bon de livraison" />
-            </div>
-          </div>
-        )
-      })()}
-
-      <Modal isOpen={showEdit} onClose={() => setShowEdit(false)} title="Modifier l'envoi">
-        <EditEnvoiModal envoi={envoi} adresses={adresses} onSave={handleUpdate} onDelete={handleDelete} onClose={() => setShowEdit(false)} />
-      </Modal>
 
       <Modal isOpen={showLabel} onClose={() => setShowLabel(false)} title="Créer une étiquette postale">
         <NovoxpressLabelModal
@@ -626,9 +600,35 @@ export default function EnvoisDetail() {
         />
       </Modal>
 
-      <Modal isOpen={showSendTracking} onClose={() => setShowSendTracking(false)} title="Envoyer le courriel de suivi">
-        <SendTrackingModal envoi={envoi} onClose={() => setShowSendTracking(false)} onSent={load} />
+      <Modal isOpen={showPickupDetails} onClose={() => setShowPickupDetails(false)} title="Détails du ramassage">
+        <NovoxpressPickupDetails
+          envoi={envoi}
+          cancelling={cancellingPickup}
+          onCancel={async () => { const done = await handleCancelPickup(); if (done) setShowPickupDetails(false) }}
+          onClose={() => setShowPickupDetails(false)}
+        />
       </Modal>
-    </Layout>
+
+      {/* « Envoyer » ouvre la composition (destinataire, Cc, objet, corps
+          modifiables) ; l'envoi part avec la fenêtre d'annulation de 3 s. */}
+      <EmailComposerModal
+        isOpen={showSendTracking}
+        onClose={() => setShowSendTracking(false)}
+        title="Courriel de suivi"
+        size="xl"
+        load={async () => {
+          const p = await api.shipments.trackingEmailPreview(envoi.id)
+          return {
+            ...p,
+            notice: p.already_sent_at
+              ? `Un courriel de suivi a déjà été envoyé le ${fmtDate(p.already_sent_at)}.`
+              : null,
+          }
+        }}
+        onSend={({ to, cc, subject, bodyHtml }) => api.shipments.sendTracking(envoi.id, { to, cc, subject, body_html: bodyHtml })}
+        onSent={load}
+      />
+
+    </>
   )
 }

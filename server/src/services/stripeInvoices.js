@@ -1,4 +1,5 @@
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import { emitCompany } from './realtimeEmitters.js'
 import { getStripeKey } from './stripe.js'
@@ -66,10 +67,11 @@ export async function getOrCreateTaxRate(stripe, { name, percentage, jurisdictio
 
 // Build line_items for Stripe Checkout Session from a pending_invoice's items_json.
 // Each item gets the right tax_rates attached based on shipping province/country.
-async function buildCheckoutLineItems(stripe, { items, shipping_province, shipping_country }) {
-  const { computeCanadaTaxes } = await import('./taxes.js')
+// `tax_regime` NULL (factures d'avant le champ) → déduction par province.
+async function buildCheckoutLineItems(stripe, { items, shipping_province, shipping_country, tax_regime }) {
+  const { resolveInvoiceTaxes } = await import('./taxes.js')
   const subtotal = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
-  const taxes = computeCanadaTaxes({ province: shipping_province, country: shipping_country, subtotal })
+  const taxes = resolveInvoiceTaxes({ province: shipping_province, country: shipping_country, subtotal, taxRegime: tax_regime })
   const taxRateIds = []
   for (const t of taxes) {
     const id = await getOrCreateTaxRate(stripe, { name: t.name, percentage: t.percentage, jurisdiction: t.jurisdiction })
@@ -120,6 +122,7 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
     items,
     shipping_province: pending.shipping_province,
     shipping_country: pending.shipping_country,
+    tax_regime: pending.tax_regime,
   })
 
   const successUrl = successUrlOverride || `${baseAppUrl}/erp/customer/post-payment?session_id={CHECKOUT_SESSION_ID}`
@@ -143,6 +146,10 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
           erp_pending_invoice_id: pending.id,
           erp_company_id: pending.company_id || '',
           ...(pending.soumission_id ? { erp_soumission_id: pending.soumission_id } : {}),
+          // Trace du choix de taxation : une facture sans taxe doit pouvoir
+          // s'expliquer des années plus tard, dans Stripe comme dans l'ERP.
+          ...(pending.tax_regime ? { erp_tax_regime: pending.tax_regime } : {}),
+          ...(pending.tax_exempt_reason ? { erp_tax_exempt_reason: String(pending.tax_exempt_reason).slice(0, 500) } : {}),
         },
         ...(pending.due_days ? { custom_fields: [{ name: 'Échéance', value: `${pending.due_days} jours` }] } : {}),
       },
@@ -234,7 +241,6 @@ function formatMoney(n, currency = 'CAD') {
 // Returns { invoice, emailedTo, emailedFrom, emailMessageId, emailErr }.
 export async function finalizeAndSendInvoice({ stripe, stripeInvoiceId, companyId, userId }) {
   const { sendEmail } = await import('./gmail.js')
-  const { randomUUID } = await import('crypto')
 
   if (!isGmailSendAvailable(userId)) {
     throw new Error('gmail_not_connected')
@@ -263,8 +269,8 @@ export async function finalizeAndSendInvoice({ stripe, stripeInvoiceId, companyI
   }
 
   // Build email
-  const interactionId = randomUUID()
-  const emailRowId = randomUUID()
+  const interactionId = newRecordId()
+  const emailRowId = newRecordId()
   const ts = new Date().toISOString()
   const total = (invoice.total || 0) / 100
   const totalLabel = formatMoney(total, invoice.currency)

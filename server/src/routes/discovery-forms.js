@@ -13,7 +13,7 @@
 // concept, juste accédé via une autre porte d'entrée que le flow Stripe Checkout.
 
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { generateShortToken } from '../utils/shortToken.js'
@@ -29,6 +29,8 @@ function publicUrlForToken(token) {
 }
 
 // Shape sortie pour les vues admin (liste + détail).
+// Inclut les réponses du client (adresses, réseau, cartes serre, extras) : la
+// fiche côté ERP est une lecture du formulaire tel que rempli.
 function shapeForm(row) {
   if (!row) return null
   const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
@@ -49,6 +51,13 @@ function shapeForm(row) {
     chief_grower_count: greenhouses.filter(g => g.permission_level === 'chief_grower').length,
     helper_count: greenhouses.filter(g => g.permission_level === 'helper').length,
     is_new_site: row.is_new_site,
+    farm_address: row.farm_address_json ? JSON.parse(row.farm_address_json) : null,
+    shipping_same_as_farm: row.shipping_same_as_farm == null ? null : !!row.shipping_same_as_farm,
+    shipping_address: row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null,
+    network_access: row.network_access,
+    wifi_ssid: row.wifi_ssid,
+    wifi_password: row.wifi_password,
+    extras: row.extras_json ? JSON.parse(row.extras_json) : [],
     submitted_at: row.submitted_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -102,7 +111,7 @@ router.post('/', (req, res) => {
 
   const topPermission = greenhouses.some(g => g.permission_level === 'chief_grower')
     ? 'chief_grower' : 'helper'
-  const id = randomUUID()
+  const id = newRecordId()
   const publicToken = generateShortToken()
   db.prepare(`
     INSERT INTO customer_onboarding_responses

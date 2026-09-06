@@ -5,15 +5,17 @@
 // court part à Émilie avec les dépenses validées. Le tableau Budget vs Réel
 // remplace le fichier Drive « Annual Marketing budget ».
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, ExternalLink, Check, X, Ban, Megaphone, Trash2, Send, Eye } from 'lucide-react'
+import { RefreshCw, ExternalLink, Check, X, Ban, Trash2, Send, Eye } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 const STATUS_META = {
   pending: { label: 'À valider', color: 'amber' },
@@ -131,7 +133,6 @@ function BudgetCell({ acctnum, month, value, onSaved }) {
       onChange={e => setText(e.target.value)}
       onBlur={save}
       onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
-      placeholder="—"
       className="w-full px-1 py-0.5 text-right text-xs tabular-nums bg-transparent border border-transparent rounded
         hover:border-slate-200 focus:border-brand-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-brand-400/30"
     />
@@ -292,10 +293,10 @@ export default function MarketingBudget() {
   return (
     <Layout>
       <div className="flex items-center justify-between mb-1">
-        <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-2">
-          <Megaphone size={20} className="text-brand-600" /> Budget marketing
+        <PageTitle>
+          Budget marketing
           {pendingCount > 0 && <Badge color="amber">{pendingCount} à valider</Badge>}
-        </h1>
+        </PageTitle>
         <div className="flex items-center gap-2">
           <button onClick={showPreview}
             className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
@@ -342,7 +343,7 @@ export default function MarketingBudget() {
             </tr>
           </thead>
           <tbody>
-            {data === null && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400">Chargement…</td></tr>}
+            {data === null && <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400"><Spinner size="xs" label="Chargement…" /></td></tr>}
             {data !== null && expenses.length === 0 && (
               <tr><td colSpan={6} className="px-4 py-6 text-center text-slate-400">
                 {filter === 'pending' ? 'Rien à valider — toutes les dépenses détectées sont tranchées. ✓' : 'Aucune dépense.'}
@@ -398,7 +399,7 @@ export default function MarketingBudget() {
             <div className="text-xs text-slate-500 mt-0.5">Leurs dépenses sont exclues automatiquement à la détection.</div>
           </div>
           <div className="divide-y divide-slate-50">
-            {rules === null && <div className="px-4 py-4 text-sm text-slate-400">Chargement…</div>}
+            {rules === null && <div className="px-4 py-4 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>}
             {rules?.length === 0 && (
               <div className="px-4 py-4 text-sm text-slate-400">
                 Aucune règle — utiliser « Jamais » sur une dépense pour en créer une.

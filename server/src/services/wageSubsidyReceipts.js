@@ -27,8 +27,8 @@
 // subvention est catégorisé au compte 12400 par ailleurs (rapprochement
 // bancaire) — cette régularisation ne touche donc pas de compte de banque,
 // uniquement le couple créance/revenu, pour le SEUL écart estimation ↔ réel.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { qbPost } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
@@ -65,7 +65,7 @@ export function addReceipt(provisionId, { received_date, amount, note } = {}, us
   if (!isDate(received_date)) throw new Error('received_date invalide (YYYY-MM-DD)')
   const n = Number(amount)
   if (!Number.isFinite(n) || n <= 0) throw new Error('amount doit être un nombre positif')
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO wage_subsidy_receipts (id, provision_id, received_date, amount, note, created_by)
     VALUES (?,?,?,?,?,?)
@@ -132,7 +132,7 @@ function detectBankReceiptsForProvision(provision) {
   for (const txn of candidates) {
     if (seen.has(txn.id)) continue
     if (!labelMatches(txn.label, label)) continue
-    const id = randomUUID()
+    const id = newRecordId()
     try {
       db.prepare(`
         INSERT INTO wage_subsidy_receipts
@@ -246,7 +246,7 @@ export async function regularizeSubsidy(provisionId, { userId = null } = {}) {
   const jeId = result.JournalEntry?.Id
   if (!jeId) throw new Error("QB n'a pas retourné d'Id pour le JournalEntry")
 
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO wage_subsidy_adjustments (id, provision_id, amount, memo, qb_je_id, created_by)
     VALUES (?,?,?,?,?,?)

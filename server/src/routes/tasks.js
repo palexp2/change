@@ -1,24 +1,22 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { newRecordId } from '../utils/recordId.js';
 import db from '../db/database.js';
+import { readRelation } from '../services/customFieldsView.js';
 import { requireAuth } from '../middleware/auth.js';
 import { pushTaskFireAndForget } from '../services/hubspotSync.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { notifyAssignment } from '../services/notifications.js';
+import { parsePage } from '../utils/pagination.js';
 
 const router = Router();
 router.use(requireAuth);
 
 function buildTaskRow(id) {
   return db.prepare(
-    `SELECT t.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
-       u.name as assigned_name, tk.title as ticket_title
-     FROM tasks t
-     LEFT JOIN companies c ON t.company_id = c.id
+    `SELECT t.*, ct.first_name || ' ' || ct.last_name as contact_name
+     FROM ${readRelation('tasks')} t
      LEFT JOIN contacts ct ON t.contact_id = ct.id
-     LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      WHERE t.id = ?`
   ).get(id)
 }
@@ -34,7 +32,7 @@ router.post('/keywords', (req, res) => {
   if (!label || !label.trim()) return res.status(400).json({ error: 'Label requis' });
   const existing = db.prepare('SELECT id, label, color FROM task_keywords WHERE label = ?').get(label.trim());
   if (existing) return res.status(200).json(existing);
-  const id = uuidv4();
+  const id = newRecordId();
   db.prepare('INSERT INTO task_keywords (id, label, color) VALUES (?, ?, ?)').run(id, label.trim(), color || null);
   res.status(201).json({ id, label: label.trim(), color: color || null });
 });
@@ -46,10 +44,8 @@ router.delete('/keywords/:id', (req, res) => {
 
 // GET /api/tasks
 router.get('/', (req, res) => {
-  const { search, status, priority, company_id, contact_id, assigned_to, ticket_id, page = 1, limit = 50 } = req.query;
-  const limitAll = limit === 'all';
-  const limitVal = limitAll ? -1 : parseInt(limit);
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { search, status, priority, company_id, contact_id, assigned_to, ticket_id } = req.query;
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50);
   let where = 'WHERE t.deleted_at IS NULL';
   const params = [];
 
@@ -71,15 +67,9 @@ router.get('/', (req, res) => {
 
   const tasks = db.prepare(
     `SELECT t.*,
-       c.name as company_name,
-       ct.first_name || ' ' || ct.last_name as contact_name,
-       u.name as assigned_name,
-       tk.title as ticket_title
-     FROM tasks t
-     LEFT JOIN companies c ON t.company_id = c.id
+       ct.first_name || ' ' || ct.last_name as contact_name
+     FROM ${readRelation('tasks')} t
      LEFT JOIN contacts ct ON t.contact_id = ct.id
-     LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      ${where}
      ORDER BY
        CASE t.priority WHEN 'Urgente' THEN 1 WHEN 'Haute' THEN 2 WHEN 'Normal' THEN 3 ELSE 4 END,
@@ -95,15 +85,9 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   const task = db.prepare(
     `SELECT t.*,
-       c.name as company_name,
-       ct.first_name || ' ' || ct.last_name as contact_name,
-       u.name as assigned_name,
-       tk.title as ticket_title
-     FROM tasks t
-     LEFT JOIN companies c ON t.company_id = c.id
+       ct.first_name || ' ' || ct.last_name as contact_name
+     FROM ${readRelation('tasks')} t
      LEFT JOIN contacts ct ON t.contact_id = ct.id
-     LEFT JOIN users u ON t.assigned_to = u.id
-     LEFT JOIN tickets tk ON t.ticket_id = tk.id
      WHERE t.id = ?`
   ).get(req.params.id);
   if (!task) return res.status(404).json({ error: 'Task not found' });
@@ -115,7 +99,7 @@ router.post('/', (req, res) => {
   const { title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes, keywords, type, ticket_id } = req.body;
   if (!title) return res.status(400).json({ error: 'Le titre est requis' });
 
-  const id = uuidv4();
+  const id = newRecordId();
   db.prepare(
     `INSERT INTO tasks (id, title, description, status, priority, due_date, company_id, contact_id, assigned_to, notes, keywords, type, ticket_id)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`

@@ -7,8 +7,8 @@
 // écoute. Les routes/services appellent `createNotification` ou le helper
 // `notifyAssignment` ; ils ne touchent jamais la table directement.
 
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { emit } from './realtime.js'
 
 /** Canal temps réel privé d'un utilisateur. Le client s'y abonne avec son propre id. */
@@ -30,7 +30,7 @@ export function createNotification({ userId, type, title, body = null, link = nu
   if (!userId || !type || !title) return null
   if (actorUserId && actorUserId === userId) return null
 
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(
     `INSERT INTO notifications (id, user_id, type, title, body, link, read)
      VALUES (?, ?, ?, ?, ?, ?, 0)`

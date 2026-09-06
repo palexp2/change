@@ -16,8 +16,8 @@
 // Toute erreur (ex. produit de remplacement introuvable) est journalisée et
 // envoyée sur Slack — fidèle à la branche catch de l'automation Airtable.
 
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { sendSlack } from './slack.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { createChangeLogWatcher } from './changeLogWatcher.js'
@@ -31,8 +31,8 @@ function createReplacementOrder(item) {
   const companyId = item.company_id || db.prepare('SELECT company_id FROM returns WHERE id = ?').get(item.return_id)?.company_id
   if (!companyId) throw new Error(`Impossible de créer la commande de remplacement — aucune entreprise résolue pour l'item ${item.id}`)
 
-  const orderId = uuidv4()
-  const orderItemId = uuidv4()
+  const orderId = newRecordId()
+  const orderItemId = newRecordId()
   const maxNum = db.prepare('SELECT MAX(order_number) AS m FROM orders').get()
   const orderNumber = (maxNum?.m || 0) + 1
 

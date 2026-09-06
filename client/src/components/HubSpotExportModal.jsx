@@ -157,7 +157,6 @@ export function HubSpotExportModal({ isOpen, onClose, filteredContacts }) {
                 onChange={e => setPastedText(e.target.value)}
                 className="input font-mono text-sm"
                 rows={8}
-                placeholder={'ex@domaine.com\nautre@domaine.com'}
                 disabled={submitting}
               />
               <p className="text-xs text-slate-400 mt-1">{emails.length} email{emails.length > 1 ? 's' : ''} unique{emails.length > 1 ? 's' : ''} détecté{emails.length > 1 ? 's' : ''}</p>

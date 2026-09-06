@@ -4,10 +4,12 @@ import api from '../lib/api.js'
 import { useTable } from '../lib/dataStore.js'
 import { applyFilter, applyFilterGroup } from '../lib/tableFilters.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { PenLine, PackageOpen, Truck, ShoppingBag, Wrench, ExternalLink, Clock, AlertTriangle, Plus, ChevronDown } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
+import Spinner from '../components/Spinner.jsx'
 
 // ── URLs externes (lanceurs Airtable) ───────────────────────────────────────
 const AIRTABLE_SIGNATURE_URL =
@@ -454,7 +456,7 @@ export default function PrioriteAssemblage() {
   return (
     <Layout>
       <div className="p-6 max-w-5xl mx-auto" data-testid="priorite-assemblage">
-        <h1 className="text-3xl font-bold text-slate-900 mb-6">Priorité d'assemblage</h1>
+        <PageTitle className="mb-6" titleClassName="text-3xl font-bold text-slate-900">Priorité d'assemblage</PageTitle>
 
         <div className="space-y-6">
           {/* Étapes 1 & 2 — côte à côte */}
@@ -487,7 +489,7 @@ export default function PrioriteAssemblage() {
           {/* Étape 4 — Production (lecture seule) — interchangée avec Commande de pièces */}
           <StepBox number={4} testid="step-4" icon={Wrench} title="Production" count={loading ? null : productionList.length}>
             {loading ? (
-              <div className="py-10 text-center text-slate-400 text-lg">Chargement…</div>
+              <div className="py-10 text-center text-slate-400 text-lg"><Spinner size="xs" label="Chargement…" /></div>
             ) : productionList.length === 0 ? (
               <div className="py-10 text-center text-slate-400 text-lg">Rien à produire pour l'instant 🎉</div>
             ) : (
@@ -500,7 +502,7 @@ export default function PrioriteAssemblage() {
           {/* Étape 5 — Commande de pièces — interchangée avec Production */}
           <StepBox number={5} testid="step-5" icon={ShoppingBag} title="Commande de pièces" count={loading ? null : achatActive.length}>
             {loading ? (
-              <div className="py-10 text-center text-slate-400 text-lg">Chargement…</div>
+              <div className="py-10 text-center text-slate-400 text-lg"><Spinner size="xs" label="Chargement…" /></div>
             ) : (
               <>
                 {achatActive.length === 0 ? (

@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft, Trash2, ChevronDown, ChevronUp, ExternalLink, Plus, CheckCircle2, Circle, Clock, X, Star, MessageSquare, Phone, AlertTriangle, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
@@ -11,6 +11,9 @@ import Attachments from '../components/Attachments.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { MultiSelectField } from '../components/MultiSelectField.jsx'
+import { InlineText, InlineTextarea, InlineUrl } from '../components/InlineFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { Modal } from '../components/Modal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
@@ -37,7 +40,7 @@ const cancelIdle = (h) => (typeof cancelIdleCallback === 'function'
 // (RecordPeekDrawer) sans le chrome de page (Layout, bouton retour, nav
 // clavier prev/next). En mode route normale, l'`id` vient de l'URL.
 // `onClose` ferme le drawer (utilisé après suppression du billet).
-export default function TicketDetail({ recordId, embedded = false, onClose }) {
+export default function TicketDetail({ recordId, embedded = true, onClose }) {
   const { id: paramId } = useParams()
   const id = recordId ?? paramId
   const navigate = useNavigate()
@@ -146,6 +149,11 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
     next: !embedded && nextId ? `/tickets/${nextId}` : null,
   })
 
+  // Modifié ailleurs (Airtable, un collègue) → la fiche suit sans rechargement.
+  useRealtimeChannel(id ? `ticket:${id}` : null, (msg) => {
+    if (msg.type === 'ticket:updated') setTicket(t => (t ? { ...t, ...msg.payload } : t))
+  })
+
   useEffect(() => {
     const ac = new AbortController()
     async function load() {
@@ -238,9 +246,9 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
     return [...users, { id: ticket.assigned_to, name: ticket.assigned_name || '…' }]
   }, [users, ticket?.assigned_to, ticket?.assigned_name])
 
-  // En mode embarqué (side-peek), pas de Layout — le drawer fournit son propre
-  // chrome. Sinon, page pleine classique.
-  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
 
   if (loading) {
     return shell(<Spinner center />)
@@ -263,7 +271,7 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
             </button>
           )}
           <div className="flex-1">
-            {!embedded && <h1 className="text-2xl font-bold text-slate-900">{ticket.title}</h1>}
+            {!embedded && <PageTitle>{ticket.title}</PageTitle>}
             <div className="flex items-center gap-2 mt-1 flex-wrap">
               <Badge color={ticketStatusColor(ticket.status)}>{ticket.status}</Badge>
               {ticket.type && <Badge color="gray">{ticket.type}</Badge>}
@@ -298,131 +306,110 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
 
         <SurveyCard ticketId={id} refreshKey={surveyKey} />
 
-        {/* Info card */}
-        <div className="card p-5 mb-6">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-            <div className="sm:col-span-2">
-              <FieldLabel label="Titre" saving={fieldSaving.title} />
+        {/* Info card — la disposition des champs (ordre, champs retirés) est
+            personnalisable : bouton « Personnaliser les champs » dans l'en-tête
+            du panneau latéral, ou au survol de la carte sur la page pleine. */}
+        <DetailFieldGrid entityType="tickets" record={ticket}>
+            <DetailField id="title" label="Titre" span2 saving={fieldSaving.title}>
               <InlineText value={ticket.title} saving={!!fieldSaving.title} onSave={v => saveField('title', v)} />
-            </div>
-            <div>
-              <FieldLabel label="Statut" saving={fieldSaving.status} />
+            </DetailField>
+            <DetailField id="status" label="Statut" saving={fieldSaving.status}>
               <SearchableSelect
                 value={ticket.status || ''}
                 options={(meta.statuses || []).map(s => ({ value: s, label: s }))}
                 emptyOption="—"
-                placeholder="—"
                 onChange={v => saveField('status', v)}
                 className="input text-sm w-full"
                 size="sm"
                 disabled={!!fieldSaving.status}
                 testId="ticket-field-status"
               />
-            </div>
-            <div>
-              <FieldLabel label="Type" saving={fieldSaving.type} />
+            </DetailField>
+            <DetailField id="type" label="Type" saving={fieldSaving.type}>
               <SearchableSelect
                 value={ticket.type || ''}
                 options={(meta.types || []).map(t => ({ value: t, label: t }))}
                 emptyOption="—"
-                placeholder="—"
                 onChange={v => saveField('type', v)}
                 className="input text-sm w-full"
                 size="sm"
                 disabled={!!fieldSaving.type}
                 testId="ticket-field-type"
               />
-            </div>
-            <div>
-              <FieldLabel label="Entreprise" saving={fieldSaving.company_id} />
+            </DetailField>
+            <DetailField id="company_id" label="Entreprise" saving={fieldSaving.company_id}>
               <LinkedRecordField
                 name="company_id"
                 value={ticket.company_id}
                 options={companiesForPicker}
                 labelFn={c => c.name}
                 getHref={c => `/companies/${c.id}`}
-                placeholder="Entreprise"
                 saving={!!fieldSaving.company_id}
                 onChange={v => saveField('company_id', v)}
               />
-            </div>
-            <div>
-              <FieldLabel label="Contact" saving={fieldSaving.contact_id} />
+            </DetailField>
+            <DetailField id="contact_id" label="Contact" saving={fieldSaving.contact_id}>
               <LinkedRecordField
                 name="contact_id"
                 value={ticket.contact_id}
                 options={contactsForPicker}
                 labelFn={c => `${c.first_name} ${c.last_name}`}
                 getHref={c => `/contacts/${c.id}`}
-                placeholder="Contact"
                 saving={!!fieldSaving.contact_id}
                 onChange={v => saveField('contact_id', v)}
               />
-            </div>
-            <div>
-              <FieldLabel label="Assigne a" saving={fieldSaving.assigned_to} />
+            </DetailField>
+            <DetailField id="assigned_to" label="Assigne a" saving={fieldSaving.assigned_to}>
               <LinkedRecordField
                 name="assigned_to"
                 value={ticket.assigned_to}
                 options={usersForPicker}
                 labelFn={u => u.name}
-                placeholder="Assigner"
                 saving={!!fieldSaving.assigned_to}
                 onChange={v => saveField('assigned_to', v)}
               />
-            </div>
-            <div>
-              <FieldLabel label="Duree" saving={fieldSaving.duration_minutes} />
+            </DetailField>
+            <DetailField id="duration_minutes" label="Duree" saving={fieldSaving.duration_minutes}>
               <div className="flex items-center gap-2">
                 <input type="number" min="0" value={ticket.duration_minutes || 0}
                   onChange={e => saveField('duration_minutes', parseInt(e.target.value) || 0)}
                   className="input text-sm w-24" disabled={!!fieldSaving.duration_minutes} />
                 <span className="text-xs text-slate-400">{fmtDuration(ticket.duration_minutes)}</span>
               </div>
-            </div>
-            <div className="sm:col-span-2">
-              <FieldLabel label="Question" saving={fieldSaving.description} />
+            </DetailField>
+            <DetailField id="description" label="Question" span2 saving={fieldSaving.description}>
               <InlineTextarea value={ticket.description} saving={!!fieldSaving.description} onSave={v => saveField('description', v)} />
-            </div>
-            <div className="sm:col-span-2">
-              <FieldLabel label="Réponse" saving={fieldSaving.response} />
+            </DetailField>
+            <DetailField id="response" label="Réponse" span2 saving={fieldSaving.response}>
               <InlineTextarea value={ticket.response} saving={!!fieldSaving.response} onSave={v => saveField('response', v)} />
-            </div>
-            <div className="sm:col-span-2">
-              <FieldLabel label="Lien GitHub" saving={fieldSaving.lien_issue_github} />
-              <InlineUrl value={ticket.lien_issue_github} saving={!!fieldSaving.lien_issue_github} onSave={v => saveField('lien_issue_github', v)} placeholder="https://github.com/…/issues/123" />
-            </div>
-            <div>
-              <FieldLabel label="Escalade" saving={fieldSaving.escalade} />
+            </DetailField>
+            <DetailField id="lien_issue_github" label="Lien GitHub" span2 saving={fieldSaving.lien_issue_github}>
+              <InlineUrl value={ticket.lien_issue_github} saving={!!fieldSaving.lien_issue_github} onSave={v => saveField('lien_issue_github', v)} />
+            </DetailField>
+            <DetailField id="escalade" label="Escalade" saving={fieldSaving.escalade}>
               <InlineText value={ticket.escalade} saving={!!fieldSaving.escalade} onSave={v => saveField('escalade', v)} />
-            </div>
-            <div>
-              <FieldLabel label="Arbre de troubleshoot utilisé" saving={fieldSaving.arbre_de_troubleshoot_utilise} />
+            </DetailField>
+            <DetailField id="arbre_de_troubleshoot_utilise" label="Arbre de troubleshoot utilisé" saving={fieldSaving.arbre_de_troubleshoot_utilise}>
               <InlineText value={ticket.arbre_de_troubleshoot_utilise} saving={!!fieldSaving.arbre_de_troubleshoot_utilise} onSave={v => saveField('arbre_de_troubleshoot_utilise', v)} />
-            </div>
-            <div className="sm:col-span-2">
-              <FieldLabel label="Mots-clés" saving={fieldSaving.mots_cles} />
-              {/* Sélection multiple : les mots-clés sont stockés en tableau JSON
-                  (même format que le sync Airtable et que la colonne du tableau). */}
+            </DetailField>
+            {/* Sélection multiple : les mots-clés sont stockés en tableau JSON
+                (même format que le sync Airtable et que la colonne du tableau). */}
+            <DetailField id="mots_cles" label="Mots-clés" span2 saving={fieldSaving.mots_cles}>
               <MultiSelectField
                 value={ticket.mots_cles}
                 options={keywordOptions}
                 saving={!!fieldSaving.mots_cles}
                 onChange={v => saveField('mots_cles', v.length ? JSON.stringify(v) : '')}
-                placeholder="Ajouter un mot-clé"
                 testId="ticket-mots-cles"
               />
-            </div>
-            <div className="sm:col-span-2">
-              <FieldLabel label="Documents" saving={fieldSaving.documents} />
+            </DetailField>
+            <DetailField id="documents" label="Documents" span2 saving={fieldSaving.documents}>
               <InlineTextarea value={ticket.documents} saving={!!fieldSaving.documents} onSave={v => saveField('documents', v)} />
-            </div>
-            <div className="sm:col-span-2">
-              <FieldLabel label="Items retour" saving={fieldSaving.items_retours} />
+            </DetailField>
+            <DetailField id="items_retours" label="Items retour" span2 saving={fieldSaving.items_retours}>
               <InlineTextarea value={ticket.items_retours} saving={!!fieldSaving.items_retours} onSave={v => saveField('items_retours', v)} />
-            </div>
-          </div>
-        </div>
+            </DetailField>
+        </DetailFieldGrid>
 
         {/* Météo au site — conditions à l'adresse du client autour de l'ouverture du billet */}
         <div className="mb-6">
@@ -455,7 +442,7 @@ export default function TicketDetail({ recordId, embedded = false, onClose }) {
             </button>
           </div>
           {loadingTasks ? (
-            <div className="text-xs text-slate-400">Chargement…</div>
+            <div className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
           ) : linkedTasks.length === 0 ? (
             <div className="text-xs text-slate-400">Aucune tâche liée.</div>
           ) : (
@@ -661,7 +648,6 @@ function SurveySection({ ticketId, contactId, onSent }) {
               <input
                 value={phone}
                 onChange={e => setPhone(e.target.value)}
-                placeholder="(514) 555-1234"
                 className="input w-full"
                 data-testid="ticket-survey-phone"
               />
@@ -811,66 +797,3 @@ function OrishaLinks({ controllers }) {
   )
 }
 
-function FieldLabel({ label, saving }) {
-  return (
-    <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
-      {label}
-      {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
-    </div>
-  )
-}
-
-function InlineText({ value, saving, onSave, placeholder }) {
-  const [local, setLocal] = useState(value || '')
-  useEffect(() => { setLocal(value || '') }, [value])
-  return (
-    <input type="text" value={local} onChange={e => setLocal(e.target.value)}
-      onBlur={e => { if (e.target.value !== (value || '')) onSave(e.target.value) }}
-      placeholder={placeholder}
-      className="input text-sm w-full" disabled={saving} />
-  )
-}
-
-function InlineUrl({ value, saving, onSave, placeholder }) {
-  const [local, setLocal] = useState(value || '')
-  useEffect(() => { setLocal(value || '') }, [value])
-  const isValidLink = value && /^https?:\/\//i.test(value)
-  return (
-    <div className="flex items-center gap-2">
-      <input
-        type="url"
-        value={local}
-        onChange={e => setLocal(e.target.value)}
-        onBlur={e => { if (e.target.value !== (value || '')) onSave(e.target.value) }}
-        placeholder={placeholder}
-        className="input text-sm flex-1"
-        disabled={saving}
-      />
-      {isValidLink && (
-        <a href={value} target="_blank" rel="noopener noreferrer" title="Ouvrir le lien" className="p-1.5 text-slate-400 hover:text-brand-600">
-          <ExternalLink size={14} />
-        </a>
-      )}
-    </div>
-  )
-}
-
-function InlineTextarea({ value, saving, onSave }) {
-  const [local, setLocal] = useState(value || '')
-  const ref = useRef(null)
-  useEffect(() => { setLocal(value || '') }, [value])
-  useEffect(() => { autoResize() }, [local])
-
-  function autoResize() {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = el.scrollHeight + 'px'
-  }
-
-  return (
-    <textarea ref={ref} value={local} onChange={e => setLocal(e.target.value)}
-      onBlur={e => { if (e.target.value !== (value || '')) onSave(e.target.value) }}
-      className="input text-sm w-full resize-none overflow-hidden" rows={1} disabled={saving} />
-  )
-}

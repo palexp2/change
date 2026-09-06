@@ -3,10 +3,12 @@ import { useSearchParams } from 'react-router-dom'
 import { Plus, AlertTriangle, Ban, RotateCcw, HelpCircle, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { VendorTabs } from '../components/VendorTabs.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -16,7 +18,7 @@ import { fmtMoney as fmtMoneyBase } from '../utils/formatters.js'
 
 // Particularités du site : montant absent → null (pas '—'), et la devise
 // Airtable « Euro » doit être mappée sur le code ISO 'EUR'.
-const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(n, currency === 'Euro' ? 'EUR' : currency, { fallback: null })
+const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(n, currency, { fallback: null })
 
 function amountDisplay(row) {
   return row.amount_label || fmtMoney(row.amount, row.currency) || '—'
@@ -147,7 +149,6 @@ function UnsubscribeFlowModal({ sub, onClose, onConfirm }) {
           className={inputCls}
           value={url}
           onChange={e => setUrl(e.target.value)}
-          placeholder="https://… page d'annulation du fournisseur"
           data-testid="unsub-url"
         />
         <button
@@ -265,7 +266,8 @@ function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
   )
 
   return (
-    <Modal isOpen onClose={onClose} title={form.vendor} size="lg">
+    <RecordPeekDrawer open onClose={onClose} title={form.vendor} width={720} peekKey="vendor_subscriptions">
+      <div className="px-5 py-4">
       <div className="grid grid-cols-2 gap-3">
         {text('vendor', 'Fournisseur')}
         {text('plan', 'Plan / Forfait', { 'data-testid': 'sub-plan' })}
@@ -282,7 +284,7 @@ function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
         {text('payment_method', 'Mode de paiement')}
         {select('active', 'Statut', [{ value: 1, label: 'Actif' }, { value: 0, label: 'Annulé' }], { asNumber: true })}
         <div className="col-span-2">
-          {text('cancel_url', "Page d'annulation chez le fournisseur (ouverte par « Se désabonner »)", { placeholder: 'https://…' })}
+          {text('cancel_url', "Page d'annulation chez le fournisseur (ouverte par « Se désabonner »)")}
         </div>
         <div className="col-span-2">
           <label className={labelCls}>Commentaires</label>
@@ -321,7 +323,8 @@ function EditModal({ sub, onClose, onSaved, onDeleted, onToggleActive }) {
         </div>
         <span className="text-xs text-slate-400">{saving ? 'Sauvegarde…' : 'Modifications sauvegardées automatiquement'}</span>
       </div>
-    </Modal>
+      </div>
+    </RecordPeekDrawer>
   )
 }
 
@@ -396,11 +399,11 @@ function CreateModal({ onClose, onCreated }) {
         </div>
         <div>
           <label className={labelCls}>Mode de paiement</label>
-          <input className={inputCls} value={form.payment_method ?? ''} onChange={e => set('payment_method', e.target.value)} placeholder="Mastercard, Visa USD, Venn – USD…" />
+          <input className={inputCls} value={form.payment_method ?? ''} onChange={e => set('payment_method', e.target.value)} />
         </div>
         <div>
           <label className={labelCls}>Date affichée (sheet)</label>
-          <input className={inputCls} value={form.billing_label ?? ''} onChange={e => set('billing_label', e.target.value)} placeholder="« 12 du mois », « 20 août »…" />
+          <input className={inputCls} value={form.billing_label ?? ''} onChange={e => set('billing_label', e.target.value)} />
         </div>
       </div>
       {/* Bouton requis : création d'un nouvel enregistrement (pas encore d'id → autosave impossible) */}
@@ -655,8 +658,7 @@ export default function VendorSubscriptions() {
 
   const { toggle: toggleActive, busyId, modal } = useSubscriptionToggle({
     onOptimistic: applyUpdate,
-    onSettled: updated => { applyUpdate(updated); setMissingKey(k => k + 1) },
-  })
+    onSettled: updated => { applyUpdate(updated); setMissingKey(k => k + 1) } })
 
   const columns = useMemo(() => TABLE_COLUMN_META.vendor_subscriptions.map(meta => ({
     ...meta,
@@ -666,8 +668,7 @@ export default function VendorSubscriptions() {
           <UnsubscribeButton sub={row} onToggle={toggleActive} busy={busyId === row.id} />
         </div>
       )
-      : RENDERS[meta.id],
-  })), [toggleActive, busyId])
+      : RENDERS[meta.id] })), [toggleActive, busyId])
 
   const load = useCallback(async () => {
     try {
@@ -696,7 +697,7 @@ export default function VendorSubscriptions() {
         <VendorTabs active="abonnements" />
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Abonnements fournisseurs</h1>
+            <PageTitle>Abonnements fournisseurs</PageTitle>
             <p className="text-xs text-slate-500 mt-0.5">
               Registre de référence des charges récurrentes (SaaS, télécom…) et calendrier des reçus attendus.
             </p>

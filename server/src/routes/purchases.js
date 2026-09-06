@@ -1,11 +1,14 @@
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
+import { readRelation } from '../services/customFieldsView.js'
 import { requireAuth } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { writeBackRecord } from '../services/airtableWriteback.js'
 import { logSync } from '../services/syncLog.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
+import { parsePage } from '../utils/pagination.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -43,9 +46,14 @@ function nextErpPurchaseReference() {
   return `LIA-ERP-${max + 1}`
 }
 
-// POST / — crée un achat INTERNE (≠ Airtable). Étape 4 « Priorité d'assemblage ».
-// Champs auto : supplier (depuis le produit), order_date = maintenant (ISO UTC Z),
-// status='Commandé', reference = LIA-ERP-n générée, unit_cost (depuis le produit).
+const PURCHASE_STATUSES = ['Commandé', 'Reçu partiellement', 'Reçu', 'Annulé']
+
+// POST / — crée un achat INTERNE (≠ Airtable). Étape 4 « Priorité d'assemblage »
+// et formulaire « Nouvel achat » de /purchases.
+// Seuls product_id et qty_ordered sont requis. Tout le reste a un défaut déduit :
+// supplier / supplier_company_id / unit_cost (depuis le produit), order_date =
+// maintenant (ISO UTC Z), status='Commandé', reference = LIA-ERP-n générée. Le
+// formulaire peut surcharger chacun de ces défauts.
 router.post('/', (req, res) => {
   const { product_id, qty_ordered, notes } = req.body
   if (!product_id) return res.status(400).json({ error: 'product_id is required' })
@@ -55,15 +63,45 @@ router.post('/', (req, res) => {
   const product = db.prepare('SELECT id, supplier, supplier_company_id, unit_cost FROM products WHERE id = ?').get(product_id)
   if (!product) return res.status(404).json({ error: 'Product not found' })
 
+  const blank = v => v === '' || v === undefined || v === null
+
+  const status = blank(req.body.status) ? 'Commandé' : String(req.body.status)
+  if (!PURCHASE_STATUSES.includes(status)) return res.status(400).json({ error: 'status invalide' })
+
+  let unitCost = product.unit_cost || 0
+  if (!blank(req.body.unit_cost)) {
+    const n = parseFloat(req.body.unit_cost)
+    if (Number.isNaN(n)) return res.status(400).json({ error: 'unit_cost doit être un nombre' })
+    unitCost = n
+  }
+
+  // Fournisseur : l'entreprise choisie dans le formulaire l'emporte sur celle du
+  // produit, et son nom repeuple la colonne texte `supplier` (affichée partout
+  // où l'achat n'est pas lié).
+  let supplierCompanyId = product.supplier_company_id || null
+  let supplier = product.supplier || null
+  if (!blank(req.body.supplier_company_id)) {
+    supplierCompanyId = String(req.body.supplier_company_id)
+    const company = db.prepare('SELECT name FROM companies WHERE id = ?').get(supplierCompanyId)
+    if (!company) return res.status(400).json({ error: 'supplier_company_id inconnu' })
+    supplier = company.name
+  }
+  if (!blank(req.body.supplier)) supplier = String(req.body.supplier).trim()
+
+  const orderDate = blank(req.body.order_date) ? null : String(req.body.order_date)
+  const receivedDate = blank(req.body.received_date) ? null : String(req.body.received_date)
+  const emplacement = blank(req.body.emplacement) ? null : String(req.body.emplacement).trim()
+  const refOverride = blank(req.body.reference) ? null : String(req.body.reference).trim()
+
   // Génération de la référence + insertion dans une même transaction (évite les
   // collisions de séquence si deux créations arrivent quasi simultanément).
-  const id = uuidv4()
+  const id = newRecordId()
   const created = db.transaction(() => {
-    const reference = nextErpPurchaseReference()
+    const reference = refOverride || nextErpPurchaseReference()
     db.prepare(`
-      INSERT INTO purchases (id, product_id, supplier, supplier_company_id, reference, order_date, qty_ordered, unit_cost, status, notes)
-      VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), ?, ?, 'Commandé', ?)
-    `).run(id, product_id, product.supplier || null, product.supplier_company_id || null, reference, qty, product.unit_cost || 0, notes || null)
+      INSERT INTO purchases (id, product_id, supplier, supplier_company_id, reference, order_date, received_date, qty_ordered, unit_cost, status, emplacement, notes)
+      VALUES (?, ?, ?, ?, ?, COALESCE(?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')), ?, ?, ?, ?, ?, ?)
+    `).run(id, product_id, supplier, supplierCompanyId, reference, orderDate, receivedDate, qty, unitCost, status, emplacement, notes || null)
     return db.prepare('SELECT * FROM purchases WHERE id = ?').get(id)
   })()
 
@@ -72,10 +110,8 @@ router.post('/', (req, res) => {
 })
 
 router.get('/', (req, res) => {
-  const { status, product_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { status, product_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
 
@@ -84,9 +120,9 @@ router.get('/', (req, res) => {
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM purchases p ${where}`).get(...params).c
   const purchases = db.prepare(`
-    SELECT p.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image,
+    SELECT p.*, pr.image_url as product_image,
            c.name as supplier_company_name
-    FROM purchases p
+    FROM ${readRelation('purchases')} p
     LEFT JOIN products pr ON p.product_id = pr.id
     LEFT JOIN companies c ON p.supplier_company_id = c.id
     ${where}
@@ -99,9 +135,9 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   const purchase = db.prepare(`
-    SELECT p.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image,
+    SELECT p.*, pr.image_url as product_image,
            c.name as supplier_company_name
-    FROM purchases p
+    FROM ${readRelation('purchases')} p
     LEFT JOIN products pr ON p.product_id = pr.id
     LEFT JOIN companies c ON p.supplier_company_id = c.id
     WHERE p.id = ?
@@ -117,7 +153,6 @@ const PATCHABLE_FIELDS = new Set([
   'qty_received',
   'unit_cost',
   'order_date',
-  'expected_date',
   'received_date',
   'reference',
   'supplier',
@@ -130,37 +165,25 @@ router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM purchases WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
-  const updates = []
-  const params = []
-  const changedColumns = []
-  for (const [key, raw] of Object.entries(req.body || {})) {
-    if (!PATCHABLE_FIELDS.has(key)) continue
-    changedColumns.push(key)
-    let value = raw
-    if (value === '' || value === undefined) value = null
-    if (['qty_ordered', 'qty_received'].includes(key) && value !== null) {
-      const n = parseInt(value, 10)
-      if (Number.isNaN(n)) return res.status(400).json({ error: `${key} doit être un entier` })
-      value = n
-    }
-    if (key === 'unit_cost' && value !== null) {
-      const n = parseFloat(value)
-      if (Number.isNaN(n)) return res.status(400).json({ error: 'unit_cost doit être un nombre' })
-      value = n
-    }
-    updates.push(`${key} = ?`)
-    params.push(value)
+  const body = req.body || {}
+  const present = k => k in body && body[k] !== '' && body[k] != null
+  for (const key of ['qty_ordered', 'qty_received']) {
+    if (present(key) && Number.isNaN(parseInt(body[key], 10))) return res.status(400).json({ error: `${key} doit être un entier` })
   }
-  if (updates.length === 0) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+  if (present('unit_cost') && Number.isNaN(parseFloat(body.unit_cost))) return res.status(400).json({ error: 'unit_cost doit être un nombre' })
+  const toInt = v => (v === '' || v == null ? null : parseInt(v, 10))
+  const { setClause, values, cols: changedColumns } = buildPartialUpdate(body, {
+    allowed: [...PATCHABLE_FIELDS],
+    coerce: { qty_ordered: toInt, qty_received: toInt, unit_cost: v => (v === '' || v == null ? null : parseFloat(v)) },
+  })
+  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
 
-  updates.push(`updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`)
-  params.push(req.params.id)
-  db.prepare(`UPDATE purchases SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  db.prepare(`UPDATE purchases SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
 
   const updated = db.prepare(`
-    SELECT p.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image,
+    SELECT p.*, pr.image_url as product_image,
            c.name as supplier_company_name
-    FROM purchases p
+    FROM ${readRelation('purchases')} p
     LEFT JOIN products pr ON p.product_id = pr.id
     LEFT JOIN companies c ON p.supplier_company_id = c.id
     WHERE p.id = ?

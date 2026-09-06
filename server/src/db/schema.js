@@ -1,5 +1,5 @@
-import { randomUUID } from 'node:crypto';
 import db from './database.js';
+import { newRecordId } from '../utils/recordId.js';
 
 export function initSchema() {
   // One-shot reshape: la 1ère version de serial_accounting_rules avait NOT NULL
@@ -73,7 +73,9 @@ export function initSchema() {
       monthly_cad REAL DEFAULT 0,
       nb_greenhouses INTEGER DEFAULT 0,
       close_date TEXT,
-      refusal_reason TEXT,
+      -- Colonne refusal_reason retirée : « Raison du refus » ne vit plus que
+      -- comme champ personnalisé (raison_du_refus, miroir du select Airtable)
+      -- — migration 025-drop-projects-refusal-reason.
       notes TEXT,
       airtable_id TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
@@ -377,6 +379,16 @@ export function initSchema() {
       UNIQUE(table_name)
     );
 
+    -- Configuration des formulaires d'ajout de record, par table (admin).
+    -- fields = JSON [{ field, visible, required }] — reflète le choix de
+    -- l'utilisateur en mode édition du formulaire ; les défauts sont déclarés
+    -- par la page (voir client/src/components/RecordForm.jsx).
+    CREATE TABLE IF NOT EXISTS table_form_configs (
+      table_name TEXT PRIMARY KEY,
+      fields TEXT NOT NULL DEFAULT '[]',
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
     -- Table view pills (admin-defined quick filters per table)
     CREATE TABLE IF NOT EXISTS table_view_pills (
       id TEXT PRIMARY KEY,
@@ -396,7 +408,8 @@ export function initSchema() {
       supplier TEXT,
       reference TEXT,
       order_date TEXT,
-      expected_date TEXT,
+      -- expected_date (« Date prévue ») retirée : champ supprimé sur demande,
+      -- colonne droppée par la migration 029. Rien ne la remplace.
       received_date TEXT,
       qty_ordered INTEGER DEFAULT 0,
       qty_received INTEGER DEFAULT 0,
@@ -809,14 +822,19 @@ export function initSchema() {
     // returns enhancements
     'ALTER TABLE returns ADD COLUMN airtable_id TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_returns_airtable ON returns(airtable_id) WHERE airtable_id IS NOT NULL',
-    'ALTER TABLE returns ADD COLUMN contact_id TEXT REFERENCES contacts(id)',
-    'ALTER TABLE returns ADD COLUMN return_number TEXT',
-    'ALTER TABLE returns ADD COLUMN tracking_number TEXT',
-    'ALTER TABLE returns ADD COLUMN processing_status TEXT',
+    // Colonnes contact_id et return_number retirées : « Contact » et « N° de
+    // retour » sont devenus des champs personnalisés (colonnes contact et
+    // n_de_retour), cf. migrations 027-convert-returns-contact et
+    // 026-convert-returns-return-number. Les laisser ici les recréerait vides à
+    // chaque démarrage — initSchema() tourne AVANT les migrations.
+    // Colonnes tracking_number et processing_status retirées : les champs
+    // « Suivi » et « Statut de traitement » ont été détruits (migration
+    // 028-drop-returns-tracking-and-processing-status). Même raison que
+    // ci-dessus : les laisser ici les recréerait à chaque démarrage.
     'ALTER TABLE returns ADD COLUMN billed_at TEXT',
     // return label automation (étiquette de retour générée depuis l'ERP) —
-    // return_label_tracking_number est distinct de tracking_number (écrasé à
-    // chaque sync Airtable, cf. airtable.js) pour ne pas perdre le suivi acheté.
+    // return_label_tracking_number porte le suivi de l'étiquette ACHETÉE depuis
+    // l'ERP ; c'est aujourd'hui le seul numéro de suivi d'un retour.
     'ALTER TABLE returns ADD COLUMN return_label_pdf_path TEXT',
     'ALTER TABLE returns ADD COLUMN return_label_tracking_number TEXT',
     'ALTER TABLE returns ADD COLUMN return_novoxpress_shipment_id TEXT',
@@ -843,14 +861,6 @@ export function initSchema() {
     'ALTER TABLE shipments ADD COLUMN ups_tracking_status TEXT',
     'ALTER TABLE shipments ADD COLUMN ups_tracking_last_activity TEXT',
     'ALTER TABLE shipments ADD COLUMN ups_tracking_checked_at TEXT',
-    // Étiquette + suivi Purolator (Shipping/Tracking E-Ship). tracking_number,
-    // carrier et label_pdf_path partagés (colonnes génériques déjà utilisées
-    // par Novoxpress/UPS) ; seul le PIN d'expédition Purolator et le suivi
-    // horaire (cf. services/purolator.js → refreshPurolatorTracking) sont propres.
-    'ALTER TABLE shipments ADD COLUMN purolator_shipment_id TEXT',
-    'ALTER TABLE shipments ADD COLUMN purolator_tracking_status TEXT',
-    'ALTER TABLE shipments ADD COLUMN purolator_tracking_last_activity TEXT',
-    'ALTER TABLE shipments ADD COLUMN purolator_tracking_checked_at TEXT',
     // Import des automatisations Airtable « Retours » (Phase 2) — ligne de
     // remplacement créée automatiquement pour un échange de garantie immédiat.
     // `order_items.item_type` a déjà les valeurs 'Facturable'|'Remplacement'|
@@ -1223,6 +1233,10 @@ export function initSchema() {
     'ALTER TABLE emails ADD COLUMN automated INTEGER DEFAULT 0',
     'ALTER TABLE emails ADD COLUMN open_count INTEGER DEFAULT 0',
     'ALTER TABLE shipments ADD COLUMN novoxpress_pickup_id TEXT',
+    // Détails du ramassage (JSON : date, fenêtre horaire, emplacement,
+    // instructions, poids, planifié le) — Novoxpress n'offre aucun endpoint de
+    // relecture d'un ramassage, on conserve donc ce qu'on lui a envoyé.
+    'ALTER TABLE shipments ADD COLUMN novoxpress_pickup_details TEXT',
     'ALTER TABLE shipments ADD COLUMN tracking_email_sent_at TEXT',
     'ALTER TABLE shipments ADD COLUMN tracking_email_interaction_id TEXT',
     'ALTER TABLE shipments ADD COLUMN tracking_email_contact_id TEXT',
@@ -1960,6 +1974,11 @@ export function initSchema() {
   // de rapprocher un achat LIA d'une facture fournisseur sans appariement flou.
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_vendor_name TEXT') } catch {}
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_qb_vendor_id TEXT') } catch {}
+  // Verdict du vérificateur de prix d'achats (services/purchasePriceCheck.js).
+  // Colonnes ERP-natives : le sync Airtable fait un upsert sélectif, elles survivent.
+  try { db.exec('ALTER TABLE purchases ADD COLUMN price_check_status TEXT') } catch {}
+  try { db.exec('ALTER TABLE purchases ADD COLUMN price_check_issues TEXT') } catch {}
+  try { db.exec('ALTER TABLE purchases ADD COLUMN price_checked_at TEXT') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_vendor ON purchases(supplier_vendor_name)') } catch {}
   // Cache de la table Airtable « Fournisseurs » : rec id → nom canonique + Id vendor QB.
   // Rafraîchi à chaque sync complète des achats ; sert à résoudre le champ lié ci-dessus.
@@ -2414,6 +2433,21 @@ export function initSchema() {
   // qui est un choix d'affichage local et non une suppression.
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0') } catch {}
 
+  // 2026-09-01 — la suppression d'un champ natif posait hidden=1, et le champ
+  // s'échouait dans une section « Champs masqués » en bas de /champs/:table :
+  // l'utilisateur voyait rester à l'écran un champ qu'il venait de supprimer.
+  // Supprimer est désormais une vraie suppression (soft-delete → corbeille) ;
+  // les hidden=1 hérités deviennent des suppressions. Convergente : plus rien
+  // n'écrit hidden=1 (la colonne reste pour ne pas casser les vieilles lignes).
+  try {
+    const r = db.prepare(`
+      UPDATE custom_fields
+      SET hidden=0, deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      WHERE hidden=1 AND deleted_at IS NULL
+    `).run()
+    if (r.changes) console.log(`✅ custom_fields: ${r.changes} champ(s) masqué(s) convertis en suppression (corbeille)`)
+  } catch {}
+
   const hasFieldOverrides = db.prepare(
     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='field_overrides'"
   ).get()
@@ -2438,7 +2472,7 @@ export function initSchema() {
       const migrate = db.transaction(rows => {
         for (const r of rows) {
           ins.run(
-            randomUUID(), r.erp_table, r.label || '', r.field_id,
+            newRecordId(), r.erp_table, r.label || '', r.field_id,
             r.type === 'boolean' ? 'checkbox' : (r.type || ''),
             r.decimals, r.country_code, r.sort_order,
             r.created_at || null, r.updated_at || null,
@@ -2529,7 +2563,7 @@ export function initSchema() {
             const mapped = mapLegacyFieldType(r)
             const label = r.display_label || r.airtable_field_name || r.column_name
             insCf.run(
-              randomUUID(), r.erp_table, label, r.column_name, mapped.type,
+              newRecordId(), r.erp_table, label, r.column_name, mapped.type,
               r.sort_order || 0, mapped.options ? JSON.stringify(mapped.options) : null,
               r.id, r.created_at, r.updated_at
             )
@@ -2951,50 +2985,12 @@ export function initSchema() {
   // commerciale et reste saisi par l'équipe.
   try { db.exec('ALTER TABLE companies ADD COLUMN source TEXT') } catch {}
 
-  // NEQ — numéro d'entreprise du Québec, clé du Registre des entreprises (REQ).
-  // Rempli par la liaison manuelle ou confirmée depuis la fiche entreprise
-  // (bloc « Registre des entreprises »), jamais par l'import : le registre est
-  // en lecture seule et ne décide pas tout seul qu'une fiche ERP lui correspond.
+  // NEQ — numéro d'entreprise du Québec. Colonne conservée pour ne pas perdre
+  // les valeurs déjà saisies ; l'intégration Registre des entreprises du
+  // Québec (REQ) qui l'alimentait a été retirée (licence des données ouvertes
+  // CC BY-NC-SA, pas d'usage commercial possible).
   try { db.exec('ALTER TABLE companies ADD COLUMN neq TEXT') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_companies_neq ON companies(neq) WHERE neq IS NOT NULL') } catch {}
-
-  // Registre des entreprises du Québec (données ouvertes du Registraire, via
-  // Données Québec). Miroir LOCAL et EN LECTURE SEULE : rien ne repart jamais
-  // vers le REQ. L'import est purement additif — voir services/reqImport.js,
-  // qui fait un upsert par NEQ et ne supprime jamais une ligne (une entreprise
-  // disparue d'une livraison garde sa dernière version connue).
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS req_entreprises (
-      neq TEXT PRIMARY KEY,
-      nom_legal TEXT,
-      nom_normalise TEXT,
-      noms_usage TEXT,                 -- JSON: autres noms sous lesquels l'entreprise fait affaire
-      statut_immat TEXT,
-      date_immat TEXT,                 -- date métier YYYY-MM-DD (pas de composante horaire)
-      date_statut_immat TEXT,
-      forme_juridique TEXT,
-      adresse TEXT,
-      ville TEXT,
-      province TEXT,
-      code_postal TEXT,
-      code_activite TEXT,
-      desc_activite TEXT,
-      code_activite2 TEXT,
-      desc_activite2 TEXT,
-      source_version TEXT,             -- livraison d'où vient la ligne (nom de fichier / date)
-      imported_at TEXT,
-      deleted_at TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    );
-  `)
-  // Nom normalisé : c'est la clé de rapprochement avec companies.name (la
-  // recherche par nom exact sur `nom_legal` ne trouve rien, les formes
-  // juridiques et les accents diffèrent d'une source à l'autre).
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_nom_normalise ON req_entreprises(nom_normalise)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_code_activite ON req_entreprises(code_activite)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_ville ON req_entreprises(ville)') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_req_statut ON req_entreprises(statut_immat)') } catch {}
 
   // Type de facture pour router les écritures comptables :
   //   'order'        → vente de pièces, constat à l'expédition (rail principal)
@@ -3141,7 +3137,7 @@ export function initSchema() {
     if (cntPill.get(t).c > 0) continue
     const cfg = getCfg.get(t)
     insPill.run(
-      randomUUID(), t, 'Tous', 'gray',
+      newRecordId(), t, 'Tous', 'gray',
       '[]',
       cfg?.visible_columns || '[]',
       cfg?.default_sort || '[]',
@@ -3169,7 +3165,7 @@ export function initSchema() {
       db.prepare(`
         INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, formula_expr, result_type, sort_order)
         VALUES (?, 'factures', 'Mois du document', 'cf_mois_du_document', 'text', 'formula', 'substr(document_date, 1, 7)', 'text', 0)
-      `).run(randomUUID())
+      `).run(newRecordId())
       console.log('✅ Factures: champ formule cf_mois_du_document créé')
     }
   } catch (e) {
@@ -3503,7 +3499,7 @@ export function initSchema() {
       db.transaction(() => {
         for (const d of rows) {
           let id = findProfile.get(d.name)?.id
-          if (!id) { id = randomUUID(); insertProfile.run(id, String(d.name).trim()) }
+          if (!id) { id = newRecordId(); insertProfile.run(id, String(d.name).trim()) }
           fill.run(d.currency || null, d.payment_method || null, d.qb_category || null,
             d.description || null, d.particularites || null, id)
         }
@@ -3590,6 +3586,11 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE paie_items ADD COLUMN total_pay REAL`) } catch {}
   // Date « Débité » (formule Airtable) : jour où la paie est chargée au compte BNC.
   try { db.exec(`ALTER TABLE paie_items ADD COLUMN debited_date TEXT`) } catch {}
+
+  // Débit bancaire de la paie : la transaction du relevé (BNC CAD, libellé
+  // Nethris) qui EST cette paie. Depuis que la banque est branchée, le montant
+  // passé au compte n'est plus recopié à la main — il vient de cette ligne.
+  try { db.exec(`ALTER TABLE paies ADD COLUMN bank_txn_id TEXT`) } catch {}
 
   // Trésorerie BNC — remplace le fichier « Maintien du solde disponible BNC ».
   // treasury_balances : saisies du solde disponible réel (une ligne par saisie,
@@ -3739,7 +3740,8 @@ export function initSchema() {
   //     paiement. C'est le garde-fou : on n'auto-coche JAMAIS un paiement que le
   //     fichier n'a pas connu, et décocher à la main le remet à NULL pour que
   //     l'automatisme ne re-coche pas par-dessus l'utilisateur.
-  //   - cleared_source : qui a coché — manual | bank (relevé) | sheet (fichier).
+  //   - cleared_source : qui a coché — manual | bank (relevé) | sheet (fichier)
+  //     | qb | plaid (webhook Plaid en temps quasi réel, voir connectors/plaid.js).
   try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN sheet_seen_at TEXT`) } catch {}
   try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN cleared_source TEXT`) } catch {}
   // Écriture QuickBooks qui prouve le passage à la banque : le rapport
@@ -3846,6 +3848,11 @@ export function initSchema() {
   // QB, et chaque transaction bancaire peut mémoriser la transaction QB
   // correspondante trouvée via le rapport GeneralLedger (services/bankQbLink.js).
   try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN qb_account_id TEXT`) } catch {}
+  // Pont Plaid : account_id Plaid (immuable côté Plaid) une fois ce compte
+  // mappé depuis /connecteurs, et l'item_id de connector_oauth correspondant
+  // (évite un JOIN sur le JSON metadata à chaque appel). NULL = pas branché.
+  try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN plaid_account_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN plaid_item_id TEXT`) } catch {}
   // « Autres détails » du relevé BNC : nature réelle de la transaction (le
   // bénéficiaire, p. ex. « NOVO EXPRESS ») alors que description reste
   // générique (« PMTS ENTREPRISES »). Affiché en premier côté UI.
@@ -3869,6 +3876,10 @@ export function initSchema() {
   // en devise de transaction des DEUX côtés — sans le taux, l'écart apparent
   // n'a aucun sens).
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN qb_match_rate REAL`) } catch {}
+  // Transaction encore en attente/autorisée côté banque (Plaid : champ `pending`
+  // de /transactions/sync) — 0/NULL = postée. Les autres sources (collage,
+  // TRX_Orisha) n'écrivent jamais de ligne pending : toujours déjà postée.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN pending INTEGER DEFAULT 0`) } catch {}
   // Seed du mapping (idempotent, ne touche pas un mapping déjà posé à la main).
   for (const [name, qbId] of [
     ['BNC CAD', '61'], ['BNC USD', '234,168'], ['BNC Épargne', '133'],
@@ -4080,6 +4091,12 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE lt_debts ADD COLUMN payment_amount REAL`) } catch {}
   try { db.exec(`ALTER TABLE lt_debt_payments RENAME COLUMN qb_je_id TO qb_txn_id`) } catch {}
   try { db.exec(`ALTER TABLE lt_debt_payments ADD COLUMN qb_txn_type TEXT`) } catch {}
+  // Versement vu au relevé bancaire : preuve que l'argent est SORTI, distincte
+  // de « l'écriture existe dans QuickBooks » (pushed_at / qb_txn_id).
+  try { db.exec(`ALTER TABLE lt_debt_payments ADD COLUMN bank_txn_id TEXT`) } catch {}
+  // Libellé du prélèvement au relevé (« BDC », « VILLE DE QUEBEC ») — sert à
+  // retrouver le versement dans le relevé. Vide = pas de recherche.
+  try { db.exec(`ALTER TABLE lt_debts ADD COLUMN bank_label_pattern TEXT`) } catch {}
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_lt_debt_payment_date ON lt_debt_payments(debt_id, payment_date) WHERE deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_lt_debt_payments_debt ON lt_debt_payments(debt_id, payment_date, deleted_at)`) } catch {}
 
@@ -4518,6 +4535,8 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_work_ideas_pos ON work_ideas(position)`) } catch {}
+  // Épingler une idée pour qu'elle ressorte visuellement et remonte en tête du carnet.
+  try { db.exec(`ALTER TABLE work_ideas ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`) } catch {}
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS recurring_tasks (
@@ -4547,6 +4566,14 @@ export function initSchema() {
   // « Payer Visa » le 25 doit crier avant le 25, pas se contenter d'exister.
   // day_hint reste l'indice libre affiché ; due_day est la version calculable.
   try { db.exec(`ALTER TABLE recurring_tasks ADD COLUMN due_day INTEGER`) } catch {}
+  // Épingler une tâche récurrente pour qu'elle ressorte visuellement et remonte dans sa cadence.
+  try { db.exec(`ALTER TABLE recurring_tasks ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`) } catch {}
+  // Certains travaux mensuels (déboursés, relevés bancaires, E/J) ne se font
+  // qu'APRÈS la fin du mois qu'ils décrivent : period_offset décale la période
+  // « courante » de N pas en arrière, pour que la ligne affiche directement
+  // « août » tout le mois de septembre plutôt qu'une ligne « septembre » vide
+  // à côté d'un rattrapage « août » — les deux disaient la même chose.
+  try { db.exec(`ALTER TABLE recurring_tasks ADD COLUMN period_offset INTEGER NOT NULL DEFAULT 0`) } catch {}
   // La cadence 'bihebdo' est arrivée après la création de la table : sur une DB
   // existante, le CHECK refuse encore la valeur, et SQLite ne sait pas modifier
   // une contrainte en place. On reconstruit donc la table (procédure officielle
@@ -4574,7 +4601,8 @@ export function initSchema() {
               created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
               updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
               deleted_at TEXT,
-              due_day INTEGER
+              due_day INTEGER,
+              priority INTEGER NOT NULL DEFAULT 0
             )
           `)
           db.exec(`

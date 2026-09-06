@@ -10,11 +10,12 @@
 // La détection est ancrée sur les comptes prépayés (prepaid_accounts) : un
 // document dont le fournisseur est un compte prépayé actif EST un relevé
 // mensuel. Aucun fournisseur codé en dur.
-import { randomUUID } from 'crypto'
 import { readFileSync, existsSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
 import { join } from 'path'
 import db from '../db/database.js'
 import { qbGet, qbUploadAttachment, qbEntityUrl } from '../connectors/quickbooks.js'
+import { uploadsPath } from '../config/uploads.js'
 
 const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
   'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
@@ -121,7 +122,7 @@ export function recordStatementLedgerEntry(row, { accountId, month }) {
     `).run(entryDate, amount, description, existing.id)
     return { id: existing.id, amount, month, created: false }
   }
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO prepaid_ledger_entries (id, account_id, entry_date, type, amount, description, source, sale_receipt_id)
     VALUES (?,?,?,'facture',?,?,'manuel',?)
@@ -207,7 +208,7 @@ async function existingAttachmentNames(entityType, entityId) {
 
 // Pages du document (page 1 + extra_pages), avec chemin absolu et type MIME.
 function statementFiles(row) {
-  const dir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
+  const dir = uploadsPath('receipts')
   let extra = []
   try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
   const pages = [

@@ -1,15 +1,19 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { newRecordId } from '../utils/recordId.js';
 import fs from 'fs';
 import path from 'path';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { makeUpload } from '../utils/upload.js';
 import { buildPurchaseOrderPdf, fetchOrishaLogo } from '../services/purchaseOrderPdf.js';
 import { sendEmail as sendGmail } from '../services/gmail.js';
 import { insertPurchasesFromPo } from '../services/purchaseOrder.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { parseFiniteInt, parsePositiveInt, parseNonNegativeInt } from '../utils/validateNumbers.js';
+import { readRelation } from '../services/customFieldsView.js'
+import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
 
 const INSTALLATION_DOC_FIELDS = [
   { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
@@ -19,15 +23,13 @@ const INSTALLATION_DOC_FIELDS = [
 ];
 
 function productDocsDir() {
-  const dir = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products', 'docs');
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  return dir;
+  return ensureUploadsDir('products', 'docs');
 }
 
 function deleteLocalDocSafe(relativePath) {
   if (!relativePath) return;
-  const abs = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', relativePath);
-  const root = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products', 'docs');
+  const abs = uploadsPath(relativePath);
+  const root = uploadsPath('products', 'docs');
   if (!abs.startsWith(root + path.sep)) return; // refuse à supprimer hors du dossier docs
   try { fs.unlinkSync(abs); } catch {}
 }
@@ -62,10 +64,8 @@ router.use(requireAuth);
 
 // GET /api/products
 router.get('/', (req, res) => {
-  const { search, type, procurement_type, low_stock, active, page = 1, limit = 100 } = req.query;
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { search, type, procurement_type, low_stock, active } = req.query;
+  const { page, limit, limitVal, offset } = parsePage(req.query, 100);
 
   let where = 'WHERE deleted_at IS NULL';
   const params = [];
@@ -101,7 +101,7 @@ router.get('/', (req, res) => {
 
 // GET /api/products/:id
 router.get('/:id', (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  const product = db.prepare(`SELECT * FROM ${readRelation('products')} WHERE id = ?`).get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
   const movements = db.prepare(
@@ -124,7 +124,7 @@ router.post('/', (req, res) => {
   const { sku, name_fr, name_en, type, unit_cost, price_cad, stock_qty, min_stock, order_qty, supplier, procurement_type, weight_lbs, notes } = req.body;
   if (!name_fr) return res.status(400).json({ error: 'name_fr is required' });
 
-  const id = uuidv4();
+  const id = newRecordId();
   db.prepare(
     `INSERT INTO products (id, sku, name_fr, name_en, type, unit_cost, price_cad, stock_qty, min_stock, order_qty, supplier, procurement_type, weight_lbs, notes)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
@@ -180,7 +180,7 @@ router.post('/:id/stock', (req, res) => {
     return res.status(400).json({ error: 'qty is required' });
   }
 
-  const movId = uuidv4();
+  const movId = newRecordId();
   let newQty;
   let movQty;
 
@@ -349,17 +349,12 @@ router.post('/:id/purchase-order/pdf', async (req, res) => {
   const product = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
-  try {
-    const po = normalizePoPayload(req.body)
-    const logo = await fetchOrishaLogo()
-    const pdf = await buildPurchaseOrderPdf({ ...po, logoBuffer: logo })
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="${po.po_number}.pdf"`)
-    res.send(pdf)
-  } catch (e) {
-    console.error('PO PDF error:', e)
-    res.status(500).json({ error: e.message })
-  }
+  const po = normalizePoPayload(req.body)
+  const logo = await fetchOrishaLogo()
+  const pdf = await buildPurchaseOrderPdf({ ...po, logoBuffer: logo })
+  res.setHeader('Content-Type', 'application/pdf')
+  res.setHeader('Content-Disposition', `inline; filename="${po.po_number}.pdf"`)
+  res.send(pdf)
 });
 
 // POST /api/products/:id/purchase-order/send-email — build PDF + send via Gmail OAuth
@@ -370,88 +365,97 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
   const { to, cc, subject, body_html, from_account } = req.body || {}
   if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
 
-  try {
-    const po = normalizePoPayload(req.body.po || {})
-    const logo = await fetchOrishaLogo()
-    const pdf = await buildPurchaseOrderPdf({ ...po, logoBuffer: logo })
+  const po = normalizePoPayload(req.body.po || {})
+  const logo = await fetchOrishaLogo()
+  const pdf = await buildPurchaseOrderPdf({ ...po, logoBuffer: logo })
 
-    const filename = `${po.po_number}.pdf`
-    const finalSubject = (subject && String(subject).trim()) || `Purchase Order ${po.po_number}`
-    const finalHtml = body_html && String(body_html).trim()
-      ? String(body_html)
-      : `<p>Bonjour,</p><p>Vous trouverez ci-joint notre bon de commande <strong>${po.po_number}</strong>.</p><p>Merci,<br>Automatisation Orisha inc.</p>`
+  const filename = `${po.po_number}.pdf`
+  const finalSubject = (subject && String(subject).trim()) || `Purchase Order ${po.po_number}`
+  const finalHtml = body_html && String(body_html).trim()
+    ? String(body_html)
+    : `<p>Bonjour,</p><p>Vous trouverez ci-joint notre bon de commande <strong>${po.po_number}</strong>.</p><p>Merci,<br>Automatisation Orisha inc.</p>`
 
-    const result = await sendGmail(to, finalSubject, finalHtml, {
-      cc: cc || undefined,
-      attachments: [{ filename, content: pdf, contentType: 'application/pdf' }],
-      userId: req.user?.id,
-      accountEmail: from_account || undefined,
-    })
+  const result = await sendGmail(to, finalSubject, finalHtml, {
+    cc: cc || undefined,
+    attachments: [{ filename, content: pdf, contentType: 'application/pdf' }],
+    userId: req.user?.id,
+    accountEmail: from_account || undefined,
+  })
 
-    // Log interaction (outbound email to supplier)
-    const companyId = product.supplier_company_id || null
-    const contactId = companyId
-      ? (db.prepare('SELECT id FROM contacts WHERE company_id=? AND email=? AND deleted_at IS NULL').get(companyId, to)?.id || null)
-      : null
-    const interactionId = uuidv4()
-    const emailId = uuidv4()
-    const achatId = uuidv4()
-    const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email)=lower(?)').get(result.account_email)?.id || req.user?.id || null
+  // Log interaction (outbound email to supplier)
+  const companyId = product.supplier_company_id || null
+  const contactId = companyId
+    ? (db.prepare('SELECT id FROM contacts WHERE company_id=? AND email=? AND deleted_at IS NULL').get(companyId, to)?.id || null)
+    : null
+  const interactionId = newRecordId()
+  const emailId = newRecordId()
+  const achatId = newRecordId()
+  const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email)=lower(?)').get(result.account_email)?.id || req.user?.id || null
 
-    // L'email est déjà parti (side effect irréversible) : on regroupe toutes les
-    // écritures DB qui en découlent (interaction, email, achat fournisseur, achats)
-    // dans une seule transaction pour éviter des records orphelins si une écriture
-    // tardive échoue. achats_fournisseurs = comptabilité, doit rester cohérent.
-    const subtotal = po.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0)
-    const linesJson = JSON.stringify(po.items.map(it => ({
-      amount: (Number(it.qty) || 0) * (Number(it.rate) || 0),
-      qty: Number(it.qty) || 0,
-      rate: Number(it.rate) || 0,
-      description: it.product,
-    })))
-    const descSummary = po.items.map(it => it.product).filter(Boolean).slice(0, 3).join(', ')
+  // L'email est déjà parti (side effect irréversible) : on regroupe toutes les
+  // écritures DB qui en découlent (interaction, email, achat fournisseur, achats)
+  // dans une seule transaction pour éviter des records orphelins si une écriture
+  // tardive échoue. achats_fournisseurs = comptabilité, doit rester cohérent.
+  const subtotal = po.items.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0)
+  const linesJson = JSON.stringify(po.items.map(it => ({
+    amount: (Number(it.qty) || 0) * (Number(it.rate) || 0),
+    qty: Number(it.qty) || 0,
+    rate: Number(it.rate) || 0,
+    description: it.product,
+  })))
+  const descSummary = po.items.map(it => it.product).filter(Boolean).slice(0, 3).join(', ')
 
-    const persist = db.transaction(() => {
-      db.prepare(`
-        INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
-        VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(interactionId, contactId, companyId, senderUserId)
-      db.prepare(`
-        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, gmail_message_id, gmail_thread_id, automated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-      `).run(emailId, interactionId, finalSubject, finalHtml, result.account_email, to, cc || null, result.message_id, result.thread_id)
+  const persist = db.transaction(() => {
+    db.prepare(`
+      INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+      VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(interactionId, contactId, companyId, senderUserId)
+    db.prepare(`
+      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, gmail_message_id, gmail_thread_id, automated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(emailId, interactionId, finalSubject, finalHtml, result.account_email, to, cc || null, result.message_id, result.thread_id)
 
-      // Créer un achat fournisseur (bill brouillon) à partir du PO envoyé
-      db.prepare(`
-        INSERT INTO achats_fournisseurs
-          (id, type, date_achat, vendor, vendor_id, bill_number, reference, description,
-           amount_cad, tax_cad, total_cad, amount_paid_cad, currency, exchange_rate,
-           status, lines, notes)
-        VALUES (?, 'bill', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, 1, 'Brouillon', ?, ?)
-      `).run(
-        achatId,
-        po.date,
-        po.supplier || null,
-        companyId,
-        po.po_number,
-        po.po_number,
-        descSummary || null,
-        subtotal,
-        subtotal,
-        po.currency || 'CAD',
-        linesJson,
-        `Créé automatiquement depuis PO ${po.po_number} envoyé à ${to}.${po.details ? ' ' + po.details : ''}`,
-      )
+    // Créer un achat fournisseur (bill brouillon) à partir du PO envoyé
+    db.prepare(`
+      INSERT INTO achats_fournisseurs
+        (id, type, date_achat, vendor, vendor_id, bill_number, reference, description,
+         amount_cad, tax_cad, total_cad, amount_paid_cad, currency, exchange_rate,
+         status, lines, notes)
+      VALUES (?, 'bill', ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, 1, 'Brouillon', ?, ?)
+    `).run(
+      achatId,
+      po.date,
+      po.supplier || null,
+      companyId,
+      po.po_number,
+      po.po_number,
+      descSummary || null,
+      subtotal,
+      subtotal,
+      po.currency || 'CAD',
+      linesJson,
+      `Créé automatiquement depuis PO ${po.po_number} envoyé à ${to}.${po.details ? ' ' + po.details : ''}`,
+    )
 
-      return insertPurchasesFromPo(db, po, { supplierCompanyId: companyId, to })
-    })
-    const purchaseIds = persist()
+    return insertPurchasesFromPo(db, po, { supplierCompanyId: companyId, to })
+  })
+  const { ids: purchaseIds, skipped: purchasesSkipped } = persist()
 
-    res.json({ success: true, interaction_id: interactionId, email_id: emailId, achat_id: achatId, purchase_ids: purchaseIds })
-  } catch (e) {
-    console.error('PO send-email error:', e)
-    res.status(500).json({ error: e.message })
+  // Realtime APRÈS le commit : la page Achats et la fiche produit voient les
+  // achats du PO tout de suite, sans attendre le prochain delta du cache client.
+  for (const purchaseId of purchaseIds) {
+    const row = db.prepare('SELECT * FROM purchases WHERE id = ?').get(purchaseId)
+    if (row) emitEntity('purchase', 'created', purchaseId, row, req.user?.id)
   }
+
+  res.json({
+    success: true,
+    interaction_id: interactionId,
+    email_id: emailId,
+    achat_id: achatId,
+    purchase_ids: purchaseIds,
+    purchases_skipped: purchasesSkipped,
+  })
 });
 
 // POST /api/products/:id/refresh-installation-docs
@@ -518,10 +522,114 @@ router.post('/:id/refresh-installation-docs', async (req, res) => {
   res.json({ product: updated, results });
 });
 
+// ── Image du produit ────────────────────────────────────────────────────────
+//
+// Jusqu'ici `products.image_url` n'était rempli QUE par le miroir Airtable
+// (pièce jointe « Image » de la table Pièces) : un produit créé dans l'ERP, ou
+// une pièce dont la fiche Airtable n'a pas d'image, n'avait aucun moyen d'en
+// obtenir une — d'où les cellules « Image » vides dans les tableaux (articles
+// de commande, nomenclature, catalogue).
+//
+// Les fichiers déposés ici portent le préfixe `local-` : c'est ce qui les
+// distingue des copies du miroir (nommées `<recAirtable>.<ext>`) et ce qui
+// empêche la prochaine synchro de les écraser (cf. piecesPrepareImages).
+const PRODUCT_IMAGE_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg'];
+
+function productImagesDir() {
+  return ensureUploadsDir('products');
+}
+
+const productImageUpload = makeUpload({
+  destination: (req, file, cb) => { try { cb(null, productImagesDir()); } catch (e) { cb(e); } },
+  filename: (req, file) => `local-${req.params.id}${path.extname(file.originalname).toLowerCase()}`,
+  fileSize: 10 * 1024 * 1024,
+  allowedExt: PRODUCT_IMAGE_EXT,
+  rejectMessage: ext => `Image non supportée : ${ext || 'sans extension'}`,
+}).single('file');
+
+// Ne supprime du disque que les dépôts manuels : un fichier du miroir Airtable
+// n'est pas à nous, et la synchro ne le re-télécharge pas s'il existe déjà.
+function unlinkLocalProductImage(imageUrl) {
+  const name = String(imageUrl || '').split('/').pop();
+  if (!name.startsWith('local-')) return;
+  try { fs.unlinkSync(path.join(productImagesDir(), name)); } catch { /* déjà parti */ }
+}
+
+// POST /api/products/:id/image — dépose (ou remplace) l'image du produit.
+router.post('/:id/image', (req, res) => {
+  const existing = db.prepare('SELECT id, image_url FROM products WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Product not found' });
+
+  productImageUpload(req, res, (uploadErr) => {
+    if (uploadErr) return res.status(400).json({ error: uploadErr.message });
+    if (!req.file) return res.status(400).json({ error: 'Aucun fichier' });
+
+    const imageUrl = `/erp/api/product-images/${req.file.filename}`;
+    // Remplacement par un autre format (jpg → png) : l'ancien dépôt manuel
+    // n'est plus référencé, on le retire.
+    if (existing.image_url && existing.image_url !== imageUrl) unlinkLocalProductImage(existing.image_url);
+
+    db.prepare("UPDATE products SET image_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+      .run(imageUrl, req.params.id);
+    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+    res.json(updated);
+  });
+});
+
+// DELETE /api/products/:id/image — retire l'image du produit.
+router.delete('/:id/image', (req, res) => {
+  const existing = db.prepare('SELECT id, image_url FROM products WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Product not found' });
+  unlinkLocalProductImage(existing.image_url);
+  db.prepare("UPDATE products SET image_url = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
+    .run(req.params.id);
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+  res.json(updated);
+});
+
+// Une pièce ne se supprime que si plus rien ne la référence : nomenclature
+// (elle-même assemblée, ou composant d'un autre produit), envoi (une ligne de
+// commande rattachée à un envoi) et achats. Sans ce garde-fou, la fiche
+// disparaît de /products mais reste citée dans des BOM, des envois expédiés et
+// l'historique d'achat, qui affichent alors une pièce introuvable.
+function productDeleteBlockers(id) {
+  const bom = db.prepare('SELECT COUNT(*) AS c FROM bom_items WHERE product_id = ? OR component_id = ?').get(id, id).c;
+  const shipments = db.prepare(
+    'SELECT COUNT(DISTINCT shipment_id) AS c FROM order_items WHERE product_id = ? AND shipment_id IS NOT NULL'
+  ).get(id).c;
+  const purchases = db.prepare('SELECT COUNT(*) AS c FROM purchases WHERE product_id = ?').get(id).c;
+  return { bom, shipments, purchases };
+}
+
+function plural(n, one, many) { return `${n} ${n > 1 ? many : one}`; }
+
+function blockersMessage(b) {
+  const parts = [];
+  if (b.bom) parts.push(plural(b.bom, 'ligne de nomenclature', 'lignes de nomenclature'));
+  if (b.shipments) parts.push(plural(b.shipments, 'envoi', 'envois'));
+  if (b.purchases) parts.push(plural(b.purchases, 'achat', 'achats'));
+  return `Pièce liée à ${parts.join(', ')} — suppression impossible.`;
+}
+
+// GET /api/products/:id/delete-check — ce qui empêche (ou non) la suppression.
+router.get('/:id/delete-check', (req, res) => {
+  const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Product not found' });
+  const blockers = productDeleteBlockers(req.params.id);
+  const deletable = !blockers.bom && !blockers.shipments && !blockers.purchases;
+  res.json({ deletable, blockers, reason: deletable ? null : blockersMessage(blockers) });
+});
+
 // DELETE /api/products/:id
 router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
+  const blockers = productDeleteBlockers(req.params.id);
+  if (blockers.bom || blockers.shipments || blockers.purchases) {
+    return res.status(409).json({ error: blockersMessage(blockers), blockers });
+  }
   db.prepare("UPDATE products SET active=0, deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
   emitEntity('product', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
   res.json({ message: 'Deleted' });

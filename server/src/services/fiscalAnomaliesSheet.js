@@ -19,8 +19,8 @@
 //   - une ligne déjà traitée n'est jamais rejouée : une édition faite ensuite dans
 //     /fournisseurs ne peut pas être réécrasée par la sync. Seule une ligne NOUVELLE
 //     (ou modifiée dans le Sheet) déclenche une mise à jour.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { fetchPmtSuiviGrid } from './pmtSuiviImport.js'
@@ -227,7 +227,7 @@ function upsertRow(a, { profileId, outcome, detail, applied }) {
     `).run(...vals, known.id)
     return known.id
   }
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO fiscal_anomalies (id, row_key, sheet_date, account_label, vendor_name, amount_text, currency,
       used_status, correct_status, explanation, vendor_profile_id, outcome, outcome_detail, applied_at)

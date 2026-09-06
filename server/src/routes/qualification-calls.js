@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { getStripeClient, ensureStripeCustomer, getOrCreateTaxRate } from '../services/stripeInvoices.js'
@@ -8,6 +8,7 @@ import { getPostmarkClient } from '../services/postmarkConfig.js'
 // escapeHtml canonique : échappe aussi " et ' dans le texte (durcissement
 // volontaire par rapport à l'ancien escapeHtmlText local).
 import { escapeHtml as escapeHtmlText, escapeAttr as escapeHtmlAttr } from '../utils/sanitizeHtml.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -120,7 +121,7 @@ router.post('/', (req, res) => {
   if (!company_id) return res.status(400).json({ error: 'company_id requis' })
   const company = db.prepare('SELECT id, name FROM companies WHERE id = ?').get(company_id)
   if (!company) return res.status(404).json({ error: 'Entreprise introuvable' })
-  const id = randomUUID()
+  const id = newRecordId()
   // airtable_record_id est UNIQUE NOT NULL — on génère un id local préfixé pour les
   // records créés depuis l'ERP (pas d'origine Airtable).
   const localRecordId = 'local_' + id
@@ -148,24 +149,12 @@ const EDITABLE_COLS = new Set([
 router.patch('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM qualification_calls WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  const body = req.body || {}
-  const sets = []
-  const vals = []
-  for (const [key, value] of Object.entries(body)) {
-    if (!EDITABLE_COLS.has(key)) continue
-    sets.push(`${key} = ?`)
-    // Colonnes JSON : stocker comme string si on reçoit un tableau.
-    if ((key === 'pain_points' || key === 'red_flags') && Array.isArray(value)) {
-      vals.push(JSON.stringify(value))
-    } else {
-      vals.push(value == null ? null : String(value))
-    }
-  }
-  if (!sets.length) return res.json({ ok: true, updated: 0 })
-  sets.push(`updated_at = ?`)
-  vals.push(new Date().toISOString())
-  vals.push(req.params.id)
-  db.prepare(`UPDATE qualification_calls SET ${sets.join(', ')} WHERE id = ?`).run(...vals)
+  const asText = v => (v == null ? null : String(v))
+  const asJsonOrText = v => (Array.isArray(v) ? JSON.stringify(v) : asText(v))
+  const coerce = Object.fromEntries([...EDITABLE_COLS].map(c => [c, c === 'pain_points' || c === 'red_flags' ? asJsonOrText : asText]))
+  const { setClause, values } = buildPartialUpdate(req.body || {}, { allowed: [...EDITABLE_COLS], coerce })
+  if (!setClause) return res.json({ ok: true, updated: 0 })
+  db.prepare(`UPDATE qualification_calls SET ${setClause}, updated_at = ? WHERE id = ?`).run(...values, new Date().toISOString(), req.params.id)
   const row = db.prepare(`SELECT ${SELECT_COLS} FROM qualification_calls WHERE id = ?`).get(req.params.id)
   res.json(row)
 })
@@ -270,7 +259,7 @@ router.post('/:id/farm-address', (req, res) => {
         db.prepare(`
           INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(randomUUID(), call.company_id, address_type, line1 || null, city || null, province || null, postal_code || null, country || null)
+        `).run(newRecordId(), call.company_id, address_type, line1 || null, city || null, province || null, postal_code || null, country || null)
       }
     }
   })
@@ -328,7 +317,7 @@ router.post('/:id/subscribe-card', async (req, res) => {
             .run(line1 || null, city || null, province, postal_code, country, existing.id)
         } else {
           db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?, ?, 'Facturation', ?, ?, ?, ?, ?)`)
-            .run(randomUUID(), call.company_id, line1 || null, city || null, province, postal_code, country)
+            .run(newRecordId(), call.company_id, line1 || null, city || null, province, postal_code, country)
         }
       })
       upsertBilling()

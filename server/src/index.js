@@ -10,23 +10,29 @@ import dotenv from 'dotenv'
 import './config/secrets.js'
 
 import { initSchema, seedSellableProducts } from './db/schema.js'
-import { initChangeLog } from './db/changeLog.js'
+import { runMigrations } from './db/migrate.js'
+import { checkSchemaDrift } from './db/schemaDrift.js'
+import { initChangeLog, purgeChangeLog } from './db/changeLog.js'
 import { startFieldRuleWatcher } from './services/fieldRuleWatcher.js'
 import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWatcher.js'
 import { startReturnItemCreatedWatcher } from './services/returnItemCreatedWatcher.js'
+import { startShippedCostWatcher } from './services/shippedCostWatcher.js'
 import { startReturnItemReceivedWatcher } from './services/returnItemReceivedWatcher.js'
 import { sendReturnExchangeReminders } from './services/returnExchangeReminder.js'
 import { startAddressCheckWatcher } from './services/addressCheck.js'
+import { startPurchasePriceCheckWatcher } from './services/purchasePriceCheck.js'
 import { syncAllPrepaidAccountsFromQB } from './services/prepaid.js'
 import bootstrapRouter from './routes/bootstrap.js'
-import { seedSystemAutomations, logSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
-import { runPurge } from './services/purge.js'
+import { seedSystemAutomations, logSystemRun, touchSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
+import { runTrashAutoCleanupOnBoot } from './services/trash.js'
 import authRouter from './routes/auth.js'
 import companiesRouter from './routes/companies.js'
 import contactsRouter from './routes/contacts.js'
 import projectsRouter from './routes/projects.js'
 import customFieldsRouter from './routes/custom-fields.js'
+import customFieldFilesRouter from './routes/custom-field-files.js'
 import fieldVisibilityRulesRouter from './routes/field-visibility-rules.js'
+import formConfigsRouter from './routes/form-configs.js'
 import productsRouter from './routes/products.js'
 import ordersRouter from './routes/orders.js'
 import ticketsRouter from './routes/tickets.js'
@@ -48,6 +54,7 @@ import paymentsRouter from './routes/payments.js'
 import catalogRouter from './routes/catalog.js'
 import documentsRouter from './routes/documents.js'
 import searchRouter from './routes/search.js'
+import recordLinksRouter from './routes/record-links.js'
 import shipmentsRouter from './routes/shipments.js'
 import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
@@ -58,6 +65,7 @@ import vendorSubscriptionsRouter from './routes/vendor-subscriptions.js'
 import vendorProfilesRouter from './routes/vendor-profiles.js'
 import treasuryRouter from './routes/treasury.js'
 import bankRouter from './routes/bank.js'
+import plaidRouter, { plaidWebhookRouter } from './routes/plaid.js'
 import prepaidRouter from './routes/prepaid.js'
 import ltDebtsRouter from './routes/lt-debts.js'
 import marketingBudgetRouter from './routes/marketing-budget.js'
@@ -67,7 +75,6 @@ import fxRouter from './routes/fx.js'
 import monthEndRouter from './routes/month-end.js'
 import driveInventoryRouter from './routes/drive-inventory.js'
 import mapaqRouter from './routes/mapaq.js'
-import reqRouter from './routes/req.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
@@ -89,6 +96,7 @@ import stripeWebhooksRouter from './routes/stripe-webhooks.js'
 import hooksRouter from './routes/hooks.js'
 import instagramRouter from './routes/instagram.js'
 import stripeInvoicesRouter from './routes/stripe-invoices.js'
+import stripeSubscriptionsRouter from './routes/stripe-subscriptions.js'
 import customerPayRouter from './routes/customer-pay.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
 import discoveryFormsRouter from './routes/discovery-forms.js'
@@ -99,7 +107,6 @@ import stripeInvoiceItemsRouter from './routes/stripe-invoice-items.js'
 import novoxpressRouter from './routes/novoxpress.js'
 import digikeyRouter from './routes/digikey.js'
 import upsRouter from './routes/ups.js'
-import purolatorRouter from './routes/purolator.js'
 import trackRouter from './routes/track.js'
 import installationFeedbackRouter from './routes/installation-feedback.js'
 import telnyxWebhooksRouter from './routes/telnyx-webhooks.js'
@@ -117,8 +124,9 @@ import { createRealtimeServer } from './services/realtime.js'
 import { initTaskRunner, shutdownTaskRunner } from './services/taskRunner.js'
 import { initScheduler } from './services/automationScheduler.js'
 import { syncAllMailboxes } from './services/gmail.js'
-import { syncAirtable, syncProjets, syncPieces, syncOrders, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements, syncEmployees, syncPaies, syncPaieItems } from './services/airtable.js'
+import { syncCompanies, syncContacts, syncProjets, syncPieces, syncOrders, syncOrderItems, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements, syncEmployees, syncPaies, syncPaieItems } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
+import { routeSync } from './services/airtableMirrorEngine.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
 import { syncAndPushStripePayouts, getStripePayoutPushConfig, importFromQB } from './services/quickbooks.js'
 import cron from 'node-cron'
@@ -199,6 +207,14 @@ app.use('/api/hooks/telnyx', express.raw({ type: 'application/json' }), (req, re
   next()
 }, telnyxWebhooksRouter)
 
+// Plaid signe le webhook en JWT ES256 sur le corps brut (voir
+// connectors/plaid.js:verifyWebhook) — même contrainte de corps brut.
+app.use('/api/plaid/webhook', express.raw({ type: 'application/json' }), (req, res, next) => {
+  req.rawBody = req.body
+  try { req.body = JSON.parse(req.body) } catch { req.body = {} }
+  next()
+}, plaidWebhookRouter)
+
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
@@ -219,18 +235,20 @@ app.get('/api/health', (req, res) => {
 })
 
 // Serve call recordings
-app.use('/api/recordings', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')))
+app.use('/api/recordings', express.static(uploadsPath('calls')))
 // Serve bons de livraison
-app.use('/api/bons-livraison', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'bons-livraison')))
+app.use('/api/bons-livraison', express.static(uploadsPath('bons-livraison')))
 // Serve product images
-app.use('/api/product-images', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products')))
+app.use('/api/product-images', express.static(uploadsPath('products')))
 // Serve product installation/replacement PDFs (cached copies of lien_pdf_*)
-app.use('/api/product-docs', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'products', 'docs')))
+app.use('/api/product-docs', express.static(uploadsPath('products', 'docs')))
 // Serve record attachments
-app.use('/api/attachments', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'attachments')))
+app.use('/api/attachments', express.static(uploadsPath('attachments')))
 
 import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
 import { regenerateAllViews } from './services/customFieldsView.js'
+import { seedNativeFieldConversions } from './services/nativeFieldConversions.js'
+import { retireEnvoisCoreFieldMap, retireOrdersCoreFieldMap } from './services/airtableUiFieldMap.js'
 import { seedBankAccounts } from './services/bankReconciliation.js'
 import { seedMonthEndProvisions } from './services/monthEndSeed.js'
 import { seedRecurringWork } from './services/recurringWork.js'
@@ -238,8 +256,17 @@ import { seedLtDebts } from './services/ltDebtSeed.js'
 import { seedCardCeilings } from './services/cardCeiling.js'
 import { seedCancelUrls } from './services/subscriptionCancelUrls.js'
 import { initPromptQueue } from './services/promptQueue.js'
+import { startQuotaGuard } from './services/quotaGuard.js'
+import { uploadsPath } from './config/uploads.js'
 
 initSchema()
+// Migrations numérotées (db/migrate.js) — ce que le pattern additif de
+// schema.js ne sait pas faire : supprimer, renommer, et savoir ce qui a déjà
+// été appliqué. Placées APRÈS initSchema (une migration peut dépendre d'une
+// table qu'il vient de créer) et AVANT tout ce qui lit des données. Une
+// migration qui échoue laisse remonter l'exception et arrête le démarrage :
+// un serveur qui refuse de partir est préférable à une base à moitié migrée.
+await runMigrations()
 initChangeLog()
 seedSellableProducts()
 seedSystemAutomations()
@@ -252,7 +279,20 @@ seedLtDebts()
 seedCardCeilings()
 // Pages d'annulation des abonnements fournisseurs — ne remplit que les vides.
 seedCancelUrls()
-runPurge()
+// Corbeille : rattrapage au démarrage (le serveur a pu rester éteint plusieurs
+// jours), puis passage quotidien via le cron plus bas.
+runTrashAutoCleanupOnBoot()
+// Conversion des colonnes natives calculées en vrais champs custom (lookup/
+// rollup) — DOIT précéder regenerateAllViews() : les routes converties lisent
+// la vue <table>_v et comptent sur ces colonnes.
+seedNativeFieldConversions()
+// Envois : reprise du field_map « cœur » vers les mappings de /champs/shipments,
+// puis effacement du field_map. Une seule fois (elle ne fait rien dès que le
+// field_map est vide) — voir services/airtableUiFieldMap.js.
+retireEnvoisCoreFieldMap()
+// Commandes : même bascule (7 clés cœur reprises dans /champs/orders, doublon
+// « Abonnement » mis à la corbeille). Idempotente elle aussi.
+retireOrdersCoreFieldMap()
 regenerateAllViews()
 
 // Register native fields in airtable_field_mappings so they appear in the
@@ -285,7 +325,6 @@ ensureNativeFieldDefs([
   { module: 'projets', erp_table: 'projects', column_name: 'vendeur_id',     label: 'Vendeur',         field_type: 'link',          sort_order: -992, options: { target_table: 'users' } },
   { module: 'projets', erp_table: 'projects', column_name: 'nom_du_vendeur', label: 'Vendeur AT',      field_type: 'text',          sort_order: -991 },
   { module: 'projets', erp_table: 'projects', column_name: 'close_date',     label: 'Date de clôture', field_type: 'date',          sort_order: -990 },
-  { module: 'projets', erp_table: 'projects', column_name: 'refusal_reason', label: 'Raison du refus', field_type: 'text',          sort_order: -989 },
   { module: 'projets', erp_table: 'projects', column_name: 'notes',          label: 'Notes',           field_type: 'long_text',     sort_order: -988 },
   { module: 'projets', erp_table: 'projects', column_name: 'creation',       label: 'Créé le',         field_type: 'date',          sort_order: -987 },
 ])
@@ -297,7 +336,10 @@ app.use('/api/companies', companiesRouter)
 app.use('/api/contacts', contactsRouter)
 app.use('/api/projects', projectsRouter)
 app.use('/api/custom-fields', customFieldsRouter)
+// Fichiers déposés dans un champ perso de type « Attachement ».
+app.use('/api/custom-field-files', customFieldFilesRouter)
 app.use('/api/field-visibility-rules', fieldVisibilityRulesRouter)
+app.use('/api/form-configs', formConfigsRouter)
 app.use('/api/products', productsRouter)
 app.use('/api/orders', ordersRouter)
 app.use('/api/tickets', ticketsRouter)
@@ -320,6 +362,7 @@ app.use('/api/payments', paymentsRouter)
 app.use('/api/catalog', catalogRouter)
 app.use('/api/documents', documentsRouter)
 app.use('/api/search', searchRouter)
+app.use('/api/record-links', recordLinksRouter)
 app.use('/api/shipments', shipmentsRouter)
 app.use('/api/automations', automationsRouter)
 // Webhooks entrants PUBLICS (token = secret, pas de requireAuth) — voir routes/hooks.js
@@ -334,6 +377,7 @@ app.use('/api/vendor-subscriptions', vendorSubscriptionsRouter)
 app.use('/api/vendor-profiles', vendorProfilesRouter)
 app.use('/api/treasury', treasuryRouter)
 app.use('/api/bank', bankRouter)
+app.use('/api/plaid', plaidRouter)
 app.use('/api/prepaid', prepaidRouter)
 app.use('/api/lt-debts', ltDebtsRouter)
 app.use('/api/marketing-budget', marketingBudgetRouter)
@@ -343,7 +387,6 @@ app.use('/api/fx', fxRouter)
 app.use('/api/month-end', monthEndRouter)
 app.use('/api/drive-inventory', driveInventoryRouter)
 app.use('/api/mapaq', mapaqRouter)
-app.use('/api/req', reqRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
 app.use('/api/anomalies', anomaliesRouter)
 app.use('/api/changelog', changelogRouter)
@@ -354,6 +397,7 @@ app.use('/api/journal-entries', journalEntriesRouter)
 app.use('/api/stock-movements', stockMovementsRouter)
 app.use('/api/stripe-queue', stripeQueueRouter)
 app.use('/api/stripe-invoices', stripeInvoicesRouter)
+app.use('/api/stripe-subscriptions', stripeSubscriptionsRouter)
 app.use('/api/stripe-payouts', stripePayoutsRouter)
 app.use('/api/stripe-invoice-items', stripeInvoiceItemsRouter)
 app.use('/api/email-tracking', emailTrackingRouter)
@@ -378,19 +422,22 @@ app.use('/api/activity', activityRouter)
 app.use('/api/side-effects', sideEffectsRouter)
 app.use('/api/notifications', notificationsRouter)
 app.use('/api/comments', commentsRouter)
-app.use('/api/receipt-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')))
-app.use('/api/novoxpress/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
+app.use('/api/receipt-files', express.static(uploadsPath('receipts')))
+app.use('/api/novoxpress/labels', express.static(uploadsPath('labels')))
+// Étiquette absente du disque : sans ce 404, la requête retombait sur le
+// routeur Novoxpress (protégé) et repartait en 401 — un « non authentifié »
+// trompeur pour un simple fichier manquant.
+app.use('/api/novoxpress/labels', (req, res) => res.status(404).json({ error: 'Étiquette introuvable' }))
 app.use('/api/novoxpress', novoxpressRouter)
 // Étiquettes servies sous un chemin neutre (elles ne sont plus toutes
 // Novoxpress depuis l'ajout du connecteur UPS) — même dossier uploads/labels.
-app.use('/api/labels', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')))
+app.use('/api/labels', express.static(uploadsPath('labels')))
 app.use('/api/ups', upsRouter)
-app.use('/api/purolator', purolatorRouter)
 app.use('/api/digikey', digikeyRouter)
 app.use('/api/track', trackRouter)
 app.use('/api/public/installation-feedback', installationFeedbackRouter)
 app.use('/api/public/ticket-survey', ticketSurveysPublicRouter)
-app.use('/api/interaction-files', express.static(path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'interactions')))
+app.use('/api/interaction-files', express.static(uploadsPath('interactions')))
 app.use('/api/public-files', publicFilesRouter)
 // Fichiers publics — URL non auth /erp/p/<token>/<filename>. Doit être monté
 // avant le static client (/erp) sinon l'index.html SPA est servi à la place.
@@ -398,8 +445,20 @@ app.use('/erp/p', publicFileServeRouter)
 
 // Serve client build
 const clientBuild = path.join(__dirname, '../../client/dist')
-app.use('/erp', express.static(clientBuild))
+// Les fichiers d'/assets portent un hash de contenu dans leur nom (Vite) : leur
+// contenu ne changera jamais, un nouveau build produit un nouveau nom. On les
+// met en cache un an sans revalidation — avant, `max-age=0` imposait un
+// aller-retour 304 sur ~3 Mo de JS à chaque ouverture de l'app.
+// index.html, lui, doit rester non caché : c'est lui qui pointe vers les
+// nouveaux noms de fichiers après un déploiement.
+const IMMUTABLE = 'public, max-age=31536000, immutable'
+app.use('/erp', express.static(clientBuild, {
+  setHeaders(res, filePath) {
+    res.setHeader('Cache-Control', /[/\\]assets[/\\]/.test(filePath) ? IMMUTABLE : 'no-cache')
+  },
+}))
 app.get('/erp/*path', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache')
   res.sendFile(path.join(clientBuild, 'index.html'))
 })
 app.get('/', (req, res) => res.redirect('/erp/'))
@@ -420,7 +479,20 @@ const server = app.listen(PORT, () => {
   // File de travaux : réconcilie un item fauché par le redémarrage et relance la
   // file. Après initTaskRunner, qui a déjà repris ou clos l'exécution en cours.
   initPromptQueue()
+  // Garde-fou de quota : sous 25 % de marge, toute la file s'arrête d'elle-même et
+  // repart quand le quota remonte (quotaGuard.js).
+  startQuotaGuard()
   initScheduler()
+
+  // Contrôle de dérive du schéma (db/schemaDrift.js) — journal uniquement,
+  // jamais bloquant, et différé pour rester hors du chemin de démarrage : il
+  // lit les sources pour repérer les tables présentes en base que plus aucun
+  // CREATE TABLE ne déclare. C'est ce contrôle qui manquait quand 22 tables
+  // mortes se sont accumulées sans que rien ne le signale.
+  setTimeout(() => {
+    try { checkSchemaDrift() }
+    catch (e) { console.warn('Contrôle de dérive du schéma indisponible:', e.message) }
+  }, 5_000)
 
   // Field-rule automations watcher — tails change_log to fire declarative
   // rules on direct ERP writes. Gated by the feature flag (off → never starts).
@@ -436,18 +508,33 @@ const server = app.listen(PORT, () => {
   // qualification, formulaire client, sync Airtable), et notifie les fautives.
   startAddressCheckWatcher()
 
+  // Vérificateur de prix d'achats — tail change_log(purchases) : signale un
+  // prix unitaire aberrant (lien de dépense Airtable erroné → prix calculé faux).
+  startPurchasePriceCheckWatcher()
+
   // Import des automatisations Airtable « Retours » (Phase 2) — voir
   // services/returnItemCreatedWatcher.js et returnItemReceivedWatcher.js.
   startReturnItemCreatedWatcher()
   startReturnItemReceivedWatcher()
 
-  // Gmail sync — toutes les heures
+  // Gel du « coût total au moment de l'envoi » d'une ligne de commande — tail
+  // change_log(order_items). Un envoi se crée dans Boréal comme dans Airtable :
+  // le seul point commun est l'écriture sur la ligne (cf. shippedCostWatcher).
+  startShippedCostWatcher()
+
+  // Gmail sync — toutes les 3 minutes
   function scheduleGmailSync() {
     const t0 = Date.now()
     tracked('gmail', () => syncAllMailboxes('scheduled'))
       .then((summary = {}) => {
         const { accounts = 0, emailsImported = 0, invoicesImported = 0, errors = [] } = summary
         const base = `${accounts} boîte(s) — ${emailsImported} courriel(s) + ${invoicesImported} facture(s) importé(s).`
+        // Passage à vide (le cas courant à 3 min) : on avance la date de dernière
+        // exécution sans écrire de journal — voir touchSystemRun.
+        if (!errors.length && !emailsImported && !invoicesImported) {
+          touchSystemRun('sys_gmail_sync', 'success')
+          return
+        }
         logSystemRun('sys_gmail_sync', {
           status: errors.length ? 'error' : 'success',
           result: errors.length ? `${base} ${errors.length} boîte(s)/box en échec : ${errors.join(' ; ')}` : base,
@@ -464,6 +551,13 @@ const server = app.listen(PORT, () => {
           duration_ms: Date.now() - t0,
         })
       })
+  }
+
+  // Rematch des appels orphelins — resté horaire. Il roulait dans la passe Gmail,
+  // mais c'est un balayage SQL des appels sans contact (les orphelins définitifs
+  // sont rescannés chaque fois) : à 3 minutes ce serait 20× le travail pour rien,
+  // et ça n'a aucun lien avec l'arrivée d'un courriel.
+  function scheduleCallRematch() {
     try { rematchCalls() } catch(e) { console.error('Rematch error:', e.message) }
   }
 
@@ -482,8 +576,10 @@ const server = app.listen(PORT, () => {
     const t0 = Date.now()
     purgeSyncLogs() // purge logs > 7 days
     const modules = [
-      ['airtable', syncAirtable], ['projets', syncProjets], ['pieces', syncPieces],
-      ['orders', syncOrders], ['achats', syncAchats], ['billets', syncBillets],
+      ['companies', syncCompanies], ['contacts', syncContacts],
+      ['projets', syncProjets], ['pieces', syncPieces],
+      ['orders', syncOrders], ['order_items', syncOrderItems],
+      ['achats', syncAchats], ['billets', syncBillets],
       ['serials', syncSerials], ['envois', syncEnvois], ['soumissions', syncSoumissions],
       ['retours', syncRetours], ['retour_items', syncRetourItems], ['adresses', syncAdresses],
       ['bom', syncBomItems], ['serial_changes', syncSerialStateChanges],
@@ -493,7 +589,10 @@ const server = app.listen(PORT, () => {
       // manuels, et des remboursements manquaient à la publication QB.
       ['employees', syncEmployees], ['paies', syncPaies], ['paie_items', syncPaieItems],
     ]
-    for (const [name, fn] of modules) scheduledSync(name, fn)
+    // Même aiguillage que le routeur de webhooks : un module basculé sur le
+    // moteur unique y part aussi pour le sync de rattrapage quotidien, sinon les
+    // deux chemins écriraient différemment la même table.
+    for (const [name, fn] of modules) scheduledSync(name, (changes) => routeSync(name, changes, fn))
     if (isStripeConfigured()) {
       tracked('stripe', () => syncStripeSubscriptions()).catch(e => console.error('Stripe sync error:', e.message))
     }
@@ -506,15 +605,29 @@ const server = app.listen(PORT, () => {
     })
   }
 
-  // Gmail : démarrage après 30s, puis toutes les heures
+  // Gmail : démarrage après 30s, puis toutes les 3 minutes. Le sync est
+  // incrémental (history.list par boîte, puis get des seuls messages inconnus) et
+  // protégé par un verrou « passe en cours » côté service : une passe qui traîne
+  // (extraction IA d'une facture) absorbe l'appel suivant au lieu de doubler.
   setTimeout(scheduleGmailSync, 30_000)
-  setInterval(scheduleGmailSync, 60 * 60 * 1000)
+  setInterval(scheduleGmailSync, 3 * 60 * 1000)
+
+  // Appels orphelins → contacts : toutes les heures (détaché du sync Gmail).
+  setTimeout(scheduleCallRematch, 45_000)
+  setInterval(scheduleCallRematch, 60 * 60 * 1000)
 
   // Comptes prépayés : détection des transactions QB des fournisseurs suivis
   // (recharges/factures Twilio…) — toutes les 6 h. logSync interne au service.
   const schedulePrepaidSync = () => { syncAllPrepaidAccountsFromQB('scheduled').catch(() => {}) }
   setTimeout(schedulePrepaidSync, 90_000)
   setInterval(schedulePrepaidSync, 6 * 60 * 60 * 1000)
+
+  // change_log : purge des entrées hors rétention (48 h). Elle ne tournait qu'au
+  // démarrage, ce qui suffisait tant que deploy.sh redémarrait le serveur toutes
+  // les heures — ce n'est plus le cas (il ne redémarre que si `server/src` a
+  // changé), donc la purge a maintenant son propre battement. Une table qui
+  // gonfle ralentit tout ce qui la lit : le delta et les watchers.
+  setInterval(purgeChangeLog, 30 * 60 * 1000)
 
   // Anomalies transactionnelles : re-scan périodique des reçus récents (filet en plus
   // du scan à l'extraction/édition — attrape les doublons entre canaux et l'historique
@@ -530,12 +643,14 @@ const server = app.listen(PORT, () => {
 
   // Achats fournisseurs : import QB continu — nouvelles factures/dépenses
   // comptabilisées dans QB ET suppressions, sans clic dans Connecteurs.
-  // CDC incrémental toutes les 15 min ; import complet (réconciliation des
-  // suppressions incluse) une fois par jour. logSync module 'qb_import'.
+  // CDC incrémental toutes les 2 min (délai perçu avant apparition dans la
+  // section « à payer » réduit au minimum raisonnable côté polling) ; import
+  // complet (réconciliation des suppressions incluse) une fois par jour.
+  // logSync module 'qb_import'.
   const scheduleQbImportIncremental = () => { importFromQB({ incremental: true, trigger: 'scheduled' }).catch(() => {}) }
   const scheduleQbImportFull = () => { importFromQB({ trigger: 'scheduled' }).catch(() => {}) }
   setTimeout(scheduleQbImportIncremental, 120_000)
-  setInterval(scheduleQbImportIncremental, 15 * 60 * 1000)
+  setInterval(scheduleQbImportIncremental, 2 * 60 * 1000)
   setInterval(scheduleQbImportFull, 24 * 60 * 60 * 1000)
 
   // Airtable webhooks : enregistrement au démarrage
@@ -851,15 +966,6 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('solde sheet catch-up:', e.message))
   }, 150_000)
 
-  // Suivi Purolator : rafraîchissement horaire des envois non livrés (le
-  // service court-circuite si sys_purolator_tracking est désactivée ou si
-  // Purolator n'est pas configuré) — cf. services/purolator.js.
-  cron.schedule('0 * * * *', () => {
-    import('./services/purolator.js')
-      .then(({ refreshPurolatorTracking }) => refreshPurolatorTracking({ trigger: 'scheduled' }))
-      .catch(e => console.error('purolator tracking cron:', e.message))
-  })
-
   // Reprise automatique (30 min) de l'onglet « Pmt_Suivi » du fichier CTB -
   // Suivi : les paiements ajoutés à la main dans le fichier arrivent seuls dans
   // la page Paiements émis, et le passage au vert coche « passé à la banque ».
@@ -901,6 +1007,30 @@ const server = app.listen(PORT, () => {
   setTimeout(runTrxSheetSync, 240_000)
   setInterval(runTrxSheetSync, 20 * 60 * 1000)
 
+  // Lecture Plaid planifiée — FILET derrière le webhook, qui était jusqu'ici le
+  // seul déclencheur : une signature refusée ou un webhook perdu et plus rien
+  // n'arrivait, en silence. Coupe-circuit si sys_plaid_sync est désactivée.
+  const runPlaidSync = () => {
+    if (!isSystemAutomationActive('sys_plaid_sync')) return
+    import('./services/plaidSync.js')
+      .then(({ scheduledPlaidSync }) => scheduledPlaidSync())
+      .catch(e => console.error('plaid sync:', e.message))
+  }
+  setTimeout(runPlaidSync, 120_000)
+  setInterval(runPlaidSync, 30 * 60 * 1000)
+
+  // Vérification QuickBooks des comptes Plaid (BNC) — remplace pour eux le
+  // rôle de l'audit TRX_Orisha ci-dessus (voir services/plaidQbAudit.js).
+  // Coupe-circuit si sys_plaid_qb_audit est désactivée.
+  const runPlaidQbAudit = () => {
+    if (!isSystemAutomationActive('sys_plaid_qb_audit')) return
+    import('./services/plaidQbAudit.js')
+      .then(({ scheduledPlaidQbAudit }) => scheduledPlaidQbAudit())
+      .catch(e => console.error('plaid qb audit:', e.message))
+  }
+  setTimeout(runPlaidQbAudit, 270_000)
+  setInterval(runPlaidQbAudit, 20 * 60 * 1000)
+
   // Sync quotidienne de l'onglet « Fournisseurs_TPS_TVQ_Anomalies » (Sheet du
   // mentor comptable) vers les profils fournisseurs : chaque correction de
   // statut fiscal nouvelle devient le défaut du fournisseur pour ses prochaines
@@ -932,18 +1062,6 @@ const server = app.listen(PORT, () => {
     import('./services/piecesDisbursements.js')
       .then(({ preparePiecesMonth }) => preparePiecesMonth({ trigger: 'cron mensuel' }))
       .catch(e => console.error('pieces disbursements cron:', e.message))
-  })
-
-  // Registre des entreprises du Québec : rafraîchissement mensuel du miroir
-  // local, le 3 à 8h UTC = 4h à Montréal (le Registraire republie deux fois par
-  // mois ; une passe mensuelle suffit à un usage de prospection). Import
-  // additif : upsert par NEQ, jamais de suppression. Coupe-circuit si
-  // sys_req_import est désactivée ; le service journalise lui-même
-  // (sync_log + automation_logs).
-  cron.schedule('0 8 3 * *', () => {
-    import('./services/reqImport.js')
-      .then(({ scheduledReqImport }) => scheduledReqImport())
-      .catch(e => console.error('req import cron:', e.message))
   })
 
   // Collecte des factures sur les portails fournisseurs (Amazon, Wix) : une
@@ -1050,6 +1168,15 @@ const server = app.listen(PORT, () => {
     import('./services/workSuggestions.js')
       .then(({ runSuggestionEngines }) => runSuggestionEngines())
       .catch(e => console.error('work suggestions cron:', e.message))
+  })
+
+  // Corbeille : suppression définitive de ce qui y traîne depuis plus de
+  // retention_days jours. 7h30 UTC = 3h30 à Montréal, personne dans l'ERP.
+  cron.schedule('30 7 * * *', () => {
+    if (!isSystemAutomationActive('sys_trash_auto_cleanup')) return
+    import('./services/trash.js')
+      .then(({ runTrashAutoCleanup }) => runTrashAutoCleanup({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('trash cleanup cron:', e.message))
   })
 })
 

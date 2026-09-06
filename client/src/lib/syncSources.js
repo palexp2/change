@@ -60,7 +60,7 @@ export const SYNC_SOURCES = {
     {
       connector: 'Gmail',
       mode: 'scheduled',
-      detail: 'Factures reçues par courriel (factures@orisha.io) importées toutes les heures.',
+      detail: 'Factures reçues par courriel (factures@orisha.io) importées toutes les 3 minutes.',
     },
     AIRTABLE_WEBHOOK,
   ],
@@ -140,14 +140,14 @@ export const SYNC_SOURCES = {
     {
       connector: 'Gmail',
       mode: 'scheduled',
-      detail: 'Reçus reçus par courriel (label ERP/Factures ou factures@orisha.io) importés toutes les heures.',
+      detail: 'Reçus reçus par courriel (label ERP/Factures ou factures@orisha.io) importés toutes les 3 minutes.',
     },
   ],
   interactions: [
     {
       connector: 'Gmail',
       mode: 'scheduled',
-      detail: 'Courriels importés toutes les heures.',
+      detail: 'Courriels importés toutes les 3 minutes.',
     },
     {
       connector: 'FTP',

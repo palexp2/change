@@ -3,13 +3,18 @@ import { useNavigate } from 'react-router-dom'
 import { Plus, RefreshCw, Database, ChevronDown, ChevronRight, Users } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
+import EmployeeDetail from './EmployeeDetail.jsx'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
+import Spinner from '../components/Spinner.jsx'
 
 function bool(row, key) {
   return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
@@ -40,50 +45,25 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.employees.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function NewEmployeeModal({ onClose, onCreated }) {
-  const [firstName, setFirstName] = useState('')
-  const [lastName, setLastName] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSaving(true)
-    setError('')
-    try {
-      const created = await api.employees.create({ first_name: firstName.trim(), last_name: lastName.trim(), active: 1 })
-      onCreated(created)
-    } catch (err) {
-      setError(err.message)
-      setSaving(false)
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="label">Prénom *</label>
-          <input value={firstName} onChange={e => setFirstName(e.target.value)} className="input" required autoFocus />
-        </div>
-        <div>
-          <label className="label">Nom *</label>
-          <input value={lastName} onChange={e => setLastName(e.target.value)} className="input" required />
-        </div>
-      </div>
-      <p className="text-xs text-slate-500">
-        Les autres informations s'éditent directement sur la fiche de l'employé (autosave).
-      </p>
-      <div className="flex justify-end gap-2 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving || !firstName.trim() || !lastName.trim()} className="btn-primary">
-          {saving ? 'Création…' : 'Créer et ouvrir'}
-        </button>
-      </div>
-    </form>
-  )
-}
+// Champs proposés par le formulaire « Nouvel employé ». POST /api/employees
+// accepte toute colonne de sa liste blanche : les champs masqués par défaut sont
+// donc réellement persistés si l'utilisateur les ajoute au formulaire (voir
+// RecordForm.jsx).
+const EMPLOYEE_FORM_FIELDS = [
+  { field: 'first_name', label: 'Prénom', locked: true, required: true },
+  { field: 'last_name', label: 'Nom', locked: true, required: true },
+  // Masqués par défaut — disponibles via « Modifier le formulaire ».
+  { field: 'matricule', label: 'Matricule', visible: false },
+  { field: 'email_work', label: 'Courriel (travail)', type: 'email', visible: false },
+  { field: 'email_personal', label: 'Courriel (personnel)', type: 'email', visible: false },
+  { field: 'phone_work', label: 'Téléphone (travail)', visible: false },
+  { field: 'phone_personal', label: 'Téléphone (personnel)', visible: false },
+  { field: 'hire_date', label: "Date d'embauche", type: 'date', visible: false },
+  { field: 'birth_date', label: 'Date de naissance', type: 'date', visible: false },
+  { field: 'hours_per_week', label: 'Heures par semaine', type: 'number', min: '0', visible: false },
+  { field: 'address', label: 'Adresse', visible: false },
+  { field: 'active', label: 'Actif', visible: false, defaultValue: 1 },
+]
 
 function SyncPanel({ onSynced }) {
   const [open, setOpen] = useState(false)
@@ -174,7 +154,7 @@ function SyncPanel({ onSynced }) {
       {open && (
         <div className="border-t border-slate-200 p-4 space-y-3 bg-slate-50">
           {loading ? (
-            <p className="text-xs text-slate-400">Chargement…</p>
+            <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>
           ) : (
             <>
               <div className="grid grid-cols-2 gap-3">
@@ -190,7 +170,6 @@ function SyncPanel({ onSynced }) {
                     getOptionLabel={o => o.name}
                     onChange={v => { setBaseId(v); setTableId('') }}
                     emptyOption="—"
-                    placeholder="Choisir une base…"
                     searchPlaceholder="Rechercher une base…"
                   />
                 </div>
@@ -206,7 +185,6 @@ function SyncPanel({ onSynced }) {
                     getOptionLabel={o => o.name}
                     onChange={v => setTableId(v)}
                     emptyOption="—"
-                    placeholder="Choisir une table…"
                     searchPlaceholder="Rechercher une table…"
                     disabled={!baseId}
                   />
@@ -235,6 +213,7 @@ function SyncPanel({ onSynced }) {
 
 export default function Employees() {
   const navigate = useNavigate()
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
   const { addToast } = useToast()
   const [employees, setEmployees] = useState([])
   const [loading, setLoading] = useState(true)
@@ -262,7 +241,7 @@ export default function Employees() {
     <Layout>
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Employés</h1>
+          <PageTitle>Employés</PageTitle>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowNew(true)} className="btn-primary flex items-center gap-2">
               <Plus size={15} /> Nouvel employé
@@ -278,14 +257,35 @@ export default function Employees() {
           columns={COLUMNS}
           data={employees}
           loading={loading}
-          onRowClick={row => navigate(`/employees/${row.id}`)}
+          peek={{
+            title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || `Employé #${row.id}`,
+            subtitle: row => row.job_title || row.email_work || '',
+            to: row => `/employees/${row.id}`,
+            width: 760,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: (row, { close }) => <EmployeeDetail recordId={row.id} embedded onClose={close} />,
+          }}
           searchFields={['first_name', 'last_name', 'matricule', 'email_work', 'email_personal']}
           emptyState={{ icon: Users, title: 'Aucun employé', description: "Aucun employé n'est encore enregistré. Ajoute un employé pour gérer la paie et les feuilles de temps.", cta: { label: 'Nouvel employé', icon: Plus, onClick: () => setShowNew(true) } }}
         />
       </div>
 
       <Modal isOpen={showNew} title="Nouvel employé" onClose={() => setShowNew(false)}>
-        <NewEmployeeModal onClose={() => setShowNew(false)} onCreated={handleCreated} />
+        <RecordForm
+          table="employees"
+          fields={EMPLOYEE_FORM_FIELDS}
+          columns={2}
+          onSubmit={async form => handleCreated(await api.employees.create(form))}
+          onClose={() => setShowNew(false)}
+          submitLabel="Créer et ouvrir"
+          savingLabel="Création…"
+          extra={
+            <p className="text-xs text-slate-500">
+              Les autres informations s'éditent directement sur la fiche de l'employé (autosave).
+            </p>
+          }
+        />
       </Modal>
     </Layout>
   )

@@ -2,8 +2,8 @@
 // L'agent tourne sur l'abonnement Claude Code (forfait fixe) : on affiche donc
 // l'utilisation RÉELLE de l'abonnement — le % de chaque plafond consommé, avec son
 // heure de réinitialisation — plutôt qu'une estimation de coût en dollars qui
-// n'aurait aucun sens sur un forfait. La consommation de jetons (agrégée depuis les
-// transcriptions locales) reste affichée en détail secondaire.
+// n'aurait aucun sens sur un forfait. Aucun compteur de jetons : il a été retiré
+// (il ressemblait à un quota journalier qui n'existe pas).
 //
 // LES TROIS PLAFONDS, ET CE QU'ILS NE SONT PAS (vérifié le 2026-08-04 sur la réponse
 // de l'endpoint /api/oauth/usage, cf. server/src/services/claudeUsage.js) :
@@ -14,25 +14,17 @@
 //   • Semaine — total sur 7 jours, tous modèles, réinitialisé à date et heure fixes.
 //   • Semaine d'un modèle — plafond hebdomadaire propre à un modèle (ex. « Fable ») :
 //     il peut être atteint alors que les deux autres jauges paraissent au vert.
-//   • Il n'existe AUCUNE limite de 24 h. Les jetons « aujourd'hui » affichés ici sont
-//     un simple repère de consommation depuis minuit — jamais un quota. C'est la
-//     confusion à éviter, d'où la note explicite sous le bandeau.
+//   • Il n'existe AUCUNE limite de 24 h.
 //
-// Deux présentations, une seule source (`GET /api/agent/usage`) :
-//   • <ClaudeUsageBar/>   — cartes détaillées (page Agent)
-//   • <ClaudeUsageStrip/> — une ligne discrète mais lisible (haut de Travaux).
-import { useState, useEffect, useRef } from 'react'
+// Une seule source (`GET /api/agent/usage`), deux affichages voisins :
+//   • <ClaudeUsageStrip/> — une ligne discrète mais lisible (haut de Travaux) : ce
+//     qu'on MESURE, rien d'autre.
+//   • <ClaudeModelControl/> — le choix du modèle de l'agent, à côté du bandeau et
+//     non dedans : c'est une commande, sa place est avec Pause et Réglages.
+import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
 import { Sparkles, Gauge, CalendarDays, Loader2, Cpu, AlertTriangle, Bot, ChevronDown, Check } from 'lucide-react'
-import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useToast } from './ui/ToastProvider.jsx'
-
-export function formatTokens(n) {
-  if (!Number.isFinite(n) || n <= 0) return '0'
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + ' M'
-  if (n >= 1_000) return (n / 1_000).toFixed(n >= 100_000 ? 0 : 1) + ' k'
-  return String(Math.round(n))
-}
 
 // « Réinit. dans 3 h 12 » à partir d'un timestamp ISO de réinitialisation.
 export function formatResetIn(iso) {
@@ -89,8 +81,14 @@ export function formatResetFull(iso) {
 const MODEL_LABELS = { fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' }
 export function modelLabel(m) { return MODEL_LABELS[m] || m || '—' }
 
-/** « Modèle Fable ▾ » — sur quoi l'agent tourne, cliquable pour changer de modèle. */
-function StripModel({ state }) {
+/**
+ * « Fable ▾ » — sur quoi l'agent tourne, cliquable pour changer de modèle.
+ * Contrôle autonome, posé À CÔTÉ du bandeau de quotas (pas dedans) : choisir le
+ * modèle est une commande, pas une mesure — sa place est avec Pause et Réglages.
+ */
+export function ClaudeModelControl({ className = '' }) {
+  const { usage } = useClaudeUsage()
+  const state = usage?.agentModel
   const toast = useToast()
   const [open, setOpen] = useState(false)
   // Choix optimiste : affiché tout de suite, effacé quand le poll suivant le confirme.
@@ -132,6 +130,7 @@ function StripModel({ state }) {
     setPending(m)
     try {
       await api.agent.saveSettings({ preferredModel: m })
+      fetchUsage()   // confirme le choix tout de suite, sans attendre le poll suivant
     } catch {
       setPending(null)
       toast?.addToast?.({ message: 'Impossible de changer le modèle de l\'agent — réessayez.', type: 'error' })
@@ -139,23 +138,25 @@ function StripModel({ state }) {
   }
 
   return (
-    <div className="relative flex items-center gap-1.5 min-w-0 shrink-0" data-testid="usage-strip-model" ref={ref}>
-      <Bot size={13} className={fallbackActive ? 'text-amber-500' : 'text-slate-400'} />
-      <span className="text-slate-500" title={hint}>Modèle</span>
+    <div className={`relative shrink-0 ${className}`} data-testid="usage-strip-model" ref={ref}>
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className={`inline-flex items-center gap-0.5 font-semibold rounded hover:bg-slate-100 px-1 -mx-1 transition-colors ${fallbackActive ? 'text-amber-600' : 'text-slate-700'}`}
+        className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border shrink-0 ${
+          fallbackActive
+            ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
+            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
+        }`}
         data-testid="usage-strip-model-name"
         title={hint}
       >
-        {modelLabel(shown)}
-        <ChevronDown size={11} className={`shrink-0 ${fallbackActive ? 'text-amber-500' : 'text-slate-400'}`} />
+        <Bot size={14} className={fallbackActive ? 'text-amber-500' : 'text-slate-400'} />
+        {modelLabel(shown)}{fallbackActive ? ' (repli)' : ''}
+        <ChevronDown size={12} className={`shrink-0 ${fallbackActive ? 'text-amber-500' : 'text-slate-400'}`} />
       </button>
-      {fallbackActive && <span className="text-amber-600" title={hint}>(repli)</span>}
       {open && (
         <div
-          className="absolute left-0 top-full mt-1.5 z-30 w-48 rounded-lg border border-slate-200 bg-white shadow-lg py-1"
+          className="absolute right-0 top-full mt-1.5 z-30 w-48 rounded-lg border border-slate-200 bg-white shadow-lg py-1"
           data-testid="usage-strip-model-menu"
         >
           <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -192,81 +193,86 @@ export function usageTone(pct, severity = null) {
   return { bar: 'bg-brand-500', text: 'text-slate-900' }
 }
 
-// Hook commun : interroge /agent/usage puis rafraîchit chaque minute (le serveur
-// cache 60 s de toute façon). `error` → l'appelant se retire silencieusement.
-function useClaudeUsage() {
-  const [usage, setUsage] = useState(null)
-  const [error, setError] = useState(false)
+// ─── Lecture des quotas : affichée tout de suite, rafraîchie derrière ──────────
+// Les jauges mettaient quelques secondes à apparaître : chaque arrivée sur la page
+// repartait de zéro (bandeau vide + roue) le temps d'un aller-retour qui, serveur
+// occupé, pouvait traîner. Trois choses le règlent :
+//   • la dernière lecture connue est gardée dans le navigateur et réaffichée au
+//     premier rendu — plus de bandeau vide ; les chiffres frais la remplacent dès
+//     qu'ils arrivent (les heures de réinitialisation, elles, ne périment pas) ;
+//   • un seul état partagé par tous les montages : changer de page ne relance pas
+//     une lecture, et deux bandeaux à l'écran n'en font qu'une ;
+//   • onglet en arrière-plan → on cesse d'interroger, et on rattrape au retour.
+const STORE_KEY = 'erp:claude-usage'
+const HYDRATE_MAX_AGE_MS = 30 * 60 * 1000  // au-delà, mieux vaut la roue qu'un chiffre faux
+const POLL_MS = 30_000
 
-  useEffect(() => {
-    let alive = true
-    async function fetchUsage() {
-      try {
-        const u = await api.agent.getUsage()
-        if (alive) { setUsage(u); setError(false) }
-      } catch {
-        if (alive) setError(true)
-      }
-    }
-    fetchUsage()
-    // 30 s : assez vivant pour suivre une exécution en cours sans marteler l'API
-    // (le serveur cache 60 s de toute façon, donc le coût réel reste d'un appel/min).
-    const i = setInterval(fetchUsage, 30_000)
-    return () => { alive = false; clearInterval(i) }
-  }, [])
-
-  return { usage, error }
+function readStored() {
+  try {
+    const { at, data } = JSON.parse(localStorage.getItem(STORE_KEY) || 'null') || {}
+    if (!at || !data || Date.now() - at > HYDRATE_MAX_AGE_MS) return null
+    return data
+  } catch { return null }
 }
 
-function UsageCard({ icon: Icon, label, sublabel, bucket, showTokens = true }) {
-  const b = bucket || {}
-  const pct = Number.isFinite(b.utilizationPct) ? Math.max(0, Math.min(100, b.utilizationPct)) : null
-  const tone = usageTone(pct ?? 0, b.severity)
-  const resetIn = formatResetIn(b.resetsAt)
-  return (
-    <div className="flex-1 min-w-0 flex items-center gap-3 rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 shadow-sm">
-      <div className="w-8 h-8 rounded-lg bg-brand-50 border border-brand-100 flex items-center justify-center flex-shrink-0">
-        <Icon size={16} className="text-brand-500" />
-      </div>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-1.5">
-          <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">{label}</span>
-          <span className="text-[10px] text-slate-400">{sublabel}</span>
-        </div>
-        {pct != null ? (
-          <>
-            <div className="flex items-baseline gap-2 mt-0.5">
-              <span className={`text-base font-semibold tabular-nums leading-none ${tone.text}`} data-testid="usage-pct">
-                {pct} %
-              </span>
-              <span className="text-xs text-slate-400">de la limite</span>
-              {resetIn && (
-                <span className="text-[11px] text-slate-400 tabular-nums" title={formatResetFull(b.resetsAt)}>
-                  · {resetIn}
-                </span>
-              )}
-            </div>
-            <div className="mt-1.5 h-1.5 w-full rounded-full bg-slate-100 overflow-hidden">
-              <div className={`h-full rounded-full ${tone.bar}`} style={{ width: `${pct}%` }} />
-            </div>
-            {showTokens && (
-              <div className="mt-1 text-[11px] text-slate-400 tabular-nums" data-testid="usage-tokens">
-                {formatTokens(b.totalTokens)} jetons
-              </div>
-            )}
-          </>
-        ) : (
-          // Abonnement indisponible (token expiré/hors-ligne) → on retombe sur les jetons.
-          <div className="flex items-baseline gap-2 mt-0.5">
-            <span className="text-base font-semibold text-slate-900 tabular-nums leading-none" data-testid="usage-tokens">
-              {formatTokens(b.totalTokens)}
-            </span>
-            <span className="text-xs text-slate-400">jetons</span>
-          </div>
-        )}
-      </div>
-    </div>
-  )
+let _usage = readStored()   // dernière valeur connue (mémoire + relais localStorage)
+let _error = false          // vrai seulement si on n'a RIEN à montrer
+let _inflight = null
+let _timer = null
+const _subs = new Set()
+
+function emit() { for (const fn of _subs) fn() }
+
+function fetchUsage() {
+  if (_inflight) return _inflight
+  _inflight = api.agent.getUsage()
+    .then(u => {
+      _usage = u
+      _error = false
+      try { localStorage.setItem(STORE_KEY, JSON.stringify({ at: Date.now(), data: u })) } catch {}
+      emit()
+    })
+    .catch(() => {
+      // Une lecture ratée n'efface pas ce qui est affiché : on ne se retire que si
+      // l'on n'a jamais rien eu.
+      if (!_usage) { _error = true; emit() }
+    })
+    .finally(() => { _inflight = null })
+  return _inflight
+}
+
+function startPolling() {
+  if (_timer) return
+  _timer = setInterval(() => { if (!document.hidden) fetchUsage() }, POLL_MS)
+}
+
+function onVisible() { if (!document.hidden) fetchUsage() }
+
+function subscribe(fn) {
+  _subs.add(fn)
+  if (_subs.size === 1) {
+    document.addEventListener('visibilitychange', onVisible)
+    startPolling()
+  }
+  fetchUsage()
+  return () => {
+    _subs.delete(fn)
+    if (!_subs.size) {
+      document.removeEventListener('visibilitychange', onVisible)
+      clearInterval(_timer); _timer = null
+    }
+  }
+}
+
+const snapshot = () => _usage
+const errorSnapshot = () => _error
+
+// Hook commun : état partagé, rafraîchi toutes les 30 s (le serveur cache 60 s de
+// toute façon). `error` → l'appelant se retire silencieusement.
+function useClaudeUsage() {
+  const usage = useSyncExternalStore(subscribe, snapshot, snapshot)
+  const error = useSyncExternalStore(subscribe, errorSnapshot, errorSnapshot)
+  return { usage, error }
 }
 
 /**
@@ -318,41 +324,6 @@ function LimitAlerts({ usage }) {
   )
 }
 
-export function ClaudeUsageBar() {
-  const { usage, error } = useClaudeUsage()
-
-  if (error) return null // dégradation silencieuse : la barre disparaît si le calcul échoue
-
-  const scoped = usage?.weekScoped
-  return (
-    <div className="mb-6" data-testid="claude-usage-bar">
-      <div className="flex items-center gap-1.5 mb-2">
-        <Sparkles size={12} className="text-brand-400" />
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-500">Utilisation de Claude</h2>
-        {!usage && <Loader2 size={11} className="text-slate-300 animate-spin" />}
-        {/* Sur quel modèle l'agent tourne réellement — sans ça, un repli sur Opus
-            passait inaperçu (les jauges de gauche ne le disent pas). */}
-        <span className="ml-2 text-xs"><StripModel state={usage?.agentModel} /></span>
-      </div>
-      <LimitAlerts usage={usage} />
-      <div className="flex flex-col sm:flex-row gap-2.5 mt-2.5">
-        {/* « Fenêtre de 5 h » et non « Session » : le compteur suit un bloc glissant
-            ouvert au premier message, pas la session Claude en cours. */}
-        <UsageCard icon={Gauge} label="Fenêtre 5 h" sublabel="glissante" bucket={usage?.session} />
-        <UsageCard icon={CalendarDays} label="Cette semaine" sublabel="7 derniers j" bucket={usage?.week} />
-        {/* Troisième plafond : hebdomadaire, propre à un modèle. Pas de compteur de
-            jetons associé — Anthropic ne dit pas ce qu'il range dans ce périmètre. */}
-        {scoped && (
-          <UsageCard
-            icon={Cpu} label={`Semaine ${scoped.label || 'modèle'}`} sublabel="ce modèle seul"
-            bucket={scoped} showTokens={false}
-          />
-        )}
-      </div>
-    </div>
-  )
-}
-
 // Une limite compactée : « Fenêtre 5 h ▓▓░ reste 58 % · réinit. dans 2 h 10 ».
 // On affiche ce qui RESTE (pas ce qui est consommé) : c'est la question qu'on se pose
 // en regardant la page — « est-ce qu'il me reste assez pour lancer ce chantier ? ».
@@ -387,7 +358,7 @@ function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
         </>
       ) : (
         // Abonnement injoignable : on ne prétend pas connaître le %.
-        <span className="text-slate-400 tabular-nums">{formatTokens(b.totalTokens)} jetons</span>
+        <span className="text-slate-400 tabular-nums">—</span>
       )}
     </div>
   )
@@ -395,12 +366,11 @@ function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
 
 /**
  * Bandeau discret pour le haut de la page Travaux : où en sont les trois plafonds de
- * l'abonnement, combien de jetons ont été consommés depuis minuit, et — quand ça
- * arrive — le fait que la file soit arrêtée par un plafond. Cliquable → page Agent
- * pour le détail. Disparaît si l'API échoue (jamais bloquant).
+ * l'abonnement et — quand ça arrive — le fait que la file soit arrêtée par un
+ * plafond. Disparaît si l'API échoue (jamais bloquant).
  *
- * La note du bas n'est pas décorative : elle corrige la lecture naturelle mais fausse
- * « j'ai un quota par jour ». Il n'y en a pas — c'est la fenêtre de 5 h qui coupe.
+ * Sous le bandeau, une seule ligne peut apparaître : celle qui signale que les
+ * pourcentages datent d'un moment (lecture des quotas momentanément indisponible).
  */
 export function ClaudeUsageStrip({ className = 'mb-5' }) {
   const { usage, error } = useClaudeUsage()
@@ -431,26 +401,13 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
               hint={`Plafond hebdomadaire propre au modèle ${scoped.label || ''} : il peut être atteint alors que les autres jauges sont au vert.`}
             />
           )}
-          <StripModel state={usage?.agentModel} />
-          <span
-            className="text-slate-500 tabular-nums shrink-0"
-            data-testid="usage-strip-today"
-            title="Jetons consommés depuis minuit (heure de Montréal). Repère de consommation, pas un quota."
-          >
-            <span className="font-semibold text-slate-700">{formatTokens(usage?.today?.totalTokens)}</span> jetons aujourd'hui
-          </span>
-          <Link to="/agent" className="ml-auto text-slate-400 hover:text-brand-600 shrink-0">Détail</Link>
         </div>
 
-        <p className="mt-1.5 text-[11px] leading-snug text-slate-400" data-testid="usage-strip-note">
-          Pas de limite par jour : Claude plafonne par fenêtre glissante de 5 h et par semaine.
-          {!usage?.extraUsageEnabled && ' Au plafond, la file attend la réinitialisation — aucun crédit de dépassement.'}
-          {usage?.subscriptionStale && (
-            <span className="text-amber-600">
-              {' '}Pourcentages datant de {formatAgo(usage.subscriptionAt)} — lecture des quotas momentanément indisponible.
-            </span>
-          )}
-        </p>
+        {usage?.subscriptionStale && (
+          <p className="mt-1.5 text-[11px] leading-snug text-amber-600" data-testid="usage-strip-note">
+            Pourcentages datant de {formatAgo(usage.subscriptionAt)} — lecture des quotas momentanément indisponible.
+          </p>
+        )}
       </div>
 
       {/* Alerte sous le bandeau : n'apparaît que quand le travail est vraiment arrêté

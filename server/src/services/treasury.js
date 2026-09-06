@@ -28,8 +28,8 @@
 // écart de réconciliation, solde de saisie périmé) est loggé et affiché sur la
 // page Trésorerie sans notification. Repli sur l'ancien comportement (seuil
 // d'ici `slack_urgent_days`) en mettant `slack_negative_only` à 0.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { paymentEvents, achatIdsWithPayment, coveredBillIds, recurringCoverage, autoClearFromBank } from './treasuryPayments.js'
@@ -1155,7 +1155,7 @@ export function actionWindowStats(days, windowDays, threshold) {
 // chaque exécution de l'alerte (cron quotidien + saisie de solde).
 
 export function saveSnapshot(proj, trigger) {
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO treasury_snapshots (
       id, snapshot_date, trigger, scenario, balance_entry_id, start_balance, balance_noted_at,
@@ -1198,6 +1198,34 @@ export function predictedBalanceFor(snap, dayIso) {
 // annonçait pour ce jour-là révèle immédiatement tout mouvement que l'ERP ne
 // connaissait pas (facture pas encore synchronisée de QB, prélèvement inconnu,
 // récurrente manquante…). C'est le contrôle qui manquait le 1er août 2026.
+// Enregistre un solde réel et déclenche la chaîne qui en dépend : écart contre
+// la projection (synchrone, pour que l'appelant ait déjà la variance), puis
+// notification et alerte en arrière-plan. Une seule porte pour les deux
+// sources : la saisie manuelle de /comptabilite et le solde lu chez Plaid.
+//
+// `source` : NULL = saisi à la main, 'plaid' = lu au compte, 'solde_sheet' =
+// ancien fichier Drive. Un solde Plaid identique au dernier (au cent près) et
+// noté depuis moins de `minAgeMinutes` n'est PAS ré-enregistré — sans ça, la
+// sync toutes les 30 min noierait l'historique des saisies.
+export function recordBalance({ balance, source = null, userId = null, minAgeMinutes = 0 } = {}) {
+  const n = Number(balance)
+  if (!Number.isFinite(n)) throw new Error('balance doit être un nombre')
+  const rounded = Math.round(n * 100) / 100
+  if (minAgeMinutes > 0) {
+    const last = db.prepare('SELECT * FROM treasury_balances ORDER BY noted_at DESC LIMIT 1').get()
+    if (last && Math.abs(Number(last.balance) - rounded) < 0.005) {
+      const ageMin = (Date.now() - new Date(last.noted_at).getTime()) / 60000
+      if (ageMin < minAgeMinutes) return { entry: last, skipped: true }
+    }
+  }
+  const id = newRecordId()
+  db.prepare('INSERT INTO treasury_balances (id, balance, source, created_by) VALUES (?,?,?,?)')
+    .run(id, rounded, source, userId)
+  reconcileBalanceEntry(id)
+  const entry = db.prepare('SELECT * FROM treasury_balances WHERE id=?').get(id)
+  return { entry, skipped: false }
+}
+
 export function reconcileBalanceEntry(entryId) {
   const entry = db.prepare('SELECT * FROM treasury_balances WHERE id = ?').get(entryId)
   if (!entry) return null

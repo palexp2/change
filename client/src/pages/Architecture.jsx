@@ -5,6 +5,7 @@ import {
   Plug, Layers, ShieldCheck, UserCog, ExternalLink, FileCode, Map,
 } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { architectureManifest as M } from '../lib/architectureManifest.js'
 import { fmtDate } from '../lib/formatDate.js'
 
@@ -117,7 +118,6 @@ function InventoryList({ icon: Icon, title, items, render, hint }) {
           <input
             value={q}
             onChange={e => setQ(e.target.value)}
-            placeholder="Filtrer…"
             className="w-full pl-8 pr-2 py-1.5 text-xs rounded-md border border-slate-200 focus:outline-none focus:ring-1 focus:ring-brand-400"
           />
         </div>
@@ -150,7 +150,7 @@ export function ArchitectureContent() {
               <Network size={22} className="text-brand-600" />
             </span>
             <div>
-              <h1 className="text-2xl font-bold text-slate-900">Architecture</h1>
+              <PageTitle>Architecture</PageTitle>
               <p className="text-sm text-slate-500 mt-1">
                 Carte du fonctionnement de l'app : pages ↔ routes API ↔ connecteurs ↔ tables.
                 Générée depuis le code, le <span className="font-medium">{fmtDate(M.generatedAt)}</span>.

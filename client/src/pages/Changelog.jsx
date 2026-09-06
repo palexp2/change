@@ -1,16 +1,22 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Sparkles, Plus, ArrowUpCircle, Wrench, AlertTriangle, CheckCircle2 } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
-import { changelogEntries, markChangelogSeen } from '../lib/changelog.js'
+import { changelogEntries } from '../lib/changelog.js'
 import { api } from '../lib/api.js'
 
 // Configuration d'affichage par type de changement.
 const TYPE_CONFIG = {
-  new:      { label: 'Nouveau',     icon: Plus,          className: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
+  new:      { label: 'Nouveauté',    icon: Plus,          className: 'bg-emerald-50 text-emerald-700 ring-emerald-200' },
   improved: { label: 'Amélioration', icon: ArrowUpCircle, className: 'bg-blue-50 text-blue-700 ring-blue-200' },
-  fixed:    { label: 'Correction',  icon: Wrench,        className: 'bg-amber-50 text-amber-700 ring-amber-200' },
+  fixed:    { label: 'Correction',   icon: Wrench,        className: 'bg-amber-50 text-amber-700 ring-amber-200' },
 }
+// Nature dominante d'une entrée : une nouveauté prime sur une amélioration,
+// qui prime sur une correction. C'est ce que porte la colonne « Nature ».
+const TYPE_RANK = ['new', 'improved', 'fixed']
 
 function TypeBadge({ type }) {
   const cfg = TYPE_CONFIG[type] || TYPE_CONFIG.improved
@@ -20,44 +26,6 @@ function TypeBadge({ type }) {
       <Icon size={12} />
       {cfg.label}
     </span>
-  )
-}
-
-function ChangelogEntry({ entry, isLast }) {
-  return (
-    <li className="relative pl-10 pb-8">
-      {/* Ligne verticale de la timeline */}
-      {!isLast && <span className="absolute left-[15px] top-2 bottom-0 w-px bg-slate-200" aria-hidden="true" />}
-      {/* Pastille */}
-      <span className="absolute left-0 top-0.5 w-8 h-8 rounded-full bg-brand-50 ring-1 ring-brand-200 flex items-center justify-center">
-        <Sparkles size={15} className="text-brand-600" />
-      </span>
-
-      <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm">
-        <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div>
-            <h2 className="text-base font-semibold text-slate-900">{entry.title}</h2>
-            <p className="text-xs text-slate-400 mt-0.5">{fmtDate(entry.date)}</p>
-          </div>
-          {entry.category && (
-            <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-slate-100 text-slate-600">
-              {entry.category}
-            </span>
-          )}
-        </div>
-
-        <ul className="mt-3 space-y-2">
-          {(entry.changes || []).map((change, i) => (
-            <li key={i} className="flex items-start gap-2.5">
-              <span className="flex-shrink-0 mt-0.5">
-                <TypeBadge type={change.type} />
-              </span>
-              <span className="text-sm text-slate-700 leading-relaxed">{change.text}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </li>
   )
 }
 
@@ -145,44 +113,118 @@ function GuardStatus() {
 }
 
 export default function Changelog() {
-  const entries = useMemo(() => changelogEntries, [])
+  // Demandeurs : le champ `requester` de l'entrée s'il existe, sinon le
+  // rapprochement serveur avec la demande d'origine. Absent = « — ».
+  const [requesters, setRequesters] = useState({})
 
-  // Marquer le journal comme lu dès l'ouverture de la page : la pastille
-  // « nouveautés » de la sidebar disparaît.
   useEffect(() => {
-    markChangelogSeen()
+    let alive = true
+    api.changelog
+      .requesters()
+      .then((r) => alive && setRequesters(r || {}))
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
   }, [])
+
+  const rows = useMemo(
+    () =>
+      changelogEntries.map((entry, i) => {
+        const changes = entry.changes || []
+        const types = [...new Set(changes.map((c) => c.type || 'improved'))]
+        const who = requesters[`${entry.date}|${entry.title}`]
+        const dominantType = TYPE_RANK.find((t) => types.includes(t)) || 'improved'
+        return {
+          id: `${entry.date}-${i}`,
+          date: entry.date,
+          title: entry.title,
+          category: entry.category || '',
+          dominantType,
+          type: TYPE_CONFIG[dominantType].label,
+          requester: who?.name || '',
+          requesterSource: who?.source || '',
+          requestTitle: who?.requestTitle || '',
+          requestDate: who?.requestDate || '',
+          summary: changes.map((c) => c.text).join(' • '),
+          types,
+          changes,
+        }
+      }),
+    [requesters]
+  )
+
+  const columns = useMemo(() => {
+    const renders = {
+      date: (row) => <span className="text-slate-500">{fmtDate(row.date)}</span>,
+      title: (row) => <span className="font-medium text-slate-800">{row.title}</span>,
+      category: (row) =>
+        row.category ? (
+          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-600">
+            {row.category}
+          </span>
+        ) : null,
+      // Une seule pastille : la nature dominante, celle sur laquelle porte le
+      // filtre. Le détail par changement s'affiche en dépliant la ligne.
+      type: (row) => <TypeBadge type={row.dominantType} />,
+      requester: (row) =>
+        row.requester ? (
+          <span
+            className={row.requesterSource === 'match' ? 'text-slate-500 italic' : 'font-medium text-slate-800'}
+            title={
+              row.requesterSource === 'match'
+                ? `Rapproché de la demande « ${row.requestTitle} »${row.requestDate ? ` (${fmtDate(row.requestDate)})` : ''}`
+                : undefined
+            }
+          >
+            {row.requester}
+          </span>
+        ) : (
+          <span className="text-slate-300">—</span>
+        ),
+      summary: (row) => <span className="text-slate-600">{row.summary}</span>,
+    }
+    return TABLE_COLUMN_META.changelog.map((meta) => ({ ...meta, render: renders[meta.id] }))
+  }, [])
+
+  const renderExpanded = useCallback(
+    (row) => (
+      <ul className="px-4 py-3 space-y-2">
+        {row.changes.map((change, i) => (
+          <li key={i} className="flex items-start gap-2.5">
+            <span className="flex-shrink-0 mt-0.5">
+              <TypeBadge type={change.type} />
+            </span>
+            <span className="text-sm text-slate-700 leading-relaxed">{change.text}</span>
+          </li>
+        ))}
+      </ul>
+    ),
+    []
+  )
 
   return (
     <Layout>
-      <div className="p-6 max-w-3xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
-            <Sparkles size={22} className="text-brand-600" /> Nouveautés
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Les évolutions de l'ERP, livraison après livraison.
-          </p>
+      <div className="p-6">
+        <div className="mb-6">
+          <PageTitle icon={Sparkles}>Nouveautés</PageTitle>
+          <p className="text-xs text-slate-400 mt-0.5">Ce qui change dans l'ERP, et qui l'a demandé</p>
         </div>
 
         <GuardStatus />
 
-        {entries.length === 0 ? (
-          <div className="text-center text-slate-400 py-16">
-            <Sparkles size={32} className="mx-auto mb-3 text-slate-300" />
-            <p className="text-sm">Aucune nouveauté pour le moment.</p>
-          </div>
-        ) : (
-          <ul>
-            {entries.map((entry, i) => (
-              <ChangelogEntry
-                key={`${entry.date}-${i}`}
-                entry={entry}
-                isLast={i === entries.length - 1}
-              />
-            ))}
-          </ul>
-        )}
+        <DataTable
+          table="changelog"
+          columns={columns}
+          data={rows}
+          renderExpanded={renderExpanded}
+          searchFields={['title', 'category', 'requester', 'summary']}
+          emptyState={{
+            icon: Sparkles,
+            title: 'Aucune nouveauté',
+            description: "Les évolutions de l'ERP s'afficheront ici.",
+          }}
+        />
       </div>
     </Layout>
   )

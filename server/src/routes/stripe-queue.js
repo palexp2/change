@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import { getStripeKey } from '../services/stripe.js'
 import db from '../db/database.js'
@@ -65,7 +65,7 @@ router.post('/tax-mappings', (req, res) => {
     ).run(qb_tax_code, stripe_tax_description || null, existing.id)
     res.json({ ok: true, id: existing.id })
   } else {
-    const id = randomUUID()
+    const id = newRecordId()
     db.prepare(`
       INSERT INTO stripe_qb_tax_mapping (id, stripe_tax_id, stripe_tax_description, qb_tax_code)
       VALUES (?,?,?,?)
@@ -228,7 +228,7 @@ router.post('/batch-enrich', async (req, res) => {
           hasPdf = !!existing.airtable_pdf_path
           if (samples.length < 10) samples.push({ factureId: existing.id, invoiceNumber: docNumber || invoiceId, action: 'maj' })
         } else {
-          const newId = randomUUID()
+          const newId = newRecordId()
           insertStmt.run(
             newId, invoiceId, companyId, docNumber, date,
             status, currency, subtotal, total, balanceDue, subscriptionId, String(subtotal),

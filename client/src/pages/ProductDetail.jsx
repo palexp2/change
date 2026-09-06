@@ -1,12 +1,14 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, PanelRight } from 'lucide-react'
+import { ArrowLeft, ArrowLeftRight, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, PanelRight, ShoppingCart, ImagePlus, X, Trash2, Plus } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
-import { VendorSelect } from '../components/VendorSelect.jsx'
+import { Badge, stockStatusColor, stockStatusLabel, PURCHASE_STATUS_COLORS } from '../components/Badge.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import SectionNav, { SECTION_NAV_INSET } from '../components/SectionNav.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
+import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -14,10 +16,16 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
-import { fmtDateTime } from '../lib/formatDate.js'
-import { formatBytes } from '../utils/formatters.js'
+import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
+import { formatBytes, fmtCad, fmtMoney } from '../utils/formatters.js'
+import PurchaseDetail from './PurchaseDetail.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import { useDetailFields } from '../lib/useDetailFields.jsx'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
+import { sync as syncStore } from '../lib/dataSync.js'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { AttachmentField } from '../components/AttachmentField.jsx'
 
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
@@ -165,9 +173,7 @@ function BomBuildableBanner({ summary }) {
   )
 }
 
-const money = n => n == null
-  ? <span className="text-slate-300">—</span>
-  : new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 2 }).format(n)
+const money = n => fmtMoney(n, 'CAD', { fallback: <span className="text-slate-300">—</span> })
 
 const MOVEMENT_RENDERS = {
   created_at:     m => <span className="text-slate-500 text-xs">{fmtDateTime(m.created_at)}</span>,
@@ -184,6 +190,27 @@ const MOVEMENT_RENDERS = {
 }
 const MOVEMENT_COLUMNS = TABLE_COLUMN_META.product_movements.map(meta => ({ ...meta, render: MOVEMENT_RENDERS[meta.id] }))
 
+// Achats de la pièce : les lignes de /purchases filtrées sur ce produit.
+const ACHAT_RENDERS = {
+  reference: row => <span className="font-mono text-slate-900">{row.reference || '—'}</span>,
+  supplier: row => (
+    row.supplier_company_id
+      ? (
+        <Link to={`/companies/${row.supplier_company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">
+          {row.supplier_company_name || row.supplier || '—'}
+        </Link>
+      )
+      : <span className="text-slate-500">{row.supplier || '—'}</span>
+  ),
+  status: row => <Badge color={PURCHASE_STATUS_COLORS[row.status] || 'gray'}>{row.status || '—'}</Badge>,
+  qty_ordered: row => <span className="text-slate-700">{row.qty_ordered ?? '—'}</span>,
+  qty_received: row => <span className="text-slate-700">{row.qty_received ?? '—'}</span>,
+  unit_cost: row => <span className="text-slate-500">{row.unit_cost ? fmtCad(row.unit_cost) : '—'}</span>,
+  order_date: row => <span className="text-slate-500">{fmtDate(row.order_date)}</span>,
+  received_date: row => <span className="text-slate-500">{fmtDate(row.received_date)}</span>,
+}
+const ACHAT_COLUMNS = TABLE_COLUMN_META.product_achats.map(meta => ({ ...meta, render: ACHAT_RENDERS[meta.id] }))
+
 function Field({ label, children, span2 = false }) {
   return (
     <div className={span2 ? 'col-span-2' : ''}>
@@ -193,25 +220,128 @@ function Field({ label, children, span2 = false }) {
   )
 }
 
+const SECTION_LABELS = {
+  info: 'Informations',
+  mouvements: 'Mouvements',
+  achats: 'Achats',
+  bom: 'BOM',
+  docs: 'Documents',
+}
+
+// Les sous-tableaux étant empilés, chacun est borné en hauteur selon son nombre
+// de lignes (32 px/ligne + l'en-tête collant) pour éviter les grands vides sous
+// une table de deux lignes.
+function stackedTableHeight(rows) {
+  if (!rows) return '190px'
+  return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
+}
+
+// Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
+function Section({ id, label, count, action, registerRef, children }) {
+  return (
+    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
+      <div className="flex items-center justify-between gap-3 mb-3">
+        <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
+          {label}
+          {count > 0 && (
+            <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>
+          )}
+        </h2>
+        {action}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
 // titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
 // le produit est supprimé pendant que le drawer est ouvert).
-export default function ProductDetail({ recordId, embedded = false, onClose }) {
+// Image de la fiche produit — et seul endroit d'où l'on peut en poser une.
+// Avant, `products.image_url` ne venait QUE de la pièce jointe « Image » de la
+// table Pièces d'Airtable : une pièce sans image là-bas (ou un produit créé
+// dans l'ERP) n'avait aucune vignette, partout où elle est affichée (articles
+// d'une commande, nomenclature, catalogue). Le carré pointillé est donc à la
+// fois le repère « pas d'image » et le bouton pour en ajouter une.
+function ProductImageSlot({ src, alt, size, onPick, onRemove, busy }) {
+  const inputRef = useRef(null)
+  const [broken, setBroken] = useState(null)
+  const usable = src && broken !== src
+  return (
+    <div className={`relative flex-shrink-0 group ${size}`} data-testid="product-image-slot">
+      <input
+        ref={inputRef} type="file" accept="image/*" className="hidden"
+        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onPick(f) }}
+      />
+      <button
+        type="button"
+        onClick={() => inputRef.current?.click()}
+        disabled={busy}
+        title={usable ? 'Changer l’image' : 'Ajouter une image'}
+        aria-label={usable ? 'Changer l’image' : 'Ajouter une image'}
+        className={`w-full h-full rounded-lg overflow-hidden flex items-center justify-center ${usable
+          ? 'border border-slate-200 hover:border-brand-400'
+          : 'border border-dashed border-slate-300 text-slate-300 hover:border-brand-400 hover:text-brand-500'}`}
+      >
+        {busy
+          ? <Spinner size="sm" />
+          : usable
+            ? <img src={src} alt={alt} onError={() => setBroken(src)} className="w-full h-full object-cover" />
+            : <ImagePlus size={18} />}
+      </button>
+      {usable && !busy && (
+        <button
+          type="button"
+          onClick={onRemove}
+          title="Retirer l’image"
+          aria-label="Retirer l’image"
+          data-testid="product-image-remove"
+          className="absolute -top-1.5 -right-1.5 hidden group-hover:flex h-5 w-5 items-center justify-center rounded-full bg-white border border-slate-300 text-slate-500 hover:text-red-600 hover:border-red-300 shadow-sm"
+        >
+          <X size={11} />
+        </button>
+      )}
+    </div>
+  )
+}
+
+export default function ProductDetail({ recordId, embedded = true, onClose }) {
   const { id: paramId } = useParams()
   const id = recordId ?? paramId
   const navigate = useNavigate()
   const { user: _user } = useAuth()
-  const [tab, setTab] = useState('info')
+  // Toutes les sections sont affichées d'un coup (empilées) : `activeSection`
+  // sert uniquement à surligner l'entrée du sélecteur latéral en fonction de la
+  // position de défilement (scroll-spy), cf. useEffect plus bas.
+  const [activeSection, setActiveSection] = useState('info')
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
+  const [achats, setAchats] = useState([])
+  const [companies, setCompanies] = useState([])
   const [showPoModal, setShowPoModal] = useState(false)
+  // Achat éclair : le serveur déduit fournisseur, coût et référence du produit,
+  // il ne reste que la quantité à saisir.
+  const [showAchatModal, setShowAchatModal] = useState(false)
+  const [achatQty, setAchatQty] = useState('')
+  const [achatSaving, setAchatSaving] = useState(false)
   const [showRefreshDocsModal, setShowRefreshDocsModal] = useState(false)
   const [refreshingDocs, setRefreshingDocs] = useState(false)
   const [refreshDocsResult, setRefreshDocsResult] = useState(null)
   const saveTimer = useRef(null)
+  const [imageBusy, setImageBusy] = useState(false)
+  // Suppression : autorisée seulement si aucun BOM / envoi / achat ne cite la
+  // pièce. Le serveur tranche (409) ; on charge son verdict pour griser le
+  // bouton et dire pourquoi avant même le clic.
+  const [deleteCheck, setDeleteCheck] = useState(null)
+  const [deleting, setDeleting] = useState(false)
+  const undoableDelete = useUndoableDelete()
+  const { addToast } = useToast()
   const { status: saveState, save } = useSaveStatus()
-  const visibleFields = PRODUCT_FIELDS.filter(f => f.defaultVisible !== false)
+  // Registre commun des champs de fiche : libellés, suppressions ET champs
+  // personnalisés viennent de la même source que le tableau /champs/products.
+  const baseFields = useMemo(() => PRODUCT_FIELDS.filter(f => f.defaultVisible !== false), [])
+  const { fields: visibleFields, customFields } = useDetailFields('products', baseFields)
   const bomSummary = useMemo(() => computeBuildable(bom), [bom])
 
   const { record: product, setRecord: setProduct, loading, loadError, reload: load } =
@@ -250,11 +380,201 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
     else if (msg.type === 'product:deleted') { if (embedded) onClose?.(); else navigate('/products') }
   })
 
+  const loadAchats = useMemo(() => () =>
+    api.purchases.list({ product_id: id, limit: 'all' }).then(r => setAchats(r.data || [])).catch(() => {}),
+  [id])
+
+  // Toutes les sections étant visibles simultanément, la nomenclature est
+  // chargée au montage (plus de chargement paresseux à la sélection d'un onglet).
   useEffect(() => {
-    if (tab === 'bom') {
-      api.bom.list({ product_id: id, limit: 'all' }).then(r => setBom(r.data)).catch(() => {})
+    api.bom.list({ product_id: id, limit: 'all' }).then(r => setBom(r.data || [])).catch(() => {})
+    loadAchats()
+    api.products.deleteCheck(id).then(setDeleteCheck).catch(() => setDeleteCheck(null))
+  }, [id, loadAchats])
+
+  // Liste des entreprises pour le champ « Fournisseur » (LinkedRecordField).
+  useEffect(() => {
+    api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
+  }, [])
+
+  // Le fournisseur déjà lié doit rester affiché même si la liste n'est pas encore
+  // arrivée (ou si l'entreprise a été supprimée) : sans option correspondante,
+  // LinkedRecordField retomberait sur son état « vide » et le lien disparaîtrait.
+  const vendorOptions = useMemo(() => {
+    const vid = form.supplier_company_id
+    if (!vid || companies.some(c => String(c.id) === String(vid))) return companies
+    return [{ id: vid, name: form.supplier_company_name || 'Fournisseur' }, ...companies]
+  }, [companies, form.supplier_company_id, form.supplier_company_name])
+
+  function changeSupplier(vendorId) {
+    const company = companies.find(c => String(c.id) === String(vendorId))
+    const next = {
+      ...form,
+      supplier_company_id: vendorId || null,
+      supplier_company_name: company?.name || '',
     }
-  }, [tab, id])
+    setForm(next)
+    clearTimeout(saveTimer.current)
+    save(() => api.products.update(id, next))
+  }
+
+  // Dépôt / retrait de l'image de la fiche. Le miroir Airtable ne l'écrasera
+  // pas : les fichiers déposés ici sont préfixés `local-` côté serveur.
+  async function uploadImage(file) {
+    setImageBusy(true)
+    await save(async () => {
+      const updated = await api.products.uploadImage(id, file)
+      setProduct(p => (p ? { ...p, ...updated } : updated))
+    })
+    setImageBusy(false)
+  }
+
+  function leaveRecord() {
+    if (embedded) onClose?.()
+    else navigate('/products')
+  }
+
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      await undoableDelete({
+        table: 'products',
+        id,
+        deleteFn: () => api.products.delete(id),
+        label: 'Pièce supprimée',
+        onChange: syncStore,
+      })
+      leaveRecord()
+    } catch (e) {
+      // 409 = BOM / envoi / achat lié : on rafraîchit le verdict pour griser le bouton.
+      api.products.deleteCheck(id).then(setDeleteCheck).catch(() => {})
+      addToast({ type: 'error', message: e.message || 'Suppression impossible', duration: 6000 })
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  async function removeImage() {
+    setImageBusy(true)
+    await save(async () => {
+      const updated = await api.products.deleteImage(id)
+      setProduct(p => (p ? { ...p, ...updated } : updated))
+    })
+    setImageBusy(false)
+  }
+
+  // Création d'un achat depuis la fiche : seule la quantité est demandée, le
+  // serveur (POST /purchases) complète fournisseur, coût unitaire, date et
+  // référence LIA-ERP-n à partir du produit.
+  async function submitAchat(e) {
+    e?.preventDefault()
+    const qty = parseInt(achatQty, 10)
+    if (!Number.isFinite(qty) || qty <= 0) return
+    setAchatSaving(true)
+    try {
+      await api.purchases.create({ product_id: id, qty_ordered: qty })
+      setShowAchatModal(false)
+      setAchatQty('')
+      await loadAchats()
+    } catch (err) {
+      addToast({ message: 'Achat non créé : ' + (err?.message || err), type: 'error' })
+    } finally {
+      setAchatSaving(false)
+    }
+  }
+
+  // ── Sections empilées + scroll-spy ──────────────────────────────────────────
+  const sections = useMemo(() => ['info', 'mouvements', 'achats', 'bom', 'docs'], [])
+  const sectionEls = useRef(new Map())
+  const spyMutedUntil = useRef(0)
+  // Callbacks de ref mémoïsés par section : sinon React les rejouerait
+  // (null puis el) à chaque rendu.
+  const sectionRefCbs = useRef(new Map())
+  const registerSection = (key) => {
+    if (!sectionRefCbs.current.has(key)) {
+      sectionRefCbs.current.set(key, (el) => {
+        if (el) sectionEls.current.set(key, el)
+        else sectionEls.current.delete(key)
+      })
+    }
+    return sectionRefCbs.current.get(key)
+  }
+
+  // Le conteneur de défilement diffère selon le contexte : <main> en pleine page,
+  // le panneau du side-peek en mode embedded. On le retrouve en remontant le DOM.
+  function scrollParentOf(el) {
+    let p = el?.parentElement
+    while (p) {
+      if (/(auto|scroll|overlay)/.test(getComputedStyle(p).overflowY)) return p
+      p = p.parentElement
+    }
+    return document.scrollingElement
+  }
+
+  // Hauteur visible du conteneur de défilement (l'écran en pleine page).
+  function viewportHeightOf(root) {
+    if (!root || root === document.scrollingElement) return window.innerHeight
+    return root.clientHeight || window.innerHeight
+  }
+
+  useEffect(() => {
+    if (loading || !product) return
+    const first = sectionEls.current.get(sections[0])
+    const root = scrollParentOf(first)
+    if (!root) return
+    const target = root === document.scrollingElement ? window : root
+    let raf = 0
+    const compute = () => {
+      raf = 0
+      if (Date.now() < spyMutedUntil.current) return
+      const rootTop = root === document.scrollingElement ? 0 : root.getBoundingClientRect().top
+      // Sonde à mi-hauteur : même repère que goToSection(), qui centre la section
+      // visée. Sinon le surlignage retomberait sur la section précédente juste
+      // après le clic.
+      const probe = rootTop + viewportHeightOf(root) / 2
+      let current = sections[0]
+      for (const key of sections) {
+        const el = sectionEls.current.get(key)
+        if (!el) continue
+        if (el.getBoundingClientRect().top <= probe) current = key
+      }
+      // Bas de page : la dernière section est forcément « celle où on est rendu »,
+      // même si son haut n'a pas franchi la ligne de sonde.
+      if (root.scrollHeight - root.scrollTop - root.clientHeight < 6) current = sections[sections.length - 1]
+      setActiveSection(prev => (prev === current ? prev : current))
+    }
+    const onScroll = () => { if (!raf) raf = requestAnimationFrame(compute) }
+    target.addEventListener('scroll', onScroll, { passive: true })
+    compute()
+    return () => {
+      target.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
+    }
+  }, [loading, product, sections])
+
+  function goToSection(key) {
+    setActiveSection(key)
+    const el = sectionEls.current.get(key)
+    if (!el) return
+    // On coupe le scroll-spy pendant l'animation, sinon les sections traversées
+    // feraient sauter le surlignage.
+    spyMutedUntil.current = Date.now() + 900
+    const root = scrollParentOf(el)
+    const height = el.getBoundingClientRect().height
+    if (!root || root === document.scrollingElement) {
+      // Une section plus haute que l'écran est calée en haut : la centrer
+      // pousserait son titre hors du champ.
+      const fits = height < window.innerHeight
+      el.scrollIntoView({ behavior: 'smooth', block: fits ? 'center' : 'start' })
+      return
+    }
+    const viewport = viewportHeightOf(root)
+    // Marge haute qui centre la section dans la zone visible (8 px si elle est
+    // trop haute pour tenir).
+    const offset = height < viewport ? Math.max(SECTION_NAV_INSET, (viewport - height) / 2) : SECTION_NAV_INSET
+    const delta = el.getBoundingClientRect().top - root.getBoundingClientRect().top
+    root.scrollTo({ top: Math.max(0, root.scrollTop + delta - offset), behavior: 'smooth' })
+  }
 
   const change = (key, val) => {
     const next = { ...form, [key]: val }
@@ -281,16 +601,23 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
 
   const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
-  // En mode embedded (side-peek), pas de Layout : le drawer fournit le cadre.
-  const shell = (content) => (embedded ? content : <Layout>{content}</Layout>)
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
 
   if (loading) return shell(<Spinner center />)
   if (loadError && !product) return shell(<DetailLoadError message={loadError} onRetry={load} />)
   if (!product) return shell(<div className="p-6 text-slate-500">Produit introuvable.</div>)
 
+  const sectionCounts = {
+    mouvements: product.movements?.length || undefined,
+    achats: achats.length || undefined,
+    bom: bom.length || undefined,
+  }
+
   return shell(
     <>
-      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-4xl mx-auto'}>
+      <div className={embedded ? 'px-5 py-4' : 'p-6 max-w-5xl mx-auto'}>
 
         {/* Header */}
         <div className="flex items-start gap-4 mb-6">
@@ -299,12 +626,17 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
               <ArrowLeft size={18} />
             </button>
           )}
-          {product.image_url && (
-            <img src={product.image_url} alt={form.name_fr} className={`object-cover rounded-lg border border-slate-200 flex-shrink-0 ${embedded ? 'w-14 h-14' : 'w-20 h-20'}`} />
-          )}
+          <ProductImageSlot
+            src={product.image_url}
+            alt={form.name_fr}
+            size={embedded ? 'w-14 h-14' : 'w-20 h-20'}
+            busy={imageBusy}
+            onPick={uploadImage}
+            onRemove={removeImage}
+          />
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
-              {!embedded && <h1 className="text-2xl font-bold text-slate-900">{form.name_fr || <span className="text-slate-400 italic font-normal">Sans nom</span>}</h1>}
+              {!embedded && <PageTitle>{form.name_fr || <span className="text-slate-400 italic font-normal">Sans nom</span>}</PageTitle>}
               <Badge color={stockStatusColor(product)} size="md">{stockStatusLabel(product)}</Badge>
               {!form.active && <Badge color="red">Inactif</Badge>}
               {form.is_sellable && <Badge color="indigo">Vendable</Badge>}
@@ -320,7 +652,7 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
           </div>
           <div className="flex items-center gap-2">
             {!embedded && (
-              /* Miroir du bouton « ouvrir en grand » du drawer : retourne à la
+              /* Chemin inverse du panneau latéral : retourne à la
                  liste avec ce produit ouvert en panneau latéral. */
               <button
                 onClick={() => navigate('/products', { state: { peekId: id } })}
@@ -343,29 +675,23 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
           </div>
         </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 mb-6 border-b border-slate-200">
-          {[
-            { key: 'info', label: 'Informations' },
-            { key: 'mouvements', label: 'Mouvements de stock' },
-            { key: 'bom', label: 'BOM' },
-            { key: 'docs', label: 'Document d’installation' },
-          ].map(t => (
-            <button key={t.key} onClick={() => setTab(t.key)}
-              className={`px-4 py-2.5 text-sm font-medium transition-colors border-b-2 -mb-px ${
-                tab === t.key ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}>
-              {t.label}
-              {t.key === 'mouvements' && product.movements?.length > 0 && (
-                <span className="ml-1.5 bg-slate-200 text-slate-600 text-xs px-1.5 py-0.5 rounded-full">{product.movements.length}</span>
-              )}
-            </button>
-          ))}
-        </div>
+        {/* Sélecteur de section (barre du haut, collante) + sections empilées */}
+        <SectionNav
+          sections={sections}
+          labels={SECTION_LABELS}
+          counts={sectionCounts}
+          active={activeSection}
+          onSelect={goToSection}
+          embedded={embedded}
+          testId="product-section-nav"
+        />
 
-        {tab === 'info' && (
+        {/* Sections */}
+        <div className="min-w-0">
+
+        <Section id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
           <div className="card p-6">
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {visibleFields.map(field => {
                 if (field.type === 'readonly') {
                   return (
@@ -385,32 +711,20 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
                   )
                 }
                 if (field.type === 'vendor') {
+                  // Champ référence : même composante que partout ailleurs dans
+                  // l'app (LinkedRecordField) — le fournisseur s'affiche comme un
+                  // lien cliquable vers sa fiche, avec la liste recherchable pour
+                  // relier ailleurs. Plus de « Ouvrir la fiche » collé au libellé.
                   return (
-                    <Field key={field.key} label={
-                      <span className="flex items-center gap-2">
-                        {field.label}
-                        {form.supplier_company_id && (
-                          <Link
-                            to={`/companies/${form.supplier_company_id}`}
-                            className="text-brand-600 hover:text-brand-800 inline-flex items-center gap-1 text-xs normal-case font-normal tracking-normal"
-                            title="Ouvrir la fiche fournisseur"
-                          >
-                            <ExternalLink size={12} /> Ouvrir la fiche
-                          </Link>
-                        )}
-                      </span>
-                    } span2={field.span2}>
-                      <VendorSelect
-                        value={form.supplier_company_name || ''}
-                        vendorId={form.supplier_company_id}
-                        onChange={({ vendor, vendor_id }) => {
-                          const next = { ...form, supplier_company_name: vendor, supplier_company_id: vendor_id }
-                          setForm(next)
-                          clearTimeout(saveTimer.current)
-                          saveTimer.current = setTimeout(() => {
-                            save(() => api.products.update(id, next))
-                          }, 300)
-                        }}
+                    <Field key={field.key} label={field.label} span2={field.span2}>
+                      <LinkedRecordField
+                        name="supplier_company_id"
+                        value={form.supplier_company_id}
+                        options={vendorOptions}
+                        labelFn={c => c.name}
+                        getHref={c => `/companies/${c.id}`}
+                        saving={saveState === 'saving'}
+                        onChange={changeSupplier}
                       />
                     </Field>
                   )
@@ -424,7 +738,6 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
                           value={form[field.key] || ''}
                           options={(field.options || []).map(o => ({ value: o, label: o }))}
                           emptyOption="—"
-                          placeholder="—"
                           onChange={v => change(field.key, v)}
                           className={inp}
                           size="sm"
@@ -460,34 +773,80 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
                   </Field>
                 )
               })}
+              {/* Champs personnalisés de la table : ils apparaissent sans qu'on
+                  touche au code de la fiche. Lecture seule — sauf le champ
+                  Attachement, qui écrit sa cellule lui-même au dépôt. */}
+              {customFields.map(field => (
+                <Field key={field.key} label={field.label}>
+                  <div className="text-sm text-slate-700 py-1.5" data-testid={`detail-cf-${field.key}`}>
+                    {field.type === 'attachment'
+                      ? <AttachmentField field={field.field} recordId={product.id} value={product[field.key]} readOnly={!field.writable} />
+                      : field.render(product[field.key])}
+                  </div>
+                </Field>
+              ))}
             </div>
           </div>
-        )}
+        </Section>
 
-        {tab === 'mouvements' && (
+        <Section id="mouvements" label={SECTION_LABELS.mouvements} count={sectionCounts.mouvements} registerRef={registerSection('mouvements')}>
           <DataTable
             table="product_movements"
             columns={MOVEMENT_COLUMNS}
             data={product.movements || []}
             searchFields={['type', 'reason', 'user_name', 'reference_id']}
-            height={embedded ? 'calc(100vh - 420px)' : 'calc(100vh - 360px)'}
+            height={stackedTableHeight(product.movements?.length)}
+            emptyState={{ icon: ArrowLeftRight, title: 'Aucun mouvement', description: "Aucune entrée, sortie ou ajustement de stock n'a encore été enregistré pour ce produit." }}
           />
-        )}
+        </Section>
 
-        {tab === 'bom' && (
-          <div>
-            {bom.length > 0 && <BomBuildableBanner summary={bomSummary} />}
-            <DataTable
-              table="bom_items"
-              columns={BOM_COLUMNS}
-              data={bomSummary.rows}
-              searchFields={['component_name', 'component_sku', 'ref_des']}
-              height={embedded ? 'calc(100vh - 480px)' : 'calc(100vh - 420px)'}
-            />
-          </div>
-        )}
+        <Section
+          id="achats"
+          label={SECTION_LABELS.achats}
+          count={sectionCounts.achats}
+          registerRef={registerSection('achats')}
+          action={(
+            <button
+              type="button"
+              onClick={() => { setAchatQty(form.order_qty ? String(form.order_qty) : ''); setShowAchatModal(true) }}
+              className="btn-secondary flex items-center gap-1.5 text-sm"
+              data-testid="product-add-achat"
+            >
+              <Plus size={14} /> Achat
+            </button>
+          )}
+        >
+          <DataTable
+            table="product_achats"
+            columns={ACHAT_COLUMNS}
+            data={achats}
+            searchFields={['reference', 'supplier', 'supplier_company_name', 'status']}
+            height={stackedTableHeight(achats.length)}
+            peek={{
+              title: row => row.reference || `Achat #${row.id}`,
+              subtitle: row => row.supplier_company_name || row.supplier || '',
+              to: row => `/purchases/${row.id}`,
+              width: 680,
+              render: (row, { close }) => <PurchaseDetail recordId={row.id} embedded onClose={close} />,
+            }}
+            emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucun achat n'est enregistré pour cette pièce." }}
+          />
+        </Section>
 
-        {tab === 'docs' && (() => {
+        <Section id="bom" label={SECTION_LABELS.bom} count={sectionCounts.bom} registerRef={registerSection('bom')}>
+          {bom.length > 0 && <BomBuildableBanner summary={bomSummary} />}
+          <DataTable
+            table="bom_items"
+            columns={BOM_COLUMNS}
+            data={bomSummary.rows}
+            searchFields={['component_name', 'component_sku', 'ref_des']}
+            height={stackedTableHeight(bomSummary.rows.length)}
+            emptyState={{ icon: Hammer, title: 'Aucune nomenclature', description: "Ce produit n'a aucun composant de nomenclature (BOM)." }}
+          />
+        </Section>
+
+        <Section id="docs" label={SECTION_LABELS.docs} count={sectionCounts.docs} registerRef={registerSection('docs')}>
+        {(() => {
           const docFields = [
             { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', label: 'Lien PDF installation (FR)' },
             { url: 'lien_pdf_installation_en', local: 'lien_pdf_installation_en_local', label: 'Lien PDF installation (EN)' },
@@ -562,7 +921,27 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
             </div>
           )
         })()}
+        </Section>
 
+        </div>
+
+        {/* Suppression — barrée tant qu'un BOM, un envoi ou un achat cite la pièce. */}
+        <div className="mt-6">
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleting || deleteCheck?.deletable === false}
+            title={deleteCheck?.reason || 'Supprimer cette pièce'}
+            data-testid="product-delete"
+            className="flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700 hover:underline disabled:opacity-50 disabled:no-underline disabled:cursor-not-allowed"
+          >
+            <Trash2 size={14} />
+            {deleting ? 'Suppression…' : 'Supprimer'}
+          </button>
+          {deleteCheck?.deletable === false && (
+            <div className="mt-1 text-xs text-slate-400">{deleteCheck.reason}</div>
+          )}
+        </div>
       </div>
 
       <PurchaseOrderModal
@@ -570,6 +949,35 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
         isOpen={showPoModal}
         onClose={() => setShowPoModal(false)}
       />
+
+      <Modal isOpen={showAchatModal} onClose={() => setShowAchatModal(false)} title="Nouvel achat" size="sm">
+        <form onSubmit={submitAchat} className="space-y-4">
+          <div>
+            <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1" htmlFor="achat-qty">Quantité</label>
+            <input
+              id="achat-qty"
+              type="number"
+              min="1"
+              step="1"
+              value={achatQty}
+              onChange={e => setAchatQty(e.target.value)}
+              className={inp}
+              data-testid="product-achat-qty"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="btn-secondary text-sm" onClick={() => setShowAchatModal(false)}>Annuler</button>
+            <button
+              type="submit"
+              className="btn-primary text-sm"
+              disabled={achatSaving || !(parseInt(achatQty, 10) > 0)}
+              data-testid="product-achat-submit"
+            >
+              {achatSaving ? 'Création…' : 'Créer'}
+            </button>
+          </div>
+        </form>
+      </Modal>
 
       {showRefreshDocsModal && (() => {
         const docFields = [
@@ -581,10 +989,17 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
         const parseUrls = v => (v || '').split(',').map(s => s.trim()).filter(Boolean)
         const filled = docFields.map(f => ({ ...f, urls: parseUrls(product[f.url]) })).filter(f => f.urls.length > 0)
         const empty = docFields.filter(f => parseUrls(product[f.url]).length === 0)
+        const closeRefreshDocs = () => {
+          if (refreshingDocs) return
+          setShowRefreshDocsModal(false)
+          setRefreshDocsResult(null)
+        }
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-            <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full p-6 max-h-[90vh] overflow-y-auto">
-              <h2 className="text-lg font-semibold text-slate-900 mb-1">Mettre à jour les PDFs ?</h2>
+          // Modale partagée (portail + empilement au-dessus des panneaux
+          // latéraux) : la fiche produit s'ouvre elle-même en panneau, souvent
+          // empilée par-dessus une commande — une boîte `fixed z-50` locale
+          // restait prisonnière du plan du panneau et passait dessous.
+          <Modal isOpen onClose={closeRefreshDocs} title="Mettre à jour les PDFs ?" size="md">
               <p className="text-sm text-slate-500 mb-4">
                 Cette action effectue les opérations suivantes côté serveur :
               </p>
@@ -625,7 +1040,7 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => { setShowRefreshDocsModal(false); setRefreshDocsResult(null); }}
+                  onClick={closeRefreshDocs}
                   disabled={refreshingDocs}
                   className="px-4 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50"
                 >
@@ -642,8 +1057,7 @@ export default function ProductDetail({ recordId, embedded = false, onClose }) {
                   </button>
                 )}
               </div>
-            </div>
-          </div>
+          </Modal>
         )
       })()}
     </>

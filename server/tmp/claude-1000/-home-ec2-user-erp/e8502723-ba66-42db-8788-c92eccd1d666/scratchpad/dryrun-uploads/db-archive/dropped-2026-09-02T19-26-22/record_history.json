@@ -1,0 +1,206 @@
+{
+  "table": "record_history",
+  "dropped_at": "2026-09-02T19:26:22.989Z",
+  "ddl": "CREATE TABLE record_history (\n      id TEXT PRIMARY KEY,\n      table_id TEXT NOT NULL,\n      record_id TEXT NOT NULL,\n      user_id TEXT REFERENCES users(id),\n      action TEXT NOT NULL CHECK(action IN ('create','update','delete','restore')),\n      diff TEXT,\n      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))\n    )",
+  "row_count": 22,
+  "rows": [
+    {
+      "id": "rec_7b44c8b801004d269679f10697c8766e",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_ff8a019f7916487f8d238d9fd686c102",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-24T21:26:59.000Z"
+    },
+    {
+      "id": "rec_4f55a4d66b2e4d66b52a94f1a495d616",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_ff8a019f7916487f8d238d9fd686c102",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"status\",\"old_value\":\"Actif\",\"new_value\":\"Terminé\",\"source\":\"user\"}",
+      "created_at": "2026-03-24T21:27:07.000Z"
+    },
+    {
+      "id": "rec_49ca45b49e8e4da7ac84d3dda72892af",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_ff8a019f7916487f8d238d9fd686c102",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "delete",
+      "diff": null,
+      "created_at": "2026-03-24T21:27:07.000Z"
+    },
+    {
+      "id": "rec_3b5ff9d9a65e48bea19a3e6507f45a0c",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_cd35b44969fe4813b55da15c84a3be3a",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-24T21:36:38.000Z"
+    },
+    {
+      "id": "rec_4661a086bd8d46afaf6637f4c759a091",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_2b5562faefbc463780151d8eb89eed35",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-24T21:36:38.000Z"
+    },
+    {
+      "id": "rec_88fceff6d03242c48aff44f8de7f63e4",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_cd35b44969fe4813b55da15c84a3be3a",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"status\",\"old_value\":\"Envoyé\",\"new_value\":\"Archivé\",\"source\":\"user\"}",
+      "created_at": "2026-03-24T21:44:01.000Z"
+    },
+    {
+      "id": "rec_2c0ef80d54eb4c12ab5ef22eb026ead8",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_2b5562faefbc463780151d8eb89eed35",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"status\",\"old_value\":\"En attente\",\"new_value\":\"Archivé\",\"source\":\"user\"}",
+      "created_at": "2026-03-24T21:44:01.000Z"
+    },
+    {
+      "id": "rec_9c51a26389634156bb16f8955c34f3fa",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_2b5562faefbc463780151d8eb89eed35",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "delete",
+      "diff": null,
+      "created_at": "2026-03-24T21:44:01.000Z"
+    },
+    {
+      "id": "rec_ffdb0d01f62e458694f56d81676dbda4",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_70bfa607449c4dc382bfddf2019e3b1d",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-24T21:44:01.000Z"
+    },
+    {
+      "id": "rec_e1178e5b453b4fa7bd142bdcfa6096a8",
+      "table_id": "tbl_4fb0cc39097a4d6ebbafffd24a8c3c8e",
+      "record_id": "rec_f413d99df9dd4dd7a03b466540ac2620",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-24T21:44:01.000Z"
+    },
+    {
+      "id": "rec_4f5335631c504f42b49cef102cbf9ca8",
+      "table_id": "tbl_0928e7eca1484ced886b410df2dcf2b4",
+      "record_id": "rec_40ec42e6d8df4274be5bbd06223ff595",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-25T01:42:42.000Z"
+    },
+    {
+      "id": "rec_ca076ae3550f476783bbe62736036a86",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_interactions",
+      "record_id": "rec_47a44e719542451e9fa04df15c4ecf87",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-25T01:45:30.000Z"
+    },
+    {
+      "id": "rec_de28430a7ab44833b4618dc8f6dcc32f",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_interactions",
+      "record_id": "rec_47a44e719542451e9fa04df15c4ecf87",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "delete",
+      "diff": null,
+      "created_at": "2026-03-25T13:49:03.000Z"
+    },
+    {
+      "id": "rec_9916a1d5d6f04586b08c04de38fb63d8",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_a89faacdc31a4675bbb33176db5f947c",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-25T14:44:21.000Z"
+    },
+    {
+      "id": "rec_1150b33f6a784b61b4ff819b12e8c7fd",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_e011de63b3a143bbaca26581a210de4b",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-25T14:44:28.000Z"
+    },
+    {
+      "id": "rec_c016e4c1276342ff9437992cb13b9e69",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_f63e30513eb341bfb301e7b1317ea2e6",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "create",
+      "diff": null,
+      "created_at": "2026-03-25T14:44:29.000Z"
+    },
+    {
+      "id": "rec_6cd3743e91704999bb1c6d5165205342",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_a89faacdc31a4675bbb33176db5f947c",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"1\",\"new_value\":\"1\",\"source\":\"user\"}",
+      "created_at": "2026-03-25T14:44:47.000Z"
+    },
+    {
+      "id": "rec_b2fabb9fd07648abb077d17d2c79ddcb",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_e011de63b3a143bbaca26581a210de4b",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"1\",\"new_value\":\"2\",\"source\":\"user\"}",
+      "created_at": "2026-03-25T14:44:48.000Z"
+    },
+    {
+      "id": "rec_6ad67447744b48aa9edfb81f01ed0bec",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_f63e30513eb341bfb301e7b1317ea2e6",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"1\",\"new_value\":\"3\",\"source\":\"user\"}",
+      "created_at": "2026-03-25T14:44:48.000Z"
+    },
+    {
+      "id": "rec_c10631692e644afaad1e380cf541b6b5",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_orders",
+      "record_id": "rec_a89faacdc31a4675bbb33176db5f947c",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"nombre\",\"new_value\":55.2,\"source\":\"user\"}",
+      "created_at": "2026-03-25T14:44:58.000Z"
+    },
+    {
+      "id": "rec_0c87ceeb0eed4c8382aa16d3817a9389",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_projects",
+      "record_id": "484c086d-8a3c-491d-b6a8-947e879ea443",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"value_cad\",\"old_value\":null,\"new_value\":\"44\",\"source\":\"user\"}",
+      "created_at": "2026-03-27T19:21:27.000Z"
+    },
+    {
+      "id": "rec_314d908301d94ab2bb25eba0fc3f54e5",
+      "table_id": "tbl_legacy_e07d65e0-e733-4721-84e1-b6dbe50cdbf5_projects",
+      "record_id": "484c086d-8a3c-491d-b6a8-947e879ea443",
+      "user_id": "5637ebf2-74e8-4245-9f1e-64d80b53b216",
+      "action": "update",
+      "diff": "{\"field_key\":\"value_cad\",\"old_value\":\"44\",\"new_value\":null,\"source\":\"user\"}",
+      "created_at": "2026-03-27T19:21:29.000Z"
+    }
+  ]
+}

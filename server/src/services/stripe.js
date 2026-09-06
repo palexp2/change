@@ -1,5 +1,5 @@
 import Stripe from 'stripe'
-import { v4 as uuid } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { recordEvent, classifyChange } from './subscriptionEvents.js'
 import {
@@ -125,7 +125,9 @@ export async function fixRefundDocumentNumbers({ dryRun = false } = {}) {
   return { total: rows.length, patched, unmatched, errors, details: details.slice(0, 100) }
 }
 
-function mapStatus(stripeStatus) {
+// Exportée : la création manuelle d'abonnement (routes/stripe-subscriptions.js)
+// doit normaliser le statut exactement comme la sync et le webhook.
+export function mapStatus(stripeStatus) {
   const map = {
     active: 'active',
     past_due: 'past_due',
@@ -253,7 +255,7 @@ export async function syncStripeSubscriptions() {
       )
       updated++
     } else {
-      const newId = uuid()
+      const newId = newRecordId()
       db.prepare(`
         INSERT INTO subscriptions (
           id, company_id, stripe_id, status, amount_monthly, currency,
@@ -347,7 +349,7 @@ export async function syncStripePayouts({ fullHistory = true } = {}) {
           failure_code, failure_message, automatic, stripe_url, raw
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
-        uuid(), p.id, amount, (p.currency || 'cad').toUpperCase(), p.status, arrival, createdDate,
+        newRecordId(), p.id, amount, (p.currency || 'cad').toUpperCase(), p.status, arrival, createdDate,
         p.method, p.type, p.description || null, p.statement_descriptor || null,
         dest?.id || (typeof p.destination === 'string' ? p.destination : null),
         dest?.bank_name || null, dest?.last4 || null,
@@ -601,7 +603,7 @@ export async function syncStripeBalanceTransactions(payoutStripeId) {
                 INSERT OR IGNORE INTO stripe_qb_tax_mapping
                   (id, stripe_tax_id, stripe_tax_description, stripe_tax_percentage, qb_tax_code)
                 VALUES (?, ?, ?, ?, ?)
-              `).run(uuid(), key, desc || null, pct, inferred)
+              `).run(newRecordId(), key, desc || null, pct, inferred)
               taxMap.set(key, inferred)
               console.log(`🔗 Auto-mappé tax_rate ${key} → QB code ${inferred} (${desc})`)
             } catch (e) {
@@ -680,7 +682,7 @@ export async function syncStripeBalanceTransactions(payoutStripeId) {
           available_on, created_date, raw
         ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).run(
-        uuid(), bt.id, payoutStripeId, bt.type, bt.reporting_category, amount, fee, net, (bt.currency || '').toUpperCase(),
+        newRecordId(), bt.id, payoutStripeId, bt.type, bt.reporting_category, amount, fee, net, (bt.currency || '').toUpperCase(),
         bt.description || null, src?.id || null, typeof bt.source === 'string' ? null : (src?.object || null),
         stripeInvoiceId, invoiceNumber, stripeCustomerId, customerName, isSubscription, qbTaxCode,
         JSON.stringify(taxDetails), invoiceTaxGst, invoiceTaxQst,
@@ -942,7 +944,7 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
       continue
     }
 
-    const id = uuid()
+    const id = newRecordId()
     db.prepare(`
       INSERT INTO factures (
         id, invoice_id, company_id, document_number, document_date,
@@ -1092,7 +1094,7 @@ export function migrateRefundsToPayments({ dryRun = false } = {}) {
                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'),
                   strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       `).run(
-        uuid(), orig.id, receivedAt, amount, currency,
+        newRecordId(), orig.id, receivedAt, amount, currency,
         refundId, chargeId, bt?.stripe_id || null, notes
       )
       db.prepare('DELETE FROM factures WHERE id = ?').run(rf.id)

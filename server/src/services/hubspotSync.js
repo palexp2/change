@@ -1,5 +1,5 @@
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import {
   isHubSpotConfigured,
   createTask, updateTask, deleteTask, getTask,
@@ -351,7 +351,7 @@ export async function pullDelta({ full = false } = {}) {
         )
         modified++
       } else {
-        const id = uuidv4()
+        const id = newRecordId()
         db.prepare(`
           INSERT INTO tasks (id, title, description, status, priority, due_date,
             assigned_to, keywords, hubspot_task_id, last_hubspot_sync)

@@ -1,0 +1,15 @@
+{
+  "table": "airtable_inventaire_config",
+  "dropped_at": "2026-09-02T19:26:22.990Z",
+  "ddl": "CREATE TABLE \"airtable_inventaire_config\" (\"base_id\" TEXT, \"projects_table_id\" TEXT, \"field_map_projects\" TEXT, \"last_synced_at\" TEXT, \"extra_tables\" TEXT)",
+  "row_count": 1,
+  "rows": [
+    {
+      "base_id": "appB4Fehk9jYd4s4B",
+      "projects_table_id": "tbl2Lh4KLVgHcRIZP",
+      "field_map_projects": "{\"name\":\"ID\",\"company\":\"Client final\",\"status\":\"Vendu\",\"type\":\"Type\",\"value_cad\":\"Valeur de la dernière soumission (CAD)b\",\"probability\":\"Probabilité\",\"close_date\":\"Fermeture\",\"notes\":\"Notes\",\"type_choices\":{\"Nouveau client\":\"Nouveau client\",\"Expansion\":\"Expansion\",\"Ajouts mineurs\":\"Ajouts mineurs\",\"Pièces de rechange\":\"Pièces de rechange\"},\"status_choices\":{\"Oui\":\"Gagné\",\"Non\":\"Perdu\"}}",
+      "last_synced_at": "2026-04-08T18:40:37.000Z",
+      "extra_tables": null
+    }
+  ]
+}

@@ -1,47 +1,38 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom'
 import {
   ArrowLeft, Plus, Truck, Package, FileText, X, Printer,
   Copy, Check, Trash2, ScanBarcode, Boxes,
-  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle
+  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle, RefreshCw
 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
-import Attachments from '../components/Attachments.jsx'
+import EnvoisDetail from './EnvoisDetail.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtMoney } from '../utils/formatters.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { ImageValue } from '../lib/customFieldDisplay.jsx'
+import { RecordOps } from '../lib/recordOps.js'
+import { ImageValue, parseSelectChoices } from '../lib/customFieldDisplay.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { useToast } from '../contexts/ToastContext.jsx'
+import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { trackingUrl } from '../lib/trackingUrl.js'
+import { shipmentTitle } from '../lib/shipmentLabel.js'
+import { invalidate } from '../lib/prefetch.js'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
-
-function trackingUrl(carrier, trackingNumber) {
-  if (!trackingNumber) return null
-  const c = (carrier || '').toLowerCase()
-  if (c.includes('purolator')) return `https://www.purolator.com/en/ship-track/tracking-summary.page?pin=${trackingNumber}`
-  if (c.includes('fedex')) return `https://www.fedex.com/fedextrack/?trknbr=${trackingNumber}`
-  if (c.includes('ups')) return `https://www.ups.com/track?tracknum=${trackingNumber}`
-  if (c.includes('dhl')) return `https://www.dhl.com/en/express/tracking.html?AWB=${trackingNumber}`
-  if (c.includes('postes canada') || c.includes('canada post') || c.includes('cp')) return `https://www.canadapost-postescanada.ca/track-reperage/en#/search?searchFor=${trackingNumber}`
-  if (c.includes('canpar')) return `https://www.canpar.com/en/tracking/track.htm?barcode=${trackingNumber}`
-  if (c.includes('gls')) return `https://gls-group.eu/EU/en/parcel-tracking?match=${trackingNumber}`
-  if (c.includes('nationex')) return `https://nationex.com/reperage/${trackingNumber}`
-  return null
-}
-
-function _fmtCad(n) {
-  if (!n && n !== 0) return '—'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(n)
-}
 
 const ITEM_TYPES = ['Facturable', 'Remplacement', 'Non facturable']
 const ITEM_TYPE_COLORS = { 'Facturable': 'green', 'Remplacement': 'yellow', 'Non facturable': 'gray' }
@@ -126,11 +117,18 @@ function ScanToast({ toast, onClose }) {
 
 function AddItemModal({ orderId, onSave, onClose }) {
   const [products, setProducts] = useState([])
-  const [form, setForm] = useState({ product_id: '', qty: 1, unit_cost: '', item_type: 'Facturable', notes: '' })
+  // `unit_cost` n'a plus de champ visible (le coût d'une ligne se lit dans
+  // « Coût total au moment de l'envoi ») mais reste dans le formulaire : il est
+  // pré-rempli avec le coût du produit choisi et posté à la création, sinon la
+  // ligne naîtrait à 0 et le gel du coût à l'envoi n'aurait rien à valoriser.
+  const [form, setForm] = useState({ product_id: '', qty: 1, unit_cost: '', item_type: 'Facturable' })
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
-    api.products.list({ limit: 200, active: true }).then(r => setProducts(r.data)).catch(() => {})
+    // Catalogue complet, pas une page : au-delà de 200 (`limit` par défaut),
+    // le tri alphabétique du serveur coupait la liste en plein milieu — un
+    // produit dont le nom commence après le 200e ne sortait jamais.
+    api.products.list({ limit: 'all', active: true }).then(r => setProducts(r.data)).catch(() => {})
   }, [])
 
   function handleProductChange(newId) {
@@ -159,73 +157,18 @@ function AddItemModal({ orderId, onSave, onClose }) {
           options={products}
           labelFn={p => `${p.name_fr}${p.sku ? ` (${p.sku})` : ''}`}
           getHref={p => `/products/${p.id}`}
-          placeholder="Produit"
           onChange={handleProductChange}
         />
       </div>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label className="label">Quantité *</label>
-          <input type="number" min="1" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className="input" required />
-        </div>
-        <div>
-          <label className="label">Coût unitaire</label>
-          <input type="number" min="0" step="0.01" value={form.unit_cost} onChange={e => setForm(f => ({ ...f, unit_cost: e.target.value }))} className="input" />
-        </div>
+      <div>
+        <label className="label">Quantité *</label>
+        <input type="number" min="1" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className="input" required />
       </div>
       <div>
         <label className="label">Type</label>
         <select value={form.item_type} onChange={e => setForm(f => ({ ...f, item_type: e.target.value }))} className="select">
           {ITEM_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
-      </div>
-      <div>
-        <label className="label">Notes</label>
-        <input value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" />
-      </div>
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? '...' : 'Ajouter'}</button>
-      </div>
-    </form>
-  )
-}
-
-// ── Commercial mode — Add shipment modal ──────────────────────────────────────
-
-function AddShipmentModal({ orderId, onSave, onClose }) {
-  const [form, setForm] = useState({ tracking_number: '', carrier: '', shipped_at: '', notes: '' })
-  const [saving, setSaving] = useState(false)
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      await api.orders.addShipment(orderId, form)
-      onSave()
-      onClose()
-    } finally { setSaving(false) }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <div>
-          <label className="label">Transporteur</label>
-          <input value={form.carrier} onChange={e => setForm(f => ({ ...f, carrier: e.target.value }))} className="input" placeholder="Purolator, FedEx..." />
-        </div>
-        <div>
-          <label className="label">N° de suivi</label>
-          <input value={form.tracking_number} onChange={e => setForm(f => ({ ...f, tracking_number: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Date d'envoi</label>
-          <input type="date" value={form.shipped_at} onChange={e => setForm(f => ({ ...f, shipped_at: e.target.value }))} className="input" />
-        </div>
-      </div>
-      <div>
-        <label className="label">Notes</label>
-        <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={2} />
       </div>
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
@@ -639,35 +582,24 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 
   return (
     <div className="min-h-screen bg-slate-100" data-testid="expedition-view">
-      {/* Expedition header */}
+      {/* Expedition header — le n° de commande et l'entreprise sont déjà dans
+          l'en-tête du panneau : ici, seulement l'avancement du prélèvement. */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-        <div className="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-bold text-slate-900 text-lg">#{order.order_number}</span>
-              {order.company_name && (
-                order.company_id
-                  ? <Link to={`/companies/${order.company_id}`} className="text-brand-600 hover:underline text-sm truncate">{order.company_name}</Link>
-                  : <span className="text-slate-500 text-sm truncate">{order.company_name}</span>
-              )}
-            </div>
-          </div>
-          <button
-            onClick={onToggleMode}
-            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors flex-shrink-0"
-          >
-            <FileText size={13} />
-            Vue commerciale
-          </button>
-        </div>
-
-        {/* Progress bar */}
-        <div className="max-w-3xl mx-auto px-4 pb-3">
-          <div className="flex items-center justify-between mb-1.5">
+        <div className="max-w-3xl mx-auto px-4 py-3">
+          <div className="flex items-center justify-between gap-3 mb-1.5">
             <span className="text-sm font-medium text-slate-600">
               {doneCount} / {totalItems} article{totalItems > 1 ? 's' : ''} prélevé{doneCount > 1 ? 's' : ''}
             </span>
-            <span className="text-sm font-bold text-slate-700">{pct}%</span>
+            <div className="flex items-center gap-3 flex-shrink-0">
+              <span className="text-sm font-bold text-slate-700">{pct}%</span>
+              <button
+                onClick={onToggleMode}
+                className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+              >
+                <FileText size={13} />
+                Vue commerciale
+              </button>
+            </div>
           </div>
           <div className="h-2.5 bg-slate-200 rounded-full overflow-hidden">
             <div
@@ -913,9 +845,17 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export default function OrderDetail() {
-  const { id } = useParams()
+// `recordId` + `embedded` : monte la fiche dans un RecordPeekDrawer (side-peek)
+// sans le chrome de page (Layout, bouton retour). `onClose` ferme le panneau
+// après suppression du record.
+export default function OrderDetail({ recordId, embedded = true, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
+  // Le cadre vient toujours du panneau latéral : une fiche ne s'affiche jamais
+  // en pleine page (voir components/RecordRoutePanel.jsx).
+  const shell = (content) => content
+  const leaveRecord = () => { if (embedded) onClose?.(); else navigate('/orders') }
   const [searchParams] = useSearchParams()
   const { record: order, setRecord: setOrder, loading, loadError, reload: load } =
     useDetailRecord(() => api.orders.get(id), [id])
@@ -925,40 +865,201 @@ export default function OrderDetail() {
 
   // Commercial mode state
   const [showAddItem, setShowAddItem] = useState(false)
-  const [showAddShipment, setShowAddShipment] = useState(false)
   const confirmDialog = useConfirm()
+  // Catalogue actif — sert au sélecteur de produit de la cellule « Produit »
+  // du tableau des articles (édition en ligne). Même requête que le formulaire
+  // d'ajout. `limit: 'all'` : le tri alphabétique du serveur coupait la liste
+  // en plein milieu du répertoire au-delà de la page par défaut (200) — un
+  // produit dont le nom vient après ne sortait jamais du sélecteur.
+  const [products, setProducts] = useState([])
+  useEffect(() => {
+    api.products.list({ limit: 'all', active: true }).then(r => setProducts(r.data || [])).catch(() => {})
+  }, [])
 
   // Shared
   const [scanToast, setScanToast] = useState(null)
   const [flashItemId, setFlashItemId] = useState(null)
 
-  // Rentabilité — brouillon du champ override (revenu manuel)
+  // Rentabilité — brouillons des champs override (revenu et coûts manuels)
   const [overrideDraft, setOverrideDraft] = useState('')
+  const [cogsOverrideDraft, setCogsOverrideDraft] = useState('')
   const [savingOverride, setSavingOverride] = useState(false)
 
-  // Synchronise le brouillon override avec la commande chargée.
+  // Synchronise les brouillons override avec la commande chargée.
   useEffect(() => {
     setOverrideDraft(order?.revenue_override_cad != null ? String(order.revenue_override_cad) : '')
   }, [order?.id, order?.revenue_override_cad])
+  useEffect(() => {
+    setCogsOverrideDraft(order?.cogs_override_cad != null ? String(order.cogs_override_cad) : '')
+  }, [order?.id, order?.cogs_override_cad])
 
-  // Autosave de l'override de revenu (on blur). '' ⇒ null ⇒ revenu calculé.
+  // Autosave d'un override de rentabilité (on blur). '' ⇒ null ⇒ valeur calculée.
   // `rawValue` permet de forcer une valeur (ex: bouton effacer) sans dépendre
   // de l'état asynchrone du brouillon.
-  async function saveOverride(rawValue) {
-    const raw = (rawValue !== undefined ? rawValue : overrideDraft).trim()
-    const current = order?.revenue_override_cad ?? null
+  async function saveOverrideField(field, setDraft, draft, rawValue) {
+    const raw = (rawValue !== undefined ? rawValue : draft).trim()
+    const current = order?.[field] ?? null
     const next = raw === '' ? null : Number(raw)
     if (next !== null && !Number.isFinite(next)) {
-      setOverrideDraft(current != null ? String(current) : '')
+      setDraft(current != null ? String(current) : '')
       return
     }
     if (next === current) return
     setSavingOverride(true)
     try {
-      await api.orders.update(id, { ...order, revenue_override_cad: next })
+      // Envoi PARTIEL : `{ ...order }` embarquait les colonnes Airtable en
+      // import seul, que la route refuse en 400 (AIRTABLE_PULL_EDIT_ERROR) —
+      // les overrides ne s'enregistraient plus du tout.
+      await api.orders.update(id, { [field]: next })
       await load()
     } finally { setSavingOverride(false) }
   }
+
+  const saveOverride = (rawValue) =>
+    saveOverrideField('revenue_override_cad', setOverrideDraft, overrideDraft, rawValue)
+  const saveCogsOverride = (rawValue) =>
+    saveOverrideField('cogs_override_cad', setCogsOverrideDraft, cogsOverrideDraft, rawValue)
+
+  // ── Champs de la carte : autosave champ par champ ───────────────────────────
+  // Un seul chemin pour les champs de <DetailFieldGrid> (champs codés ET champs
+  // personnalisés) : PUT partiel, puis application locale du seul champ modifié.
+  // On ne fusionne PAS la réponse du PUT — elle porte la colonne legacy Airtable
+  // `items` (TEXT JSON) qui écraserait le vrai tableau d'articles.
+  const { addToast } = useToast()
+  const [fieldSaving, setFieldSaving] = useState({})
+
+  async function saveField(key, value) {
+    const next = value === '' || value === undefined ? null : value
+    if ((order?.[key] ?? null) === next) return
+    setFieldSaving(s => ({ ...s, [key]: true }))
+    try {
+      await api.orders.update(id, { [key]: next })
+      setOrder(o => (o ? { ...o, [key]: next } : o))
+    } catch (e) {
+      addToast({ message: `Sauvegarde échouée : ${e.message}`, type: 'error' })
+    } finally {
+      setFieldSaving(s => ({ ...s, [key]: false }))
+    }
+  }
+
+  // Recalcul des coûts figés à l'envoi : le gel automatique ne remplit que les
+  // lignes vides, ce bouton reprend celles déjà envoyées avec les coûts du jour
+  // (Pièces + valeur de fabrication de chaque numéro de série).
+  const [recomputing, setRecomputing] = useState(false)
+  async function recomputeShippedCosts() {
+    setRecomputing(true)
+    try {
+      const r = await api.orders.recomputeShippedCosts(id)
+      await load()
+      addToast({ message: r.frozen ? `${r.frozen} ligne(s) recalculée(s)` : 'Aucune ligne envoyée', type: 'success' })
+    } catch (e) {
+      addToast({ message: `Recalcul échoué : ${e.message}`, type: 'error' })
+    } finally { setRecomputing(false) }
+  }
+
+  // Choix de « Priorité » : c'est un champ perso (custom_fields), ses options
+  // s'éditent dans /champs/orders — on les lit là plutôt que de les figer ici.
+  const { fields: orderFields } = useCustomFields('orders')
+  const priorityOptions = useMemo(() => {
+    const row = (orderFields || []).find(f => f.column_name === 'priority')
+    return parseSelectChoices(row).map(c => ({ value: c.label ?? c.id, label: c.label ?? c.id }))
+  }, [orderFields])
+
+  // ── Notes : édition en ligne ────────────────────────────────────────────────
+  // Clic sur le texte (ou sur « Ajouter une note… » quand c'est vide) → textarea
+  // qui grandit avec le contenu ; la valeur part au blur (règle autosave), Échap
+  // annule, ⌘/Ctrl+Entrée valide. Pas de bouton « Enregistrer ».
+  const notesSave = useSaveStatus()
+  const [editingNotes, setEditingNotes] = useState(false)
+  const [notesDraft, setNotesDraft] = useState('')
+  const notesRef = useRef(null)
+
+  const startEditNotes = () => {
+    setNotesDraft(order?.notes || '')
+    setEditingNotes(true)
+  }
+
+  // Auto-hauteur du textarea (une note fait souvent plusieurs lignes).
+  useEffect(() => {
+    const el = notesRef.current
+    if (!el) return
+    el.style.height = 'auto'
+    el.style.height = `${el.scrollHeight}px`
+  }, [editingNotes, notesDraft])
+
+  async function commitNotes() {
+    setEditingNotes(false)
+    const next = notesDraft.trim() === '' ? null : notesDraft
+    const current = order?.notes ?? null
+    if (next === current) return
+    // On ne fusionne PAS la réponse du PUT dans `order` : la list-row contient la
+    // colonne legacy Airtable `items` (TEXT JSON) qui écraserait le vrai tableau
+    // d'articles chargé par GET /:id.
+    const ok = await notesSave.save(() => api.orders.update(id, { notes: next }))
+    if (ok) setOrder(o => (o ? { ...o, notes: next } : o))
+  }
+
+  // ── Liens de l'entête : entreprise, projet, factures ────────────────────────
+  // Champs référence (règle CLAUDE.md : picker recherchable + lien vers la
+  // fiche), déliables/reliables en place. Chaque changement part aussitôt
+  // (autosave) puis la commande est relue SANS le spinner de page : nom
+  // d'entreprise, nom de projet, liste des factures et rentabilité en dépendent.
+  // Une facture se lie par SON order_id (PATCH facture), pas par la commande.
+  const linkSave = useSaveStatus()
+  const [companies, setCompanies] = useState([])
+  const [projects, setProjects] = useState([])
+  const [companyFactures, setCompanyFactures] = useState([])
+  useEffect(() => {
+    api.companies.lookup()
+      .then(d => setCompanies(Array.isArray(d) ? d : (d?.data || [])))
+      .catch(() => setCompanies([]))
+  }, [])
+  const companyId = order?.company_id || null
+  useEffect(() => {
+    let alive = true
+    api.projects.list(companyId ? { company_id: companyId, limit: 'all' } : { limit: 'all' })
+      .then(r => { if (alive) setProjects(r.data || []) })
+      .catch(() => {})
+    // Le serveur refuse de lier une facture d'une autre entreprise : on ne
+    // propose que celles de l'entreprise de la commande (sans les brouillons
+    // « pending », qui ne sont pas encore de vraies factures).
+    if (companyId) {
+      api.factures.list({ company_id: companyId, limit: 'all' })
+        .then(r => { if (alive) setCompanyFactures((r.data || []).filter(f => f.source !== 'pending')) })
+        .catch(() => {})
+    } else {
+      setCompanyFactures([])
+    }
+    return () => { alive = false }
+  }, [companyId])
+
+  // Le record déjà lié est toujours proposé, même absent de la liste (entreprise
+  // archivée, liste pas encore chargée) — sinon le champ paraîtrait vide.
+  const companyOptions = useMemo(() => {
+    if (!order?.company_id || companies.some(c => String(c.id) === String(order.company_id))) return companies
+    return [{ id: order.company_id, name: order.company_name || 'Entreprise liée' }, ...companies]
+  }, [companies, order?.company_id, order?.company_name])
+  const projectOptions = useMemo(() => {
+    if (!order?.project_id || projects.some(p => String(p.id) === String(order.project_id))) return projects
+    return [{ id: order.project_id, name: order.project_name || 'Projet lié' }, ...projects]
+  }, [projects, order?.project_id, order?.project_name])
+  const linkedFactureIds = new Set((order?.factures || []).map(f => f.id))
+  const factureOptions = companyFactures.filter(f => !linkedFactureIds.has(f.id))
+
+  async function refreshOrder() {
+    // Le PATCH d'une facture n'invalide pas /orders : purge explicite avant relecture.
+    invalidate(`/orders/${id}`)
+    setOrder(await api.orders.get(id))
+  }
+  const saveLink = (field, value) => linkSave.save(async () => {
+    await api.orders.update(id, { [field]: value || null })
+    await refreshOrder()
+  })
+  const setFactureOrder = (factureId, orderId) => linkSave.save(async () => {
+    await api.factures.update(factureId, { order_id: orderId })
+    await refreshOrder()
+  })
+  const linkSaving = linkSave.status === 'saving'
 
   // Realtime: another tab/user mutates this order → merge into local state.
   // Item events (`order:item:*`) need full-record refetch for bulk/reorder
@@ -974,7 +1075,7 @@ export default function OrderDetail() {
       const { items: _legacyItems, ...rest } = msg.payload || {}
       setOrder(o => o ? { ...o, ...rest } : o)
     } else if (msg.type === 'order:deleted') {
-      navigate('/orders')
+      leaveRecord()
     } else if (msg.type === 'order:item:created') {
       setOrder(o => {
         if (!o) return o
@@ -1010,6 +1111,45 @@ export default function OrderDetail() {
     setOrder(o => ({ ...o, items: newItems }))
   }
 
+  // ── Articles : table manipulable (RecordOps) ────────────────────────────────
+  // Le DataTable « Articles » est du second type (voir lib/recordOps.js) : clic
+  // droit sur une ligne pour la dupliquer/supprimer, « + » sous la dernière
+  // ligne pour ajouter un article en place. La ligne créée naît « Facturable »,
+  // qté 1, sans produit — le curseur ouvre aussitôt le sélecteur de produit de
+  // la cellule « Produit ». Le bouton « Ajouter » (formulaire) reste offert.
+  const itemOps = useMemo(() => new RecordOps({
+    labels: {
+      add: 'Ajouter un article',
+      duplicate: "Dupliquer l'article",
+      delete: "Supprimer l'article",
+      duplicated: 'Article dupliqué',
+      deleted: 'Article supprimé',
+    },
+    create: async () => {
+      const created = await api.orders.addItem(id, { qty: 1, item_type: 'Facturable' })
+      setOrder(o => (o && !(o.items || []).some(i => i.id === created.id)
+        ? { ...o, items: [...(o.items || []), { ...created, serials: [] }] }
+        : o))
+      return created
+    },
+    duplicate: async (row) => {
+      const created = await api.orders.duplicateItem(id, row.id)
+      setOrder(o => {
+        if (!o) return o
+        const items = [...(o.items || [])]
+        const idx = items.findIndex(i => i.id === row.id)
+        items.splice(idx === -1 ? items.length : idx + 1, 0, { ...created, serials: [] })
+        return { ...o, items }
+      })
+      return created
+    },
+    remove: async (row) => {
+      await api.orders.deleteItem(id, row.id)
+      setOrder(o => (o ? { ...o, items: (o.items || []).filter(i => i.id !== row.id) } : o))
+    },
+    deleteConfirm: (row) => `Supprimer « ${row.product_name || 'Produit inconnu'} » (×${row.qty}) de la commande ? Cette action est irréversible.`,
+  }), [id, setOrder])
+
   // Édition « tableur » du DataTable Articles : PATCH du champ touché, puis
   // merge de la réponse serveur (qui inclut serials + champs produit joints).
   async function handleItemCellEdit(row, col, value) {
@@ -1019,7 +1159,15 @@ export default function OrderDetail() {
       v = Math.max(1, Math.round(Number(value) || 0))
     }
     if (col.field === 'item_type' && !v) return // pas de type vide
-    const updated = await api.orders.updateItem(id, row.id, { [col.field]: v })
+    const payload = { [col.field]: v }
+    // Choix du produit sur une ligne qui n'a pas encore de coût : on emporte le
+    // coût du produit, comme le fait le formulaire d'ajout — sinon la ligne
+    // reste à 0 et le gel du coût à l'envoi n'a rien à valoriser.
+    if (col.field === 'product_id' && v && !Number(row.unit_cost)) {
+      const prod = products.find(p => String(p.id) === String(v))
+      if (prod?.unit_cost) payload.unit_cost = prod.unit_cost
+    }
+    const updated = await api.orders.updateItem(id, row.id, payload)
     handlePatchItem(row.id, updated)
   }
 
@@ -1084,20 +1232,26 @@ export default function OrderDetail() {
 
   useBarcodeScanner(handleScan)
 
+  // Options de l'éditeur de cellule « Produit » (catalogue actif). Ce hook doit
+  // rester au-dessus des returns anticipés ci-dessous : appelé après eux, il
+  // change le nombre de hooks entre le rendu « chargement » et le rendu chargé.
+  const productLinkOptions = useMemo(
+    () => products.map(p => ({ id: p.id, label: p.name_fr || p.name_en || p.sku, sub: p.sku })),
+    [products]
+  )
+
   function handlePatchItem(itemId, changes) {
     setOrder(o => ({ ...o, items: o.items.map(i => i.id === itemId ? { ...i, ...changes } : i) }))
   }
 
-  if (loading) {
-    return <Layout><Spinner center /></Layout>
-  }
-  if (loadError && !order) return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
-  if (!order) return <Layout><div className="p-6 text-slate-500">Commande introuvable.</div></Layout>
+  if (loading) return shell(<Spinner center />)
+  if (loadError && !order) return shell(<DetailLoadError message={loadError} onRetry={load} />)
+  if (!order) return shell(<div className="p-6 text-slate-500">Commande introuvable.</div>)
 
   // ── Expedition mode ─────────────────────────────────────────────────────────
   if (expeditionMode) {
-    return (
-      <Layout>
+    return shell(
+      <>
         <ExpeditionView
           order={order}
           orderId={id}
@@ -1108,30 +1262,39 @@ export default function OrderDetail() {
           setScanToast={setScanToast}
           flashItemId={flashItemId}
         />
-      </Layout>
+      </>
     )
   }
 
   // ── Colonnes du DataTable Articles ──────────────────────────────────────────
   // Méta partagée (tableDefs.order_items) + renders spécifiques à la page.
-  // qty / type / série remplacée / notes / coût unitaire s'éditent en mode
-  // tableur (double-clic ou Entrée sur la cellule) via handleItemCellEdit.
+  // Produit / qté / type s'éditent en mode tableur (double-clic ou Entrée sur
+  // la cellule) via handleItemCellEdit — voir ITEM_EDITABLE plus bas.
   const ITEM_RENDERS = {
-    product_name: item => (
-      <div className="flex items-center gap-2 min-w-0">
+    // Colonne « Produit » (champ `product_id`, le lien vers la fiche produit) :
+    // on affiche le NOM du produit, cliquable — jamais l'id brut. Les numéros de
+    // série assignés à la ligne ont leur propre colonne (`serials`).
+    product_id: item => (
+      <div className="flex items-center min-w-0">
         <span className="font-medium text-slate-900 truncate">
           {item.product_id
             ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
             : (item.product_name || 'Produit inconnu')}
         </span>
-        {item.serials?.length > 0 && item.serials.map(s => (
-          <Link key={s.id} to={`/serials/${s.id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors flex-shrink-0">
-            {s.serial}
-            {s.status && <span className="text-slate-400 text-[10px]">· {s.status}</span>}
-          </Link>
-        ))}
       </div>
     ),
+    serials: item => (item.serials?.length > 0
+      ? (
+        <div className="flex items-center gap-1 flex-wrap">
+          {item.serials.map(s => (
+            <Link key={s.id} to={`/serials/${s.id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors flex-shrink-0">
+              {s.serial}
+              {s.status && <span className="text-slate-400 text-[10px]">· {s.status}</span>}
+            </Link>
+          ))}
+        </div>
+      )
+      : <span className="text-slate-300">—</span>),
     qty: item => <span className="font-bold text-slate-900">{item.qty}</span>,
     item_type: item => item.item_type
       ? <Badge color={ITEM_TYPE_COLORS[item.item_type] || 'gray'}>{item.item_type}</Badge>
@@ -1143,9 +1306,6 @@ export default function OrderDetail() {
       const fs = item.fulfillment_status || 'À prélever'
       return <Badge color={FULFILLMENT_STATUS[fs]?.color || 'gray'}>{fs}</Badge>
     },
-    replaced_serial: item => item.replaced_serial
-      ? <span className="text-xs font-mono text-slate-600">{item.replaced_serial}</span>
-      : <span className="text-slate-300">—</span>,
     // Champ Airtable « # de série » : le champ custom stocke des recordID Airtable
     // bruts. Le serveur les résout en vraies fiches série (de_serie_serials, via
     // serial_numbers.airtable_id) — on les affiche en liens cliquables vers la
@@ -1176,7 +1336,6 @@ export default function OrderDetail() {
       : item.product_stock === 0 ? <Badge color="red">Épuisé</Badge>
       : item.product_stock < item.qty ? <Badge color="yellow">{item.product_stock} en stock</Badge>
       : <Badge color="green">{item.product_stock} en stock</Badge>,
-    unit_cost: item => <span className="tabular-nums">{_fmtCad(item.unit_cost)}</span>,
     actions: item => (
       <div className="flex items-center gap-0.5 justify-end" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
         <button onClick={() => handleDuplicateItem(item.id)} className="text-slate-400 hover:text-brand-600 p-1 rounded" title="Dupliquer" data-testid={`item-duplicate-${item.id}`}><Copy size={13} /></button>
@@ -1195,11 +1354,21 @@ export default function OrderDetail() {
       </div>
     ),
   }
-  const ITEM_EDITABLE = new Set(['qty', 'item_type', 'replaced_serial', 'notes', 'unit_cost'])
+  // `product_id` est éditable en ligne via son propre éditeur (liste
+  // recherchable du catalogue) : sans lui, une ligne ajoutée par le « + » de la
+  // table n'aurait aucun moyen de recevoir son produit.
+  const ITEM_EDITABLE = new Set(['product_id', 'qty', 'item_type'])
   const itemColumns = TABLE_COLUMN_META.order_items.map(meta => ({
     ...meta,
     render: ITEM_RENDERS[meta.id],
     editable: ITEM_EDITABLE.has(meta.id),
+    // Cellule « Produit » : champ référence, donc éditeur de lien (dissocier /
+    // associer) plutôt qu'une saisie texte — cf. components/LinkCellEditor.jsx.
+    // La liste vient de la page et non du serveur : seuls les produits ACTIFS
+    // du catalogue sont proposés, comme dans le formulaire d'ajout.
+    ...(meta.id === 'product_id'
+      ? { linkTarget: 'products', linkOptions: productLinkOptions }
+      : {}),
     ...(meta.id === 'item_type'
       ? { selectChoices: ITEM_TYPES.map(t => ({ id: t, label: t, color: ITEM_TYPE_COLORS[t] || 'gray' })) }
       : {}),
@@ -1227,63 +1396,88 @@ export default function OrderDetail() {
     editable: false,
     render: ITEM_RENDERS.de_serie,
   })
-  const itemsCount = order.items?.length || 0
+
+  // ── DataTable Expéditions ───────────────────────────────────────────────────
+  // Chaque envoi porte ses articles rattachés (et leurs numéros de série) sous
+  // forme de champs dérivés : `_items` / `_serials` pour l'affichage, et les
+  // résumés texte `items_summary` / `serials_summary` pour la recherche, les
+  // filtres et le copier-coller en mode tableur.
+  const envoiRows = (order.shipments || []).map(s => {
+    const assignedItems = (order.items || []).filter(i => i.shipment_id === s.id)
+    const serials = assignedItems.flatMap(i => (i.serials || []).map(sn => ({ ...sn, product_name: i.product_name })))
+    return {
+      ...s,
+      _items: assignedItems,
+      _serials: serials,
+      items_summary: assignedItems.map(i => `${i.product_name || 'Produit inconnu'} ×${i.qty}`).join(', '),
+      serials_summary: serials.map(sn => sn.serial).join(', '),
+    }
+  })
+  const ENVOI_RENDERS = {
+    carrier: s => s.carrier
+      ? <span className="font-medium text-slate-900">{s.carrier}</span>
+      : <span className="text-slate-300">—</span>,
+    tracking_number: s => {
+      const url = trackingUrl(s.carrier, s.tracking_number)
+      if (!s.tracking_number) return <span className="text-slate-300">—</span>
+      return url
+        ? <a href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="font-mono text-xs text-brand-600 hover:underline">{s.tracking_number}</a>
+        : <span className="font-mono text-xs text-slate-600">{s.tracking_number}</span>
+    },
+    status: s => <Badge color={s.status === 'Envoyé' ? 'green' : 'gray'}>{s.status || 'À envoyer'}</Badge>,
+    shipped_at: s => <span className="text-slate-500">{s.shipped_at ? fmtDate(s.shipped_at) : '—'}</span>,
+    items_summary: s => (s._items.length === 0
+      ? <span className="text-slate-300 text-xs">—</span>
+      : (
+        <div className="flex flex-wrap gap-1">
+          {s._items.map(i => (
+            <Link
+              key={i.id}
+              to={`/products/${i.product_id}`}
+              onClick={e => e.stopPropagation()}
+              className={`text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded ${i.product_id ? 'hover:bg-brand-50 hover:text-brand-700' : 'pointer-events-none'}`}
+            >
+              {i.product_name || 'Produit inconnu'} ×{i.qty}
+            </Link>
+          ))}
+        </div>
+      )),
+    serials_summary: s => (s._serials.length === 0
+      ? <span className="text-slate-300 text-xs">—</span>
+      : (
+        <div className="flex flex-wrap gap-1" data-testid="shipment-serials">
+          {s._serials.map(sn => (
+            <Link
+              key={sn.id}
+              to={`/serials/${sn.id}`}
+              onClick={e => e.stopPropagation()}
+              title={sn.product_name}
+              className="text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors"
+            >
+              {sn.serial}
+            </Link>
+          ))}
+        </div>
+      )),
+  }
+  const envoiColumns = TABLE_COLUMN_META.order_envois.map(meta => ({ ...meta, render: ENVOI_RENDERS[meta.id] }))
 
   // ── Commercial mode ─────────────────────────────────────────────────────────
-  return (
-    <Layout>
+  return shell(
+    <>
       <div className="p-6">
 
-        {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
-          <button onClick={() => navigate('/orders')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
-            <ArrowLeft size={18} />
-          </button>
-          <div className="flex-1">
-            <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-900">Commande #{order.order_number}</h1>
-              <Badge color={orderStatusColor(order.status)} size="md">{order.status}</Badge>
-              {order.priority && <Badge color="orange">{order.priority}</Badge>}
-              <button
-                onClick={async () => {
-                  const newVal = order.is_subscription ? 0 : 1
-                  await api.orders.update(id, { ...order, is_subscription: newVal })
-                  load()
-                }}
-                className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition-colors ${
-                  order.is_subscription
-                    ? 'bg-violet-100 text-violet-700 border-violet-200 hover:bg-violet-200'
-                    : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
-                }`}
-              >
-                {order.is_subscription ? 'Abonnement' : 'Achat'}
-              </button>
-            </div>
-            <div className="text-sm text-slate-500 mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
-              {order.company_name && (
-                <Link to={`/companies/${order.company_id}`} className="text-brand-600 hover:underline">{order.company_name}</Link>
-              )}
-              {order.project_id && (
-                <>
-                  <span className="text-slate-300">·</span>
-                  <Link to={`/projects/${order.project_id}`} className="text-brand-500 hover:underline flex items-center gap-1">
-                    {order.project_name || 'Projet'}
-                  </Link>
-                </>
-              )}
-              {order.factures?.map(f => (
-                <React.Fragment key={f.id}>
-                  <span className="text-slate-300">·</span>
-                  <Link to={`/factures/${f.id}`} className="text-brand-500 hover:underline flex items-center gap-1">
-                    {f.document_number || 'Facture'}
-                  </Link>
-                </React.Fragment>
-              ))}
-              <span className="text-slate-300">·</span>
-              <span>Créée le {fmtDate(order.created_at)}</span>
-              {order.date_commande && <><span className="text-slate-300">·</span><span>Commande du {fmtDate(order.date_commande)}</span></>}
-              {order.assigned_name && <><span className="text-slate-300">·</span><span>{order.assigned_name}</span></>}
-            </div>
+        {/* Header — titre (hors panneau) et actions SEULEMENT : aucun champ ici.
+            Statut, type, entreprise, projet, factures et dates vivent dans la
+            carte de champs ci-dessous, la seule zone éditable de la fiche. */}
+        <div className="flex items-start gap-4 mb-4">
+          {!embedded && (
+            <button onClick={() => navigate('/orders')} className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+              <ArrowLeft size={18} />
+            </button>
+          )}
+          <div className="flex-1 min-w-0">
+            {!embedded && <PageTitle>Commande #{order.order_number}</PageTitle>}
           </div>
           <div className="flex items-center gap-2">
             <button
@@ -1296,34 +1490,180 @@ export default function OrderDetail() {
           </div>
         </div>
 
-        {/* Notes */}
-        {order.notes && (
-          <div className="card p-5 mb-4">
-            <h2 className="font-semibold text-slate-900 mb-2">Notes</h2>
-            <p className="text-sm text-slate-600 whitespace-pre-wrap">{order.notes}</p>
-          </div>
-        )}
-
-        {/* Pièces jointes */}
-        <div className="mb-4">
-          <Attachments entityType="orders" entityId={order.id} />
-        </div>
+        {/* Carte de champs de la commande — même module que les fiches billet,
+            projet ou envoi : l'ordre des champs et ceux qu'on garde se règlent
+            depuis la fiche (bouton « Personnaliser les champs » dans l'en-tête
+            du panneau latéral, réservé aux admins). Les champs personnalisés de
+            la table rejoignent la carte tout seuls et sont modifiables (PUT
+            /api/orders accepte les colonnes éditables). */}
+        <DetailFieldGrid
+          entityType="orders"
+          record={order}
+          onSaveCustom={saveField}
+          savingKeys={fieldSaving}
+          className="card p-5 mb-4"
+          testId="order-fields"
+        >
+          <DetailField id="status" label="Statut">
+            <div><Badge color={orderStatusColor(order.status)}>{order.status}</Badge></div>
+          </DetailField>
+          <DetailField id="is_subscription" label="Type">
+            <button
+              onClick={async () => {
+                const newVal = order.is_subscription ? 0 : 1
+                await api.orders.update(id, { is_subscription: newVal })
+                load()
+              }}
+              className={`px-2.5 py-0.5 rounded-full text-xs font-medium border transition-colors ${
+                order.is_subscription
+                  ? 'bg-violet-100 text-violet-700 border-violet-200 hover:bg-violet-200'
+                  : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'
+              }`}
+            >
+              {order.is_subscription ? 'Abonnement' : 'Achat'}
+            </button>
+          </DetailField>
+          <DetailField id="company_id" label="Entreprise" saving={linkSaving}>
+            <LinkedRecordField
+              name="company_id"
+              value={order.company_id}
+              options={companyOptions}
+              labelFn={c => c.name}
+              getHref={c => `/companies/${c.id}`}
+              saving={linkSaving}
+              onChange={v => saveLink('company_id', v)}
+            />
+          </DetailField>
+          <DetailField id="project_id" label="Projet" saving={linkSaving}>
+            <LinkedRecordField
+              name="project_id"
+              value={order.project_id}
+              options={projectOptions}
+              labelFn={p => p.name}
+              getHref={p => `/projects/${p.id}`}
+              saving={linkSaving}
+              onChange={v => saveLink('project_id', v)}
+            />
+          </DetailField>
+          <DetailField id="factures" label="Factures" saving={linkSaving}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1" data-testid="order-links">
+              {(order.factures || []).map(f => (
+                f.order_id === order.id ? (
+                  // Liée directement à la commande : chip déliable.
+                  <LinkedRecordField
+                    key={f.id}
+                    name={`facture_${f.id}`}
+                    value={f.id}
+                    options={[f]}
+                    labelFn={x => x.document_number || 'Facture'}
+                    getHref={x => `/factures/${x.id}`}
+                    saving={linkSaving}
+                    onChange={() => setFactureOrder(f.id, null)}
+                  />
+                ) : (
+                  // Arrive par le projet : se délie depuis la facture ou le
+                  // projet — même pastille, sans poignée de déliaison.
+                  <LinkedRecordField
+                    key={f.id}
+                    name={`facture_${f.id}`}
+                    value={f.id}
+                    options={[{ id: f.id, name: f.document_number || 'Facture' }]}
+                    getHref={x => `/factures/${x.id}`}
+                    disabled
+                    allowClear={false}
+                  />
+                )
+              ))}
+              {order.company_id && (
+                <LinkedRecordField
+                  name="facture_add"
+                  value=""
+                  options={factureOptions}
+                  labelFn={x => x.document_number || 'Facture'}
+                  saving={linkSaving}
+                  onChange={fid => fid && setFactureOrder(fid, order.id)}
+                />
+              )}
+            </div>
+          </DetailField>
+          <DetailField id="created_at" label="Créée le">
+            <div className="text-sm text-slate-700">{fmtDate(order.created_at)}</div>
+          </DetailField>
+          <DetailField id="date_commande" label="Commande du">
+            <div className="text-sm text-slate-700">{order.date_commande ? fmtDate(order.date_commande) : '—'}</div>
+          </DetailField>
+          <DetailField id="priority" label="Priorité" saving={!!fieldSaving.priority}>
+            <SearchableSelect
+              value={order.priority || ''}
+              options={priorityOptions}
+              emptyOption="—"
+              onChange={v => saveField('priority', v)}
+              className="input text-sm w-full"
+              size="sm"
+              disabled={!!fieldSaving.priority}
+              testId="order-field-priority"
+            />
+          </DetailField>
+          {/* Date de la commande : champ Airtable en import seul — affiché, pas
+              éditable (l'écriture serait écrasée au prochain sync). */}
+          <DetailField id="date_de_la_commande" label="Date de la commande">
+            <div className="text-sm text-slate-700" data-testid="order-field-date">
+              {order.date_de_la_commande ? fmtDate(order.date_de_la_commande) : '—'}
+            </div>
+          </DetailField>
+          <DetailField id="notes" label="Notes" span2>
+            <SaveStatus status={notesSave.status} className="mb-1" />
+            {editingNotes ? (
+              <textarea
+                ref={notesRef}
+                value={notesDraft}
+                autoFocus
+                onChange={e => setNotesDraft(e.target.value)}
+                onBlur={commitNotes}
+                onKeyDown={e => {
+                  if (e.key === 'Escape') { e.preventDefault(); setEditingNotes(false) }
+                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.blur() }
+                }}
+                rows={2}
+                className="input text-sm w-full resize-none overflow-hidden"
+                data-testid="order-notes-input"
+              />
+            ) : (
+              <p
+                role="button"
+                tabIndex={0}
+                onClick={startEditNotes}
+                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEditNotes() } }}
+                title="Cliquer pour modifier"
+                className={`text-sm whitespace-pre-wrap cursor-text rounded px-2 py-1 -mx-2 hover:bg-slate-50 ${order.notes ? 'text-slate-600' : 'text-slate-400 italic'}`}
+                data-testid="order-notes-text"
+              >
+                {order.notes || 'Ajouter une note…'}
+              </p>
+            )}
+          </DetailField>
+        </DetailFieldGrid>
 
         {/* Items section — DataTable (vues, filtres, tri, groupement, édition
             tableur, réordonnancement par poignée, duplication/suppression) */}
         <div className="mb-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-semibold text-slate-900">Articles ({order.items?.length || 0})</h2>
-            <button onClick={() => setShowAddItem(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>
-          </div>
+          {/* Pas de bouton « Ajouter » : un article se crée en ligne, par le
+              « + » sous la dernière ligne de la table (recordOps). */}
+          <h2 className="font-semibold text-slate-900 mb-2">Articles ({order.items?.length || 0})</h2>
           <DataTable
             table="order_items"
             columns={itemColumns}
             data={order.items || []}
-            searchFields={['product_name', 'sku', 'replaced_serial', 'notes']}
-            height={Math.max(180, Math.min(100 + itemsCount * 32, 480))}
+            searchFields={['product_name', 'sku']}
+            // Les articles s'affichent tous : pas d'ascenseur dans la table,
+            // c'est le panneau de la fiche qui défile.
+            height="auto"
             onCellEdit={handleItemCellEdit}
             onRowReorder={handleReorderItems}
+            // Table manipulable : clic droit = dupliquer/supprimer l'article,
+            // « + » sous la dernière ligne = article ajouté en place (voir
+            // lib/recordOps.js).
+            recordOps={itemOps}
             emptyState={{
               icon: Package,
               title: 'Aucun article',
@@ -1333,78 +1673,34 @@ export default function OrderDetail() {
           />
         </div>
 
-        {/* Shipments section */}
-        <div className="card mb-4">
-          <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
-            <h2 className="font-semibold text-slate-900">Expéditions ({order.shipments?.length || 0})</h2>
-            <button onClick={() => setShowAddShipment(true)} className="btn-secondary btn-sm"><Plus size={14} /> Ajouter</button>
+        {/* Shipments section — DataTable (vues, filtres, tri, groupement,
+            side-peek sur la fiche envoi) */}
+        <div className="mb-4">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold text-slate-900">Expéditions ({envoiRows.length})</h2>
           </div>
-          {order.shipments?.length === 0 ? (
-            <div className="text-center py-8 text-slate-400">
-              <Truck size={24} className="mx-auto mb-2 text-slate-300" />
-              Aucune expédition
-            </div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-slate-100 bg-slate-50">
-                  <th className="text-left px-5 py-3 text-xs font-semibold text-slate-500">Transporteur</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden md:table-cell">N° suivi</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden sm:table-cell">Date envoi</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">Articles</th>
-                  <th className="text-left px-4 py-3 text-xs font-semibold text-slate-500 hidden lg:table-cell">N° de série</th>
-                </tr>
-              </thead>
-              <tbody>
-                {order.shipments.map(s => {
-                  const assignedItems = (order.items || []).filter(i => i.shipment_id === s.id)
-                  return (
-                    <tr key={s.id} onClick={() => navigate(`/envois/${s.id}`)} className="table-row-hover border-b border-slate-100 last:border-0 cursor-pointer">
-                      <td className="px-5 py-3 font-medium">{s.carrier || '—'}</td>
-                      <td className="px-4 py-3 hidden md:table-cell font-mono text-xs">
-                        {(() => {
-                          const url = trackingUrl(s.carrier, s.tracking_number)
-                          return url
-                            ? <a href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{s.tracking_number}</a>
-                            : <span className="text-slate-500">{s.tracking_number || '—'}</span>
-                        })()}
-                      </td>
-                      <td className="px-4 py-3 hidden sm:table-cell text-slate-500">{fmtDate(s.shipped_at)}</td>
-                      <td className="px-4 py-3 hidden lg:table-cell">
-                        <div className="flex flex-wrap gap-1">
-                          {assignedItems.length === 0
-                            ? <span className="text-slate-300 text-xs">—</span>
-                            : assignedItems.map(i => (
-                              <span key={i.id} className="text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded">{i.product_name} ×{i.qty}</span>
-                            ))}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 hidden lg:table-cell" data-testid="shipment-serials">
-                        <div className="flex flex-wrap gap-1">
-                          {(() => {
-                            const serials = assignedItems.flatMap(i => (i.serials || []).map(sn => ({ ...sn, product_name: i.product_name })))
-                            return serials.length === 0
-                              ? <span className="text-slate-300 text-xs">—</span>
-                              : serials.map(sn => (
-                                <Link
-                                  key={sn.id}
-                                  to={`/serials/${sn.id}`}
-                                  onClick={e => e.stopPropagation()}
-                                  title={sn.product_name}
-                                  className="text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors"
-                                >
-                                  {sn.serial}
-                                </Link>
-                              ))
-                          })()}
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          )}
+          <DataTable
+            table="order_envois"
+            columns={envoiColumns}
+            data={envoiRows}
+            searchFields={['carrier', 'tracking_number', 'status', 'pays', 'items_summary', 'serials_summary', 'notes']}
+            // Comme les articles : toutes les expéditions s'affichent, pas
+            // d'ascenseur dans la table — c'est le panneau qui défile.
+            height="auto"
+            peek={{
+              title: shipmentTitle,
+              subtitle: () => [order.company_name, `Commande #${order.order_number}`].filter(Boolean).join(' · '),
+              to: row => `/envois/${row.id}`,
+              width: 860,
+              render: (row, { close }) => <EnvoisDetail recordId={row.id} embedded onClose={close} />,
+            }}
+            emptyState={{
+              icon: Truck,
+              title: 'Aucune expédition',
+              // Pas de CTA : les envois se créent uniquement en mode expédition.
+              description: "Les expéditions se créent depuis le mode expédition de la commande.",
+            }}
+          />
         </div>
 
         {/* Rentabilité */}
@@ -1415,6 +1711,7 @@ export default function OrderDetail() {
           const profit = p.profit ?? (revenue - cogs)
           const margin = p.margin_pct
           const overrideActive = p.revenue_override_cad != null
+          const cogsOverrideActive = p.cogs_override_cad != null
           const profitColor = profit > 0 ? 'text-emerald-600' : profit < 0 ? 'text-red-600' : 'text-slate-600'
           return (
             <div className="card mb-4">
@@ -1426,51 +1723,89 @@ export default function OrderDetail() {
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mb-5">
                   <div>
                     <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Revenus</div>
-                    <div className="text-xl font-bold text-slate-900">{_fmtCad(revenue)}</div>
+                    <div className="text-xl font-bold text-slate-900">{fmtMoney(revenue)}</div>
                     {overrideActive
-                      ? <div className="text-xs text-amber-600 mt-0.5">Override · calculé {_fmtCad(p.revenue_computed ?? 0)}</div>
+                      ? <div className="text-xs text-amber-600 mt-0.5">Override · calculé {fmtMoney(p.revenue_computed ?? 0)}</div>
                       : <div className="text-xs text-slate-400 mt-0.5">{order.is_subscription ? '1re facture × 38 (HT)' : 'Factures liées (HT)'}</div>}
                   </div>
                   <div>
+                    {/* Libellé en enfant DIRECT du bloc : c'est le crochet des règles
+                        `.peek-panel` d'index.css (libellé à gauche, valeur à droite). Enveloppé
+                        dans un flex avec le bouton, il ne matchait plus et le chiffre des coûts
+                        tombait sous son libellé au lieu de s'aligner avec revenus et profit. */}
                     <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Coûts</div>
-                    <div className="text-xl font-bold text-slate-900">{_fmtCad(cogs)}</div>
-                    <div className="text-xs text-slate-400 mt-0.5">Pièces à l'envoi (Facturable)</div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="text-xl font-bold text-slate-900">{fmtMoney(cogs)}</div>
+                      <button
+                        onClick={recomputeShippedCosts}
+                        disabled={recomputing}
+                        className="text-slate-300 hover:text-slate-600 disabled:opacity-50"
+                        title="Recalculer les coûts des lignes envoyées (Pièces + valeur de fabrication de chaque numéro de série)"
+                      >
+                        <RefreshCw size={12} className={recomputing ? 'animate-spin' : ''} />
+                      </button>
+                    </div>
+                    {cogsOverrideActive
+                      ? <div className="text-xs text-amber-600 mt-0.5">Override · calculé {fmtMoney(p.cogs_computed ?? 0)}</div>
+                      : <div className="text-xs text-slate-400 mt-0.5">Pièces à l'envoi (Facturable)</div>}
                   </div>
                   <div>
                     <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1">Profit</div>
-                    <div className={`text-xl font-bold ${profitColor}`}>{_fmtCad(profit)}</div>
+                    <div className={`text-xl font-bold ${profitColor}`}>{fmtMoney(profit)}</div>
                     <div className="text-xs text-slate-400 mt-0.5">{margin != null ? `Marge ${margin.toFixed(1)} %` : 'Marge —'}</div>
                   </div>
                 </div>
-                <div className="border-t border-slate-100 pt-4">
-                  <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
-                    Revenu override (CAD)
-                  </label>
-                  <div className="flex items-center gap-2 max-w-xs">
-                    <input
-                      type="number"
-                      step="0.01"
-                      value={overrideDraft}
-                      onChange={e => setOverrideDraft(e.target.value)}
-                      onBlur={() => saveOverride()}
-                      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
-                      placeholder="Vide = revenu calculé"
-                      className="input py-1.5 text-sm w-full"
-                    />
-                    {overrideDraft.trim() !== '' && (
-                      <button
-                        onClick={() => { setOverrideDraft(''); saveOverride('') }}
-                        className="text-slate-400 hover:text-red-600 p-1 rounded"
-                        title="Effacer l'override"
-                      >
-                        <X size={16} />
-                      </button>
-                    )}
+                <div className="border-t border-slate-100 pt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                      Revenu override (CAD)
+                    </label>
+                    <div className="flex items-center gap-2 max-w-xs">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={overrideDraft}
+                        onChange={e => setOverrideDraft(e.target.value)}
+                        onBlur={() => saveOverride()}
+                        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                        className="input py-1.5 text-sm w-full"
+                      />
+                      {overrideDraft.trim() !== '' && (
+                        <button
+                          onClick={() => { setOverrideDraft(''); saveOverride('') }}
+                          className="text-slate-400 hover:text-red-600 p-1 rounded"
+                          title="Effacer l'override"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <p className="text-xs text-slate-400 mt-1.5">
-                    Quick fix de la valeur réelle de la commande. Si rempli, remplace le revenu calculé
-                    ici et dans le tableau Rentabilité du dashboard.
-                  </p>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                      Coûts override (CAD)
+                    </label>
+                    <div className="flex items-center gap-2 max-w-xs">
+                      <input
+                        type="number"
+                        step="0.01"
+                        value={cogsOverrideDraft}
+                        onChange={e => setCogsOverrideDraft(e.target.value)}
+                        onBlur={() => saveCogsOverride()}
+                        onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                        className="input py-1.5 text-sm w-full"
+                      />
+                      {cogsOverrideDraft.trim() !== '' && (
+                        <button
+                          onClick={() => { setCogsOverrideDraft(''); saveCogsOverride('') }}
+                          className="text-slate-400 hover:text-red-600 p-1 rounded"
+                          title="Effacer l'override"
+                        >
+                          <X size={16} />
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1484,9 +1819,6 @@ export default function OrderDetail() {
       <Modal isOpen={showAddItem} onClose={() => setShowAddItem(false)} title="Ajouter un article">
         <AddItemModal orderId={id} onSave={load} onClose={() => setShowAddItem(false)} />
       </Modal>
-      <Modal isOpen={showAddShipment} onClose={() => setShowAddShipment(false)} title="Ajouter une expédition">
-        <AddShipmentModal orderId={id} onSave={load} onClose={() => setShowAddShipment(false)} />
-      </Modal>
-    </Layout>
+    </>
   )
 }

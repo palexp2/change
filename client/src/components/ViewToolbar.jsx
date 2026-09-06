@@ -1,34 +1,88 @@
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Eye, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle, Lock, Unlock, Pencil, Trash2, Paintbrush, SlidersHorizontal } from 'lucide-react'
+import { Eye, EyeOff, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle, Lock, Unlock, Pencil, Trash2, Paintbrush, SlidersHorizontal, Copy } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { FilterRow, FieldSelect, defaultOpForType } from './FilterRow.jsx'
 import { TableConfigModal } from './TableConfigModal.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { countFilterRules } from '../lib/tableFilters.js'
+import { FieldTypeIcon } from '../lib/fieldTypeIcons.jsx'
+import { typeLabel, kindLabel } from '../lib/fieldOverrides.jsx'
+import { usePeekFieldEdit } from '../lib/detailFieldLayout.jsx'
 import api from '../lib/api.js'
 
-function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn, disabled }) {
+const LOCKED_HINT = 'Vue verrouillée — déverrouillez-la pour la modifier'
+
+// Délai de survol avant d'afficher le libellé d'un bouton en mode compact.
+const TOOLTIP_DELAY_MS = 1000
+
+// Mode compact (tableau dans une fiche, place très comptée) : le bouton ne
+// montre que son icône ; le libellé n'apparaît qu'après TOOLTIP_DELAY_MS de
+// survol, dans une infobulle rendue en portal (position:fixed) pour ne pas être
+// clippée par les `overflow` du panneau latéral.
+function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn, disabled, compact }) {
+  const btnRef = useRef(null)
+  const timerRef = useRef(null)
+  const [tip, setTip] = useState(null)
+
+  const tipLabel = disabled ? LOCKED_HINT : label
+
+  function hideTip() {
+    clearTimeout(timerRef.current)
+    setTip(null)
+  }
+  function scheduleTip() {
+    if (!compact || !tipLabel) return
+    clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => {
+      const r = btnRef.current?.getBoundingClientRect()
+      if (r) setTip({ top: r.bottom + 6, left: r.left + r.width / 2 })
+    }, TOOLTIP_DELAY_MS)
+  }
+  useEffect(() => () => clearTimeout(timerRef.current), [])
+
   return (
-    <button
-      onClick={(e) => { if (!disabled) onClick(e) }}
-      disabled={disabled}
-      data-panel-btn={dataPanelBtn}
-      title={disabled ? 'Vue verrouillée — déverrouillez-la pour la modifier' : undefined}
-      className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded text-xs font-medium transition-colors ${
-        disabled
-          ? 'text-slate-300 cursor-not-allowed'
-          : active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100'
-      }`}
-    >
-      {icon}
-      {label}
-      {badge > 0 && (
-        <span className="bg-brand-600 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] leading-none">
-          {badge}
-        </span>
+    <>
+      <button
+        ref={btnRef}
+        onClick={(e) => { hideTip(); if (!disabled) onClick(e) }}
+        onMouseEnter={scheduleTip}
+        onMouseLeave={hideTip}
+        onBlur={hideTip}
+        disabled={disabled}
+        data-panel-btn={dataPanelBtn}
+        // En compact, l'infobulle maison remplace celle du navigateur (sinon les
+        // deux se superposent) ; l'aria-label garde le libellé accessible.
+        title={compact ? undefined : (disabled ? LOCKED_HINT : undefined)}
+        aria-label={compact ? label : undefined}
+        className={`flex items-center rounded text-xs font-medium transition-colors ${
+          compact ? 'gap-1 px-1.5 py-1.5' : 'gap-1.5 px-2.5 py-1.5'
+        } ${
+          disabled
+            ? 'text-slate-300 cursor-not-allowed'
+            : active ? 'bg-brand-50 text-brand-700' : 'text-slate-600 hover:bg-slate-100'
+        }`}
+      >
+        {icon}
+        {!compact && label}
+        {badge > 0 && (
+          <span className="bg-brand-600 text-white rounded-full w-4 h-4 flex items-center justify-center text-[10px] leading-none">
+            {badge}
+          </span>
+        )}
+      </button>
+      {tip && createPortal(
+        <div
+          role="tooltip"
+          data-testid="toolbar-tooltip"
+          style={{ position: 'fixed', top: tip.top, left: tip.left, transform: 'translateX(-50%)', zIndex: 10000 }}
+          className="pointer-events-none whitespace-nowrap rounded bg-slate-800 px-2 py-1 text-[11px] font-medium text-white shadow-lg"
+        >
+          {tipLabel}
+        </div>,
+        document.body,
       )}
-    </button>
+    </>
   )
 }
 
@@ -87,6 +141,14 @@ function PanelTitle({ children }) {
   return <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">{children}</p>
 }
 
+// Libellé FR du type d'une colonne, pour l'infobulle de son icône dans le
+// panneau « Champs ». Un champ virtuel est nommé par sa famille (Formule,
+// Rollup…), un champ « donnée » par son type de valeur.
+function fieldTypeTitle(col) {
+  const key = col.fieldType || col.type
+  return kindLabel(key) || typeLabel(key)
+}
+
 export function FieldsPanel({ columns, visibleCols, onChange, anchorEl }) {
   const [search, setSearch] = useState('')
   const filtered = search
@@ -114,7 +176,6 @@ export function FieldsPanel({ columns, visibleCols, onChange, anchorEl }) {
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
-          placeholder="Rechercher..."
           autoFocus
         />
       </div>
@@ -122,7 +183,7 @@ export function FieldsPanel({ columns, visibleCols, onChange, anchorEl }) {
         {filtered.length === 0
           ? <p className="text-xs text-slate-400 text-center py-2">Aucun résultat</p>
           : filtered.map(col => (
-          <label key={col.id} className="flex items-center gap-2.5 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
+          <label key={col.id} className="flex items-center gap-2 px-1 py-1.5 rounded hover:bg-slate-50 cursor-pointer">
             <input
               type="checkbox"
               checked={visibleCols.includes(col.id)}
@@ -132,7 +193,14 @@ export function FieldsPanel({ columns, visibleCols, onChange, anchorEl }) {
               }}
               className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
             />
-            <span className="text-sm text-slate-700">{col.label}</span>
+            {/* Icône du type de champ — même pictogramme que /champs/:table, pour
+                reconnaître un champ (formule, devise, date…) sans lire son type.
+                `fieldType` porte le type réel quand la colonne l'aplatit
+                (champ perso, personnalisation d'un champ natif). */}
+            <span className="flex-shrink-0 text-slate-400" title={fieldTypeTitle(col)}>
+              <FieldTypeIcon type={col.fieldType || col.type} size={14} />
+            </span>
+            <span className="text-sm text-slate-700 truncate">{col.label}</span>
           </label>
         ))}
       </div>
@@ -142,16 +210,18 @@ export function FieldsPanel({ columns, visibleCols, onChange, anchorEl }) {
             type="button"
             onClick={showAll}
             disabled={allVisible}
-            className="flex-1 text-xs font-medium text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
           >
+            <Eye size={13} />
             Tout voir
           </button>
           <button
             type="button"
             onClick={hideAll}
             disabled={noneVisible}
-            className="flex-1 text-xs font-medium text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+            className="flex-1 flex items-center justify-center gap-1.5 text-xs font-medium text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded px-2 py-1.5 disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
           >
+            <EyeOff size={13} />
             Tout cacher
           </button>
         </div>
@@ -668,7 +738,6 @@ function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onC
           value={search}
           onChange={e => setSearch(e.target.value)}
           className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
-          placeholder="Rechercher..."
           autoFocus
         />
       </div>
@@ -688,6 +757,51 @@ function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onC
       </div>
     </Panel>
   )
+}
+
+// ── Copier la configuration d'une autre vue ──────────────────────────────────
+// Chaque aspect de la config d'une vue est copiable indépendamment. `Colonnes`
+// (quelles colonnes sont visibles) et `Ordre` (dans quel ordre) vivent tous
+// deux dans visible_columns : cocher l'un sans l'autre fusionne (voir
+// mergeVisibleColumns).
+const COPY_ASPECTS = [
+  { key: 'cols',    label: 'Colonnes' },
+  { key: 'order',   label: 'Ordre' },
+  { key: 'widths',  label: 'Largeurs' },
+  { key: 'filters', label: 'Filtres' },
+  { key: 'groups',  label: 'Groupes' },
+  { key: 'colors',  label: 'Couleurs' },
+  { key: 'sorts',   label: 'Tris' },
+]
+const ALL_COPY_ASPECTS = Object.fromEntries(COPY_ASPECTS.map(a => [a.key, true]))
+
+// Une vue jamais configurée a visible_columns = [] (elle retombe sur les
+// colonnes par défaut à l'affichage). On résout ce fallback avant de copier,
+// sinon copier depuis elle viderait la vue cible.
+function effectiveVisible(list, columns) {
+  if (Array.isArray(list) && list.length > 0) return list
+  return columns.filter(c => c.defaultVisible !== false).map(c => c.id)
+}
+
+// Combine la liste de colonnes cible et source selon les cases cochées :
+// - les deux  → la liste source telle quelle ;
+// - Colonnes  → l'ensemble de la source, rangé dans l'ordre de la cible ;
+// - Ordre     → l'ensemble de la cible, rangé dans l'ordre de la source ;
+// - aucune    → null (on ne touche pas à visible_columns).
+function mergeVisibleColumns(target, source, { cols, order }) {
+  if (cols && order) return [...source]
+  if (cols) {
+    const src = new Set(source)
+    const kept = target.filter(id => src.has(id))
+    const tgt = new Set(target)
+    return [...kept, ...source.filter(id => !tgt.has(id))]
+  }
+  if (order) {
+    const tgt = new Set(target)
+    const src = new Set(source)
+    return [...source.filter(id => tgt.has(id)), ...target.filter(id => !src.has(id))]
+  }
+  return null
 }
 
 export function ViewToolbar({
@@ -713,11 +827,17 @@ export function ViewToolbar({
   manageViews = false,
   manageViewsBulkDelete = false,
   onOpenFieldConfig,        // () => void — ouvre la modale « Configuration des champs » (fournie par DataTable)
+  onApplyColumnWidths,      // (widths) => void — pousse des largeurs de colonnes dans l'état du DataTable (copie de config d'une vue)
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   // Élément bouton servant d'ancre au panneau (rendu en portal position:fixed).
   const [panelAnchor, setPanelAnchor] = useState(null)
   const toolbarRef = useRef(null)
+
+  // Tableau affiché DANS une fiche (panneau latéral) : la barre passe en mode
+  // compact — icônes seules, libellé au survol prolongé. Le contexte du peek
+  // n'existe que sous RecordPeekDrawer, il sert donc de détecteur.
+  const compact = !!usePeekFieldEdit()
 
   function togglePanel(name, e) {
     if (openPanel === name) { setOpenPanel(null); return }
@@ -772,6 +892,69 @@ export function ViewToolbar({
       await api.views.deletePill(table, v.id)
       window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
     } catch {}
+  }
+
+  // ── Copie de configuration entre vues ───────────────────────────────────────
+  // Source choisie + aspects cochés (tout par défaut) dans le sous-panneau
+  // « Copier une config » du menu contextuel de vue.
+  const [copySourceId, setCopySourceId] = useState(null)
+  const [copyOpts, setCopyOpts] = useState(ALL_COPY_ASPECTS)
+  const [copySearch, setCopySearch] = useState('')
+  const [copyBusy, setCopyBusy] = useState(false)
+
+  function openCopyPanel() {
+    setCopySourceId(null)
+    setCopyOpts(ALL_COPY_ASPECTS)
+    setCopySearch('')
+    setViewMenu(m => ({ ...m, copying: true }))
+  }
+
+  async function applyCopyToView(target) {
+    const src = views.find(v => v.id === copySourceId)
+    if (!src || !target || target.id === src.id) return
+    // Un autosave en vol écrirait l'ancienne config par-dessus la copie.
+    flushSave()
+
+    const payload = {}
+    const nextCols = mergeVisibleColumns(
+      effectiveVisible(target.visible_columns, columns),
+      effectiveVisible(src.visible_columns, columns),
+      { cols: !!copyOpts.cols, order: !!copyOpts.order },
+    )
+    if (nextCols) payload.visible_columns = nextCols
+    if (copyOpts.filters) payload.filters = src.filters || []
+    if (copyOpts.sorts) payload.sort = src.sort || []
+    if (copyOpts.groups) {
+      payload.group_by = src.group_by || null
+      payload.group_order = src.group_order || null
+    }
+    if (copyOpts.colors) payload.color_rules = src.color_rules || []
+    const widths = copyOpts.widths ? { ...(src.column_widths || {}) } : null
+
+    setCopyBusy(true)
+    try {
+      if (Object.keys(payload).length > 0) await api.views.updatePill(table, target.id, payload)
+      if (widths) await api.views.savePillColumnWidths(table, target.id, widths)
+      patchLocalView?.(target.id, { ...payload, ...(widths ? { column_widths: widths } : {}) })
+      // Vue en cours d'affichage : l'état local du tableau ne se recharge pas
+      // sur `views:updated` (il ne suit que le changement de vue active), il
+      // faut donc lui pousser la nouvelle config — sinon l'autosave suivant
+      // réécrirait l'ancienne.
+      if (target.id === activeViewId) {
+        if (payload.visible_columns) setVisibleCols?.(payload.visible_columns)
+        if (payload.filters !== undefined) setFilters?.(payload.filters)
+        if (payload.sort !== undefined) setSorts?.(payload.sort)
+        if (copyOpts.groups) {
+          setGroupBy?.(src.group_by || [])
+          setGroupOrder?.(src.group_order || [])
+        }
+        if (payload.color_rules !== undefined) setColorRules?.(payload.color_rules)
+        if (widths) onApplyColumnWidths?.(widths)
+      }
+      window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+    } catch {}
+    setCopyBusy(false)
+    setViewMenu(null)
   }
 
   // Bouton « + » de la barre des vues (admin) : crée une vue vide et l'active
@@ -1038,13 +1221,21 @@ export function ViewToolbar({
         if (!v) return null
         const itemCls = 'flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left'
         const lastView = views.length <= 1
+        const otherViews = views.filter(x => x.id !== v.id)
+        // Le sous-panneau de copie est haut : on le recale dans le viewport.
+        const menuTop = viewMenu.copying
+          ? Math.max(8, Math.min(viewMenu.y, window.innerHeight - 360))
+          : viewMenu.y
+        const menuLeft = viewMenu.copying
+          ? Math.max(8, Math.min(viewMenu.x, window.innerWidth - 288))
+          : viewMenu.x
         return (
           <>
             <div className="fixed inset-0 z-40" onClick={() => setViewMenu(null)} onContextMenu={e => { e.preventDefault(); setViewMenu(null) }} />
             <div
               data-testid="view-context-menu"
               className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[200px]"
-              style={{ top: viewMenu.y, left: viewMenu.x }}
+              style={{ top: menuTop, left: menuLeft }}
             >
               {viewMenu.renaming ? (
                 <div className="px-2 py-1 flex items-center gap-1.5">
@@ -1063,6 +1254,66 @@ export function ViewToolbar({
                     <Check size={15} />
                   </button>
                 </div>
+              ) : viewMenu.copying ? (
+                (() => {
+                  const q = copySearch.trim().toLowerCase()
+                  const list = q ? otherViews.filter(o => o.label.toLowerCase().includes(q)) : otherViews
+                  const noAspect = COPY_ASPECTS.every(a => !copyOpts[a.key])
+                  return (
+                    <div data-testid="view-copy-panel" className="w-[264px] px-2.5 py-1.5">
+                      <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Copier depuis</p>
+                      {otherViews.length > 8 && (
+                        <div className="relative mb-1.5">
+                          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                          <input
+                            autoFocus
+                            value={copySearch}
+                            onChange={e => setCopySearch(e.target.value)}
+                            className="w-full pl-7 pr-2 py-1 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
+                          />
+                        </div>
+                      )}
+                      <div className="max-h-36 overflow-y-auto space-y-0.5">
+                        {list.length === 0 && <p className="text-xs text-slate-400 py-1">Aucune autre vue</p>}
+                        {list.map(o => (
+                          <button
+                            key={o.id}
+                            data-testid={`view-copy-source-${o.id}`}
+                            onClick={() => setCopySourceId(o.id)}
+                            className={`flex items-center justify-between gap-2 w-full px-2 py-1 rounded text-sm text-left ${
+                              copySourceId === o.id ? 'bg-brand-50 text-brand-700 font-medium' : 'text-slate-600 hover:bg-slate-50'
+                            }`}
+                          >
+                            <span className="truncate">{o.label}</span>
+                            {copySourceId === o.id && <Check size={13} className="flex-shrink-0" />}
+                          </button>
+                        ))}
+                      </div>
+                      <div className="grid grid-cols-2 gap-x-2 mt-2 pt-2 border-t border-slate-100">
+                        {COPY_ASPECTS.map(a => (
+                          <label key={a.key} className="flex items-center gap-1.5 py-0.5 text-xs text-slate-600 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              data-testid={`view-copy-opt-${a.key}`}
+                              checked={!!copyOpts[a.key]}
+                              onChange={e => setCopyOpts(o => ({ ...o, [a.key]: e.target.checked }))}
+                              className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+                            />
+                            {a.label}
+                          </label>
+                        ))}
+                      </div>
+                      <button
+                        data-testid="view-copy-apply"
+                        onClick={() => applyCopyToView(v)}
+                        disabled={!copySourceId || noAspect || copyBusy}
+                        className="mt-2 w-full flex items-center justify-center gap-1.5 px-2 py-1.5 text-xs font-medium rounded bg-brand-600 text-white hover:bg-brand-700 disabled:bg-slate-200 disabled:text-slate-400"
+                      >
+                        <Copy size={12} /> Copier
+                      </button>
+                    </div>
+                  )
+                })()
               ) : (
                 <>
                   {/* Vue verrouillée : renommage et suppression masqués (mêmes
@@ -1075,6 +1326,14 @@ export function ViewToolbar({
                       className={itemCls}
                     >
                       <Pencil size={13} /> Renommer
+                    </button>
+                  )}
+                  {/* Reprendre la config d'une autre vue (colonnes, ordre,
+                      largeurs, filtres, groupes, couleurs, tris) — impossible
+                      sur une vue verrouillée, qui n'accepte aucune écriture. */}
+                  {!v.locked && otherViews.length > 0 && (
+                    <button data-testid="view-menu-copy" onClick={openCopyPanel} className={itemCls}>
+                      <Copy size={13} /> Copier une config
                     </button>
                   )}
                   <button data-testid="view-menu-lock" onClick={() => toggleViewLockFromMenu(v)} className={itemCls}>
@@ -1115,7 +1374,6 @@ export function ViewToolbar({
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="input text-xs py-1.5 pl-7 pr-7 w-52"
-                placeholder="Rechercher..."
               />
               {search && (
                 <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-300 hover:text-slate-500">
@@ -1127,18 +1385,18 @@ export function ViewToolbar({
 
           {visibleCols && setVisibleCols && (
             <ToolbarBtn icon={<Eye size={14} />} label="Champs" active={openPanel === 'fields'}
-              dataPanelBtn="fields" disabled={activeViewLocked}
+              dataPanelBtn="fields" disabled={activeViewLocked} compact={compact}
               onClick={(e) => togglePanel('fields', e)} />
           )}
 
           <ToolbarBtn icon={<Filter size={14} />} label="Filtrer" active={openPanel === 'filter'}
             badge={countFilterRules(filters)}
-            dataPanelBtn="filter" disabled={activeViewLocked}
+            dataPanelBtn="filter" disabled={activeViewLocked} compact={compact}
             onClick={(e) => togglePanel('filter', e)} />
 
           <ToolbarBtn icon={<ArrowUpDown size={14} />} label="Trier" active={openPanel === 'sort'}
             badge={sorts.length}
-            dataPanelBtn="sort" disabled={activeViewLocked}
+            dataPanelBtn="sort" disabled={activeViewLocked} compact={compact}
             onClick={(e) => togglePanel('sort', e)} />
 
           {setGroupBy && (
@@ -1147,7 +1405,7 @@ export function ViewToolbar({
               label="Grouper"
               active={openPanel === 'group' || (Array.isArray(groupBy) ? groupBy.length > 0 : !!groupBy)}
               badge={Array.isArray(groupBy) && groupBy.length > 1 ? groupBy.length : 0}
-              dataPanelBtn="group" disabled={activeViewLocked}
+              dataPanelBtn="group" disabled={activeViewLocked} compact={compact}
               onClick={(e) => togglePanel('group', e)} />
           )}
 
@@ -1157,7 +1415,7 @@ export function ViewToolbar({
               label="Couleur"
               active={openPanel === 'color'}
               badge={Array.isArray(colorRules) ? colorRules.length : 0}
-              dataPanelBtn="color" disabled={activeViewLocked}
+              dataPanelBtn="color" disabled={activeViewLocked} compact={compact}
               onClick={(e) => togglePanel('color', e)} />
           )}
 
@@ -1168,6 +1426,7 @@ export function ViewToolbar({
               icon={<SlidersHorizontal size={14} />}
               label="Configurer les champs"
               dataPanelBtn="field-config"
+              compact={compact}
               onClick={() => onOpenFieldConfig()}
             />
           )}

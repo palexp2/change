@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Plus, Trash2, AlertCircle, CheckCircle2, Ban, SlidersHorizontal } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -87,7 +88,6 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
             className="input"
             value={form.previous_status ?? ''}
             onChange={e => setField('previous_status', e.target.value)}
-            placeholder="(laisser vide = wildcard / création)"
             disabled={isEdit}
           />
         </div>
@@ -125,7 +125,6 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
               getOptionValue={a => a.Id}
               getOptionLabel={a => `${a.FullyQualifiedName || a.Name} (${a.AccountType})`}
               getOptionKey={a => a.Id}
-              placeholder="— Choisir —"
               testId="debit-account-select"
             />
           </div>
@@ -140,7 +139,6 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
               getOptionValue={a => a.Id}
               getOptionLabel={a => `${a.FullyQualifiedName || a.Name} (${a.AccountType})`}
               getOptionKey={a => a.Id}
-              placeholder="— Choisir —"
               testId="credit-account-select"
             />
           </div>
@@ -181,7 +179,6 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
           className="input"
           value={form.memo_template}
           onChange={e => setField('memo_template', e.target.value)}
-          placeholder="ex: {count}× {prev}→{new} — semaine {week}"
         />
         <p className="text-xs text-slate-500 mt-1">
           Variables disponibles: {`{count}`}, {`{prev}`}, {`{new}`}, {`{week}`}, {`{total}`}
@@ -195,7 +192,6 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
           rows={2}
           value={form.notes}
           onChange={e => setField('notes', e.target.value)}
-          placeholder="Précisions sur les conditions, exceptions, etc."
         />
       </div>
 
@@ -210,6 +206,12 @@ function RuleForm({ initial, transition, accounts, onSave, onCancel }) {
 
       {error && <p className="text-red-600 text-sm">{error}</p>}
 
+      {/* Bouton plutôt qu'autosave : les champs se valident ensemble, pas un par
+          un — skip_accounting change quels champs sont requis (débit/crédit
+          redeviennent optionnels), valuation_source=fixed_amount rend fixed_amount
+          requis, et debit/credit doivent être cohérents l'un avec l'autre avant
+          tout envoi (cf. validation ligne ~45). Sauvegarder à mi-chemin créerait
+          une règle transitoirement invalide. */}
       <div className="flex justify-end gap-2 pt-2">
         <button type="button" onClick={onCancel} className="btn-secondary">Annuler</button>
         <button type="submit" disabled={saving} className="btn-primary">
@@ -437,14 +439,14 @@ export default function SerialAccountingRules() {
       <div className="p-6 max-w-6xl mx-auto">
         <div className="flex items-start justify-between gap-3 mb-4">
           <div>
-            <h1 className="text-xl font-bold text-slate-900 mb-1">Mouvements numéros de série</h1>
+            <PageTitle className="mb-1">Mouvements numéros de série</PageTitle>
             <p className="text-sm text-slate-500">
               Chaque transition d'état produit une ligne débit/crédit. L'agrégation hebdomadaire poussera une écriture de journal QuickBooks combinant toutes les transitions de la semaine.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
             <Link
-              to="/champs/serial_transitions?tab=serial_changes"
+              to="/champs/serial_transitions"
               className="btn-secondary btn-sm py-1 flex items-center gap-1.5"
               title="Ajouter et mapper des champs Airtable supplémentaires sur les changements d'état"
             >

@@ -1,5 +1,5 @@
-import { randomUUID } from 'crypto'
 import { readFileSync, existsSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
 import { join, extname } from 'path'
 import db from '../db/database.js'
 import { qbGet, qbPost, qbUploadAttachment } from '../connectors/quickbooks.js'
@@ -11,6 +11,7 @@ import { logSync } from './syncLog.js'
 import { validateTaxCodeAgainstType, getTransactionType } from './fiscalStatus.js'
 import { completeLiaDescription } from './purchaseLiaMatch.js'
 import { round2, round2Safe } from '../utils/money.js'
+import { uploadsPath } from '../config/uploads.js'
 
 const SALE_RECEIPT_MIME = {
   '.jpg':  'image/jpeg',
@@ -152,7 +153,7 @@ export async function findOrCreateVendor(vendorName, currency = 'CAD') {
     db.prepare(`
       INSERT OR IGNORE INTO companies (id, name, type, quickbooks_vendor_id, currency)
       VALUES (?, ?, 'Fournisseur', ?, ?)
-    `).run(randomUUID(), effectiveName, qbVendorId, currency || 'CAD')
+    `).run(newRecordId(), effectiveName, qbVendorId, currency || 'CAD')
   }
 
   return qbVendorId
@@ -215,6 +216,18 @@ export async function pushAchatToQB(achatId) {
       TxnTaxDetail: { TxnTaxCodeRef: { value: row.tax_code_id }, TotalTax: round2Safe(row.tax_cad) },
       GlobalTaxCalculation: 'TaxExcluded',
     }
+    // Sans TaxLine[] explicite, QuickBooks IGNORE TotalTax et recalcule la taxe
+    // au taux nominal du code : le montant publié cesse alors de coller à la
+    // facture (arrondi fournisseur, base taxable partielle). On ventile donc
+    // `tax_cad` sur les taux d'achat du code. Si la ventilation est impossible
+    // (code à récupération réduite, taux non classable), on retombe sur
+    // l'auto-calcul QB — un override faux serait pire que pas d'override.
+    try {
+      const rates = await resolveTaxCodeRates(row.tax_code_id)
+      const split = splitTaxAcrossRates(rates, round2Safe(row.tax_cad))
+      const taxLines = split ? buildTaxLinesFromRates(rates, { ...split, subtotalAmt: lineBase }) : null
+      if (taxLines) taxDetail.TxnTaxDetail.TaxLine = taxLines
+    } catch { /* taux QB indisponibles → auto-calcul */ }
   }
   const lineDetail = { AccountRef: { value: expenseAccountId } }
   if (applyTax) lineDetail.TaxCodeRef = { value: row.tax_code_id }
@@ -342,7 +355,7 @@ function upsertVendorCompany(qbVendorId, vendorName, currency) {
     return byName.id
   }
 
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO companies (id, name, type, quickbooks_vendor_id, currency)
     VALUES (?, ?, 'Fournisseur', ?, ?)
@@ -499,7 +512,7 @@ export async function importFromQB({ incremental = false, trigger = 'manual' } =
              status, vendor_invoice_number, notes, lines, currency, exchange_rate, quickbooks_id)
           VALUES (?, 'bill', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).run(
-          randomUUID(), vendor, vendorCompanyId, dateFact, dueDate,
+          newRecordId(), vendor, vendorCompanyId, dateFact, dueDate,
           total, 0, total, amountPaid, status, docNum, notes, lines, currency, exchangeRate, qbId
         )
         inserted++
@@ -565,7 +578,7 @@ export async function importFromQB({ incremental = false, trigger = 'manual' } =
              currency, exchange_rate, quickbooks_id)
           VALUES (?, 'purchase', ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).run(
-          randomUUID(), dateAchat, description, vendor, vendorCompanyId,
+          newRecordId(), dateAchat, description, vendor, vendorCompanyId,
           reference, total, 0, total, paymentMethod, 'Approuvé', notes, lines, currency, exchangeRate, qbId
         )
         insertedDep++
@@ -691,7 +704,7 @@ export async function checkBillAutoPayment(receiptId, billId) {
     + `Si c'est une erreur, défaites l'appariement dans QuickBooks (l'API ne peut pas le faire).`
   try {
     db.prepare('INSERT INTO sale_receipt_events (id, receipt_id, user_id, action, detail) VALUES (?,?,?,?,?)')
-      .run(randomUUID(), receiptId, null, 'qb_auto_matched', detail)
+      .run(newRecordId(), receiptId, null, 'qb_auto_matched', detail)
   } catch (e) {
     console.error(`checkBillAutoPayment: journal indisponible pour ${receiptId} (${e.message})`)
   }
@@ -1361,7 +1374,7 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // Document multipage : on attache la page 1 (filename) + chaque page de extra_pages.
   // Une erreur d'upload ne doit pas invalider la transaction comptable déjà postée.
   try {
-    const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
+    const uploadsDir = uploadsPath('receipts')
     let extraPages = []
     try { extraPages = JSON.parse(rec.extra_pages || '[]') } catch {}
     const pages = [
@@ -1553,7 +1566,7 @@ export async function resolveAccountByAcctNum(acctNum) {
 // échec d'appel : si le fetch tombe (429/503/timeout) percent resterait null et la
 // ventilation par % zapperait la taxe en silence — on laisse l'erreur remonter pour
 // que le caller retombe sur l'auto-calc QB plutôt que de publier une taxe muette à 0.
-async function resolveTaxCodeRates(taxCodeId) {
+export async function resolveTaxCodeRates(taxCodeId) {
   const tcRes = await qbGet(`/taxcode/${taxCodeId}`)
   const details = tcRes?.TaxCode?.PurchaseTaxRateList?.TaxRateDetail || []
   const rates = []
@@ -1759,6 +1772,24 @@ export function buildTaxLinesFromRates(rates, { tpsAmt = 0, tvqAmt = 0, otherAmt
   if (!split.some(([, amt]) => amt > 0)) return null
   // Tous les taux du code sont émis, y compris ceux à 0 $ (cf. règle QB ci-dessus).
   return split.map(([r, amt]) => mkLine(r, amt))
+}
+
+// Ventile UN montant de taxe global (les achats ne stockent pas le détail
+// TPS/TVQ) sur les taux d'achat du code, au prorata des pourcentages. Renvoie
+// null quand la ventilation n'a pas de sens — l'appelant laisse alors QB
+// calculer plutôt que de publier un override arbitraire.
+export function splitTaxAcrossRates(rates, taxTotal) {
+  const total = round2(taxTotal)
+  if (!Array.isArray(rates) || !rates.length || !(total > 0)) return null
+  if (rates.length === 1) return { otherAmt: total }
+
+  const tps = rates.find(r => r.percent != null && Math.abs(r.percent - 5) < 1)
+  const tvq = rates.find(r => r.percent != null && Math.abs(r.percent - 9.975) < 1.5)
+  if (!tps || !tvq || rates.length !== 2) return null
+
+  const sum = tps.percent + tvq.percent
+  const tpsAmt = round2(total * tps.percent / sum)
+  return { tpsAmt, tvqAmt: round2(total - tpsAmt) }
 }
 
 async function buildPurchaseTaxLines(taxCodeId, amounts) {
@@ -2750,6 +2781,29 @@ function buildPaymentMemo(method, f) {
   return `${label}${client} — facture ${f.document_number || f.id}`
 }
 
+// Dérive le HT (Line.Amount du Deposit) à partir du TTC réellement encaissé.
+// invoice.subtotal (Stripe) est AVANT rabais — sur une facture à rabais, il peut
+// dépasser invoice.total et faire déraper le ratio subtotal/total au-delà de 1
+// (HT gonflé au-delà du TTC reçu — vu sur le Deposit 17936, sept. 2026 : ratio
+// 11000/8853.10 au lieu de 7700/8853.10 net du rabais de 3300 $). On soustrait
+// donc `total_discount_amounts` du subtotal avant de calculer le ratio.
+export function deriveHtFromTtc(amountTtc, invoiceForTax, facture) {
+  let subtotal = null, total = null
+  if (invoiceForTax?.subtotal != null && invoiceForTax?.total != null) {
+    const discountTotal = (invoiceForTax.total_discount_amounts || [])
+      .reduce((s, d) => s + (d.amount || 0), 0)
+    subtotal = (invoiceForTax.subtotal - discountTotal) / 100
+    total = invoiceForTax.total / 100
+  } else if (facture?.amount_before_tax_cad && facture?.total_amount) {
+    subtotal = facture.amount_before_tax_cad
+    total = facture.total_amount
+  }
+  if (total > 0 && subtotal > 0 && Math.abs(subtotal - total) > 0.001) {
+    return Math.round(amountTtc * (subtotal / total) * 100) / 100
+  }
+  return amountTtc
+}
+
 export async function buildPaymentDeposit(params) {
   const f = db.prepare(`
     SELECT f.id, f.document_date, f.document_number, f.status, f.kind, f.currency,
@@ -2816,19 +2870,16 @@ export async function buildPaymentDeposit(params) {
   // taxe en sus — le Deposit serait gonflé du montant de la taxe. On déduit donc le HT
   // via le ratio subtotal/total (invoice Stripe, sinon totaux facture) pour que QB
   // recalcule la taxe et que le total du Deposit retombe sur le TTC reçu.
+  //
+  // invoice.subtotal (Stripe) est AVANT rabais — sur une facture à escompte (ex.
+  // acompte déjà facturé sur une facture précédente, ou rabais commercial), il peut
+  // dépasser invoice.total et faire déraper le ratio au-delà de 1 (lineAmount > amount
+  // reçu — vu sur le Deposit 17936 : ratio 11000/8853.10 au lieu de 7700/8853.10, HT
+  // gonflé de 3300 $). Il faut net des rabais (`total_discount_amounts`) pour retomber
+  // sur le HT réel de la facture.
   let lineAmount = amount
   if (taxCodeId) {
-    let subtotal = null, total = null
-    if (invoiceForTax?.subtotal != null && invoiceForTax?.total != null) {
-      subtotal = invoiceForTax.subtotal / 100
-      total = invoiceForTax.total / 100
-    } else if (f.amount_before_tax_cad && f.total_amount) {
-      subtotal = f.amount_before_tax_cad
-      total = f.total_amount
-    }
-    if (total > 0 && subtotal > 0 && Math.abs(subtotal - total) > 0.001) {
-      lineAmount = Math.round(amount * (subtotal / total) * 100) / 100
-    }
+    lineAmount = deriveHtFromTtc(amount, invoiceForTax, f)
   }
 
   const lineDetail = { AccountRef: { value: creditAccountId } }

@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, lazy, Suspense } from 'react'
 import { ExternalLink, FileText } from 'lucide-react'
 import api from '../lib/api.js'
-import { Modal } from './Modal.jsx'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
+import Spinner from './Spinner.jsx'
 import LinkedRecordField from './LinkedRecordField.jsx'
 import { SubscriptionHistory } from './SubscriptionHistory.jsx'
 import { fmtDate } from '../lib/formatDate.js'
@@ -10,9 +10,18 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { intervalAmount, intervalLabel } from '../lib/subscriptionPricing.js'
 import { fmtCad } from '../utils/formatters.js'
 
-// `variant`: 'modal' (défaut, fenêtre centrée) ou 'peek' — même contenu rendu
-// dans un RecordPeekDrawer (side-peek à la Airtable) par-dessus une liste.
-export function AbonnementDetailModal({ abonnement, onClose, onChange, variant = 'modal' }) {
+// Import différé : FactureDetail importe ce module (side-peek abonnement d'une
+// facture). Un import statique créerait un cycle à l'évaluation ; `lazy` casse
+// le cycle en le résolvant seulement au moment où on ouvre la facture.
+const FactureDetail = lazy(() => import('../pages/FactureDetail.jsx'))
+
+// Fiche abonnement : toujours rendue dans un RecordPeekDrawer (side-peek à la
+// Airtable), par-dessus la liste ou par-dessus un autre panneau (depuis la
+// fiche d'une entreprise, d'une facture…).
+export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
+  // Facture ouverte par-dessus le panneau abonnement (clic sur une ligne de la
+  // section « Factures »).
+  const [facturePeek, setFacturePeek] = useState(null)
   const [details, setDetails] = useState(null)
   const [loading, setLoading] = useState(true)
   const [companies, setCompanies] = useState([])
@@ -21,6 +30,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, variant =
 
   useEffect(() => {
     setLocalAbo(abonnement)
+    setFacturePeek(null)
   }, [abonnement])
 
   useEffect(() => {
@@ -98,7 +108,6 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, variant =
               options={companies}
               labelFn={c => c.name}
               getHref={c => `/companies/${c.id}`}
-              placeholder="Entreprise"
               saving={savingCompany}
               onChange={handleCompanyChange}
             />
@@ -205,7 +214,12 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, variant =
                 <h4 className="text-sm font-semibold text-slate-700 mb-2">Factures ({details.invoices.length})</h4>
                 <div className="border border-slate-200 rounded-lg overflow-hidden divide-y divide-slate-100">
                   {details.invoices.map((inv, i) => (
-                    <div key={i} className={`px-4 py-2.5 ${inv.facture_id ? 'hover:bg-slate-50 cursor-pointer' : ''}`} onClick={() => { if (inv.facture_id) { onClose?.(); window.location.href = `/erp/factures/${inv.facture_id}` } }}>
+                    <div
+                      key={i}
+                      data-testid={inv.facture_id ? `abo-invoice-row-${inv.facture_id}` : undefined}
+                      className={`px-4 py-2.5 ${inv.facture_id ? 'hover:bg-slate-50 cursor-pointer' : ''}`}
+                      onClick={() => { if (inv.facture_id) setFacturePeek({ id: inv.facture_id, number: inv.number }) }}
+                    >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-3">
                           <span className={`text-xs font-mono ${inv.facture_id ? 'text-brand-600 hover:underline' : 'text-slate-700'}`}>{inv.number || '—'}</span>
@@ -245,23 +259,30 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange, variant =
       </div>
   )
 
-  if (variant === 'peek') {
-    return (
-      <RecordPeekDrawer
-        open
-        onClose={onClose}
-        title={abonnement.product_name || "Détails de l'abonnement"}
-        subtitle={aboState.company_name || abonnement.customer_email || undefined}
-        width={640}
-      >
-        <div className="px-5 py-4">{body}</div>
-      </RecordPeekDrawer>
-    )
-  }
-
   return (
-    <Modal isOpen onClose={onClose} title="Détails de l'abonnement" size="xl">
-      {body}
-    </Modal>
+    <RecordPeekDrawer
+      open
+      onClose={onClose}
+      title={abonnement.product_name || "Détails de l'abonnement"}
+      subtitle={aboState.company_name || abonnement.customer_email || undefined}
+      width={640}
+      peekKey="abonnements"
+    >
+      <div className="px-5 py-4">{body}</div>
+      {/* Facture empilée par-dessus l'abonnement — on ne quitte pas le contexte. */}
+      {facturePeek && (
+        <RecordPeekDrawer
+          open
+          onClose={() => setFacturePeek(null)}
+          title={facturePeek.number || `Facture #${facturePeek.id}`}
+          to={`/factures/${facturePeek.id}`}
+          width={720}
+        >
+          <Suspense fallback={<Spinner center />}>
+            <FactureDetail recordId={facturePeek.id} embedded onClose={() => setFacturePeek(null)} />
+          </Suspense>
+        </RecordPeekDrawer>
+      )}
+    </RecordPeekDrawer>
   )
 }

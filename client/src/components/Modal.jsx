@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
+import { nextModalZ, registerOverlay } from '../lib/overlayLayers.js'
 
 // Sélecteur des éléments réellement focusables à l'intérieur de la modale.
 const FOCUSABLE_SELECTOR = [
@@ -19,8 +20,42 @@ function getFocusable(container) {
   )
 }
 
-export function Modal({ isOpen, onClose, title, children, size = 'md' }) {
+// Nombre de modales actuellement ouvertes. RecordPeekDrawer s'y réfère pour ne
+// PAS se fermer sur Échap quand une modale est ouverte par-dessus : les deux
+// écoutent `document` en phase bulle, donc le stopPropagation de la modale
+// n'atteint pas le drawer et une seule touche fermait les deux d'un coup.
+let openModals = 0
+export function hasOpenModal() { return openModals > 0 }
+
+// `zIndex` : plan d'empilement imposé. Par défaut la modale se place d'elle-même
+// juste au-dessus de la couche flottante la plus haute déjà ouverte (registre
+// `lib/overlayLayers.js`) : panneau latéral, pile de panneaux empilés, ou autre
+// modale. C'est ce qui garantit qu'une confirmation reste visible même ouverte
+// depuis le troisième panneau d'une pile.
+export function Modal({ isOpen, onClose, title, children, size = 'md', zIndex }) {
   const contentRef = useRef(null)
+  // Plan figé à l'ouverture : recalculer à chaque rendu ferait sauter la modale
+  // d'un plan à l'autre au gré des couches qui s'ouvrent/se ferment ailleurs.
+  const zRef = useRef(null)
+  if (isOpen) {
+    if (zRef.current == null) zRef.current = zIndex ?? nextModalZ()
+  } else if (zRef.current != null) {
+    zRef.current = null
+  }
+  const z = zRef.current ?? zIndex ?? 50
+
+  useEffect(() => {
+    if (!isOpen) return
+    openModals += 1
+    return () => { openModals -= 1 }
+  }, [isOpen])
+
+  // Inscription au registre d'empilement : une modale ouverte par-dessus
+  // celle-ci (une confirmation dans un formulaire, typiquement) passera devant.
+  useEffect(() => {
+    if (!isOpen) return
+    return registerOverlay(z)
+  }, [isOpen, z])
 
   // Verrou du scroll du body quand la modale est ouverte
   useEffect(() => {
@@ -101,7 +136,7 @@ export function Modal({ isOpen, onClose, title, children, size = 'md' }) {
   // sous #root alors que le drawer est un sibling ajouté après #root — à
   // z-index égal (50), le drawer gagnait l'empilement et recouvrait la modale.
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: z }} role="dialog" aria-modal="true">
       <div
         className="fixed inset-0 bg-black/50"
         onClick={onClose}

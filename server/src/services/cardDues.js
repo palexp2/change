@@ -1,5 +1,5 @@
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { createPayment, getPayment } from './treasuryPayments.js'
 import { nowIso } from '../utils/datetime.js'
 
@@ -74,7 +74,7 @@ export function ensureCardDues({ today = new Date(), dueDay = DUE_DAY, leadDays 
   const run = db.transaction(() => {
     for (const c of CARDS) {
       if (exists.get(period, c.card_account)) continue
-      insert.run(randomUUID(), period, c.card_account, c.pay_account, c.currency, c.label, due)
+      insert.run(newRecordId(), period, c.card_account, c.pay_account, c.currency, c.label, due)
       created++
     }
   })

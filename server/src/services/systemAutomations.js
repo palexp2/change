@@ -42,12 +42,6 @@ export const MANUAL_RUNNERS = {
     const { syncSoldeSheet } = await import('./treasurySoldeSheet.js')
     return await syncSoldeSheet({ trigger: 'manuel', apply: !dryRun })
   },
-  // Suivi Purolator : dry-run et run-now font le même appel (une simple
-  // lecture de statut, jamais un achat) — pas de distinction utile ici.
-  sys_purolator_tracking: async () => {
-    const { refreshPurolatorTracking } = await import('./purolator.js')
-    return await refreshPurolatorTracking({ trigger: 'manuel' })
-  },
   // Reprise de l'onglet Pmt_Suivi (fichier CTB - Suivi) : dry-run = lignes qui
   // seraient ajoutées / mises à jour sans rien écrire ; run-now = import réel.
   sys_pmt_suivi_sheet: async ({ dryRun }) => {
@@ -112,9 +106,63 @@ export const MANUAL_RUNNERS = {
     return { summary: out.summary, counts: out.counts, problems: out.problems.slice(0, 50) }
   },
 
+  // Corbeille : dry-run = ce qui partirait, sans rien détruire ; run-now =
+  // suppression définitive immédiate (même si l'automation est en pause).
+  // `log: false` — la route run-now journalise déjà l'exécution.
+  sys_trash_auto_cleanup: async ({ dryRun }) => {
+    const { runTrashAutoCleanup } = await import('./trash.js')
+    const out = runTrashAutoCleanup({ dryRun: !!dryRun, trigger: 'manuel', force: true, log: false })
+    // Pas de clé `details` : la route run-now la formate comme une liste
+    // d'envois d'emails (`d.action.toUpperCase()`) et planterait dessus.
+    return { summary: out.summary, retention_days: out.retention_days, tables: out.details, blocked: out.blocked_details }
+  },
+
+  // Vérificateur de prix des achats : dry-run = liste des prix suspects sans
+  // persister de verdict ni notifier ; run-now = passe complète.
+  sys_purchase_price_check: async ({ dryRun }) => {
+    const { runPurchasePriceCheck } = await import('./purchasePriceCheck.js')
+    const out = runPurchasePriceCheck({ trigger: 'manuel', apply: !dryRun, log: false })
+    return { summary: out.summary, counts: out.counts, problems: out.problems.slice(0, 50) }
+  },
+
   sys_bank_trx_sheet: async ({ dryRun }) => {
     const { syncTrxSheet } = await import('./bankTrxSheet.js')
     return await syncTrxSheet({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Rattachement des sorties connues au relevé : dry-run et run-now font la
+  // même chose (le rattachement n'écrit qu'un lien, jamais une écriture
+  // comptable) — on lance le passage et on rend ce qui a été rattaché.
+  sys_bank_debit_link: async () => {
+    const { linkKnownDebits, summarizeLinks } = await import('./bankDebitLink.js')
+    const out = await linkKnownDebits()
+    return { ...out, summary: summarizeLinks(out) }
+  },
+  // Sync bancaire Plaid : dry-run = état de la connexion compte par compte
+  // (fraîcheur, nombre de transactions, comptes mappés mais vides) ;
+  // run-now = passage immédiat sur tous les items.
+  sys_plaid_sync: async ({ dryRun }) => {
+    const { scheduledPlaidSync, plaidSyncStatus } = await import('./plaidSync.js')
+    if (dryRun) {
+      const st = await plaidSyncStatus()
+      const empty = st.accounts.filter((a) => a.empty).map((a) => a.account_name)
+      const mute = st.items.filter((i) => i.last_successful_update && i.last_successful_update < new Date(Date.now() - 36 * 3600e3).toISOString())
+      return {
+        ...st,
+        summary: st.accounts.map((a) => `${a.account_name}: ${a.plaid_count} trx${a.last_txn_date ? `, dernière ${a.last_txn_date}` : ''}`).join(' · ')
+          + (empty.length ? ` — À RELIRE (mappés mais vides) : ${empty.join(', ')}` : '')
+          + (mute.length ? ` — BANQUE MUETTE : ${mute.map((i) => `${i.institution} depuis le ${i.last_successful_update.slice(0, 10)}`).join(', ')}` : ''),
+      }
+    }
+    const results = await scheduledPlaidSync()
+    return { results, summary: results.map((r) => r.error ? `${r.institution || r.item_id}: échec (${r.error})` : `${r.institution || r.item_id}: ${r.inserted} nouvelle(s)`).join(' · ') || 'aucune connexion Plaid' }
+  },
+  // Revérification QuickBooks des comptes Plaid : dry-run n'existe pas vraiment
+  // ici (la recherche ne modifie que qb_txn_id/statut, jamais les montants) —
+  // on lance simplement le passage complet dans les deux cas.
+  sys_plaid_qb_audit: async () => {
+    const { scheduledPlaidQbAudit } = await import('./plaidQbAudit.js')
+    const results = await scheduledPlaidQbAudit()
+    return { summary: (results || []).map((r) => r.error ? `${r.account_name}: échec (${r.error})` : `${r.account_name}: ${r.linked} lié(s)/${r.scanned} vérifiée(s)`).join(' · ') || 'aucun compte Plaid mappé à QuickBooks', results }
   },
   // Rappel cartes : dry-run = prochaine date de rappel + aperçu du message ;
   // run-now = envoi immédiat du rappel Slack (ignore la date et l'idempotence).
@@ -223,14 +271,6 @@ export const MANUAL_RUNNERS = {
     if (dryRun) return previewWeeklyProspectDigest()
     return await runWeeklyProspectDigest({ force: true, trigger: 'manuel' })
   },
-  // Registre des entreprises du Québec : dry-run = lit la source et compte ce
-  // qui serait importé sans rien écrire ; run-now = import complet (upsert).
-  sys_req_import: async ({ dryRun }) => {
-    const { runReqImport, getReqStatus } = await import('./reqImport.js')
-    const out = await runReqImport({ trigger: 'manuel', apply: !dryRun })
-    return { summary: out.summary, source: out.source, read: out.read, written: out.written, status: getReqStatus() }
-  },
-
   sys_paie_repartition: async () => {
     const { computePaieRepartition } = await import('./paieRepartition.js')
     const last = db.prepare('SELECT id, number FROM paies ORDER BY period_end DESC LIMIT 1').get()
@@ -383,20 +423,23 @@ export const SYSTEM_AUTOMATIONS = [
   },
   {
     id: 'sys_gmail_sync',
-    name: 'Sync Gmail (heure)',
+    name: 'Sync Gmail (3 min)',
     description:
       "Synchronise toutes les boîtes Gmail connectées (via OAuth) : récupère les nouveaux messages, " +
       "les associe aux contacts/entreprises, crée des interactions + emails. " +
       "Ingère comme factures fournisseurs (sale_receipts + extraction IA) tout message portant le label ERP/Factures " +
       "OU adressé/livré à factures@orisha.io — aucun label requis ; dédup inter-boîtes par Message-ID RFC822. " +
       "Le répertoire fournisseurs (profils /fournisseurs) est injecté dans le prompt d'extraction. " +
-      "Exécute aussi rematchCalls() pour relier les appels orphelins à des contacts. " +
-      "Démarre 30s après le boot puis s'exécute toutes les heures.",
+      "Démarre 30s après le boot puis s'exécute toutes les 3 minutes ; une passe encore en cours " +
+      "absorbe l'appel suivant (verrou côté service) plutôt que d'en lancer une seconde. " +
+      "Un passage sans rien à importer avance la date de dernière exécution sans écrire de journal : " +
+      "l'historique ci-dessous ne garde que les passages qui ont importé quelque chose ou échoué. " +
+      "Le rematch des appels orphelins, qui tournait dans cette passe, a son propre battement horaire.",
     trigger_config: {
       kind: 'schedule',
       source: 'index.js:scheduleGmailSync',
-      cron: '0 * * * * (interval 1h)',
-      summary: 'Scheduler interne — toutes les heures',
+      cron: '*/3 * * * * (interval 3 min)',
+      summary: 'Scheduler interne — toutes les 3 minutes',
     },
   },
   {
@@ -609,21 +652,6 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
-    id: 'sys_purolator_tracking',
-    name: 'Purolator : rafraîchissement horaire du suivi des envois',
-    description:
-      "Toutes les heures (et sur demande depuis le bouton « Simuler »/« Exécuter » ci-dessous), interroge le service de suivi Purolator (Tracking Service) pour chaque envoi dont le transporteur est Purolator et qui n'est pas encore marqué livré, et met à jour son statut et sa dernière activité sur la fiche envoi. " +
-      "Sens unique ERP → Purolator : achat d'étiquette côté page Envois (bouton « Tarifer »), ce job ne fait que LIRE le statut, jamais d'achat ni d'annulation. Court-circuite si Purolator n'est pas configuré (page Connecteurs).",
-    trigger_config: {
-      kind: 'schedule',
-      source: "cron '0 * * * *' (index.js) → services/purolator.js refreshPurolatorTracking()",
-      summary: 'Rafraîchissement toutes les 60 minutes, à l\'heure pile',
-    },
-    action_config: {},
-    configurable: true,
-    default_active: 1,
-  },
-  {
     id: 'sys_carm_balance_alert',
     name: 'Douanes ASFC : alerte de solde bas du compte CARM',
     description:
@@ -755,6 +783,58 @@ export const SYSTEM_AUTOMATIONS = [
       slack_anomalies: '0',
       slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
     },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_debit_link',
+    name: 'Comptabilité : reconnaître au relevé les sorties déjà connues',
+    description:
+      "À chaque arrivée de transactions bancaires, rapproche du relevé les sorties d'argent que l'ERP attendait déjà : le débit de la paie (libellé Nethris, 2 à 4 jours après la fin de période) et les versements des dettes à long terme (BDC, Ville de Québec, DEC). " +
+      "La paie rattachée s'ouvre avec son montant et sa date déjà remplis dans « Comptabilisation de la paie » — le montant passé au compte BNC ne se recopie plus du relevé à la main. " +
+      "AUCUNE écriture n'est publiée dans QuickBooks par ce passage : publier reste un geste humain, au clic. " +
+      "Un versement de dette rattaché affiche « passé à la banque » sur la page Dettes à long terme, ce qui distingue enfin « l'écriture existe dans QuickBooks » de « l'argent est sorti ». " +
+      "Rien n'est deviné : sans libellé configuré, sans candidat unique, ou sur un montant qui s'écarte de plus de 2 % de l'attendu, la transaction reste à traiter plutôt que d'être mal rattachée. " +
+      "Les libellés se règlent sur l'automation « Répartition de la paie » (paie, assurance collective) et sur la fiche de chaque dette.",
+    trigger_config: {
+      kind: 'event',
+      source: 'services/bankReconciliation.js:runPostImportHooks (collage, TRX_Orisha, Plaid)',
+      summary: "À chaque arrivée de transactions bancaires, quelle qu'en soit la source",
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_plaid_sync',
+    name: 'Connexion bancaire : lecture des transactions et du solde (Plaid)',
+    description:
+      "Toutes les 30 minutes, relit auprès de Plaid les nouvelles transactions de chaque institution connectée (BNC, Desjardins) et les verse dans le rapprochement bancaire, puis note le solde du compte BNC CAD utilisé par la projection de trésorerie. " +
+      "Plaid prévient normalement l'ERP tout de suite (webhook) — ce passage est le FILET : un webhook perdu, une signature refusée ou une coupure réseau et les transactions cessaient d'arriver sans que rien ne le signale (c'est ce qui s'est produit début septembre 2026). " +
+      "Lecture seule : aucune capacité de virement ou de paiement n'est demandée à la banque. " +
+      "« Simuler » n'appelle pas la banque, il affiche l'état de la connexion compte par compte — dont les comptes mappés qui n'ont AUCUNE transaction, signe que la lecture a commencé avant que le compte soit associé : il faut alors relire tout l'historique depuis la page Connecteurs.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 30 min (index.js) → services/plaidSync.js + POST /api/plaid/sync/:itemId',
+      summary: 'Lecture aux 30 minutes, en plus des avis instantanés de la banque (webhook)',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_plaid_qb_audit',
+    name: 'Rapprochement bancaire : vérification QuickBooks des comptes Plaid',
+    description:
+      "Toutes les 20 minutes (et sur demande depuis la page Rapprochement bancaire, bouton « Revérifier avec QuickBooks »), pour chaque compte branché à Plaid (BNC) et mappé à QuickBooks : cherche dans le grand livre QB, avec le moteur de recherche approfondie (tolérance de montant, ±30 jours, virements internes, devises — services/bankQbSearch.js), une écriture correspondant à chaque transaction bancaire non encore rapprochée. " +
+      "Remplace, pour ces comptes, l'audit qui vivait dans la sync du fichier TRX_Orisha.xlsx (désormais désactivée pour eux — voir services/bankTrxSheet.js) : le statut « Comptabilisé »/« Rapproché » de ces comptes ne dépend plus que d'une preuve QuickBooks réelle, jamais d'une couleur peinte à la main dans un fichier Excel. " +
+      "Le passage automatique couvre une fenêtre glissante de 90 jours ; le bouton manuel couvre tout l'historique non reconcilié (utile pour rattraper les transactions 2024-2025 jamais vérifiées par l'ancien audit, plafonné à 45 jours).",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 20 min (index.js) → services/plaidQbAudit.js + POST /api/bank/accounts/:id/qb-audit',
+      summary: 'Vérification aux 20 minutes + bouton « Revérifier avec QuickBooks » de la page Rapprochement bancaire',
+    },
+    action_config: {},
     configurable: true,
     default_active: 1,
   },
@@ -1088,31 +1168,6 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
-    id: 'sys_req_import',
-    name: 'Registre des entreprises du Québec : rafraîchissement mensuel',
-    description:
-      "Une fois par mois (le 3 à 4h du matin, heure de Montréal), recharge le miroir local du Registre des entreprises du Québec — les données ouvertes publiées par le Registraire sur Données Québec, republiées deux fois par mois. "
-      + "SENS UNIQUE ET LECTURE SEULE : rien ne repart jamais vers le Registraire, aucun compte ni aucune clé n'est utilisé, le jeu de données est public. "
-      + "L'import est ADDITIF et IDEMPOTENT : chaque entreprise est mise à jour par son NEQ, aucune ligne n'est jamais supprimée — une entreprise absente d'une livraison garde sa dernière version connue plutôt que de disparaître de l'ERP. Relancer deux fois le même fichier laisse exactement le même contenu. "
-      + "Ce qui est conservé par entreprise : NEQ, nom légal, autres noms utilisés, statut d'immatriculation, date d'immatriculation, adresse du domicile, forme juridique et codes d'activité économique. "
-      + "À quoi ça sert : la fiche entreprise affiche un bloc « Registre des entreprises » qui retrouve tout seul la correspondance par nom + ville (avec un bandeau d'alerte si l'entreprise est radiée), et la page « Prospects REQ » liste les entreprises horticoles du registre qui ne sont pas encore dans l'ERP. "
-      + "⚠️ Le téléchargement automatique est aujourd'hui refusé par la protection Cloudflare du site du Registraire (HTTP 403 depuis ce serveur) : tant que ce n'est pas débloqué, il faut récupérer le fichier ZIP à la main sur Données Québec, le déposer sur le serveur et renseigner local_zip_path ci-dessous — l'import mensuel le lira alors sans rien télécharger. "
-      + "activity_codes et activity_keywords définissent ce qui compte comme « culture en serre / horticulture » sur la page Prospects (les codes seuls ne suffisent pas : le filtre retient aussi toute activité déclarée dont le texte parle de serre, d'horticulture, de pépinière ou de maraîchage). "
-      + "Le bouton « Simuler » lit la source et compte ce qui serait importé sans rien écrire ; « Exécuter » lance l'import complet.",
-    trigger_config: {
-      kind: 'schedule',
-      source: "cron '0 8 3 * *' (index.js) → services/reqImport.js + POST /api/req/import",
-      summary: 'Le 3 de chaque mois à 4h (Montréal) + import manuel depuis la page Prospects REQ',
-    },
-    action_config: {
-      local_zip_path: '',
-      activity_codes: '0126,0125,0121',
-      activity_keywords: 'serre|serricol|horticol|horticultur|pepiniere|floricol|floricultur|jardinerie|maraich|hydroponi',
-    },
-    configurable: true,
-    default_active: 1,
-  },
-  {
     id: 'sys_address_check',
     name: 'Vérification des adresses postales + notification des adresses fautives',
     description:
@@ -1139,6 +1194,31 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_purchase_price_check',
+    name: "Vérification des prix d'achats (inventaire) + alerte sur prix aberrant",
+    description:
+      "Chaque achat de pièce (table Achats, miroir de l'interface Inventaire → Achats d'Airtable) est contrôlé à l'écriture, quelle que soit l'origine (sync Airtable en tête) : un watcher lit le journal des mutations de la table. " +
+      "Contexte : dans Airtable, le prix unitaire d'un achat est CALCULÉ — total facturé des « Dépense Line item » liés ÷ quantité. Quand le match automatique Airtable lie par erreur la ligne d'une autre pièce, le prix devient absurde (cas réel du 2026-09-01 : Raspberry Pi 4 à 1 $ au lieu de 81,85 $) et fausse la valeur d'inventaire. " +
+      "Sont détectés : prix unitaire hors des bornes ratio_min/ratio_max par rapport à la référence de la pièce (médiane des autres achats, sinon coût de référence du produit) avec un écart d'au moins min_abs_diff $ ; et achat dont une dépense est liée mais dont le prix reste à 0 $. Un achat à 0 $ SANS dépense liée n'est PAS signalé : c'est l'état normal d'une commande pas encore facturée. " +
+      "Quand un prix devient suspect, une notification in-app part vers les destinataires listés dans fallback_roles — des rôles (admin, sales…) et/ou des emails de comptes précis, séparés par des virgules — avec le lien vers l'achat et la marche à suivre (corriger le lien « Dépense Line item » dans Airtable — le prix lui-même est un champ calculé, non modifiable). " +
+      "Anti-spam : un achat déjà signalé ne re-notifie pas tant que la nature du problème n'a pas changé, et une passe complète (« Exécuter » ici) ne notifie jamais — elle rafraîchit l'état. " +
+      "notify à 0 vérifie et affiche sans jamais notifier. Le bouton « Simuler » liste ce qui serait signalé sans rien écrire.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(purchases) → services/purchasePriceCheck.js (watcher, poll 5 s)',
+      summary: "Déclenché à chaque écriture DB d'un achat (sync Airtable, édition ERP, import DigiKey)",
+    },
+    action_config: {
+      ratio_min: '0.25',
+      ratio_max: '4',
+      min_abs_diff: '20',
+      fallback_roles: 'antoine.lambert96@gmail.com',
+      notify: '1',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_airtable_webhooks_init',
     name: 'Enregistrement webhooks Airtable (boot)',
     description:
@@ -1159,7 +1239,7 @@ export const SYSTEM_AUTOMATIONS = [
       "Le transporteur est proposé automatiquement : Purolator si le client est au Canada, UPS s'il est aux États-Unis, sauf si un autre " +
       "tarif de la liste est moins cher de plus que le seuil configuré ci-dessous — auquel cas le moins cher est proposé à la place, avec la raison affichée. " +
       "Le tarif proposé reste modifiable manuellement avant achat. Le PDF est enregistré sous uploads/labels/return-<id>.pdf et " +
-      "les colonnes dédiées de returns sont mises à jour (jamais tracking_number, écrasée par la sync Airtable).",
+      "les colonnes return_label_* de returns sont mises à jour.",
     trigger_config: {
       kind: 'manual',
       source: 'POST /api/retours/:id/return-label',
@@ -1227,6 +1307,36 @@ export const SYSTEM_AUTOMATIONS = [
     },
   },
   {
+    id: 'sys_order_item_shipped_cost',
+    name: "Gel du coût total au moment de l'envoi",
+    description:
+      "Dès qu'un envoi est associé à une ligne de commande (condition par défaut : shipment_id non vide), le coût de la ligne " +
+      "est recalculé et gelé dans « Coût total au moment de l'envoi » : chaque numéro de série rattaché à la ligne compte " +
+      "pour SA valeur de fabrication (table Numéros de série), et la quantité qui ne porte pas de numéro de série est " +
+      "valorisée au coût de la pièce lu dans la table Pièces (« Cout unitaire », à défaut le coût unitaire FIFO) — jamais au " +
+      "coût saisi sur la ligne de commande. Une série sans valeur de fabrication est valorisée au coût de la pièce (le détail " +
+      "est dans chaque exécution ci-dessous). " +
+      "Déclenché par modification DB via un watcher qui tail change_log sur order_items — donc quelle que soit l'origine de " +
+      "l'envoi : fiche commande, mode expédition, étiquette Novoxpress, ou création de l'envoi dans Airtable (le sync des " +
+      "envois rattache les « items expédiés » à la ligne). Aucune route front-end ne fait ce calcul. " +
+      "N'écrit QUE si la colonne est vide : le gel est définitif, l'historique (y compris celui figé par Airtable avant la " +
+      "reprise) n'est jamais réécrit automatiquement. Pour reprendre un coût faux (coût de pièce corrigé après coup, valeur " +
+      "de fabrication saisie en retard), le bouton « Recalculer » de la carte Rentabilité de la commande recalcule et re-gèle " +
+      "ses lignes déjà envoyées — chaque recalcul apparaît dans l'historique ci-dessous. Quand un commis ne peut " +
+      "pas tout expédier, il duplique la ligne et corrige les quantités : chaque ligne est alors gelée pour sa propre " +
+      "quantité. Le coût gelé est ce que lisent la rentabilité de la commande et les dashboards. " +
+      "Désactiver l'automation suspend le gel (les envois survenus pendant la pause ne sont pas rattrapés à la réactivation).",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(order_items) → shippedCostWatcher (poll 5s)',
+      summary: "Déclenché à l'écriture DB d'une ligne de commande : shipment_id not_null (toute origine : UI, Novoxpress, sync Airtable)",
+      erp_table: 'order_items',
+      column: 'shipment_id',
+      op: 'not_null',
+    },
+    configurable: true,
+  },
+  {
     id: 'sys_return_item_created',
     name: 'Création d\'un item de retour (import Airtable #2)',
     description:
@@ -1271,6 +1381,35 @@ export const SYSTEM_AUTOMATIONS = [
     },
     default_active: 0,
   },
+  {
+    id: 'sys_trash_auto_cleanup',
+    name: 'Corbeille : suppression définitive après 30 jours',
+    description:
+      "Chaque nuit à 3 h 30 (heure de Montréal), et une fois au démarrage du serveur, détruit définitivement les éléments " +
+      "qui traînent dans la corbeille (page Admin → Corbeille) depuis plus de retention_days jours. " +
+      "La date affichée sur chaque élément de la corbeille (« Suppression définitive dans X jours ») suit ce réglage : " +
+      "changer retention_days change immédiatement le compte à rebours affiché. " +
+      "PÉRIMÈTRE : entreprises, contacts, commandes, produits, envois, retours, projets, assemblages, tâches, interactions, " +
+      "numéros de série — plus les automations supprimées, qui ne s'affichent pas dans la corbeille. " +
+      "LES CHAMPS SUPPRIMÉS SONT ÉPARGNÉS : pour un champ, la ligne dans la corbeille est justement ce qui le garde hors " +
+      "des fiches ; la détruire le ferait réapparaître partout un mois après sa suppression. Ils restent donc dans la " +
+      "corbeille indéfiniment, et seul le bouton « Vider la corbeille » peut les enlever. " +
+      "Suppression ligne par ligne : un enregistrement encore référencé ailleurs est laissé en place et signalé dans le " +
+      "journal ci-dessous plutôt que de faire échouer tout le passage. " +
+      "Le journal ne reçoit que les passages qui ont détruit ou bloqué quelque chose — une nuit sans rien à faire est silencieuse. " +
+      "Le bouton « Simuler » compte ce qui partirait sans rien détruire ; « Exécuter » lance le nettoyage immédiatement.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '30 7 * * *' UTC (index.js) → services/trash.js runTrashAutoCleanup()",
+      cron: '30 7 * * * UTC (3h30 à Montréal, tous les jours)',
+      summary: 'Scheduler interne — une fois par nuit, plus un passage au démarrage du serveur',
+    },
+    action_config: {
+      retention_days: '30',
+    },
+    configurable: true,
+    default_active: 1,
+  },
 ]
 
 // System automations dont trigger_config/action_config sont partiellement
@@ -1305,7 +1444,7 @@ function mergeMissingKeys(storedJson, defaults) {
 // qu'elles disparaissent de la page Automations (le seed ne les recrée plus).
 // - sys_ctb_abonnements : miroir de l'onglet Abonnements du sheet CTB - Suivi,
 //   abandonné — la page Abonnements fournisseurs de l'ERP est la référence.
-const RETIRED_SYSTEM_AUTOMATION_IDS = ['sys_ctb_abonnements']
+const RETIRED_SYSTEM_AUTOMATION_IDS = ['sys_ctb_abonnements', 'sys_req_import', 'sys_weekly_review_slack']
 
 export function seedSystemAutomations() {
   // ON CONFLICT doesn't touch `active`, so user toggles persist across seeds.
@@ -1438,6 +1577,23 @@ function seedSystemFieldRules() {
 export function isSystemAutomationActive(id) {
   const row = db.prepare('SELECT active FROM automations WHERE id = ? AND system = 1').get(id)
   return !!(row && row.active)
+}
+
+// Marque une exécution sans rien écrire dans l'historique : le « dernière
+// exécution » de l'automation avance, mais aucune ligne de journal n'est créée.
+// Pour les automations à battement rapide dont la plupart des passages n'ont
+// rien à raconter (sync Gmail toutes les 3 min : 480 passages/jour, presque
+// tous « 0 courriel »). Sans ça les 50 derniers journaux ne couvriraient que
+// deux heures et noieraient les passages qui, eux, ont importé quelque chose.
+export function touchSystemRun(key, status = 'success') {
+  try {
+    db.prepare(`
+      UPDATE automations SET last_run_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_run_status = ?
+      WHERE id = ? AND system = 1
+    `).run(status, key)
+  } catch (e) {
+    console.error(`⚠️  touchSystemRun(${key}) failed:`, e.message)
+  }
 }
 
 // Log one execution of a system automation. `key` is the automation id.

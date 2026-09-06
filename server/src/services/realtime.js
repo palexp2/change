@@ -111,19 +111,23 @@ export function broadcast(channel, message) {
 
 /**
  * Send `message` to the union of sockets subscribed to any of `channels`.
- * Each socket receives the message at most once, tagged with the first
- * channel it was matched on (good enough for client-side routing).
+ * Each socket receives the message at most once, mais TAGUÉ AVEC TOUS les
+ * canaux auxquels il est abonné (`channels`), pas seulement le premier.
+ *
+ * Pourquoi : une fiche s'ouvre toujours en panneau latéral PAR-DESSUS sa liste
+ * (règle de design). Le navigateur est donc abonné à `orders:list` ET à
+ * `order:<id>` en même temps. Tagué avec le seul premier canal trouvé, le
+ * message n'était routé que vers le handler de la LISTE : la fiche ouverte
+ * n'était jamais mise à jour en direct. `channel` reste renseigné (premier
+ * canal) pour les clients qui ne connaissent pas encore `channels`.
  */
 export function emit(channels, message) {
   const list = Array.isArray(channels) ? channels : [channels]
   for (const [ws, state] of clients.entries()) {
-    let matched = null
-    for (const ch of list) {
-      if (state.channels.has(ch)) { matched = ch; break }
-    }
-    if (!matched) continue
+    const matched = list.filter(ch => state.channels.has(ch))
+    if (!matched.length) continue
     try {
-      if (ws.readyState === 1) ws.send(JSON.stringify({ ...message, channel: matched }))
+      if (ws.readyState === 1) ws.send(JSON.stringify({ ...message, channel: matched[0], channels: matched }))
     } catch {}
   }
 }

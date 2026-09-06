@@ -1,14 +1,14 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
-import { Plus, X, Search } from 'lucide-react'
+import { Plus, X, Search, ChevronDown } from 'lucide-react'
 
 export default function LinkedRecordField({
   value,
   options,
   labelFn,
   getHref,
-  placeholder,
+  onOpen,
   saving = false,
   disabled = false,
   onChange,
@@ -54,14 +54,69 @@ export default function LinkedRecordField({
     <span className="inline-block w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
   )
 
+  // Liste recherchable — la même qu'un champ vide ouvre pour lier, et qu'un
+  // champ rempli ouvre pour relier ailleurs. Rendue en portail : le champ vit
+  // souvent dans une carte à `overflow` contraint (panneau latéral, cellule).
+  const picker = open && createPortal(
+    <div
+      id="linked-record-portal"
+      style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
+      className="bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden"
+    >
+      <div className="p-2 border-b border-slate-100">
+        <div className="relative">
+          <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            ref={inputRef}
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
+          />
+        </div>
+      </div>
+      <div className="max-h-52 overflow-y-auto">
+        {filtered.length === 0 ? (
+          <p className="text-xs text-slate-400 text-center py-3">Aucun résultat</p>
+        ) : filtered.map(o => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => { onChange(o.id); setOpen(false) }}
+            className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 ${String(o.id) === String(value) ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
+          >
+            {getLabel(o)}
+          </button>
+        ))}
+        {!search && options.length > 60 && (
+          <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-100">
+            {options.length - 60} autres — affinez la recherche
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body
+  )
+
   if (selected) {
     const href = getHref ? getHref(selected) : null
     const label = getLabel(selected)
     const bodyCls = 'text-sm text-slate-700 truncate'
     return (
       <div className="flex items-center gap-1.5 min-w-0" data-testid={fieldTestId} data-state="selected">
-        <span className="inline-flex items-center gap-0.5 bg-slate-100 hover:bg-slate-200/70 rounded-md max-w-full transition-colors">
-          {href ? (
+        <span ref={btnRef} className="inline-flex items-center gap-0.5 bg-slate-100 hover:bg-slate-200/70 rounded-md max-w-full transition-colors">
+          {onOpen ? (
+            // Pas de fiche dédiée pour la table cible : le libellé ouvre la
+            // modale d'édition du record lié (même affordance qu'un lien).
+            <button
+              type="button"
+              onClick={() => onOpen(selected)}
+              className={`${bodyCls} pl-2.5 pr-1 py-1 text-left hover:text-brand-600 hover:underline`}
+              data-testid="linked-record-open"
+              title="Modifier"
+            >
+              {label}
+            </button>
+          ) : href ? (
             <Link
               to={href}
               className={`${bodyCls} pl-2.5 pr-1 py-1 hover:text-brand-600 hover:underline`}
@@ -71,6 +126,23 @@ export default function LinkedRecordField({
             </Link>
           ) : (
             <span className={`${bodyCls} pl-2.5 pr-1 py-1`}>{label}</span>
+          )}
+          {/* Relier ailleurs sans passer par un vidage préalable : le libellé
+              navigue (ou ouvre la modale), donc le changement de cible a besoin
+              de sa propre poignée. Sans elle, un champ rempli non vidable
+              (allowClear={false}) était définitivement figé. */}
+          {!disabled && (
+            <button
+              type="button"
+              onClick={() => !saving && setOpen(o => !o)}
+              disabled={saving}
+              className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-300/60 disabled:opacity-50"
+              aria-label="Changer"
+              title="Changer"
+              data-testid="linked-record-change"
+            >
+              <ChevronDown size={12} />
+            </button>
           )}
           {allowClear && (
             <button
@@ -86,6 +158,7 @@ export default function LinkedRecordField({
           )}
         </span>
         {spinner}
+        {picker}
       </div>
     )
   }
@@ -101,49 +174,9 @@ export default function LinkedRecordField({
         data-testid="linked-record-add"
       >
         <Plus size={12} />
-        {placeholder && <span>{placeholder}</span>}
       </button>
       {spinner}
-      {open && createPortal(
-        <div
-          id="linked-record-portal"
-          style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 9999 }}
-          className="bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden"
-        >
-          <div className="p-2 border-b border-slate-100">
-            <div className="relative">
-              <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                ref={inputRef}
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
-                placeholder="Rechercher..."
-              />
-            </div>
-          </div>
-          <div className="max-h-52 overflow-y-auto">
-            {filtered.length === 0 ? (
-              <p className="text-xs text-slate-400 text-center py-3">Aucun résultat</p>
-            ) : filtered.map(o => (
-              <button
-                key={o.id}
-                type="button"
-                onClick={() => { onChange(o.id); setOpen(false) }}
-                className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-              >
-                {getLabel(o)}
-              </button>
-            ))}
-            {!search && options.length > 60 && (
-              <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-100">
-                {options.length - 60} autres — affinez la recherche
-              </div>
-            )}
-          </div>
-        </div>,
-        document.body
-      )}
+      {picker}
     </div>
   )
 }

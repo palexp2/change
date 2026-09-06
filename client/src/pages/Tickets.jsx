@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
-import { Link } from 'react-router-dom'
-import { Plus, LifeBuoy, Star } from 'lucide-react'
+import { Link, useSearchParams } from 'react-router-dom'
+import { Plus, LifeBuoy, Star, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
@@ -10,8 +10,8 @@ import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, ticketStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { contactsForCompany } from '../lib/contactCompanies'
@@ -46,114 +46,66 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function TicketForm({ initial = {}, meta = {}, companies = [], users = [], contacts = [], defaultAssignedTo = '', onSave, onClose }) {
-  const [form, setForm] = useState({
-    title: '', company_id: '', contact_id: '', assigned_to: defaultAssignedTo,
-    type: '', status: 'Waiting on us', description: '', duration_minutes: 0,
-    ...initial
-  })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    setSaving(true)
-    try { await onSave(form); onClose() }
-    catch (err) { setError(err.message) }
-    finally { setSaving(false) }
-  }
-
-  const filteredContacts = contactsForCompany(contacts, form.company_id)
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <label className="label">Titre</label>
-        <input value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} className="input" />
-      </div>
-      <div className="grid grid-cols-2 gap-4">
-        <div>
-          <label className="label">Type</label>
-          <SearchableSelect
-            value={form.type}
-            options={(meta.types || []).map(t => ({ value: t, label: t }))}
-            emptyOption="—"
-            placeholder="—"
-            onChange={v => setForm(f => ({ ...f, type: v }))}
-            className="input"
-            size="sm"
-            testId="ticket-form-type"
-          />
-        </div>
-        <div>
-          <label className="label">Statut</label>
-          <SearchableSelect
-            value={form.status}
-            options={(meta.statuses || []).map(s => ({ value: s, label: s }))}
-            emptyOption="—"
-            placeholder="—"
-            onChange={v => setForm(f => ({ ...f, status: v }))}
-            className="input"
-            size="sm"
-            testId="ticket-form-status"
-          />
-        </div>
-        <div>
-          <label className="label">Entreprise</label>
-          <LinkedRecordField
-            name="ticket_company_id"
-            value={form.company_id}
-            options={companies}
-            labelFn={c => c.name}
-            placeholder="Entreprise"
-            onChange={v => setForm(f => ({ ...f, company_id: v, contact_id: '' }))}
-          />
-        </div>
-        <div>
-          <label className="label">Contact</label>
-          <LinkedRecordField
-            name="ticket_contact_id"
-            value={form.contact_id}
-            options={filteredContacts}
-            labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
-            placeholder="Contact"
-            onChange={v => setForm(f => ({ ...f, contact_id: v }))}
-          />
-        </div>
-        <div>
-          <label className="label">Assigne a</label>
-          <LinkedRecordField
-            name="ticket_assigned_to"
-            value={form.assigned_to}
-            options={users}
-            labelFn={u => u.name}
-            placeholder="Assigner"
-            onChange={v => setForm(f => ({ ...f, assigned_to: v }))}
-          />
-        </div>
-        <div>
-          <label className="label">Duree (minutes)</label>
-          <input type="number" min="0" value={form.duration_minutes} onChange={e => setForm(f => ({ ...f, duration_minutes: e.target.value }))} className="input" />
-        </div>
-      </div>
-      <div>
-        <label className="label">Question</label>
-        <textarea value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} className="input" rows={3} />
-      </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement...' : 'Enregistrer'}</button>
-      </div>
-    </form>
-  )
+// Champs proposés par le formulaire « Nouveau billet » — liste calquée sur ce
+// que POST /api/tickets persiste (voir RecordForm.jsx pour la configuration).
+function ticketFormFields({ meta, companies, contacts, users, defaultAssignedTo }) {
+  return [
+    { field: 'title', label: 'Titre', span: 2 },
+    { field: 'type', label: 'Type', type: 'select', options: meta.types || [], searchable: true, testId: 'ticket-form-type' },
+    { field: 'status', label: 'Statut', type: 'select', options: meta.statuses || [], defaultValue: 'Waiting on us', searchable: true, testId: 'ticket-form-status' },
+    {
+      field: 'company_id', label: 'Entreprise',
+      input: ({ value, setValues }) => (
+        <LinkedRecordField
+          name="ticket_company_id"
+          value={value}
+          options={companies}
+          labelFn={c => c.name}
+          // Changer d'entreprise invalide le contact déjà choisi (il n'appartient
+          // plus forcément à la nouvelle entreprise).
+          onChange={v => setValues(f => ({ ...f, company_id: v, contact_id: '' }))}
+        />
+      ),
+    },
+    {
+      field: 'contact_id', label: 'Contact',
+      input: ({ value, onChange, values }) => (
+        <LinkedRecordField
+          name="ticket_contact_id"
+          value={value}
+          options={contactsForCompany(contacts, values.company_id)}
+          labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
+          onChange={onChange}
+        />
+      ),
+    },
+    {
+      field: 'assigned_to', label: 'Assigné à', defaultValue: defaultAssignedTo,
+      input: ({ value, onChange }) => (
+        <LinkedRecordField
+          name="ticket_assigned_to"
+          value={value}
+          options={users}
+          labelFn={u => u.name}
+          onChange={onChange}
+        />
+      ),
+    },
+    { field: 'duration_minutes', label: 'Durée (minutes)', type: 'number', min: '0', defaultValue: 0 },
+    { field: 'description', label: 'Question', type: 'textarea', span: 2 },
+    // Masqué par défaut — disponible via « Modifier le formulaire ».
+    { field: 'response', label: 'Réponse', type: 'textarea', span: 2, visible: false },
+  ]
 }
 
 export default function Tickets() {
   const { user } = useAuth()
   const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [showModal, setShowModal] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Filtre temporaire posé par un clic sur une barre du graphique « Billets de
+  // support » (vue globale du dashboard) : 'YYYY-MM'.
+  const createdMonth = searchParams.get('createdMonth')
 
   const ticketsRaw = useTable('tickets')
   const companies = useTable('companies')
@@ -173,11 +125,22 @@ export default function Tickets() {
     }))
   }, [ticketsRaw, companies, contacts, users])
 
+  // Même bucketing que le graphique du dashboard : mois UTC de `created_at`.
+  const displayedTickets = useMemo(() => {
+    if (!createdMonth) return tickets
+    return tickets.filter(t => String(t.created_at || '').slice(0, 7) === createdMonth)
+  }, [tickets, createdMonth])
+
   useEffect(() => {
     api.tickets.meta().then(setMeta).catch(() => {})
   }, [])
 
   async function handleCreate(form) { await api.tickets.create(form); await syncStore() }
+
+  const formFields = useMemo(
+    () => ticketFormFields({ meta, companies, contacts, users, defaultAssignedTo: user?.id || '' }),
+    [meta, companies, contacts, users, user?.id],
+  )
 
   return (
     <Layout>
@@ -191,12 +154,29 @@ export default function Tickets() {
           </div>
         </div>
 
+        {createdMonth && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700" data-testid="tickets-created-month-filter">
+            <span>
+              Billets créés en {new Date(`${createdMonth}-15T12:00:00Z`).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
+              {' '}({displayedTickets.length})
+            </span>
+            <button
+              onClick={() => setSearchParams({})}
+              className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700"
+              data-testid="tickets-created-month-clear"
+            >
+              <X size={13} /> Effacer
+            </button>
+          </div>
+        )}
+
         <DataTable
           table="tickets"
           manageViews
           columns={COLUMNS}
-          data={tickets}
+          data={displayedTickets}
           loading={loading}
+          forceAllView={!!createdMonth}
           peek={{
             title: row => row.title || 'Billet',
             subtitle: row => row.company_name || row.contact_name || '',
@@ -210,7 +190,13 @@ export default function Tickets() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau billet" size="lg">
-        <TicketForm meta={meta} companies={companies} contacts={contacts} users={users} defaultAssignedTo={user?.id || ''} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <RecordForm
+          table="tickets"
+          fields={formFields}
+          columns={2}
+          onSubmit={handleCreate}
+          onClose={() => setShowModal(false)}
+        />
       </Modal>
 
     </Layout>

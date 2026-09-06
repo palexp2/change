@@ -1,26 +1,36 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
-import { useParams, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { Pencil, Trash2, RotateCcw, Plus, Sparkles, ArrowLeft, Search } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { useParams, useLocation, useNavigate } from 'react-router-dom'
+import { Pencil, Trash2, Plus, ArrowLeft, Search } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { TABLE_LABELS, TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { typeLabel, useFieldOverrides, applyFieldOverrides, applyFieldOrder } from '../lib/fieldOverrides.jsx'
 import {
-  CoreMapPane, CoreFieldPicker, CoreMapSaveBar, DirectionControl, useCoreMap, DIRECTIONS,
+  typeLabel, kindLabel, useFieldOverrides, applyFieldOverrides, applyFieldOrder,
+  isComputedKind, isPushOnlyKind, noMappingReason, pushOnlyMappingReason,
+} from '../lib/fieldOverrides.jsx'
+import { FieldTypeIcon } from '../lib/fieldTypeIcons.jsx'
+import {
+  CoreMapPane, DirectionControl, useCoreMap, DIRECTIONS, directionLockTitle,
 } from '../components/AirtableCoreMapModal.jsx'
-import { CustomFieldModal } from '../components/CustomFieldModal.jsx'
-import { SyncDetails } from '../components/SyncDetails.jsx'
+import { CustomFieldModal, MappingBlock } from '../components/CustomFieldModal.jsx'
 import {
-  AirtableModuleFields, MappingPicker, ModuleSourceStatus, AirtableConfigSection,
+  MappingPicker, AirtableFieldCell, ModuleSourceStatus,
   useModuleFields, TYPE_OPTIONS,
 } from '../components/AirtableModuleFields.jsx'
+import {
+  useAirtableModules, buildCoreProps, mappingCellFor, sqlTableForFieldKey,
+  useAirtableDirectSource, FixedMappingCell,
+} from '../components/FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { customFieldToColumn, CUSTOM_FIELD_TABLES } from '../lib/customFieldDisplay.jsx'
-import { summarizeDependents } from '../lib/customFieldDeps.js'
-import { useConfirm } from '../components/ConfirmProvider.jsx'
+import {
+  customFieldToColumn, CUSTOM_FIELD_TABLES, isAirtableLinkField,
+} from '../lib/customFieldDisplay.jsx'
+import { groupDependents, DEPENDENT_CATEGORY_LABELS } from '../lib/customFieldDeps.js'
 
-// Icône du sens « Airtable → ERP », partagée avec le mapping des champs cœur.
+// Icônes de sens, partagées avec le mapping des champs cœur.
 const DirPullIcon = DIRECTIONS.pull.Icon
+const DirPushIcon = DIRECTIONS.push.Icon
 import { useToast } from '../contexts/ToastContext.jsx'
 
 // Page pleine largeur de configuration des champs d'une table — ouverte par le
@@ -39,83 +49,59 @@ import { useToast } from '../contexts/ToastContext.jsx'
 //
 // Le mapping des champs « cœur » (field_map du module) y est fusionné lui aussi
 // dès que la spec serveur déclare la colonne ERP de chaque clé
-// (`inline_columns` — cf. CORE_FIELD_SPECS) : la ligne du champ porte alors le
-// picker du mapping cœur au lieu de celui des champs dynamiques, et une barre
-// « Enregistrer le mapping » apparaît sous le tableau (ce mapping n'est pas
-// autosauvé : il peut déclencher une resynchronisation complète).
+// (`inline_columns` — cf. CORE_FIELD_SPECS). Rien ne distingue alors ces champs
+// des autres : la colonne « Champ Airtable » est LA MÊME cellule
+// (AirtableFieldCell) pour les deux systèmes, et le choix s'y enregistre tout
+// de suite. La resynchronisation reste explicite — bouton « Synchroniser » de
+// l'en-tête Source Airtable.
 //
-// Un onglet séparé subsiste pour les mappings cœur non rattachables à une
-// colonne (CoreMapPane — clés de spec sans `column`) et pour les modules
-// « enfants » qui alimentent une AUTRE table ERP (ex. lignes de commande sur
-// /champs/orders).
+// UNE page = UNE table. La page ne montre QUE les champs de la table depuis
+// laquelle elle a été ouverte : pas d'onglet, pas de module « enfant » invité.
+// Pour régler les champs des lignes de commande, on ouvre la configuration
+// depuis le tableau des lignes de commande (/champs/order_items), pas depuis
+// celui des commandes. Le mapping cœur non rattachable à une colonne
+// (CoreMapPane — clés de spec sans `column`) s'affiche sous le tableau des
+// champs, dans la même page.
 
-// Modules à mapping cœur supplémentaires à afficher pour une table donnée : les
-// lignes d'un document se configurent depuis la page du document parent.
-const EXTRA_MODULES_BY_TABLE = {
-  orders: ['order_items'],
-  paies: ['paie_items'],
-  serial_transitions: ['serials'],
-  serial_accounting_rules: ['serial_changes', 'serials'],
+// Supprimer un champ ne demande AUCUNE confirmation : la ligne part tout de
+// suite et un toast « Annuler » laisse ce délai pour revenir en arrière.
+const UNDO_DELETE_MS = 4000
+
+// Version courte du rapport de dépendances, taillée pour un toast (le résumé
+// multi-lignes de customFieldDeps est fait pour un dialogue) : on nomme les
+// catégories touchées, pas chaque dépendance.
+function shortDependentsNote(dependents) {
+  if (!dependents?.length) return ''
+  const cats = groupDependents(dependents)
+    .map(([cat, items]) => `${items.length} ${DEPENDENT_CATEGORY_LABELS[cat].toLowerCase()}`)
+  return ` — ⚠️ ${cats.join(', ')} à ajuster`
 }
 
-// Tables ERP des modules Airtable dont le nom diffère de la clé de vue
-// DataTable (registre serveur AIRTABLE_FIELD_MODULES).
-const MODULE_ERP_TABLE_ALIAS = {
+// URL /champs/:table → vraie table SQL : `sqlTableForFieldKey` (partagé avec la
+// modale de champ des tableaux). Les lookups (custom_fields, modules Airtable)
+// se font TOUJOURS en vrai nom SQL ; l'URL et les overrides gardent la clé de
+// vue historique.
+
+// Réciproque, pour rediriger les anciennes URL /airtable/fields/:module vers la
+// clé d'URL /champs/:table historique de la table ERP du module.
+const SQL_TABLE_TO_URL = {
   returns: 'retours',
   serial_state_changes: 'serial_transitions',
 }
-
-function normalizeErpTable(t) {
-  return MODULE_ERP_TABLE_ALIAS[t] || t
+function urlTableForSql(t) {
+  return SQL_TABLE_TO_URL[t] || t
 }
 
-// Modules Airtable à présenter en onglets pour la table courante :
-//   • `kind: 'coremap'` — le module a un mapping des champs cœur (CoreMapPane).
-//   • `kind: 'link'`    — le module n'a que le contrôle de champ par module
-//     (page /airtable/fields/:module) : on affiche les détails de sync et un
-//     lien vers cette page plutôt que de dupliquer son interface.
-function useAirtableModules(table) {
-  const [modules, setModules] = useState([])
-  useEffect(() => {
-    if (!table) return
-    let alive = true
-    Promise.all([
-      api.airtable.coreMapModules().catch(() => []),
-      api.airtable.fieldModules().catch(() => []),
-    ])
-      .then(([core, all]) => {
-        if (!alive) return
-        const extras = EXTRA_MODULES_BY_TABLE[table] || []
-        const isOwn = m => normalizeErpTable(m.erp_table) === table
-        const rank = m => (isOwn(m) ? -1 : extras.indexOf(m.module))
-        const mine = list => (list || [])
-          .filter(m => normalizeErpTable(m.erp_table) === table || extras.includes(m.module))
-          .sort((a, b) => rank(a) - rank(b))
-        const coreMine = mine(core)
-        const coreKeys = new Set((core || []).map(m => m.module))
-        const linkMine = mine(all).filter(m => !coreKeys.has(m.module))
-        // Modules du registre de contrôle de champ (peuvent aussi avoir un mapping cœur).
-        // Un module peut avoir les deux : mapping cœur (colonnes ERP fixes) ET
-        // contrôle des champs Airtable supplémentaires. On fusionne par clé.
-        const fieldKeys = new Set((all || []).map(m => m.module))
-        const merged = new Map()
-        for (const m of coreMine) {
-          // `inline` : toutes les clés cœur du module déclarent leur colonne ERP,
-          // donc son mapping se fusionne dans le tableau (pas d'onglet dédié).
-          merged.set(m.module, { module: m.module, title: m.label, coremap: true, inline: !!m.inline_columns, fields: fieldKeys.has(m.module), own: isOwn(m) })
-        }
-        for (const m of linkMine) {
-          if (!merged.has(m.module)) merged.set(m.module, { module: m.module, title: m.label, coremap: false, inline: false, fields: true, own: isOwn(m) })
-        }
-        setModules([...merged.values()])
-      })
-    return () => { alive = false }
-  }, [table])
-  return modules
+// Colonne ERP que le mapping Airtable alimente pour une ligne du tableau —
+// celle du champ, sauf quand la définition en désigne une autre (`mappingColumn`
+// dans tableDefs.js : « Vendeur » s'affiche depuis `vendeur_label` et s'importe
+// dans `vendeur_ref`).
+function mappingKey(col) {
+  return col.mappingColumn || col.field
 }
 
 // En-tête du tableau des champs. Les largeurs suivent exactement celles de
-// `FieldRow` (w-6 / flex-1 / w-28 / w-16 / w-5 / w-64 / actions) : toute
+// `FieldRow` (w-6 / flex-1 / w-28 / w-5 / w-64 / actions) : toute
 // modification ici doit être répercutée là-bas, sinon les colonnes décalent.
 // `mapping` : la table a-t-elle une source Airtable (colonnes « Sens » et
 // « Champ Airtable » affichées) ?
@@ -128,29 +114,34 @@ function FieldsHeader({ mapping }) {
       <span className="w-6 flex-shrink-0 text-right">#</span>
       <span className="flex-1 min-w-0">Nom</span>
       <span className="w-28 flex-shrink-0 truncate">Type</span>
-      <span className="w-16 flex-shrink-0 truncate">Origine</span>
       {mapping && (
         // Colonne de 20 px : le libellé déborde un peu dans les gouttières
         // voisines (12 px de chaque côté) plutôt que d'être tronqué.
         <span className="w-5 flex-shrink-0 text-center text-[10px] whitespace-nowrap" title="Sens de synchronisation">Sens</span>
       )}
       {mapping && <span className="w-64 flex-shrink-0 truncate">Champ Airtable</span>}
-      {/* 90 px = les trois boutons d'action de la ligne (22 px) et leurs gouttières. */}
-      <span className="w-[90px] flex-shrink-0 text-center">Actions</span>
+      {/* 56 px = les deux boutons d'action de la ligne (22 px) et leur gouttière. */}
+      <span className="w-[56px] flex-shrink-0 text-center">Actions</span>
     </div>
   )
 }
 
 // Une ligne de champ : nom éditable (autosave au blur), type, et actions
-// (éditer / réinitialiser / supprimer).
+// (éditer / supprimer).
 function FieldRow({
-  col, cf, override, index, onRename, onEdit, onReset, onDelete,
+  col, cf, index, onRename, onEdit, onDelete, onDeleteNative,
   // Volet Airtable (fusionné depuis l'ancien onglet) : `at` = entrée mapping-data
   // de la colonne, `airtableFields` / `tableMap` = données du picker.
   // `onAdoptType` n'est fourni que pour les colonnes ERP que la table n'affiche
   // pas encore : choisir leur type les matérialise en champ. Une colonne native
   // de la DataTable se règle via « Modifier le champ » (crayon).
   at, airtableFields, tableMap, onSaveMapping, onAdoptType, savingId,
+  // Colonne ERP alimentée par le mapping quand ce n'est pas celle de la ligne :
+  // « Vendeur » s'affiche depuis `vendeur_label` mais c'est `vendeur_ref` que le
+  // sync remplit (cf. `mappingColumn` dans tableDefs.js). Seules les cellules
+  // « Sens » et « Champ Airtable » suivent cette colonne — le type, le renommage
+  // et la suppression restent ceux du champ de la ligne.
+  mappingAt,
   // `showMapping` : la table a une source Airtable → toutes les lignes portent
   // les colonnes « Sens » et « Champ Airtable », même celles sans mapping (sinon
   // les lignes se décalent entre elles et sous l'en-tête).
@@ -163,6 +154,11 @@ function FieldRow({
   // module Airtable de la table, `dynDirection` = sens courant ('pull' défaut),
   // `onDynDirection` = autosave du choix. Absents → icône statique.
   dynModule, dynDirection, onDynDirection,
+  // Libellé du module Airtable de la table — pour l'infobulle du sens verrouillé.
+  moduleLabel,
+  // Table lue en direct dans Airtable (hors miroir) : le champ qui alimente la
+  // colonne est fixé en code — il s'affiche, cadenassé, au lieu du picker.
+  fixedField, fixedReason,
 }) {
   const [name, setName] = useState(col.label)
   const [saving, setSaving] = useState(false)
@@ -180,6 +176,20 @@ function FieldRow({
       if (ok === false) setName(col.label)
     } finally { setSaving(false) }
   }
+
+  // Champ calculé (formule, lookup, rollup, « créé le / créé par », bouton) :
+  // sa valeur est produite par l'ERP, aucun champ Airtable ne peut l'alimenter.
+  // Le kind vient des métadonnées serveur (`cf_kind`) et, à défaut, du champ
+  // perso chargé par la page.
+  const computedKind = isComputedKind(at?.cf_kind)
+    ? at.cf_kind
+    : (isComputedKind(cf?.kind) ? cf.kind : null)
+  // …sauf qu'un champ calculé se POUSSE vers Airtable : le serveur marque alors
+  // la colonne `push_only` (cf. mapping-data). Le mapping est donc proposé
+  // normalement, avec un sens figé à « Boréal → Airtable ».
+  const pushOnly = !!at?.push_only && isPushOnlyKind(computedKind)
+  // Entrée mapping-data qui pilote les deux cellules Airtable de la ligne.
+  const mapAt = mappingAt || at
 
   return (
     <div
@@ -203,36 +213,105 @@ function FieldRow({
       />
       {/* Type : figé dès qu'un champ existe (édition via la fiche du champ) ;
           sélecteur d'adoption pour une colonne ERP encore sans présentation. */}
-      {at && !at.cf_id && onAdoptType
+      {/* Un champ lien (mapping avec table cible) n'a pas de type d'affichage à
+          adopter : sa colonne porte un identifiant de record, et le sélecteur de
+          type laissait croire le contraire. Il s'affiche donc en « Lien ». */}
+      {at && !at.cf_id && onAdoptType && !at.target_table
         ? (
-          <select
-            value={at.field_type || 'text'}
-            onChange={e => onAdoptType(e.target.value)}
-            disabled={savingId === col.field}
-            title="Choisir le type d'affichage adopte cette colonne"
-            data-testid={`fieldcfg-type-${col.id}`}
-            className="w-28 flex-shrink-0 rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-800 cursor-pointer hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:opacity-50"
-          >
-            {TYPE_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-          </select>
+          <span className="w-28 flex-shrink-0 flex items-center gap-1.5 min-w-0">
+            <FieldTypeIcon
+              type={at.field_type || 'text'}
+              data-testid={`fieldcfg-typeicon-${col.id}`}
+              className="text-slate-500"
+            />
+            <select
+              value={at.field_type || 'text'}
+              onChange={e => onAdoptType(e.target.value)}
+              disabled={savingId === col.field}
+              title="Choisir le type d'affichage adopte cette colonne"
+              data-testid={`fieldcfg-type-${col.id}`}
+              className="flex-1 min-w-0 rounded border border-slate-200 bg-white px-1.5 py-1 text-xs text-slate-800 cursor-pointer hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-500/30 disabled:opacity-50"
+            >
+              {TYPE_OPTIONS.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </span>
         )
         : (
-          <span className="text-xs text-slate-600 w-28 flex-shrink-0 truncate" title={`Colonne : ${col.field}`}>
-            {col.renderTypeLabel || typeLabel(col.type)}
-          </span>
+          // Icône ET libellé viennent du champ perso quand il y en a un : une
+          // formule ou un lookup qui rend du texte n'est pas un champ texte, et
+          // le seul type de colonne les confondait. Sinon, type d'affichage de
+          // la colonne native.
+          (() => {
+            // Champ perso : sa famille (Formule, Lookup…) ou, pour un champ
+            // « donnée », son PROPRE type — celui du champ, pas celui auquel la
+            // colonne se ramène (une devise se ramène à un nombre).
+            const own = !col.renderTypeLabel && cf ? (kindLabel(cf.kind) || typeLabel(cf.type)) : null
+            // Champ lien Airtable : stocké en texte (l'id du record lié), mais
+            // c'est un lien — le nommer « Texte » n'apprenait rien à l'utilisateur.
+            const atLink = isAirtableLinkField(cf) || !!at?.target_table
+            return (
+              <span
+                className="text-xs text-slate-600 w-28 flex-shrink-0 flex items-center gap-1.5 min-w-0"
+                title={atLink
+                  ? (at?.target_table
+                    ? `Champ lien Airtable — la colonne ${col.field} porte l'id Boréal du record lié dans « ${at.target_table} »`
+                    : `Champ lien Airtable — la colonne ${col.field} porte le record ID Airtable du record lié`)
+                  : `Colonne : ${col.field}`}
+              >
+                <FieldTypeIcon
+                  // `fieldType` = type choisi par l'utilisateur (override), plus
+                  // fidèle que `type`, que la DataTable aplatit (devise → nombre,
+                  // lien → texte).
+                  type={atLink ? 'link' : (col.fieldType || cf || col.type)}
+                  data-testid={`fieldcfg-typeicon-${col.id}`}
+                  className="text-slate-500"
+                />
+                <span className="truncate">{atLink ? kindLabel('link') : (col.renderTypeLabel || own || typeLabel(col.type))}</span>
+              </span>
+            )
+          })()
         )}
-      <span className="w-16 flex-shrink-0">
-        {cf && (
-          <span className="text-[10px] text-brand-600 bg-brand-50 rounded px-1.5 py-0.5 inline-flex items-center gap-1">
-            <Sparkles size={9} /> perso
-          </span>
-        )}
-      </span>
       {/* Sens de sync. Champ cœur : réglable via le field_map du module. Champ
           dynamique mappé d'un module write-back : réglable aussi (clé `dyn:<colonne>`,
           défaut Airtable → ERP — cf. services/airtableWriteback.js). Sinon (champ
           lien, module sans write-back, non mappé) : icône statique en lecture seule. */}
-      {showMapping && (
+      {/* Champ calculé : aucun champ Airtable ne l'alimente. Soit il n'y a rien
+          à synchroniser du tout (bouton, table sans écriture vers Airtable) →
+          icône grisée avec la raison en infobulle ; soit il est poussable
+          (`push_only`) → flèche « Boréal → Airtable » figée, jamais un choix. */}
+      {showMapping && computedKind && !pushOnly && (
+        <span
+          title={noMappingReason(computedKind)}
+          data-testid={`fieldcfg-direction-${col.id}`}
+          data-direction="none"
+          className="w-5 flex-shrink-0 inline-flex justify-center cursor-help text-slate-400"
+        >
+          <DirPullIcon size={13} />
+        </span>
+      )}
+      {showMapping && pushOnly && (
+        <span
+          title={pushOnlyMappingReason(computedKind)}
+          data-testid={`fieldcfg-direction-${col.id}`}
+          data-direction="push"
+          className={`w-5 flex-shrink-0 inline-flex justify-center cursor-help ${at?.mapped ? 'text-slate-600' : 'text-slate-400'}`}
+        >
+          <DirPushIcon size={13} />
+        </span>
+      )}
+      {/* Table lue en direct : le sens est forcément Airtable → Boréal, et il
+          n'est pas réglable (rien n'est écrit vers Airtable). */}
+      {showMapping && !computedKind && fixedField && (
+        <span
+          title={fixedReason}
+          data-testid={`fieldcfg-direction-${col.id}`}
+          data-direction="pull"
+          className="w-5 flex-shrink-0 inline-flex justify-center cursor-help text-slate-600"
+        >
+          <DirPullIcon size={13} />
+        </span>
+      )}
+      {showMapping && !computedKind && !fixedField && (
         core
           ? (
             <span className="w-5 flex-shrink-0 inline-flex justify-center">
@@ -244,16 +323,17 @@ function FieldRow({
                 configurable={core.field.configurable}
                 mapped={!!core.value}
                 onChange={core.onDirection}
+                lockTitle={directionLockTitle(core.field.direction_reason, moduleLabel)}
               />
             </span>
           )
-          : at?.mapped && at.direction_configurable && dynModule && onDynDirection
+          : mapAt?.mapped && mapAt.direction_configurable && dynModule && onDynDirection
             ? (
               <span className="w-5 flex-shrink-0 inline-flex justify-center">
                 <DirectionControl
                   compact
                   module={dynModule}
-                  fieldKey={`dyn-${col.field}`}
+                  fieldKey={`dyn-${mapAt.column_name}`}
                   direction={dynDirection || 'pull'}
                   configurable
                   mapped
@@ -263,38 +343,58 @@ function FieldRow({
             )
             : (
               <span
-                title={at?.mapped ? DIRECTIONS.pull.title : 'Aucun mapping Airtable — ce champ n’est pas importé'}
+                // Sens verrouillé : infobulle honnête selon la raison serveur
+                // (module sans write-back, champ lien) plutôt que le même texte
+                // générique que le sens « pull » librement choisi.
+                title={mapAt?.mapped
+                  ? (directionLockTitle(mapAt.direction_reason, moduleLabel) || DIRECTIONS.pull.title)
+                  : 'Aucun mapping Airtable — ce champ n’est pas importé'}
                 data-testid={`fieldcfg-direction-${col.id}`}
-                data-direction={at?.mapped ? 'pull' : 'none'}
-                className={`w-5 flex-shrink-0 inline-flex justify-center cursor-help ${at?.mapped ? 'text-slate-600' : 'text-slate-400'}`}
+                data-direction={mapAt?.mapped ? 'pull' : 'none'}
+                className={`w-5 flex-shrink-0 inline-flex justify-center cursor-help ${mapAt?.mapped ? 'text-slate-600' : 'text-slate-400'}`}
               >
                 <DirPullIcon size={13} />
               </span>
             )
       )}
-      {/* Champ Airtable qui alimente la colonne — vide = pas d'import. */}
+      {/* Champ Airtable qui alimente la colonne — vide = pas d'import. Même
+          cellule (AirtableFieldCell) pour une clé « cœur » et pour un mapping
+          dynamique : rien ne doit distinguer les deux à l'écran, et le choix
+          s'enregistre tout de suite dans les deux cas. */}
       {showMapping && (
         <span
           className="w-64 flex-shrink-0"
           data-testid={`fieldcfg-airtable-${col.id}`}
           data-core={core ? '1' : undefined}
-          title={core ? `Champ « cœur » du module — alimente la colonne ${col.field} à chaque synchronisation` : undefined}
+          data-mappable={computedKind && !pushOnly ? '0' : '1'}
+          title={computedKind && !pushOnly ? noMappingReason(computedKind) : undefined}
         >
-          {core
+          {computedKind && !pushOnly
+            ? <span className="text-[11px] text-slate-400 italic cursor-help">non mappable</span>
+            : fixedField
+            ? <FixedMappingCell field={fixedField} reason={fixedReason} testId={`fixedmap-${col.field}`} />
+            : core
             ? (
-              <CoreFieldPicker
-                module={core.module}
-                field={core.field}
-                value={core.value}
-                onChange={core.onChange}
+              <AirtableFieldCell
+                testId={`coremap-${core.module}-${core.field.key}`}
+                mapped={core.value || null}
                 options={core.options}
                 suggestion={core.suggestion}
+                saving={core.saving}
+                // Une clé requise du sync ne peut pas être démappée (le serveur
+                // refuse) : pas de × trompeur, on dit pourquoi.
+                canUnmap={!core.field.required}
+                unmapTitle={core.field.required
+                  ? 'Champ requis par la synchronisation — il ne peut pas être démappé'
+                  : undefined}
+                onPick={core.onPick}
+                onUnmap={core.onUnmap}
               />
             )
-            : at
+            : mapAt
               ? (
                 <MappingPicker
-                  erpColumn={at}
+                  erpColumn={mapAt}
                   airtableFields={airtableFields}
                   tableMap={tableMap}
                   onSave={onSaveMapping}
@@ -313,55 +413,57 @@ function FieldRow({
       >
         <Pencil size={14} />
       </button>
-      {/* Place réservée même sans bouton « réinitialiser » : les actions restent
-          alignées d'une ligne à l'autre, et sous l'en-tête. */}
-      {!(!cf && override && (override.label || override.type)) && <span className="w-[22px] flex-shrink-0" aria-hidden="true" />}
-      {!cf && override && (override.label || override.type) && (
-        <button
-          type="button"
-          onClick={onReset}
-          title="Réinitialiser le nom et le type d'origine"
-          data-testid={`fieldcfg-reset-${col.id}`}
-          className="p-1 text-slate-600 hover:text-amber-600 flex-shrink-0"
-        >
-          <RotateCcw size={14} />
-        </button>
-      )}
       {cf
         ? (
           <button
             type="button"
             onClick={onDelete}
-            title="Supprimer le champ"
+            title="Supprimer le champ (annulable pendant quelques secondes)"
             data-testid={`fieldcfg-delete-${col.id}`}
             className="p-1 text-slate-600 hover:text-red-500 flex-shrink-0"
           >
             <Trash2 size={14} />
           </button>
         )
-        : (
-          <span
-            title={at && !at.cf_id
-              // Colonne ERP sans champ configuré : typiquement le résidu d'un champ
-              // supprimé (la colonne SQLite n'est jamais droppée) ou une colonne
-              // jamais adoptée. Rien à supprimer — c'est le mapping qui l'alimente.
-              ? 'Colonne ERP sans champ configuré — rien à supprimer ici. Videz son « Champ Airtable » pour couper l’import.'
-              : 'Champ natif — non supprimable (masquez-le depuis le panneau « Champs » de la table)'}
-            data-testid={`fieldcfg-delete-disabled-${col.id}`}
-            className="p-1 text-slate-400 cursor-not-allowed flex-shrink-0"
-          >
-            <Trash2 size={14} />
-          </span>
-        )}
+        : (at && !at.cf_id
+          ? (
+            // Colonne ERP sans champ configuré : typiquement le résidu d'un champ
+            // supprimé (la colonne SQLite n'est jamais droppée) ou une colonne
+            // jamais adoptée. Rien à supprimer — c'est le mapping qui l'alimente.
+            <span
+              title="Colonne ERP sans champ configuré — rien à supprimer ici. Videz son « Champ Airtable » pour couper l’import."
+              data-testid={`fieldcfg-delete-disabled-${col.id}`}
+              className="p-1 text-slate-400 cursor-not-allowed flex-shrink-0"
+            >
+              <Trash2 size={14} />
+            </span>
+          )
+          : (
+            // Champ natif : « Supprimer » le retire de partout et l'envoie à la
+            // corbeille (Paramètres → Corbeille) — même geste que le menu d'en-tête
+            // de la DataTable.
+            <button
+              type="button"
+              onClick={onDeleteNative}
+              title="Supprimer le champ (restaurable depuis la corbeille)"
+              data-testid={`fieldcfg-delete-${col.id}`}
+              className="p-1 text-slate-600 hover:text-red-500 flex-shrink-0"
+            >
+              <Trash2 size={14} />
+            </button>
+          ))}
     </div>
   )
 }
 
 export default function FieldConfig() {
   const { table } = useParams()
+  // Table SQL réelle derrière la clé d'URL (ex. /champs/retours → returns) :
+  // les appels custom-fields / modules Airtable parlent en vrai nom SQL, les
+  // overrides et métadonnées de vue restent sous la clé d'URL.
+  const sqlTable = sqlTableForFieldKey(table)
   const location = useLocation()
   const navigate = useNavigate()
-  const confirm = useConfirm()
   const { addToast } = useToast()
 
   // Colonnes réelles de la table telles que la page hôte les affiche, passées
@@ -385,25 +487,18 @@ export default function FieldConfig() {
   const fromNavState = Array.isArray(location.state?.columns) && location.state.columns.length > 0
   const backTo = location.state?.fromPath || null
 
-  const modules = useAirtableModules(table)
-  // ?tab=<module> : deep-link vers un onglet Airtable (utilisé par la
-  // redirection des anciennes URL /airtable/fields/:module).
-  const [searchParams, setSearchParams] = useSearchParams()
-  const askedTab = searchParams.get('tab')
-  const [tab, setTabRaw] = useState(askedTab || 'fields')
-  const setTab = (next) => {
-    setTabRaw(next)
-    const sp = new URLSearchParams(searchParams)
-    if (next === 'fields') sp.delete('tab')
-    else sp.set('tab', next)
-    // `state` reconduit : sans lui, le replace perd les colonnes passées par la
-    // DataTable et le chemin de retour.
-    setSearchParams(sp, { replace: true, state: location.state })
-  }
+  const { modules } = useAirtableModules(table, sqlTable)
+
+  // Table lue en direct dans Airtable (hors miroir, ex. les commissions d'un
+  // projet) : aucun module ne l'alimente, mais chaque colonne a bien son champ
+  // Airtable — fixé en code. On l'affiche en lecture seule plutôt que de laisser
+  // la colonne « Champ Airtable » disparaître sans explication.
+  const directSource = useAirtableDirectSource(table)
+  const directFields = directSource?.fields || null
 
   // Module Airtable qui alimente CETTE table : son contrôle par champ est
   // fusionné dans le tableau principal (colonne « Champ Airtable »).
-  const ownModule = modules.find(m => m.own && m.fields) || null
+  const ownModule = modules.find(m => m.fields) || null
   const {
     data: atData, savingId: atSavingId, applyChange: atApplyChange, saveMapping: atSaveMapping,
     reload: reloadAirtableColumns,
@@ -411,13 +506,16 @@ export default function FieldConfig() {
   const [filter, setFilter] = useState('')
 
   const { overrides, reload: reloadOverrides } = useFieldOverrides(table)
-  const selfManagedCF = CUSTOM_FIELD_TABLES.has(table)
-  const { fields: customFields, loaded: cfLoaded, reload: reloadCustomFields } = useCustomFields(selfManagedCF ? table : null)
+  const selfManagedCF = CUSTOM_FIELD_TABLES.has(sqlTable)
+  const { fields: customFields, loaded: cfLoaded, reload: reloadCustomFields } = useCustomFields(selfManagedCF ? sqlTable : null)
 
   // Mapping des champs « cœur » de CETTE table, quand chaque clé de la spec
-  // déclare sa colonne ERP : il se fusionne ligne à ligne dans le tableau plutôt
-  // que dans un onglet à part.
-  const inlineCoreModule = modules.find(m => m.own && m.coremap && m.inline) || null
+  // déclare sa colonne ERP : il se fusionne ligne à ligne dans le tableau.
+  const inlineCoreModule = modules.find(m => m.coremap && m.inline) || null
+  // Sinon (clés cœur sans colonne ERP : items de paie…),
+  // le mapping s'affiche en panneau sous le tableau — toujours dans la page de
+  // la table concernée, jamais dans celle d'une autre.
+  const paneCoreModule = modules.find(m => m.coremap && !m.inline) || null
   const core = useCoreMap(inlineCoreModule?.module || null, () => reloadCustomFields())
   const coreByColumn = useMemo(() => {
     const m = new Map()
@@ -434,6 +532,15 @@ export default function FieldConfig() {
   const forgetColumn = (field) => {
     if (!field?.column_name) return
     setRemovedColumns(prev => new Map(prev).set(field.column_name, field.id))
+  }
+  // Inverse de forgetColumn : la ligne revient (annulation d'une suppression).
+  const unforgetColumn = (field) => {
+    if (!field?.column_name) return
+    setRemovedColumns(prev => {
+      const next = new Map(prev)
+      next.delete(field.column_name)
+      return next
+    })
   }
   const [cfModal, setCfModal] = useState(null)          // { editing } — champ perso (création / édition)
   const [nativeModal, setNativeModal] = useState(null)  // { col } — champ natif (renommage / type)
@@ -482,6 +589,9 @@ export default function FieldConfig() {
     const ids = new Set(live.map(c => c.id ?? c.field))
     const extra = customFields.filter(f => !ids.has(f.column_name)).map(customFieldToColumn)
     const known = new Set([...ids, ...customFields.map(f => f.column_name)])
+    // Colonne ERP déjà pilotée par la ligne d'un champ affiché (`mappingColumn`,
+    // ex. `vendeur_ref` sous « Vendeur ») : pas de seconde ligne pour elle.
+    for (const c of live) if (c.mappingColumn) known.add(c.mappingColumn)
     // Colonnes ERP que la table n'affiche pas (jamais mises en colonne, ou
     // simplement pas encore adoptées) : elles étaient listées par l'ancien
     // onglet Airtable, elles restent visibles ici.
@@ -524,10 +634,44 @@ export default function FieldConfig() {
   }, [baseColumns, customFields, atByColumn, cfByColumn, cfLoaded, ownModule, atData, fromNavState, nativeIds, removedColumns, coreByColumn])
   const baseById = useMemo(() => new Map(mergedBase.map(c => [c.id, c])), [mergedBase])
 
+  // Un champ supprimé sort du tableau : le serveur republie les lignes
+  // supprimées sous le drapeau `hidden`, et c'est ici qu'on les retire. Il n'y a
+  // pas de section « champs masqués » — un champ supprimé n'apparaît plus nulle
+  // part dans l'app, il se récupère depuis la corbeille (Paramètres → Corbeille).
   const columns = useMemo(
-    () => applyFieldOrder(applyFieldOverrides(mergedBase, overrides), overrides),
+    () => applyFieldOrder(applyFieldOverrides(mergedBase, overrides), overrides)
+      .filter(c => !overrides.get(c.id)?.hidden),
     [mergedBase, overrides]
   )
+
+  // Supprimer un champ NATIF : la ligne part à la corbeille et le champ
+  // disparaît partout — même geste que le menu d'en-tête de la DataTable, avec
+  // « Annuler » au lieu d'une confirmation.
+  async function deleteNativeField(col) {
+    try {
+      await api.customFields.setNativeHidden(table, col.id, true, col.label)
+      await reloadOverrides()
+      addToast({
+        type: 'undo',
+        message: `Champ « ${col.label} » supprimé`,
+        duration: UNDO_DELETE_MS,
+        action: {
+          label: 'Annuler',
+          onClick: async () => {
+            try {
+              await api.customFields.setNativeHidden(table, col.id, false)
+              await reloadOverrides()
+              addToast({ message: 'Champ restauré', type: 'success', duration: 2000 })
+            } catch (e) {
+              addToast({ message: 'Restauration échouée : ' + (e.message || 'erreur'), type: 'error' })
+            }
+          },
+        },
+      })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
 
   // Recherche : filtre l'affichage seulement.
   const visibleRows = useMemo(() => {
@@ -540,7 +684,7 @@ export default function FieldConfig() {
     return columns.filter(c =>
       (c.label || '').toLowerCase().includes(q)
       || (c.field || '').toLowerCase().includes(q)
-      || (atByColumn.get(c.field)?.mapped_airtable_field || '').toLowerCase().includes(q)
+      || (atByColumn.get(mappingKey(c))?.mapped_airtable_field || '').toLowerCase().includes(q)
       || coreValue(c).toLowerCase().includes(q)
     )
   }, [columns, filter, atByColumn, coreByColumn, core.draft])
@@ -571,39 +715,46 @@ export default function FieldConfig() {
     }
   }
 
-  async function resetField(col) {
-    try {
-      await api.fieldOverrides.reset(table, col.id)
-      await reloadOverrides()
-      addToast({ message: 'Champ réinitialisé', type: 'success' })
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    }
-  }
-
-  // Suppression d'un champ perso : rapport de dépendances (champs calculés,
-  // automations, vues, règles) avant de les casser en silence — même logique
-  // que le menu contextuel d'en-tête de DataTable.
+  // Suppression d'un champ perso : pas de confirmation, la ligne part tout de
+  // suite et le toast offre « Annuler » pendant UNDO_DELETE_MS. L'appel serveur
+  // n'est envoyé qu'à l'expiration de ce délai : rien n'est détruit tant que la
+  // fenêtre d'annulation est ouverte — ce qui compte pour un champ « lien »,
+  // dont la suppression emporte définitivement les lignes de jonction (la
+  // corbeille ne les rendrait pas). Le rapport de dépendances (champs calculés,
+  // automations, vues, règles) est résumé dans le toast plutôt que dans une
+  // modale bloquante.
   async function deleteCustomField(field) {
     let dependents = []
     try { dependents = (await api.customFields.dependents(field.id))?.dependents || [] } catch { /* rapport optionnel */ }
-    const depMsg = summarizeDependents(dependents)
-    if (!(await confirm({
-      title: 'Supprimer le champ',
-      message: `Supprimer le champ "${field.name}" ? Restaurable depuis la corbeille.${depMsg}`,
-      confirmLabel: dependents.length ? 'Supprimer quand même' : 'Supprimer',
-    }))) return
-    try {
-      await api.customFields.delete(field.id)
-      forgetColumn(field)
-      addToast({ message: 'Champ supprimé', type: 'success' })
-      // Les colonnes Airtable aussi : sans ce reload, la colonne physique du
-      // champ supprimé reste dans `atData` et la ligne se réaffiche en
-      // « colonne ERP non adoptée » jusqu'au prochain chargement de la page.
-      await Promise.all([reloadCustomFields(), reloadAirtableColumns()])
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    }
+    forgetColumn(field)
+    let cancelled = false
+    const timer = setTimeout(async () => {
+      if (cancelled) return
+      try {
+        await api.customFields.delete(field.id)
+        // Les colonnes Airtable aussi : sans ce reload, la colonne physique du
+        // champ supprimé reste dans `atData` et la ligne se réaffiche en
+        // « colonne ERP non adoptée » jusqu'au prochain chargement de la page.
+        await Promise.all([reloadCustomFields(), reloadAirtableColumns()])
+      } catch (e) {
+        unforgetColumn(field)
+        addToast({ message: e.message, type: 'error' })
+      }
+    }, UNDO_DELETE_MS)
+    addToast({
+      type: 'undo',
+      message: `Champ « ${field.name} » supprimé${shortDependentsNote(dependents)}`,
+      duration: UNDO_DELETE_MS,
+      action: {
+        label: 'Annuler',
+        onClick: () => {
+          cancelled = true
+          clearTimeout(timer)
+          unforgetColumn(field)
+          addToast({ message: 'Suppression annulée', type: 'success', duration: 2000 })
+        },
+      },
+    })
   }
 
   // Sens de sync des champs dynamiques mappés (surcouche optimiste sur la valeur
@@ -638,59 +789,69 @@ export default function FieldConfig() {
   // module qui ne sont PAS déjà pilotés par une ligne du tableau (mapping cœur
   // fusionné) — sinon on annoncerait « non modifiable ici » juste au-dessous du
   // picker qui les modifie.
+  // Un champ converti en champ personnalisé (« Contact », « # de retour ») y
+  // reste listé, et c'est exact : ce que la note décrit est le BRANCHEMENT
+  // Airtable→colonne, qui vit toujours dans le plan cœur du miroir — le champ
+  // ERP, lui, se renomme et se supprime dans le tableau ci-dessus.
   const hardcodedLeft = useMemo(() => {
     const shown = new Set([...coreByColumn.values()].map(f => core.draft[f.key]).filter(Boolean))
     return (atData?.hardcoded || []).filter(n => !shown.has(n))
   }, [atData, coreByColumn, core.draft])
 
-  // Onglets restants : mappings « cœur » non rattachables à une colonne, et
-  // modules enfants (autre table ERP). Le module de la table courante est
-  // fusionné dans le tableau principal — contrôle par champ ET, quand la spec
-  // déclare les colonnes (`inline`), mapping cœur.
-  const tabModules = modules.filter(m => (m.coremap && !(m.own && m.inline)) || !m.own)
-  const tabs = [
-    { key: 'fields', title: 'Champs' },
-    ...tabModules.map(m => ({ key: m.module, title: `Airtable · ${m.title}` })),
-  ]
-  // ?tab= pointant vers un module fusionné dans le tableau (ex. l'ancienne URL
-  // /airtable/fields/contacts) ou inconnu : on retombe sur « Champs » — sans ça
-  // la page n'afficherait rien. `modules` arrive en asynchrone : tant qu'il est
-  // vide on garde l'onglet demandé.
-  const activeTab = (modules.length === 0 || tabs.some(t => t.key === tab)) ? tab : 'fields'
+  const showMapping = !!(ownModule || inlineCoreModule || directFields)
 
-  // Les anciennes URL /airtable/fields/:module visaient le contrôle par champ.
-  // Quand ce module est celui de la table courante, ce contrôle vit désormais
-  // dans le tableau principal → on y bascule (l'onglet du module, s'il existe
-  // encore, ne porte plus que le mapping des champs « cœur »).
-  // N'agit que sur le ?tab d'ARRIVÉE : un clic sur l'onglet « cœur » d'un module
-  // fusionné doit rester possible (il porte encore le mapping des champs cœur).
-  const initialTabRef = useRef(askedTab)
-  const tabIntentDone = useRef(false)
-  useEffect(() => {
-    const asked = initialTabRef.current
-    if (tabIntentDone.current || !asked || asked === 'fields' || modules.length === 0) return
-    tabIntentDone.current = true
-    const m = modules.find(x => x.module === asked)
-    if (m && m.own && (m.fields || m.inline)) setTabRaw('fields')
-  }, [modules])
+  // Props de mapping « cœur » d'une colonne — construites une seule fois pour
+  // la ligne du tableau ET pour la fiche du champ (même cellule, même autosave).
+  function buildCore(coreField) {
+    return buildCoreProps(inlineCoreModule?.module || null, coreField, core)
+  }
+
+  // Champ ouvert dans la modale « Modifier le champ » → sa cellule de mapping,
+  // injectée dans la modale. Le mapping se change donc là où l'utilisateur est
+  // déjà (l'ancien texte de la modale renvoyait à une page qui n'existe plus).
+  // Même cellule que dans le tableau : la page a déjà tout chargé, elle ne
+  // repasse pas par <FieldAirtableMapping> (qui refetcherait pour rien et
+  // laisserait la ligne du tableau en arrière d'un mapping).
+  const editingColumn = cfModal?.editing?.column_name
+    || nativeModal?.col?.field || nativeModal?.col?.id || null
+  const editingCell = mappingCellFor({
+    showMapping,
+    column: editingColumn,
+    cfKind: cfModal?.editing?.kind || null,
+    coreProps: buildCore(editingColumn ? coreByColumn.get(editingColumn) : null),
+    at: editingColumn ? atByColumn.get(editingColumn) : null,
+    airtableFields: atData?.airtable_fields || [],
+    tableMap: atData?.airtable_table_to_erp,
+    ownModule,
+    onSaveMapping: atSaveMapping,
+    savingId: atSavingId,
+    fixedField: editingColumn ? (directFields?.[editingColumn] || null) : null,
+    fixedReason: directSource?.reason,
+  })
+  const mappingSlot = editingCell ? <MappingBlock>{editingCell}</MappingBlock> : null
 
   return (
     <Layout>
-      <div className="p-6">
+      {/* pb-28 : le bouton flottant de feedback masquerait la dernière ligne du
+          tableau (avant, la barre d'enregistrement du mapping cœur portait cette
+          marge — elle a disparu avec l'autosave). */}
+      <div className="p-6 pb-28">
         <div className="flex items-start justify-between mb-6 gap-4">
           <div className="min-w-0">
             {backTo && (
               <button
                 onClick={() => navigate(backTo)}
                 data-testid="fieldcfg-back"
-                className="text-xs text-slate-600 hover:text-slate-900 inline-flex items-center gap-1 mb-1"
+                title="Retour à la table"
+                aria-label="Retour à la table"
+                className="text-slate-600 hover:text-slate-900 inline-flex items-center mb-5 mr-2.5"
               >
-                <ArrowLeft size={12} /> Retour à la table
+                <ArrowLeft size={16} />
               </button>
             )}
-            <h1 className="text-2xl font-bold text-slate-900">
+            <PageTitle>
               Configuration des champs — {TABLE_LABELS[table] || table}
-            </h1>
+            </PageTitle>
           </div>
           {selfManagedCF && (
             <button
@@ -703,48 +864,33 @@ export default function FieldConfig() {
           )}
         </div>
 
-        <div className={`flex gap-0.5 border-b border-slate-200 mb-5 ${tabs.length > 1 ? '' : 'hidden'}`}>
-          {tabs.map(t => (
-            <button
-              key={t.key}
-              onClick={() => setTab(t.key)}
-              data-testid={`fieldcfg-tab-${t.key}`}
-              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                activeTab === t.key ? 'border-brand-600 text-brand-600' : 'border-transparent text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              {t.title}
-            </button>
-          ))}
-        </div>
-
-        <div className={activeTab === 'fields' ? '' : 'hidden'}>
-          <p className="text-xs text-slate-600 mb-3 max-w-3xl">
-            Le nom de chaque champ se modifie directement
-            ci-dessous{ownModule || inlineCoreModule ? ", et la dernière colonne choisit le champ Airtable qui alimente chacun (vide = pas d'import)" : ''} ;
-            les colonnes SQL et les synchronisations ne sont pas touchées.
-            {ownModule && " La colonne « Sens » règle la direction de synchronisation de chaque champ mappé (Airtable → ERP, ERP → Airtable ou bidirectionnel)."}
-            {inlineCoreModule && " Les champs « cœur » du module s'enregistrent avec le bouton sous le tableau : leur mapping peut relancer une synchronisation complète."}
-          </p>
-
+        {/* Pas d'onglets : la page ne configure que la table d'où elle vient. */}
+        <div data-testid="fieldcfg-panel">
           {/* Source Airtable de la table (état + sync) — ex-en-tête de l'onglet Airtable */}
           {ownModule && (
             <div className="mb-4">
-              {ownModule.module === 'projets'
-                ? <AirtableConfigSection onSynced={() => reloadCustomFields()} />
-                : atData
-                  ? <ModuleSourceStatus data={atData} onSynced={() => reloadCustomFields()} />
-                  : (
-                    // Tant que les métadonnées Airtable ne sont pas revenues, on ne
-                    // prétend pas que la source est « non configurée ».
-                    <div className="bg-white border border-slate-200 rounded-lg p-4">
-                      <h2 className="text-sm font-semibold text-slate-800">Source Airtable</h2>
-                      <p className="text-xs text-slate-600 mt-0.5">Chargement de la configuration…</p>
-                    </div>
-                  )}
-              {/* Détails de sync de la table — ex-en-tête du panneau de mapping
-                  cœur, conservés ici puisque son onglet a fusionné. */}
-              {inlineCoreModule && <div className="mt-4"><SyncDetails table={table} connector="Airtable" /></div>}
+              {atData
+                ? <ModuleSourceStatus data={atData} onSynced={() => reloadCustomFields()} />
+                : (
+                  // Tant que les métadonnées Airtable ne sont pas revenues, on ne
+                  // prétend pas que la source est « non configurée ».
+                  <div className="bg-white border border-slate-200 rounded-lg p-4">
+                    <h2 className="text-sm font-semibold text-slate-800">Source Airtable</h2>
+                    <p className="text-xs text-slate-600 mt-0.5">Chargement de la configuration…</p>
+                  </div>
+                )}
+            </div>
+          )}
+
+          {/* Table lue en direct : même place que l'en-tête « Source Airtable »
+              d'un module, mais rien à synchroniser ni à régler. */}
+          {!ownModule && directSource && (
+            <div
+              data-testid="fieldcfg-direct-source"
+              className="mb-4 bg-white border border-slate-200 rounded-lg p-4"
+            >
+              <h2 className="text-sm font-semibold text-slate-800">Source Airtable — {directSource.label}</h2>
+              <p className="text-xs text-slate-600 mt-0.5">{directSource.reason}</p>
             </div>
           )}
 
@@ -754,7 +900,6 @@ export default function FieldConfig() {
               <input
                 value={filter}
                 onChange={e => setFilter(e.target.value)}
-                placeholder="Rechercher un champ…"
                 data-testid="fieldcfg-search"
                 className="input text-sm py-1 pl-7 w-64"
               />
@@ -764,20 +909,11 @@ export default function FieldConfig() {
                   plutôt que de laisser la liste s'allonger sans explication. */}
               {ownModule && !atData && <span className="text-slate-600 mr-2">Chargement des champs Airtable…</span>}
               {visibleRows.length} champ{visibleRows.length !== 1 ? 's' : ''}
-              {atData && (() => {
-                // Mappés = champs dynamiques mappés + clés « cœur » mappées
-                // (les deux alimentent la table depuis Airtable).
-                const n = atData.erp_columns.filter(c => c.mapped).length
-                  + [...coreByColumn.values()].filter(f => core.draft[f.key]).length
-                return <> · <span className="text-brand-600 font-medium">
-                  {n} mappé{n !== 1 ? 's' : ''} depuis Airtable
-                </span></>
-              })()}
             </span>
           </div>
 
           <div className="card">
-            {visibleRows.length > 0 && <FieldsHeader mapping={!!(ownModule || inlineCoreModule)} />}
+            {visibleRows.length > 0 && <FieldsHeader mapping={showMapping} />}
             {visibleRows.length === 0
               ? <p className="text-sm text-slate-600 p-6">Aucun champ{filter ? ' ne correspond à cette recherche' : ' pour cette table'}.</p>
               : visibleRows.map((col, i) => {
@@ -789,48 +925,43 @@ export default function FieldConfig() {
                     col={col}
                     cf={cf}
                     index={i}
-                    override={overrides.get(col.id) || null}
                     onRename={next => renameField(col, cf, next)}
                     onEdit={() => (cf ? setCfModal({ editing: cf }) : setNativeModal({ col: baseById.get(col.id) || col }))}
-                    onReset={() => resetField(col)}
                     onDelete={() => deleteCustomField(cf)}
+                    onDeleteNative={() => deleteNativeField(col)}
                     at={atByColumn.get(col.field) || null}
+                    mappingAt={col.mappingColumn ? (atByColumn.get(col.mappingColumn) || null) : null}
+                    moduleLabel={atData?.label || ownModule?.title || null}
                     airtableFields={atData?.airtable_fields || []}
                     tableMap={atData?.airtable_table_to_erp}
                     savingId={atSavingId}
                     onSaveMapping={ownModule ? atSaveMapping : null}
-                    showMapping={!!(ownModule || inlineCoreModule)}
+                    showMapping={showMapping}
                     dynModule={ownModule?.module || null}
-                    dynDirection={dynDirs[col.field] ?? atByColumn.get(col.field)?.direction ?? 'pull'}
-                    onDynDirection={ownModule ? (dir => changeDynDirection(col.field, dir)) : null}
+                    dynDirection={dynDirs[mappingKey(col)] ?? atByColumn.get(mappingKey(col))?.direction ?? 'pull'}
+                    onDynDirection={ownModule ? (dir => changeDynDirection(mappingKey(col), dir)) : null}
                     // Une colonne portée par une clé « cœur » n'est jamais adoptée
                     // en champ perso depuis ici : c'est le field_map du module qui
                     // l'alimente, et son type est fixé par le sync.
                     onAdoptType={ownModule && col.unlisted && !coreField ? (type => adoptColumnType(col, type)) : null}
-                    core={coreField && {
-                      module: inlineCoreModule.module,
-                      field: coreField,
-                      value: core.draft[coreField.key] || '',
-                      options: core.options,
-                      suggestion: core.data?.suggested?.[coreField.key],
-                      direction: core.dirs[coreField.key] || coreField.direction,
-                      onChange: v => { core.setDraft(d => ({ ...d, [coreField.key]: v })); core.setSavedMsg('') },
-                      onDirection: dir => core.changeDirection(coreField.key, dir),
-                    }}
+                    core={buildCore(coreField)}
+                    fixedField={directFields?.[col.field] || null}
+                    fixedReason={directSource?.reason}
                   />
                 )
               })}
           </div>
 
-          {/* Mapping « cœur » : pas d'autosave (il peut relancer une
-              resynchronisation complète du module) — enregistrement explicite. */}
-          {inlineCoreModule && core.data && (
-            // mb-24 : la barre est le dernier élément de la page — sans cette
-            // marge, son bouton finit sous le bouton flottant de feedback.
-            <div className="card mt-3 mb-24 px-3 py-2 space-y-2">
-              {core.loadError && <p className="text-sm text-red-600">{core.loadError}</p>}
-              <CoreMapSaveBar module={inlineCoreModule.module} core={core} />
-            </div>
+          {/* Pas de section « Champs masqués » : un champ supprimé disparaît
+              vraiment (corbeille dans Paramètres → Corbeille). */}
+
+          {/* Mapping « cœur » fusionné : chaque cellule s'enregistre elle-même
+              (voir AirtableFieldCell) — il n'y a plus de barre
+              « Enregistrer le mapping », qui aurait signalé à l'utilisateur une
+              différence de nature entre ces champs et les autres. Seule
+              l'erreur de chargement du mapping reste à dire. */}
+          {inlineCoreModule && core.loadError && (
+            <p className="mt-3 text-sm text-red-600">{core.loadError}</p>
           )}
 
           {hardcodedLeft.length > 0 && (
@@ -842,34 +973,26 @@ export default function FieldConfig() {
               <p className="text-slate-600">{hardcodedLeft.join(', ')}</p>
             </div>
           )}
-        </div>
 
-        {tabModules.map(m => (
-          <div key={m.module} className={activeTab === m.module ? '' : 'hidden'}>
-            {m.coremap && (
-              <div className="max-w-4xl">
-                <CoreMapPane module={m.module} onSaved={() => reloadCustomFields()} />
-              </div>
-            )}
-            {m.coremap && m.fields && !m.own && <div className="border-t border-slate-200 my-6" />}
-            {m.fields && !m.own && (
-              <>
-                {m.coremap && (
-                  <h2 className="text-sm font-semibold text-slate-800 mb-2">
-                    Champs Airtable supplémentaires
-                  </h2>
-                )}
-                <AirtableModuleFields module={m.module} />
-              </>
-            )}
-            {!m.coremap && !(m.fields && !m.own) && (
-              <div className="max-w-4xl space-y-4">
-                <SyncDetails table={table} connector="Airtable" />
-                <p className="text-xs text-slate-600">Ce module n'expose aucun réglage de champ.</p>
-              </div>
-            )}
-          </div>
-        ))}
+          {/* Mapping « cœur » de CETTE table dont les clés n'ont pas de colonne
+              ERP déclarée : il ne peut pas se fusionner ligne à ligne, il vit
+              donc juste sous le tableau (ex-onglet). mb-24 : dernier élément de
+              la page — sans cette marge son bouton finit sous le bouton flottant
+              de feedback. */}
+          {paneCoreModule && (
+            <div className="mt-6 mb-24 max-w-4xl" data-testid={`fieldcfg-coremap-${paneCoreModule.module}`}>
+              <h2 className="text-sm font-semibold text-slate-800 mb-2">
+                Champs alimentés par Airtable
+              </h2>
+              <CoreMapPane
+                module={paneCoreModule.module}
+                // Les détails de sync sont déjà affichés en tête de page.
+                showSync={false}
+                onSaved={() => reloadCustomFields()}
+              />
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Modale commune de champ : champs perso (création / édition) et champs
@@ -877,11 +1000,14 @@ export default function FieldConfig() {
       <CustomFieldModal
         isOpen={!!cfModal || !!nativeModal}
         onClose={() => { setCfModal(null); setNativeModal(null) }}
-        erpTable={table}
+        // Mode natif (override cosmétique) : clé de vue — les overrides sont
+        // stockés par vue. Mode champ perso : vraie table SQL (custom_fields).
+        erpTable={nativeModal ? table : sqlTable}
         editing={cfModal?.editing || null}
         native={nativeModal?.col
           ? { column: nativeModal.col, override: overrides.get(nativeModal.col.id) || null }
           : null}
+        mappingSlot={mappingSlot}
         onSaved={() => { nativeModal ? reloadOverrides() : reloadCustomFields() }}
         onDeleted={(field) => { forgetColumn(field); reloadCustomFields(); reloadAirtableColumns() }}
       />
@@ -890,8 +1016,8 @@ export default function FieldConfig() {
 }
 
 // Redirection des anciennes URL de contrôle des champs Airtable
-// (/airtable/fields/:module et /projects/fields) vers l'onglet correspondant de
-// la page de configuration des champs, où cette interface vit maintenant.
+// (/airtable/fields/:module et /projects/fields) vers la page de configuration
+// des champs de la table du module, où cette interface vit maintenant.
 export function AirtableFieldsRedirect() {
   const { module: moduleParam } = useParams()
   const module = moduleParam || 'projets'
@@ -905,7 +1031,7 @@ export function AirtableFieldsRedirect() {
         if (!alive) return
         const hit = (list || []).find(m => m.module === module)
         if (!hit?.erp_table) { setError(`Module Airtable inconnu : ${module}`); return }
-        navigate(`/champs/${normalizeErpTable(hit.erp_table)}?tab=${module}`, { replace: true })
+        navigate(`/champs/${urlTableForSql(hit.erp_table)}`, { replace: true })
       })
       .catch(e => alive && setError(e.message))
     return () => { alive = false }

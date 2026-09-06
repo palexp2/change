@@ -1,10 +1,11 @@
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import fs from 'fs'
 import PDFDocument from 'pdfkit'
 import sharp from 'sharp'
 import db from '../db/database.js'
+import { readRelation } from '../services/customFieldsView.js'
 import { requireAuth } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
@@ -13,6 +14,8 @@ import { writeBackRecord, createInAirtable } from '../services/airtableWriteback
 import { logSync } from '../services/syncLog.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { APP_URL } from '../config/appUrl.js'
+import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -37,7 +40,7 @@ function traceAirtablePush(promise, trigger, recordId) {
 function buildShipmentRow(id) {
   return db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
-    FROM shipments s
+    FROM ${readRelation('shipments')} s
     LEFT JOIN orders o ON s.order_id = o.id
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
@@ -61,10 +64,8 @@ const ADDRESS_COLS = `
 
 // GET /api/shipments
 router.get('/', (req, res) => {
-  const { search, status, order_id, company_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { search, status, order_id, company_id, address_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE s.deleted_at IS NULL'
   const params = []
 
@@ -85,6 +86,12 @@ router.get('/', (req, res) => {
     where += ' AND o.company_id = ?'
     params.push(company_id)
   }
+  // Envois expédiés à une adresse donnée — alimente la section « Envois » de la
+  // fiche d'une adresse (/adresses/:id).
+  if (address_id) {
+    where += ' AND s.address_id = ?'
+    params.push(address_id)
+  }
 
   const total = db.prepare(`
     SELECT COUNT(*) as c FROM shipments s
@@ -95,7 +102,7 @@ router.get('/', (req, res) => {
 
   const rows = db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
-    FROM shipments s
+    FROM ${readRelation('shipments')} s
     LEFT JOIN orders o ON s.order_id = o.id
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
@@ -126,7 +133,7 @@ router.get('/stats/weekly', (req, res) => {
 router.get('/:id', (req, res) => {
   const row = db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name, ${ADDRESS_COLS}
-    FROM shipments s
+    FROM ${readRelation('shipments')} s
     LEFT JOIN orders o ON s.order_id = o.id
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
@@ -145,9 +152,11 @@ router.get('/:id', (req, res) => {
     ORDER BY oi.created_at
   `).all(req.params.id)
 
-  // Fallback : aucun item lié (envoi sans assignation) → afficher toute la commande.
+  // Fallback : aucun item lié (envoi sans assignation) → afficher toute la
+  // commande. Un envoi délié n'a pas de commande à montrer : pas de repli, et
+  // la fiche titre « Articles de l'envoi » plutôt que « … de la commande ».
   let items_fallback = false
-  if (order_items.length === 0) {
+  if (order_items.length === 0 && row.order_id) {
     items_fallback = true
     order_items = db.prepare(`
       SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.weight_lbs
@@ -169,7 +178,7 @@ router.post('/', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(order_id)
   if (!order) return res.status(400).json({ error: 'Commande introuvable' })
 
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO shipments (id, order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -190,30 +199,57 @@ router.post('/', (req, res) => {
 
 // PATCH /api/shipments/:id
 router.patch('/:id', (req, res) => {
-  const { tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
+  const { order_id, tracking_number, carrier, status, shipped_at, notes, address_id, pays } = req.body
   const existing = db.prepare('SELECT id FROM shipments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Envoi introuvable' })
 
+  // Commande : rattachement modifiable ET détachable (migration 022 — la
+  // colonne n'est plus NOT NULL). Le champ est bidirectionnel avec Airtable :
+  // un vidage ici pousse [] sur « Commande lié ». Une commande fournie doit
+  // exister — sinon l'envoi pointerait dans le vide.
+  if (order_id) {
+    const order = db.prepare('SELECT id FROM orders WHERE id = ? AND deleted_at IS NULL').get(order_id)
+    if (!order) return res.status(400).json({ error: 'Commande introuvable' })
+  }
+
+  // Sémantique : champ absent du body = inchangé, champ présent = écrit TEL
+  // QUEL (null compris). Le COALESCE d'origine rendait tout vidage impossible —
+  // effacer un n° de suivi depuis la fiche envoi ne persistait jamais. `status`
+  // garde le COALESCE : un envoi a toujours un statut (et le constat de vente
+  // s'y accroche), on ne le met pas à null par une cellule vidée.
   db.prepare(`
     UPDATE shipments SET
-      tracking_number = COALESCE(?, tracking_number),
-      carrier = COALESCE(?, carrier),
-      status = COALESCE(?, status),
-      shipped_at = COALESCE(?, shipped_at),
-      notes = COALESCE(?, notes),
-      address_id = CASE WHEN ? THEN ? ELSE address_id END,
-      pays = COALESCE(?, pays)
+      order_id        = CASE WHEN ? THEN ? ELSE order_id END,
+      tracking_number = CASE WHEN ? THEN ? ELSE tracking_number END,
+      carrier         = CASE WHEN ? THEN ? ELSE carrier END,
+      status          = COALESCE(?, status),
+      shipped_at      = CASE WHEN ? THEN ? ELSE shipped_at END,
+      notes           = CASE WHEN ? THEN ? ELSE notes END,
+      address_id      = CASE WHEN ? THEN ? ELSE address_id END,
+      pays            = CASE WHEN ? THEN ? ELSE pays END
     WHERE id = ?
   `).run(
-    tracking_number !== undefined ? tracking_number : null,
-    carrier !== undefined ? carrier : null,
+    order_id !== undefined ? 1 : 0, order_id !== undefined ? (order_id || null) : null,
+    tracking_number !== undefined ? 1 : 0, tracking_number !== undefined ? tracking_number : null,
+    carrier !== undefined ? 1 : 0, carrier !== undefined ? carrier : null,
     status !== undefined ? status : null,
-    shipped_at !== undefined ? shipped_at : null,
-    notes !== undefined ? notes : null,
+    shipped_at !== undefined ? 1 : 0, shipped_at !== undefined ? shipped_at : null,
+    notes !== undefined ? 1 : 0, notes !== undefined ? notes : null,
     address_id !== undefined ? 1 : 0, address_id !== undefined ? address_id : null,
-    pays !== undefined ? pays : null,
+    pays !== undefined ? 1 : 0, pays !== undefined ? pays : null,
     req.params.id
   )
+
+  // Changement de commande : les lignes déjà assignées à l'envoi appartiennent à
+  // l'ANCIENNE commande. Les laisser ferait afficher (et facturer) des articles
+  // d'une autre commande sur le bon de livraison. On détache celles qui ne
+  // suivent pas — la fiche retombe alors sur les articles de la nouvelle
+  // commande (fallback ci-dessus) jusqu'à une nouvelle assignation. Envoi délié
+  // (order_id vidé) : plus aucune ligne ne le suit, on les détache toutes.
+  if (order_id !== undefined) {
+    db.prepare('UPDATE order_items SET shipment_id = NULL WHERE shipment_id = ? AND (? IS NULL OR order_id != ?)')
+      .run(req.params.id, order_id || null, order_id || null)
+  }
 
   // Freeze unit cost on items when shipment is marked as Envoyé
   if (status === 'Envoyé') {
@@ -231,14 +267,16 @@ router.patch('/:id', (req, res) => {
   const updated = buildShipmentRow(req.params.id)
   emitEntity('shipment', 'updated', req.params.id, updated, req.user?.id)
 
-  // Write-back ERP → Airtable (scalaires uniquement : tracking, carrier, status,
-  // shipped_at, notes). Asynchrone, non bloquant : l'édition ERP réussit même si
-  // Airtable est indisponible. La garde anti-boucle (airtable_writeback_guard +
-  // consumeWritebackEcho dans syncEnvois) empêche le webhook de retour de réécrire
-  // la valeur dans l'ERP. Les linked records et le lookup « pays » sont exclus
-  // côté WRITEBACK_MODULES.envois — pas besoin de les filtrer ici.
+  // Write-back ERP → Airtable (scalaires : tracking, carrier, status,
+  // shipped_at, notes — plus le lien « Commande », traduit en record id par
+  // WRITEBACK_MODULES.envois.linkColumns). Asynchrone, non bloquant : l'édition
+  // ERP réussit même si Airtable est indisponible. La garde anti-boucle
+  // (airtable_writeback_guard + consumeWritebackEcho dans syncEnvois) empêche le
+  // webhook de retour de réécrire la valeur dans l'ERP. Les autres liens et le
+  // lookup « pays » restent exclus côté WRITEBACK_MODULES.envois — pas besoin de
+  // les filtrer ici.
   if (updated?.airtable_id) {
-    const changedColumns = ['tracking_number', 'carrier', 'status', 'shipped_at', 'notes', 'pays', 'address_id']
+    const changedColumns = ['order_id', 'tracking_number', 'carrier', 'status', 'shipped_at', 'notes', 'pays', 'address_id']
       .filter(k => req.body[k] !== undefined)
     traceAirtablePush(writeBackRecord('envois', req.params.id, changedColumns), 'erp-writeback', req.params.id)
   } else {
@@ -345,36 +383,86 @@ function buildTrackingHtml(t, recipientName, addressLine1, carrier, trackingNumb
 </html>`
 }
 
-// POST /api/shipments/:id/send-tracking
-router.post('/:id/send-tracking', async (req, res) => {
-  const started = Date.now()
-  const { to } = req.body
-  if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
-
+// Contexte de composition du courriel de suivi. Partagé entre l'aperçu
+// (GET .../tracking-email, affiché dans la modale) et l'envoi réel, pour que ce
+// que l'utilisateur voit avant d'envoyer soit exactement ce qui part.
+function loadTrackingEmailContext(shipmentId) {
   const row = db.prepare(`
     SELECT s.*, o.order_number, o.company_id, c.name as company_name,
            a.contact_id as address_contact_id, a.line1 as address_line1,
            ct.first_name as contact_first_name, ct.last_name as contact_last_name,
-           ct.language as contact_language
+           ct.email as contact_email, ct.language as contact_language
     FROM shipments s
     LEFT JOIN orders o ON s.order_id = o.id
     LEFT JOIN companies c ON o.company_id = c.id
     LEFT JOIN adresses a ON s.address_id = a.id
     LEFT JOIN contacts ct ON a.contact_id = ct.id
     WHERE s.id = ?
-  `).get(req.params.id)
+  `).get(shipmentId)
 
-  if (!row) return res.status(404).json({ error: 'Envoi introuvable' })
-  if (!row.tracking_number) return res.status(400).json({ error: 'Aucun numéro de suivi sur cet envoi' })
+  if (!row) return { error: { status: 404, message: 'Envoi introuvable' } }
+  if (!row.tracking_number) return { error: { status: 400, message: 'Aucun numéro de suivi sur cet envoi' } }
 
   const lang = (row.contact_language || '').toLowerCase().startsWith('en') ? 'en' : 'fr'
   const t = TRANSLATIONS[lang]
-  const recipientName = row.contact_first_name || ''
-  const trackingLink = getTrackingLink(row.carrier, row.tracking_number)
-  const subject = t.subject(row.order_number)
-  const emailId = uuidv4()
+  return {
+    row,
+    lang,
+    t,
+    recipientName: row.contact_first_name || '',
+    trackingLink: getTrackingLink(row.carrier, row.tracking_number),
+    subject: t.subject(row.order_number),
+  }
+}
+
+// GET /api/shipments/:id/tracking-email
+// Aperçu du courriel de suivi (destinataire, expéditeur, objet, corps HTML) tel
+// qu'il partira. Aucun pixel de suivi n'est injecté dans l'aperçu : il n'est
+// généré qu'à l'envoi réel, sinon une simple ouverture de modale compterait
+// comme une lecture du client.
+router.get('/:id/tracking-email', (req, res) => {
+  const ctx = loadTrackingEmailContext(req.params.id)
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.message })
+  const { row, lang, t, recipientName, trackingLink, subject } = ctx
+
+  const bodyHtml = buildTrackingHtml(t, recipientName, row.address_line1, row.carrier, row.tracking_number, trackingLink, null)
+
+  res.json({
+    to: row.contact_email || null,
+    from: getAutomationFrom('sys_shipment_tracking_email') || null,
+    subject,
+    bodyHtml,
+    language: lang,
+    contact_name: [row.contact_first_name, row.contact_last_name].filter(Boolean).join(' ') || null,
+    carrier: row.carrier || null,
+    tracking_number: row.tracking_number,
+    tracking_link: trackingLink,
+    already_sent_at: row.tracking_email_sent_at || null,
+  })
+})
+
+// POST /api/shipments/:id/send-tracking
+// L'objet, le corps et le Cc peuvent être remplacés par ce que l'utilisateur a
+// édité dans la modale de composition (EmailComposerModal).
+router.post('/:id/send-tracking', async (req, res) => {
+  const started = Date.now()
+  const { to, cc, subject: subjectOverride, body_html } = req.body
+  if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
+
+  const ctx = loadTrackingEmailContext(req.params.id)
+  if (ctx.error) return res.status(ctx.error.status).json({ error: ctx.error.message })
+  const { row, lang, t, recipientName, trackingLink } = ctx
+  const subject = (subjectOverride && String(subjectOverride).trim()) || ctx.subject
+
+  const emailId = newRecordId()
   const trackPixelUrl = `${process.env.APP_URL || 'https://customer.orisha.io'}/erp/api/track/email/${emailId}.gif`
-  const html = buildTrackingHtml(t, recipientName, row.address_line1, row.carrier, row.tracking_number, trackingLink, trackPixelUrl)
+  // Corps édité par l'utilisateur : on y injecte le pixel de suivi, absent de
+  // l'aperçu (une ouverture de modale ne doit pas compter comme une lecture).
+  const custom = body_html && String(body_html).trim()
+  const pixelTag = `<img src="${trackPixelUrl}" width="1" height="1" alt="" style="display:none;border:0;width:1px;height:1px">`
+  const html = custom
+    ? (custom.includes('</body>') ? custom.replace('</body>', `${pixelTag}</body>`) : `${custom}${pixelTag}`)
+    : buildTrackingHtml(t, recipientName, row.address_line1, row.carrier, row.tracking_number, trackingLink, trackPixelUrl)
 
   try {
     const fromAddress = getAutomationFrom('sys_shipment_tracking_email')
@@ -383,12 +471,13 @@ router.post('/:id/send-tracking', async (req, res) => {
     await client.sendEmail({
       From: fromAddress,
       To: to,
+      Cc: cc || undefined,
       Subject: subject,
       HtmlBody: html,
     })
 
     // Logger l'interaction
-    const interactionId = uuidv4()
+    const interactionId = newRecordId()
     // Tout-ou-rien post-envoi : interaction + email + marquage de l'expédition
     // doivent réussir ensemble, sinon on resterait dans un état incohérent
     // (email envoyé mais expédition non marquée → re-envoi, ou records orphelins).
@@ -398,9 +487,9 @@ router.post('/:id/send-tracking', async (req, res) => {
         VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       `).run(interactionId, row.address_contact_id || null, row.company_id || null)
       db.prepare(`
-        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
-        VALUES (?, ?, ?, ?, ?, ?, 1)
-      `).run(emailId, interactionId, subject, html, fromAddress, to)
+        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, automated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+      `).run(emailId, interactionId, subject, html, fromAddress, to, cc || null)
 
       db.prepare(`
         UPDATE shipments SET
@@ -464,6 +553,12 @@ router.post('/:id/bon-livraison', async (req, res) => {
     WHERE s.id = ?
   `).get(req.params.id)
   if (!shipment) return res.status(404).json({ error: 'Envoi introuvable' })
+  // Le bon de livraison est celui d'une commande : numéro, client et articles en
+  // viennent tous. Un envoi délié n'en a pas — mieux vaut le dire que produire
+  // un PDF sans destinataire ni articles.
+  if (!shipment.order_id) {
+    return res.status(400).json({ error: "Cet envoi n'est lié à aucune commande — rattachez-le pour générer le bon de livraison." })
+  }
 
   // Items linked to this shipment explicitly (exclude JWT type)
   let shipmentItems = db.prepare(`
@@ -500,12 +595,11 @@ router.post('/:id/bon-livraison', async (req, res) => {
 
   const contactLang = (shipment.contact_language || '').toLowerCase().startsWith('en') ? 'en' : 'fr'
 
-  const uploadsDir = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'bons-livraison')
-  if (!fs.existsSync(uploadsDir)) fs.mkdirSync(uploadsDir, { recursive: true })
+  const uploadsDir = ensureUploadsDir('bons-livraison')
 
   const filename = `bon-livraison-envoi-${shipment.order_number}-${Date.now()}.pdf`
   const filepath = path.join(uploadsDir, filename)
-  const uploadsRoot = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+  const uploadsRoot = uploadsPath()
 
   // Fetch Orisha logo
   let logoBuffer = null
@@ -515,13 +609,25 @@ router.post('/:id/bon-livraison', async (req, res) => {
   } catch {}
 
   // Helper to load image buffer for a product image_url — converts to PNG via sharp
+  //
+  // Les SVG étaient écartés d'office : la vignette d'un produit vectoriel (toute
+  // la gamme JWT V3) restait vide sur le bon de livraison. sharp les rastérise
+  // très bien via librsvg ; ils n'ont simplement pas de taille en pixels, d'où la
+  // `density` élevée + le `resize` — sans ça le PNG sort à la taille du viewBox
+  // (184px) et pique à l'impression. Un SVG hors norme retombe sur le catch.
   async function getImageBuffer(imageUrl) {
     if (!imageUrl) return null
     try {
       if (imageUrl.startsWith('/erp/api/product-images/') || imageUrl.startsWith('/api/product-images/')) {
         const fname = imageUrl.split('/').pop()
         const imgPath = path.join(uploadsRoot, 'products', fname)
-        if (!fs.existsSync(imgPath) || imgPath.endsWith('.svg')) return null
+        if (!fs.existsSync(imgPath)) return null
+        if (imgPath.toLowerCase().endsWith('.svg')) {
+          return await sharp(imgPath, { density: 300 })
+            .resize(240, 240, { fit: 'inside', withoutEnlargement: true })
+            .png()
+            .toBuffer()
+        }
         return await sharp(imgPath).png().toBuffer()
       }
     } catch {}

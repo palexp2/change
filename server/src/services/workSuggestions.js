@@ -8,7 +8,8 @@
 // Le modèle n'explore PAS le repo : le contexte lui est fourni ici (git log,
 // travaux récurrents, file récente, erreurs de sync). Il tourne donc sans outils,
 // en parallèle d'une exécution, sans jamais lire un fichier à moitié écrit.
-import { randomUUID, createHash } from 'crypto'
+import { createHash } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import { execFileSync } from 'child_process'
 import { readdirSync } from 'fs'
 import db from '../db/database.js'
@@ -103,7 +104,7 @@ export function addSuggestion({ title, rationale = null, prompt, area = null, ki
   const fp = fingerprintOf(t)
   const exists = db.prepare('SELECT id FROM work_suggestions WHERE fingerprint=?').get(fp)
   if (exists) return null
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO work_suggestions (id, title, rationale, prompt, area, kind, fingerprint)
     VALUES (?,?,?,?,?,?,?)
@@ -185,7 +186,7 @@ export function isAnswering(id) { return _answering.has(id) }
 export function addSuggestionMessage(suggestionId, { role, text, author = null }) {
   const t = String(text || '').trim()
   if (!t) return null
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO work_suggestion_messages (id, suggestion_id, role, text, author)
     VALUES (?,?,?,?,?)

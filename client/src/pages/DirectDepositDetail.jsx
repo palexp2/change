@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, ExternalLink, CheckCircle2, AlertCircle, Eye, Send, RefreshCw } from 'lucide-react'
+import { useParams, Link } from 'react-router-dom'
+import { ExternalLink, CheckCircle2, AlertCircle, Eye, Send, RefreshCw } from 'lucide-react'
 import api from '../lib/api.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DetailLoadError } from '../components/DetailLoadError.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { METHOD_LABELS, MANUAL_METHODS, PaymentConfirmModal } from '../components/FacturePaymentsSection.jsx'
 
@@ -30,9 +31,11 @@ function InfoField({ label, value }) {
 //     crée la ligne payments et poste le Deposit via le flux existant).
 //   - deposit   : ligne payments existante → lien vers le Deposit QB, ou Retry
 //     si la pose a échoué.
-export default function DirectDepositDetail() {
-  const { id } = useParams()
-  const navigate = useNavigate()
+// Fiche d'un dépôt direct. Rendue exclusivement dans un panneau latéral :
+// `recordId` vient du panneau, `useParams` sert au montage depuis l'URL.
+export default function DirectDepositDetail({ recordId }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
 
   const [data, setData] = useState(null) // { kind, deposit?, candidate? }
   const [loading, setLoading] = useState(true)
@@ -175,8 +178,8 @@ export default function DirectDepositDetail() {
     }
   }
 
-  if (loading && !data) return <Layout><Spinner center label="Chargement…" /></Layout>
-  if (error && !data) return <Layout><DetailLoadError message={error} onRetry={() => load()} retrying={loading} /></Layout>
+  if (loading && !data) return <Spinner center label="Chargement…" />
+  if (error && !data) return <DetailLoadError message={error} onRetry={() => load()} retrying={loading} />
   if (!data) return null
 
   const isCandidate = data.kind === 'candidate'
@@ -194,18 +197,15 @@ export default function DirectDepositDetail() {
   const qbLabel = !isCandidate ? (p.qb_deposit_id ? 'Deposit' : (p.qb_journal_entry_id ? 'JE' : 'SR')) : null
 
   return (
-    <Layout>
-      <div className="p-6 max-w-4xl mx-auto">
-        <button onClick={() => navigate('/stripe-payouts')} className="flex items-center gap-2 text-slate-600 hover:text-slate-900 mb-4">
-          <ArrowLeft size={16} /> Retour aux payouts
-        </button>
+    <>
+      <div className="p-6">
 
         {/* Header — miroir du détail payout */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 mb-4" data-testid="direct-deposit-header">
           <div className="flex items-start justify-between gap-4 flex-wrap">
             <div>
               <div className="flex items-center gap-3 flex-wrap">
-                <h1 className="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(displayAmount, cur)}</h1>
+                <PageTitle titleClassName="text-2xl font-bold text-slate-900 tabular-nums">{fmtMoney(displayAmount, cur)}</PageTitle>
                 {isCandidate ? (
                   <Badge color="yellow">À comptabiliser</Badge>
                 ) : qbId ? (
@@ -237,7 +237,14 @@ export default function DirectDepositDetail() {
             <InfoField
               label="Client"
               value={companyId
-                ? <Link to={`/companies/${companyId}`} className="text-brand-600 hover:underline">{companyName}</Link>
+                ? <LinkedRecordField
+                  name="company_id"
+                  value={companyId}
+                  options={[{ id: companyId, name: companyName || 'Entreprise' }]}
+                  getHref={c => `/companies/${c.id}`}
+                  disabled
+                  allowClear={false}
+                />
                 : companyName}
             />
             <InfoField label="Type de facture" value={(isCandidate ? c.kind : p.kind) === 'subscription' ? 'Abonnement' : 'Commande'} />
@@ -325,27 +332,27 @@ export default function DirectDepositDetail() {
             <>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3 border-t border-slate-100">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Mode</label>
-                  <select value={method} onChange={e => invalidating(setMethod)(e.target.value)} className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5">
+                  <label className="label">Mode</label>
+                  <select value={method} onChange={e => invalidating(setMethod)(e.target.value)} className="input input-sm">
                     {MANUAL_METHODS.map(m => <option key={m} value={m}>{METHOD_LABELS[m]}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Date de réception</label>
-                  <input type="date" value={receivedAt} onChange={e => invalidating(setReceivedAt)(e.target.value)} className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5" />
+                  <label className="label">Date de réception</label>
+                  <input type="date" value={receivedAt} onChange={e => invalidating(setReceivedAt)(e.target.value)} className="input input-sm" />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Montant</label>
+                  <label className="label">Montant</label>
                   <input
                     type="number" step="0.01" min="0" value={amount}
                     onChange={e => invalidating(setAmount)(e.target.value)}
-                    className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+                    className="input input-sm"
                     data-testid="direct-deposit-amount"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Devise</label>
-                  <select value={currency} onChange={e => invalidating(setCurrency)(e.target.value)} className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5">
+                  <label className="label">Devise</label>
+                  <select value={currency} onChange={e => invalidating(setCurrency)(e.target.value)} className="input input-sm">
                     <option value="CAD">CAD</option>
                     <option value="USD">USD</option>
                   </select>
@@ -353,11 +360,10 @@ export default function DirectDepositDetail() {
               </div>
               <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
                 <div>
-                  <label className="block text-xs font-medium text-slate-500 mb-1">Notes (optionnel)</label>
+                  <label className="label">Notes (optionnel)</label>
                   <input
                     type="text" value={notes} onChange={e => setNotes(e.target.value)}
-                    placeholder="Référence du virement, numéro de chèque, etc."
-                    className="w-full text-sm border border-slate-300 rounded-md px-2 py-1.5"
+                    className="input input-sm"
                   />
                 </div>
                 <label className="inline-flex items-center gap-2 text-xs text-slate-600 cursor-pointer pb-2">
@@ -383,7 +389,7 @@ export default function DirectDepositDetail() {
         onCancel={() => setConfirmOpen(false)}
         onConfirm={push}
       />
-    </Layout>
+    </>
   )
 }
 

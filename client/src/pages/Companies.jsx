@@ -1,14 +1,16 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useNavigate, useSearchParams, useLocation } from 'react-router-dom'
+import { useSearchParams } from 'react-router-dom'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { Plus, X, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -33,108 +35,33 @@ const COLUMNS = TABLE_COLUMN_META.companies.map(meta => ({
   render: RENDERS[meta.id],
 }))
 
-function CompanyForm({ initial = {}, onSave, onClose }) {
-  const [form, setForm] = useState({
-    name: '', type: '', lifecycle_phase: '', phone: '', email: '',
-    website: '', address: '', city: '', province: '', country: 'Canada', notes: '',
-    ...initial,
-  })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    setSaving(true)
-    try {
-      await onSave(form)
-      onClose()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="col-span-2">
-          <label className="label">Nom *</label>
-          <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} className="input" required />
-        </div>
-        <div>
-          <label className="label">Type</label>
-          {/* Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche. */}
-          <SearchableSelect
-            value={form.type}
-            options={TYPES.map(t => ({ value: t, label: t }))}
-            onChange={v => setForm(f => ({ ...f, type: v }))}
-            emptyOption="— Sélectionner —"
-            placeholder="— Sélectionner —"
-            className="input w-full"
-            size="sm"
-            testId="company-form-type"
-          />
-        </div>
-        <div>
-          <label className="label">Phase</label>
-          {/* Cohérence : même composant searchable que « Type » ci-dessus et que CompanyDetail. */}
-          <SearchableSelect
-            value={form.lifecycle_phase}
-            options={PHASES.map(p => ({ value: p, label: p }))}
-            onChange={v => setForm(f => ({ ...f, lifecycle_phase: v }))}
-            emptyOption="— Sélectionner —"
-            placeholder="— Sélectionner —"
-            className="input w-full"
-            size="sm"
-            testId="company-form-phase"
-          />
-        </div>
-        <div>
-          <label className="label">Téléphone</label>
-          <input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Courriel</label>
-          <input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} className="input" />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Site web</label>
-          <input value={form.website} onChange={e => setForm(f => ({ ...f, website: e.target.value }))} className="input" placeholder="https://" />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Adresse</label>
-          <input value={form.address} onChange={e => setForm(f => ({ ...f, address: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Ville</label>
-          <input value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} className="input" />
-        </div>
-        <div>
-          <label className="label">Province</label>
-          <input value={form.province} onChange={e => setForm(f => ({ ...f, province: e.target.value }))} className="input" />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Notes</label>
-          <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={3} />
-        </div>
-      </div>
-      {/* Création seulement : on n'avertit pas en édition (pas de doublon avec soi-même). */}
-      {!initial.id && <DuplicateWarning kind="company" values={form} />}
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">
-          {saving ? 'Enregistrement...' : 'Enregistrer'}
-        </button>
-      </div>
-    </form>
-  )
-}
+// Champs proposés par le formulaire « Nouvelle entreprise » — liste calquée sur
+// ce que POST /api/companies persiste. Visibilité et obligation configurables
+// par l'utilisateur (voir RecordForm.jsx).
+const COMPANY_FORM_FIELDS = [
+  { field: 'name', label: 'Nom', span: 2, locked: true, required: true },
+  {
+    field: 'type', label: 'Type', type: 'select', options: TYPES,
+    searchable: true, testId: 'company-form-type',
+  },
+  {
+    field: 'lifecycle_phase', label: 'Phase', type: 'select', options: PHASES,
+    searchable: true, testId: 'company-form-phase',
+  },
+  { field: 'phone', label: 'Téléphone' },
+  { field: 'email', label: 'Courriel', type: 'email' },
+  { field: 'website', label: 'Site web', span: 2 },
+  { field: 'address', label: 'Adresse', span: 2 },
+  { field: 'city', label: 'Ville' },
+  { field: 'province', label: 'Province' },
+  { field: 'notes', label: 'Notes', type: 'textarea', span: 2 },
+  // Masqués par défaut — disponibles via « Modifier le formulaire ».
+  { field: 'country', label: 'Pays', visible: false, defaultValue: 'Canada' },
+  { field: 'language', label: 'Langue', type: 'select', visible: false, options: [{ value: 'French', label: 'Français' }, { value: 'English', label: 'Anglais' }] },
+  { field: 'currency', label: 'Devise', type: 'select', visible: false, options: ['CAD', 'USD'], defaultValue: 'CAD' },
+]
 
 export default function Companies() {
-  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
   const farmProvince = searchParams.get('farm_province') || ''
   const shippingProvince = searchParams.get('shipping_province') || ''
@@ -143,16 +70,7 @@ export default function Companies() {
   const [showModal, setShowModal] = useState(false)
   const undoableDelete = useUndoableDelete()
 
-  // Ouverture du side-peek demandée par la fiche plein écran (« revenir au
-  // panneau latéral ») — l'id voyage via location.state.peekId. Consommée une
-  // fois le drawer ouvert, et le state d'historique est nettoyé pour qu'un
-  // refresh ne rouvre pas le drawer. Même pattern que Factures.jsx.
-  const location = useLocation()
-  const [peekOpenId, setPeekOpenId] = useState(() => location.state?.peekId ?? null)
-  const consumePeekOpen = useCallback(() => {
-    setPeekOpenId(null)
-    navigate(location.pathname + location.search, { replace: true, state: null })
-  }, [navigate, location.pathname, location.search])
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   const load = useCallback(async () => {
     const extraParams = {}
@@ -187,7 +105,7 @@ export default function Companies() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Entreprises</h1>
+            <PageTitle>Entreprises</PageTitle>
             {farmProvince && (
               <div className="flex items-center gap-2 mt-1">
                 <span className="inline-flex items-center gap-1.5 text-xs font-medium bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-3 py-1">
@@ -229,8 +147,7 @@ export default function Companies() {
             width: 720,
             openId: peekOpenId,
             onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <CompanyDetail recordId={row.id} embedded onClose={close} />,
-          }}
+            render: (row, { close }) => <CompanyDetail recordId={row.id} embedded onClose={close} /> }}
           searchFields={['name', 'email', 'city', 'phone']}
           onBulkDelete={async (ids) => {
             await undoableDelete({
@@ -246,7 +163,14 @@ export default function Companies() {
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvelle entreprise" size="lg">
-        <CompanyForm onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <RecordForm
+          table="companies"
+          fields={COMPANY_FORM_FIELDS}
+          columns={2}
+          onSubmit={handleCreate}
+          onClose={() => setShowModal(false)}
+          extra={values => <DuplicateWarning kind="company" values={values} />}
+        />
       </Modal>
     </Layout>
   )

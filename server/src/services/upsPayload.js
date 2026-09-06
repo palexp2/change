@@ -125,7 +125,15 @@ export function buildOrishaParty({ shipperNumber } = {}) {
 // `packages` arrive au format ERP partagé avec Novoxpress :
 // [{ quantity, weight, length, width, depth }] — `quantity` étant le nombre de
 // boîtes IDENTIQUES. UPS veut une entrée par colis physique : on déplie.
-export function buildPackages(packages, description = 'Return') {
+//
+// ⚠ Le type d'emballage ne porte PAS le même nom selon l'API UPS : la Shipping
+// API attend `Package.Packaging`, la Rating API `Package.PackagingType`. Un
+// `Packaging` envoyé à la Rating API est ignoré silencieusement, le type
+// d'emballage est alors vide et UPS répond « [111212] The requested Package
+// Type is unavailable for the selected service between the selected locations ».
+// D'où le drapeau `forRating`.
+export function buildPackages(packages, description = 'Return', { forRating = false } = {}) {
+  const packagingKey = forRating ? 'PackagingType' : 'Packaging'
   const out = []
   for (const p of packages || []) {
     const qty = Math.max(1, parseInt(p.quantity, 10) || 1)
@@ -134,7 +142,7 @@ export function buildPackages(packages, description = 'Return') {
     for (let i = 0; i < qty; i++) {
       out.push({
         Description: asciiFold(description).slice(0, 35) || 'Return',
-        Packaging: { Code: '02' }, // 02 = colis fourni par le client
+        [packagingKey]: { Code: '02' }, // 02 = colis fourni par le client
         Dimensions: {
           UnitOfMeasurement: { Code: 'IN' },
           Length: String(dims[0]), Width: String(dims[1]), Height: String(dims[2]),
@@ -250,15 +258,27 @@ export function buildReturnShipmentRequest(ctx, {
   }
 }
 
-// Comparaison de tarifs pour un envoi SORTANT (Orisha → client).
-export function buildRateRequest(ctx, { accountNumber, packages, currency = 'CAD', customsItems = null } = {}) {
+// Comparaison de tarifs. Deux sens :
+//  • sortant (défaut) : Orisha → client ;
+//  • `inbound: true` (retour) : client → atelier d'Orisha, comme l'étiquette de
+//    retour — sans quoi le tarif comparé ne serait pas celui du bon trajet.
+// Dans les deux cas le compte d'Orisha reste le Shipper (c'est lui qui paie).
+// `negotiatedRates` : demande les tarifs du contrat Orisha plutôt que les tarifs
+// publics. Un compte sans entente négociée peut faire échouer la requête — d'où
+// la possibilité de rebâtir le payload sans (cf. services/ups.js).
+export function buildRateRequest(ctx, {
+  accountNumber, packages, currency = 'CAD', customsItems = null, negotiatedRates = true, inbound = false,
+} = {}) {
   const customer = buildCustomerParty(ctx)
   const orisha = buildOrishaParty({ shipperNumber: accountNumber })
   const shipment = {
     Shipper: orisha,
-    ShipTo: customer,
-    ShipFrom: buildOrishaParty(),
-    Package: buildPackages(packages, 'Envoi'),
+    ShipTo: inbound ? buildOrishaParty() : customer,
+    ShipFrom: inbound ? customer : buildOrishaParty(),
+    Package: buildPackages(packages, inbound ? 'Retour' : 'Envoi', { forRating: true }),
+    ...(negotiatedRates && accountNumber
+      ? { ShipmentRatingOptions: { NegotiatedRatesIndicator: 'Y' } }
+      : {}),
   }
   // Envoi vers les US : la valeur déclarée conditionne le tarif ET la
   // déclaration douanière — on la calcule depuis les lignes de la commande.

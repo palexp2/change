@@ -22,6 +22,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 
 import { fmtMoney } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 const COLUMN_LABELS = {
   date: 'Date', due_date: 'Échéance', type: 'Type', number: 'Numéro',
@@ -120,7 +121,7 @@ function ImportModal({ onClose, onImported }) {
         ) : (
           <textarea data-testid="douanes-import-text" className={`${inputCls} font-mono`} rows={9}
             value={text} onChange={e => setText(e.target.value)}
-            placeholder={dragOver ? 'Dépose le fichier ici…' : 'Transaction Date,Transaction Type,Transaction Number,Amount,Balance\n2026-07-15,Commercial Accounting Declaration,CAD-2026-0012345,500.00,500.00'}
+            placeholder={dragOver ? 'Dépose le fichier ici…' : undefined}
             autoFocus />
         )}
         <div className="flex items-center justify-between mt-2 text-xs">
@@ -227,7 +228,7 @@ function LinkModal({ txn, receipts, onClose, onLinked }) {
     <Modal isOpen onClose={onClose} title={`Lier un reçu — ${fmtDate(txn.transaction_date)} · ${fmtMoney(Math.abs(txn.amount))}`} size="md">
       <div className="relative mb-2">
         <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-        <input className={`${inputCls} pl-8`} placeholder="Rechercher un reçu…" value={query}
+        <input className={`${inputCls} pl-8`} value={query}
           onChange={e => setQuery(e.target.value)} autoFocus />
       </div>
       <div className="max-h-80 overflow-y-auto divide-y divide-slate-100 border border-slate-100 rounded-lg">
@@ -264,11 +265,11 @@ const CATEGORIES = [
 ]
 
 // Champ montant à autosave (blur), utilisé pour la ventilation droits / TPS.
-function AmountCell({ value, onSave, placeholder, title }) {
+function AmountCell({ value, onSave, title }) {
   const [v, setV] = useState(value == null ? '' : String(value))
   useEffect(() => { setV(value == null ? '' : String(value)) }, [value])
   return (
-    <input type="text" inputMode="decimal" value={v} title={title} placeholder={placeholder}
+    <input type="text" inputMode="decimal" value={v} title={title}
       onChange={e => setV(e.target.value)}
       onBlur={() => {
         const raw = v.trim().replace(',', '.')
@@ -316,7 +317,7 @@ function StatBar({ state, statementBalance, config, onSaved }) {
         <div className="mt-2 flex items-end gap-3 text-xs">
           <label className="block">
             <span className="text-slate-400">Solde d'ouverture</span>
-            <AmountCell value={config?.opening_balance === '' ? null : Number(config?.opening_balance)} placeholder="0"
+            <AmountCell value={config?.opening_balance === '' ? null : Number(config?.opening_balance)}
               title="Solde du compte au portail à la date d'ouverture"
               onSave={v => save({ opening_balance: v ?? 0 })} />
           </label>
@@ -328,7 +329,7 @@ function StatBar({ state, statementBalance, config, onSaved }) {
           </label>
           <label className="block">
             <span className="text-slate-400">Seuil d'alerte</span>
-            <AmountCell value={config?.threshold === '' ? null : Number(config?.threshold)} placeholder="50"
+            <AmountCell value={config?.threshold === '' ? null : Number(config?.threshold)}
               title="Alerte Slack quand le solde passe sous ce montant"
               onSave={v => save({ threshold: v ?? 0 })} />
           </label>
@@ -568,7 +569,7 @@ export default function DouanesCarmPanel() {
           </thead>
           <tbody>
             {data === null && (
-              <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400">Chargement…</td></tr>
+              <tr><td colSpan={7} className="px-4 py-6 text-center text-slate-400"><Spinner size="xs" label="Chargement…" /></td></tr>
             )}
             {data !== null && transactions.length === 0 && (
               <tr><td colSpan={7} className="px-4 py-8 text-center text-slate-400">
@@ -595,14 +596,14 @@ export default function DouanesCarmPanel() {
                       des droits et de la TPS — un paiement ne touche que le bilan. */}
                   <td className="px-2 py-2 text-right">
                     {splittable(t)
-                      ? <AmountCell value={t.duty_amount} placeholder="—" title="Droits de douane (dépense, non récupérable)"
+                      ? <AmountCell value={t.duty_amount} title="Droits de douane (dépense, non récupérable)"
                         onSave={v => patch(t, { duty_amount: v })} />
                       : null}
                   </td>
                   <td className="px-2 py-2 text-right">
                     {splittable(t) ? (
                       <span className="inline-flex items-center gap-1">
-                        <AmountCell value={t.gst_amount} placeholder="—" title="TPS à l'importation (CTI récupérable)"
+                        <AmountCell value={t.gst_amount} title="TPS à l'importation (CTI récupérable)"
                           onSave={v => patch(t, { gst_amount: v })} />
                         {t.duty_amount == null && t.gst_amount == null && (
                           <button onClick={() => patch(t, { duty_amount: 0, gst_amount: t.amount })}

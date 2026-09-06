@@ -1,7 +1,7 @@
-import { v4 as uuid } from 'uuid'
 import { join, extname } from 'path'
+import { newRecordId } from '../utils/recordId.js'
 import { createHash } from 'crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { writeFileSync } from 'fs'
 import db from '../db/database.js'
 import { getGmailClient, canCreateDrafts, invoiceTrashMailboxes, isInvoiceOnlyMailbox, mailboxList } from '../connectors/google.js'
 import { runExtractionAndUpdate } from './saleReceiptExtraction.js'
@@ -9,6 +9,7 @@ import { emitEntity } from './realtimeEmitters.js'
 import { buildEmailBodyPdf, htmlToText, isBillingSender, looksLikeInvoiceEmail, looksLikeInvoiceMessage, stripTrackingUrls } from '../utils/emailBodyPdf.js'
 import { renderEmailHtmlPdf } from '../utils/emailHtmlPdf.js'
 import { logSync } from './syncLog.js'
+import { ensureUploadsDir } from '../config/uploads.js'
 
 const DOMAIN = 'orisha.io'
 const INVOICE_LABEL_NAME = 'ERP/Factures'
@@ -71,8 +72,7 @@ const RECEIPT_MIME_PREFIXES = ['application/pdf', 'image/']
 // inline (Content-ID) mais pèse plusieurs dizaines de Ko, il faut la conserver.
 const MIN_RECEIPT_IMAGE_BYTES = 20 * 1024
 
-const receiptsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'receipts')
-if (!existsSync(receiptsDir)) mkdirSync(receiptsDir, { recursive: true })
+const receiptsDir = ensureUploadsDir('receipts')
 
 // Dédup par contenu : la même facture arrive sous plusieurs Message-ID (transfert
 // interne, fournisseur qui relance, boîte du comptable en copie). Le hash du
@@ -168,7 +168,7 @@ function findOrCreateContact(emailAddress, displayName) {
   if (existing) return { contactId: existing.id, companyId: existing.company_id }
 
   const parts = (displayName || '').replace(/<.*>/, '').trim().split(' ')
-  const id = uuid()
+  const id = newRecordId()
   db.prepare('INSERT INTO contacts (id, first_name, last_name, email) VALUES (?,?,?,?)')
     .run(id, parts[0] || '', parts.slice(1).join(' ') || '', emailAddress)
   return { contactId: id, companyId: null }
@@ -255,8 +255,8 @@ async function syncAccount(oauthRow, trigger = 'scheduled') {
       const externalName = direction === 'out' ? getHeader(headers, 'to') : getHeader(headers, 'from')
 
       const { contactId, companyId } = findOrCreateContact(externalEmail, externalName) || {}
-      const interactionId = uuid()
-      const emailId = uuid()
+      const interactionId = newRecordId()
+      const emailId = newRecordId()
 
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
@@ -496,7 +496,7 @@ async function importInlineInvoice({ message, msgId, userId, rfc822Id = null }) 
     }
   }
 
-  const id = uuid()
+  const id = newRecordId()
   const storedName = `${id}.pdf`
   const filePath = join(receiptsDir, storedName)
   try { writeFileSync(filePath, buffer) }
@@ -659,6 +659,10 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
         continue
       }
       const { html, text } = extractBodies(msg.data.payload)
+      // Une liste blanche non vide est une intention explicite : l'expéditeur a
+      // déjà passé senderAllowed, on lui fait confiance même pour un transfert
+      // (cas type : facture d'entretien ménager transférée vers la boîte perso).
+      const trustedSender = allowedSenders.length > 0
       const isInvoice = looksLikeInvoiceMessage({
         subject: getHeader(headers, 'Subject'),
         from: getHeader(headers, 'From'),
@@ -667,6 +671,7 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
         // Un fil de discussion embarque les pièces jointes ET les images de
         // signature de tous les messages cités : en autodétection on l'ignore.
         isReply: !!(getHeader(headers, 'in-reply-to') || getHeader(headers, 'references')),
+        trustedSender,
       })
       if (!isInvoice) {
         skippedInvoiceMessageIds.add(msgRef.id)
@@ -687,7 +692,9 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
       // arrivent ainsi : sans pièce jointe, la facture EST le courriel.
       if (attachments.length === 0) {
         const bodyText = stripTrackingUrls(text || htmlToText(html))
-        if (!isBillingSender(getHeader(headers, 'From')) ||
+        // Un expéditeur whitelisté n'a pas à ressembler à billing@ — mais le
+        // corps doit toujours passer le filtre strict mot-clé + montant.
+        if ((!trustedSender && !isBillingSender(getHeader(headers, 'From'))) ||
             !looksLikeInvoiceEmail(getHeader(headers, 'Subject'), bodyText)) {
           skippedInvoiceMessageIds.add(msgRef.id)
           continue
@@ -731,7 +738,7 @@ async function syncInvoiceLabel(oauthRow, trigger = 'scheduled') {
       const hash = sha256(buffer)
       if (contentAlreadyImported(hash)) { duplicatesFromMessage++; continue }
 
-      const id = uuid()
+      const id = newRecordId()
       const storedName = `${id}${ext}`
       const filePath = join(receiptsDir, storedName)
       try { writeFileSync(filePath, buffer) }

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { RefreshCw, Plus, Settings, CheckCircle2, AlertTriangle, ChevronLeft, ChevronRight, ExternalLink, ShieldCheck } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -16,6 +17,7 @@ const inputCls = 'w-full px-2.5 py-1.5 text-sm border border-slate-200 rounded-l
 const labelCls = 'block text-xs font-medium text-slate-500 mb-1'
 
 import { fmtMoney } from '../utils/formatters.js'
+import Spinner from '../components/Spinner.jsx'
 
 // Convention comptable : montant négatif entre parenthèses (comme la cédule papier).
 function fmtAmort(n, currency = 'CAD') {
@@ -84,8 +86,8 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
             {['USD', 'CAD', 'EUR'].map(c => <option key={c}>{c}</option>)}
           </select>
         </div>
-        {field('qb_vendor_name', 'Fournisseur QuickBooks (DisplayName)', { placeholder: 'Twilio' })}
-        {field('qb_asset_acctnum', "No de compte d'actif prépayé QB", { placeholder: 'ex. 13000 — sert à classer recharge vs facture' })}
+        {field('qb_vendor_name', 'Fournisseur QuickBooks (DisplayName)')}
+        {field('qb_asset_acctnum', "No de compte d'actif prépayé QB")}
         <div>
           <label className={labelCls}>Solde réel via API</label>
           <select className={inputCls} value={form.balance_provider ?? ''} onChange={e => { const v = e.target.value || null; set('balance_provider', v); save('balance_provider', v) }}>
@@ -266,7 +268,7 @@ function LedgerTab() {
     }
   }
 
-  if (accounts === null) return <div className="text-sm text-slate-400 py-10 text-center">Chargement…</div>
+  if (accounts === null) return <div className="text-sm text-slate-400 py-10 text-center"><Spinner size="xs" label="Chargement…" /></div>
 
   const balance = ledger?.balance ?? account?.balance ?? 0
   const delta = providerBalance?.balance != null ? Math.round((providerBalance.balance - balance) * 100) / 100 : null
@@ -548,8 +550,7 @@ function LedgerTab() {
 function ExpenseModal({ expense, onClose, onChanged }) {
   const isNew = !expense?.id
   const [form, setForm] = useState(expense || {
-    label: '', amount: '', currency: 'CAD', method: 'prorata_jours', fpa_acctnum: '13000', active: 1,
-  })
+    label: '', amount: '', currency: 'CAD', method: 'prorata_jours', fpa_acctnum: '13000', active: 1 })
   const [saving, setSaving] = useState(false)
   const { addToast } = useToast()
   const { options: acctOptions, accountName } = useQbAccounts()
@@ -558,8 +559,7 @@ function ExpenseModal({ expense, onClose, onChanged }) {
   const { save, saving: autosaving } = useAutosave(expense, patch => api.prepaid.expenses.update(expense.id, patch), {
     enabled: !isNew,
     onSaved: () => onChanged(),
-    onError: (k, prev) => set(k, prev),
-  })
+    onError: (k, prev) => set(k, prev) })
 
   async function create() {
     if (!form.label?.trim()) { addToast({ message: 'Libellé requis', type: 'error' }); return }
@@ -594,7 +594,6 @@ function ExpenseModal({ expense, onClose, onChanged }) {
         value={form[k] ?? ''}
         options={acctOptions}
         emptyOption="— Aucun compte —"
-        placeholder="— Aucun compte —"
         onChange={v => { set(k, v || null); save(k, v || null) }}
       />
       {form[k] && !accountName(form[k]) && (
@@ -883,7 +882,7 @@ export default function PrepaidAccounts() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-5">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Comptes prépayés</h1>
+            <PageTitle>Comptes prépayés</PageTitle>
             <p className="text-xs text-slate-500 mt-0.5">
               Soldes fournisseurs à recharges (ex-Twilio_Suivi), cédule de continuité des frais payés d'avance #13000 (ex-FPA_Continuité) et compte de douanes ASFC.
             </p>

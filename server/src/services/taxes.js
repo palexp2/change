@@ -64,6 +64,59 @@ export function computeCanadaTaxes({ province, country, subtotal }) {
   return [{ name: 'TPS', percentage: 5, jurisdiction: 'CA', amount: round2(sub * 0.05) }]
 }
 
+// ── Régimes de taxe explicites (facturation) ────────────────────────────────
+//
+// `computeCanadaTaxes` déduit les taxes de la province de livraison. C'est le
+// bon défaut, mais pas une vérité : un client autochtone livré sur réserve est
+// exonéré, un export ne porte pas de taxe. On nomme donc chaque régime, on le
+// stocke sur la facture (`pending_invoices.tax_regime`) et l'utilisateur peut
+// le changer — la province ne fait plus que *suggérer*.
+export const TAX_REGIMES = {
+  qc: { label: 'TPS 5 % + TVQ 9,975 % — Québec', rates: [
+    { name: 'TPS', percentage: 5, jurisdiction: 'CA' },
+    { name: 'TVQ', percentage: 9.975, jurisdiction: 'CA-QC' },
+  ] },
+  hst_on: { label: 'TVH 13 % — Ontario', rates: [{ name: 'HST', percentage: 13, jurisdiction: 'CA-ON' }] },
+  hst_nb: { label: 'TVH 15 % — Nouveau-Brunswick', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-NB' }] },
+  hst_nl: { label: 'TVH 15 % — Terre-Neuve-et-Labrador', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-NL' }] },
+  hst_ns: { label: 'TVH 15 % — Nouvelle-Écosse', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-NS' }] },
+  hst_pe: { label: 'TVH 15 % — Île-du-Prince-Édouard', rates: [{ name: 'HST', percentage: 15, jurisdiction: 'CA-PE' }] },
+  gst: { label: 'TPS 5 % seulement', rates: [{ name: 'TPS', percentage: 5, jurisdiction: 'CA' }] },
+  none: { label: 'Aucune taxe', rates: [] },
+}
+
+const HST_REGIME_BY_PROVINCE = { ON: 'hst_on', NB: 'hst_nb', NL: 'hst_nl', NS: 'hst_ns', PE: 'hst_pe' }
+
+export function isCanada(country) {
+  return normalizeCountry(country) === 'CA'
+}
+
+// Régime suggéré par l'adresse de livraison — le défaut proposé dans l'UI.
+export function suggestTaxRegime({ province, country }) {
+  if (!isCanada(country)) return 'none'
+  const p = normalizeProvince(province)
+  if (!p) return 'none'
+  if (HST_REGIME_BY_PROVINCE[p]) return HST_REGIME_BY_PROVINCE[p]
+  if (p === 'QC') return 'qc'
+  return 'gst'
+}
+
+// Applique un régime nommé à un sous-total. Même forme de retour que
+// computeCanadaTaxes : [{ name, percentage, jurisdiction, amount }].
+export function taxesForRegime(regime, subtotal) {
+  const def = TAX_REGIMES[regime]
+  if (!def) return []
+  const sub = Number(subtotal) || 0
+  return def.rates.map(r => ({ ...r, amount: round2(sub * r.percentage / 100) }))
+}
+
+// Taxes effectives d'une facture : le régime choisi s'il est connu, sinon le
+// calcul historique par province (factures créées avant l'ajout du champ).
+export function resolveInvoiceTaxes({ province, country, subtotal, taxRegime }) {
+  if (taxRegime && TAX_REGIMES[taxRegime]) return taxesForRegime(taxRegime, subtotal)
+  return computeCanadaTaxes({ province, country, subtotal })
+}
+
 // Taux de référence pour la ventilation TPS/TVQ d'un montant de taxe global.
 export const TPS_RATE = 0.05
 export const TVQ_RATE = 0.09975

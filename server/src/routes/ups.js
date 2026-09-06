@@ -1,14 +1,15 @@
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import fs from 'fs'
-import { v4 as uuidv4 } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { saveConfig, deleteConfig, publicConfig, isUpsConfigured, DEFAULTS } from '../connectors/ups.js'
-import { createReturnLabel, getShipmentRates, trackNumber, testConnection } from '../services/ups.js'
+import { createReturnLabel, getShipmentRates, getReturnRates, trackNumber, testConnection } from '../services/ups.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // Intégration UPS — connecteur (OAuth client_credentials), étiquettes de retour
 // (Shipping API, ReturnService 9), tarifs (Rating API /Shop) et suivi
@@ -18,7 +19,7 @@ import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig
 const router = Router()
 router.use(requireAuth)
 
-const LABELS_DIR = path.join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'labels')
+const LABELS_DIR = uploadsPath('labels')
 
 // Réponse d'erreur uniforme : message brut UPS + payload envoyé pour debug.
 function upsFailure(res, e, fallbackStatus = 502) {
@@ -181,6 +182,28 @@ router.post('/returns/:id/return-label', async (req, res) => {
   }
 })
 
+// Tarifs UPS d'un RETOUR (client → atelier) — lecture seule, aucun achat :
+// sert à comparer le tarif Novoxpress retenu avec le tarif UPS direct.
+router.post('/returns/:id/rates', async (req, res) => {
+  const { address_id, packages } = req.body || {}
+  if (!Array.isArray(packages) || !packages.length) {
+    return res.status(400).json({ error: 'packages requis' })
+  }
+  if (!isUpsConfigured()) return res.status(400).json({ error: 'UPS non configuré (page Connecteurs)' })
+
+  if (!getReturn(req.params.id)) return res.status(404).json({ error: 'Retour introuvable' })
+
+  const { ctx } = buildReturnPartyContext(req.params.id, address_id || null) || {}
+  if (!ctx) return res.status(400).json({ error: "Aucune adresse client trouvée pour ce retour — impossible de tarifer." })
+
+  try {
+    res.json(await getReturnRates(ctx, req.params.id, { packages }))
+  } catch (e) {
+    console.error('UPS return rates error:', e.message)
+    upsFailure(res, e)
+  }
+})
+
 // Envoi de l'étiquette au client (Postmark). Appelé par le front APRÈS la
 // fenêtre d'annulation de 10 s d'UndoSendProvider — d'où l'absence de délai
 // côté serveur : l'utilisateur a déjà eu sa chance d'annuler.
@@ -198,7 +221,7 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
   }
 
   const started = Date.now()
-  const label = ret.return_number || req.params.id
+  const label = ret.n_de_retour || req.params.id
   const subject = `Votre étiquette de retour UPS — ${label}`
   const trackingLine = ret.return_label_tracking_number
     ? `<p>Numéro de suivi UPS : <strong>${ret.return_label_tracking_number}</strong></p>`
@@ -227,13 +250,13 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
       }],
     })
 
-    const interactionId = uuidv4()
-    const emailId = uuidv4()
+    const interactionId = newRecordId()
+    const emailId = newRecordId()
     db.transaction(() => {
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
         VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(interactionId, ret.contact_id || null, ret.company_id || null)
+      `).run(interactionId, ret.contact || null, ret.company_id || null)
       db.prepare(`
         INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
         VALUES (?, ?, ?, ?, ?, ?, 1)

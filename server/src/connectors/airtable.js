@@ -19,7 +19,7 @@ export function getAuthUrl(state, codeChallenge) {
     client_id: clientId,
     redirect_uri: CALLBACK_URL,
     response_type: 'code',
-    scope: 'data.records:read data.records:write schema.bases:read webhook:manage',
+    scope: 'data.records:read data.records:write schema.bases:read schema.bases:write webhook:manage',
     state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',

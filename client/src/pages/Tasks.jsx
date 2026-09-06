@@ -6,10 +6,14 @@ import { useAuth } from '../lib/auth.jsx'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import TaskForm from '../components/TaskForm.jsx'
+import TaskForm, { KeywordPicker } from '../components/TaskForm.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -74,6 +78,38 @@ const RENDERS = {
 
 const COLUMNS = TABLE_COLUMN_META.tasks.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
+// Champs proposés par le formulaire « Nouvelle tâche » — liste calquée sur ce
+// que POST /api/tasks persiste (voir RecordForm.jsx pour la configuration).
+function taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo }) {
+  const linked = (name, options, labelFn, href) => ({ value, onChange }) => (
+    <LinkedRecordField
+      name={name}
+      value={value || ''}
+      options={options}
+      labelFn={labelFn}
+      getHref={href}
+      onChange={onChange}
+    />
+  )
+  return [
+    { field: 'title', label: 'Titre', span: 2, locked: true, required: true },
+    { field: 'description', label: 'Description', type: 'textarea', rows: 2, span: 2 },
+    { field: 'status', label: 'Statut', type: 'select', options: ['À faire', 'En cours', 'Terminé', 'Annulé'], defaultValue: 'À faire' },
+    { field: 'priority', label: 'Priorité', type: 'select', options: ['Basse', 'Normal', 'Haute', 'Urgente'], defaultValue: 'Normal' },
+    { field: 'type', label: 'Type', type: 'select', options: ['Problème'] },
+    { field: 'due_date', label: "Date d'échéance", type: 'date' },
+    { field: 'company_id', label: 'Entreprise', input: linked('task_company_id', companies, c => c.name, c => `/companies/${c.id}`) },
+    { field: 'contact_id', label: 'Contact', input: linked('task_contact_id', contacts, c => `${c.first_name || ''} ${c.last_name || ''}`.trim(), c => `/contacts/${c.id}`) },
+    { field: 'ticket_id', label: 'Billet', span: 2, input: linked('task_ticket_id', tickets, t => t.title || '(sans titre)', t => `/tickets/${t.id}`) },
+    { field: 'assigned_to', label: 'Responsable', span: 2, defaultValue: defaultAssignedTo, input: linked('task_assigned_to', users, u => u.name) },
+    {
+      field: 'keywords', label: 'Mots-clés', span: 2, defaultValue: [],
+      input: ({ value, onChange }) => <KeywordPicker value={value || []} onChange={onChange} hideLabel />,
+    },
+    { field: 'notes', label: 'Notes', type: 'textarea', rows: 2, span: 2 },
+  ]
+}
+
 export default function Tasks() {
   const { user } = useAuth()
   const [showModal, setShowModal] = useState(false)
@@ -132,7 +168,7 @@ export default function Tasks() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Tâches</h1>
+            <PageTitle>Tâches</PageTitle>
             <p className="text-sm text-slate-500 mt-0.5">{tasks.length} tâche{tasks.length !== 1 ? 's' : ''}</p>
           </div>
           <div className="flex items-center gap-2">
@@ -163,19 +199,18 @@ export default function Tasks() {
       </div>
 
       <Modal isOpen={showModal} title="Nouvelle tâche" onClose={() => setShowModal(false)}>
-        <TaskForm
-          companies={companies}
-          contacts={contacts}
-          users={users}
-          tickets={tickets}
-          defaultAssignedTo={user?.id || ''}
-          onSave={handleCreate}
+        <RecordForm
+          table="tasks"
+          fields={taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo: user?.id || '' })}
+          columns={2}
+          onSubmit={handleCreate}
           onClose={() => setShowModal(false)}
         />
       </Modal>
 
       {editing && (
-        <Modal isOpen={!!editing} title="Modifier la tâche" onClose={() => setEditing(null)}>
+        <RecordPeekDrawer open onClose={() => setEditing(null)} title={editing.title || 'Tâche'} subtitle={editing.company_name || undefined} width={640} peekKey="tasks">
+          <div className="px-5 py-4">
           <TaskForm
             initial={editing}
             companies={companies}
@@ -193,7 +228,8 @@ export default function Tasks() {
               Supprimer cette tâche
             </button>
           </div>
-        </Modal>
+          </div>
+        </RecordPeekDrawer>
       )}
     </Layout>
   )

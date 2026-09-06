@@ -55,7 +55,6 @@ export function FieldSelect({ columns, value, onChange, cls }) {
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
-                placeholder="Rechercher un champ..."
               />
             </div>
           </div>
@@ -133,7 +132,6 @@ export function ValueSelect({ options, value, onChange, cls, placeholder = '—'
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 className="w-full pl-7 pr-2 py-1.5 text-xs border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400"
-                placeholder="Rechercher une valeur..."
               />
             </div>
           </div>
@@ -385,7 +383,7 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
         <input type="date" value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
       )}
       {needsValue && fieldType === 'date' && isDays && (
-        <input type="number" min="1" value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} placeholder="Jours" />
+        <input type="number" min="1" value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
       )}
       {needsValue && fieldType === 'date' && isRange && (
         <div className="flex items-center gap-1.5 flex-1 min-w-0">
@@ -395,10 +393,10 @@ export function FilterRow({ columns, filter, onChange, onRemove, size = 'sm', da
         </div>
       )}
       {needsValue && fieldType === 'number' && (
-        <input type="number" value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} placeholder="Valeur" />
+        <input type="number" value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
       )}
       {needsValue && fieldType !== 'single_select' && fieldType !== 'multi_select' && fieldType !== 'user' && fieldType !== 'date' && fieldType !== 'number' && fieldType !== 'boolean' && (
-        <input value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} placeholder="Valeur" />
+        <input value={filter.value} onChange={e => onChange({ ...filter, value: e.target.value })} className={`input ${cls} flex-1 min-w-0`} />
       )}
 
       <button onClick={onRemove} className="text-slate-300 hover:text-red-500 flex-shrink-0 mt-1"><X size={14} /></button>

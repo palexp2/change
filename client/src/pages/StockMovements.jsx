@@ -3,20 +3,16 @@ import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 
-function money(n) {
-  if (n == null) return <span className="text-slate-300">—</span>
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD', maximumFractionDigits: 2 }).format(n)
-}
-
-function num(n) {
-  if (n == null) return <span className="text-slate-300">—</span>
-  return Number(n).toLocaleString('fr-CA')
-}
+const DASH = <span className="text-slate-300">—</span>
+const money = n => fmtMoney(n, 'CAD', { fallback: DASH })
+const num = n => fmtNumber(n, { fallback: DASH })
 
 const TYPE_COLORS = {
   in: 'green',
@@ -63,7 +59,7 @@ export default function StockMovements() {
     <Layout>
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
-          <h1 className="text-2xl font-bold text-slate-900">Mouvements d'inventaire</h1>
+          <PageTitle>Mouvements d'inventaire</PageTitle>
         </div>
 
         <DataTable

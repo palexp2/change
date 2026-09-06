@@ -2,12 +2,12 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-08-31T03:29:45.691Z",
+  "generatedAt": "2026-09-06T16:53:29.434Z",
   "stats": {
-    "routes": 95,
-    "pages": 87,
+    "routes": 78,
+    "pages": 70,
     "groups": 6,
-    "api": 97,
+    "api": 101,
     "tables": 158,
     "connectors": 9
   },
@@ -81,7 +81,7 @@ export const architectureManifest = {
         },
         {
           "to": "/discovery-forms",
-          "label": "Formulaires de découverte",
+          "label": "System builder",
           "component": "DiscoveryForms",
           "adminOnly": false,
           "hrOnly": false,
@@ -366,16 +366,16 @@ export const architectureManifest = {
     },
     {
       "to": "/customer/post-payment",
-      "label": "CustomerPostPayment",
-      "component": "CustomerPostPayment",
+      "label": "DiscoveryFormPage",
+      "component": "DiscoveryFormPage",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
     },
     {
       "to": "/d/:token",
-      "label": "CustomerPostPayment",
-      "component": "CustomerPostPayment",
+      "label": "DiscoveryFormPage",
+      "component": "DiscoveryFormPage",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -421,89 +421,9 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/orders/:id",
-      "label": "OrderDetail",
-      "component": "OrderDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/orders"
-    },
-    {
-      "to": "/products/:id",
-      "label": "ProductDetail",
-      "component": "ProductDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/products"
-    },
-    {
-      "to": "/tickets/:id",
-      "label": "TicketDetail",
-      "component": "TicketDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/tickets"
-    },
-    {
-      "to": "/purchases/:id",
-      "label": "PurchaseDetail",
-      "component": "PurchaseDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/purchases"
-    },
-    {
-      "to": "/serials/:id",
-      "label": "SerialDetail",
-      "component": "SerialDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/serials"
-    },
-    {
-      "to": "/projects/:id",
-      "label": "ProjectDetail",
-      "component": "ProjectDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/projects"
-    },
-    {
-      "to": "/retours/:id",
-      "label": "RetourDetail",
-      "component": "RetourDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/retours"
-    },
-    {
-      "to": "/factures/:id",
-      "label": "FactureDetail",
-      "component": "FactureDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
       "to": "/paiements-emis",
       "label": "PaiementsEmis",
       "component": "PaiementsEmis",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
-      "to": "/soumissions/:id",
-      "label": "SoumissionDetail",
-      "component": "SoumissionDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
-      "to": "/envois/:id",
-      "label": "EnvoisDetail",
-      "component": "EnvoisDetail",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -557,14 +477,6 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/tests-antoine/prospects-req",
-      "label": "ReqProspects",
-      "component": "ReqProspects",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
       "to": "/fin-de-mois",
       "label": "FinDeMois",
       "component": "FinDeMois",
@@ -613,36 +525,12 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/sale-receipts/:id",
-      "label": "SaleReceiptDetail",
-      "component": "SaleReceiptDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/sale-receipts"
-    },
-    {
       "to": "/stripe-payouts",
       "label": "StripePayouts",
       "component": "StripePayouts",
       "adminOnly": false,
       "hrOnly": false,
       "api": "/api/stripe-payouts"
-    },
-    {
-      "to": "/stripe-payouts/:stripeId",
-      "label": "StripePayoutDetail",
-      "component": "StripePayoutDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/stripe-payouts"
-    },
-    {
-      "to": "/depots-directs/:id",
-      "label": "DirectDepositDetail",
-      "component": "DirectDepositDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
     },
     {
       "to": "/rapprochement",
@@ -653,42 +541,18 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/employees/:id",
-      "label": "EmployeeDetail",
-      "component": "EmployeeDetail",
-      "adminOnly": false,
-      "hrOnly": true,
-      "api": "/api/employees"
-    },
-    {
-      "to": "/contacts/:id",
-      "label": "ContactDetail",
-      "component": "ContactDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/contacts"
-    },
-    {
-      "to": "/companies/:id",
-      "label": "CompanyDetail",
-      "component": "CompanyDetail",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/companies"
-    },
-    {
       "to": "/admin",
-      "label": "Admin",
-      "component": "Admin",
-      "adminOnly": true,
+      "label": "AdminRedirect",
+      "component": "AdminRedirect",
+      "adminOnly": false,
       "hrOnly": false,
       "api": "/api/admin"
     },
     {
       "to": "/admin/:tab",
-      "label": "Admin",
-      "component": "Admin",
-      "adminOnly": true,
+      "label": "AdminRedirect",
+      "component": "AdminRedirect",
+      "adminOnly": false,
       "hrOnly": false,
       "api": "/api/admin"
     },
@@ -701,9 +565,17 @@ export const architectureManifest = {
       "api": "/api/activity"
     },
     {
-      "to": "/settings",
-      "label": "Settings",
-      "component": "Settings",
+      "to": "/parametres",
+      "label": "Parametres",
+      "component": "Parametres",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/parametres/:section",
+      "label": "Parametres",
+      "component": "Parametres",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -731,14 +603,6 @@ export const architectureManifest = {
       "adminOnly": false,
       "hrOnly": false,
       "api": "/api/automations"
-    },
-    {
-      "to": "/agent",
-      "label": "Agent",
-      "component": "Agent",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": "/api/agent"
     },
     {
       "to": "/__boom",
@@ -770,6 +634,7 @@ export const architectureManifest = {
     "/api/companies",
     "/api/connectors",
     "/api/contacts",
+    "/api/custom-field-files",
     "/api/custom-fields",
     "/api/customer/post-payment",
     "/api/dashboard",
@@ -781,6 +646,7 @@ export const architectureManifest = {
     "/api/email-tracking",
     "/api/employees",
     "/api/field-visibility-rules",
+    "/api/form-configs",
     "/api/fx",
     "/api/hooks",
     "/api/hooks/telnyx",
@@ -803,6 +669,8 @@ export const architectureManifest = {
     "/api/paies",
     "/api/payments",
     "/api/places",
+    "/api/plaid",
+    "/api/plaid/webhook",
     "/api/prepaid",
     "/api/product-docs",
     "/api/product-images",
@@ -813,13 +681,12 @@ export const architectureManifest = {
     "/api/public/installation-feedback",
     "/api/public/ticket-survey",
     "/api/purchases",
-    "/api/purolator",
     "/api/qualification-calls",
     "/api/receipt-files",
+    "/api/record-links",
     "/api/recordings",
     "/api/records",
     "/api/reports",
-    "/api/req",
     "/api/retours",
     "/api/sale-receipts",
     "/api/scrapers",
@@ -832,6 +699,7 @@ export const architectureManifest = {
     "/api/stripe-invoices",
     "/api/stripe-payouts",
     "/api/stripe-queue",
+    "/api/stripe-subscriptions",
     "/api/stripe-webhooks",
     "/api/tasks",
     "/api/telemetry",
@@ -954,7 +822,6 @@ export const architectureManifest = {
     "recurring_outflows",
     "recurring_task_completions",
     "recurring_tasks",
-    "req_entreprises",
     "return_items",
     "returns",
     "revenue_recognition_queue",
@@ -979,6 +846,7 @@ export const architectureManifest = {
     "subscription_events",
     "subscriptions",
     "sync_log",
+    "table_form_configs",
     "table_view_configs",
     "table_view_pills",
     "task_keywords",
@@ -1015,7 +883,7 @@ export const architectureManifest = {
     "digikey",
     "google",
     "hubspot",
-    "purolator",
+    "plaid",
     "quickbooks",
     "ups"
   ]

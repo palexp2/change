@@ -1,7 +1,9 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
+import { readRelation } from '../services/customFieldsView.js'
 import { requireAuth } from '../middleware/auth.js'
+import { parsePage } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -162,7 +164,7 @@ router.post('/accounting/rules', (req, res) => {
       return res.status(400).json({ error: 'Montant fixe requis pour valuation_source=fixed_amount' })
     }
   }
-  const id = randomUUID()
+  const id = newRecordId()
   try {
     db.prepare(`
       INSERT INTO serial_accounting_rules
@@ -221,10 +223,8 @@ router.delete('/accounting/rules/:id', (req, res) => {
 })
 
 router.get('/', (req, res) => {
-  const { company_id, product_id, status, search, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { company_id, product_id, status, search } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
 
@@ -232,23 +232,24 @@ router.get('/', (req, res) => {
   if (product_id) { where += ' AND sn.product_id = ?'; params.push(product_id) }
   if (status) { where += ' AND sn.status = ?'; params.push(status) }
   if (search) {
-    where += ' AND (sn.serial LIKE ? OR pr.name_fr LIKE ? OR co.name LIKE ?)'
+    // EXISTS plutôt que JOIN : indépendant des jointures retirées et des
+    // colonnes converties de la vue (supprimables par l'utilisateur).
+    where += ` AND (sn.serial LIKE ?
+      OR EXISTS (SELECT 1 FROM products pr WHERE pr.id = sn.product_id AND pr.name_fr LIKE ?)
+      OR EXISTS (SELECT 1 FROM companies co WHERE co.id = sn.company_id AND co.name LIKE ?))`
     const q = `%${search}%`
     params.push(q, q, q)
   }
 
   const total = db.prepare(`
-    SELECT COUNT(*) as c FROM serial_numbers sn
-    LEFT JOIN products pr ON sn.product_id = pr.id
-    LEFT JOIN companies co ON sn.company_id = co.id
+    SELECT COUNT(*) as c FROM ${readRelation('serial_numbers')} sn
     ${where}
   `).get(...params).c
 
   const serials = db.prepare(`
-    SELECT sn.*, pr.name_fr as product_name, pr.sku, co.name as company_name
-    FROM serial_numbers sn
+    SELECT sn.*, pr.sku
+    FROM ${readRelation('serial_numbers')} sn
     LEFT JOIN products pr ON sn.product_id = pr.id
-    LEFT JOIN companies co ON sn.company_id = co.id
     ${where}
     ORDER BY sn.created_at DESC
     LIMIT ? OFFSET ?

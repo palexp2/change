@@ -462,7 +462,6 @@ function LinkQbModal({ kind, facture, linking, error, onCancel, onSubmit }) {
             onChange={e => setQbId(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') handleSubmit() }}
             disabled={linking}
-            placeholder="ex. 12345"
             className="w-full border border-slate-300 rounded-lg px-2 py-1.5 text-sm font-mono"
             data-testid="link-qb-id-input"
             autoFocus

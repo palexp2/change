@@ -1,24 +1,47 @@
 import { Router } from 'express'
-import { v4 as uuidv4 } from 'uuid'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
 
 const router = Router()
 
 const ALLOWED_TABLES = new Set([
   'companies', 'contacts', 'projects', 'products',
-  'orders', 'order_items', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
-  'abonnements', 'abonnement_events', 'retours', 'factures', 'assemblages',
+  'orders', 'order_items', 'shipment_items', 'order_envois', 'adresse_envois', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
+  'abonnements', 'abonnement_events', 'retours', 'retour_items', 'factures', 'assemblages',
   'achats_fournisseurs', 'vendor_subscriptions', 'tasks',
   'employees', 'paies', 'paie_items', 'bom_items', 'hour_bank',
   'company_serials', 'sale_receipts',
   'automations', 'catalog', 'discovery_forms', 'journal_entries',
   'public_files', 'qualification_calls', 'soumissions', 'stock_movements',
-  'product_movements', 'sync_log',
+  'product_movements', 'product_achats', 'sync_log', 'bank_transactions',
   'stripe_invoice_items', 'stripe_payouts', 'users', 'payments',
   // Vues dérivées (pas de table DB) — règles comptables des numéros de série.
   'serial_transitions', 'serial_accounting_rules', 'serial_missing_valuations',
 ])
+
+// Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom :
+// les vues/pills restent stockées sous la clé de vue, mais custom_fields est
+// indexé par vraie table SQL. Miroir client : sqlTableForView
+// (client/src/lib/customFieldDisplay.jsx).
+const VIEW_KEY_TO_SQL_TABLE = {
+  retours: 'returns',
+  abonnements: 'subscriptions',
+  // Articles d'un envoi (fiche envoi) : lignes order_items, vues séparées.
+  shipment_items: 'order_items',
+  // Articles d'un retour (fiche retour) : lignes return_items.
+  retour_items: 'return_items',
+  // Envois d'une commande (fiche commande) : lignes shipments, vues séparées
+  // de la page /envois.
+  order_envois: 'shipments',
+  // Envois expédiés à une adresse (fiche adresse) : mêmes lignes shipments,
+  // vues séparées elles aussi.
+  adresse_envois: 'shipments',
+  // Achats d'une pièce (fiche produit) : lignes purchases, vues séparées de la
+  // page /purchases.
+  product_achats: 'purchases',
+}
 
 function validateTable(req, res) {
   if (!ALLOWED_TABLES.has(req.params.table)) {
@@ -72,9 +95,11 @@ router.get('/:table', requireAuth, (req, res) => {
   // Colonnes dynamiques (champs custom kind='data', qu'ils portent une colonne
   // cf_* auto-générée ou une colonne native adoptée depuis Airtable —
   // ex-système `airtable_field_defs`, fusionné dans custom_fields).
+  // custom_fields est indexé par VRAIE table SQL — certaines clés de vue
+  // DataTable n'en sont pas une (VIEW_KEY_TO_SQL_TABLE), on résout l'alias.
   const rawFields = db.prepare(
     "SELECT id, name, column_name, type, options, sort_order FROM custom_fields WHERE erp_table=? AND deleted_at IS NULL AND kind='data' ORDER BY sort_order"
-  ).all(table)
+  ).all(VIEW_KEY_TO_SQL_TABLE[table] || table)
   const dynamicFields = rawFields.map(f => ({
     id: f.column_name,
     label: f.name,
@@ -108,7 +133,7 @@ router.patch('/:table/bulk-delete-enabled', requireAdmin, (req, res) => {
       .run(enabled, table)
   } else {
     db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, bulk_delete_enabled) VALUES (?,?,?,?,?)')
-      .run(uuidv4(), table, '[]', '[]', enabled)
+      .run(newRecordId(), table, '[]', '[]', enabled)
   }
   res.json({ ok: true, bulk_delete_enabled: enabled === 1 })
 })
@@ -134,7 +159,7 @@ router.put('/:table', requireAdmin, (req, res) => {
   } else {
     db.prepare(
       'INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort) VALUES (?,?,?,?)'
-    ).run(uuidv4(), table, JSON.stringify(visible_columns), JSON.stringify(default_sort))
+    ).run(newRecordId(), table, JSON.stringify(visible_columns), JSON.stringify(default_sort))
   }
 
   res.json({ ok: true })
@@ -153,7 +178,7 @@ router.patch('/:table/column-widths', requireAuth, (req, res) => {
       .run(JSON.stringify(column_widths), table)
   } else {
     db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, column_widths) VALUES (?,?,?,?,?)')
-      .run(uuidv4(), table, '[]', '[]', JSON.stringify(column_widths))
+      .run(newRecordId(), table, '[]', '[]', JSON.stringify(column_widths))
   }
   res.json({ ok: true })
 })
@@ -174,7 +199,7 @@ router.patch('/:table/footer-aggregations', requireAuth, (req, res) => {
       .run(JSON.stringify(footer_aggregations), table)
   } else {
     db.prepare('INSERT INTO table_view_configs (id, table_name, visible_columns, default_sort, footer_aggregations) VALUES (?,?,?,?,?)')
-      .run(uuidv4(), table, '[]', '[]', JSON.stringify(footer_aggregations))
+      .run(newRecordId(), table, '[]', '[]', JSON.stringify(footer_aggregations))
   }
   res.json({ ok: true })
 })
@@ -188,7 +213,7 @@ router.post('/:table/pills', requireAdmin, (req, res) => {
   if (!label) return res.status(400).json({ error: 'label requis' })
   if (!Array.isArray(filters)) return res.status(400).json({ error: 'filters doit être un tableau' })
 
-  const id = uuidv4()
+  const id = newRecordId()
   db.prepare(
     'INSERT INTO table_view_pills (id, table_name, label, color, filters, visible_columns, sort, group_by, sort_order) VALUES (?,?,?,?,?,?,?,?,?)'
   ).run(id, table, label, color, JSON.stringify(filters), JSON.stringify(visible_columns), JSON.stringify(sort), group_by, sort_order)
@@ -233,37 +258,25 @@ router.put('/:table/pills/:id', requireAuth, (req, res) => {
   }
 
   const body = req.body
-  const updates = []
-  const values = []
-
-  if (body.label !== undefined)           { updates.push('label = ?');           values.push(body.label) }
-  if (body.color !== undefined)           { updates.push('color = ?');           values.push(body.color) }
-  if (body.filters !== undefined)         { updates.push('filters = ?');         values.push(JSON.stringify(body.filters)) }
-  if (body.visible_columns !== undefined) { updates.push('visible_columns = ?'); values.push(JSON.stringify(body.visible_columns)) }
-  if (body.sort !== undefined)            { updates.push('sort = ?');            values.push(JSON.stringify(body.sort)) }
-  if ('group_by' in body) {
-    // Accepte string (legacy single-level) ou array (multi-niveau). Sérialise
-    // les arrays en JSON pour le stockage ; les strings restent telles quelles
-    // pour préserver les vues existantes.
-    const v = body.group_by
-    updates.push('group_by = ?')
-    values.push(Array.isArray(v) ? JSON.stringify(v) : v)
+  if (body.color_rules !== undefined && !Array.isArray(body.color_rules)) {
+    return res.status(400).json({ error: 'color_rules doit être un tableau' })
   }
-  if ('group_order' in body) {
-    const v = body.group_order
-    updates.push('group_order = ?')
-    values.push(Array.isArray(v) ? JSON.stringify(v) : v)
-  }
-  if (body.collapsed_groups !== undefined){ updates.push('collapsed_groups = ?'); values.push(JSON.stringify(body.collapsed_groups)) }
-  if (body.color_rules !== undefined) {
-    if (!Array.isArray(body.color_rules)) return res.status(400).json({ error: 'color_rules doit être un tableau' })
-    updates.push('color_rules = ?'); values.push(JSON.stringify(body.color_rules))
-  }
-  if (body.sort_order !== undefined)      { updates.push('sort_order = ?');      values.push(body.sort_order) }
+  const raw = v => v
+  const json = v => JSON.stringify(v)
+  // group_by / group_order : string (legacy mono-niveau) gardée telle quelle, array sérialisé.
+  const jsonIfArray = v => (Array.isArray(v) ? JSON.stringify(v) : v)
+  const { setClause, values } = buildPartialUpdate(body, {
+    allowed: ['label', 'color', 'filters', 'visible_columns', 'sort', 'group_by', 'group_order', 'collapsed_groups', 'color_rules', 'sort_order'],
+    coerce: {
+      label: raw, color: raw, sort_order: raw,
+      filters: json, visible_columns: json, sort: json, collapsed_groups: json, color_rules: json,
+      group_by: jsonIfArray, group_order: jsonIfArray,
+    },
+  })
 
-  if (updates.length === 0) return res.status(400).json({ error: 'Aucun champ à modifier' })
+  if (!setClause) return res.status(400).json({ error: 'Aucun champ à modifier' })
 
-  db.prepare(`UPDATE table_view_pills SET ${updates.join(', ')} WHERE id=?`).run(...values, id)
+  db.prepare(`UPDATE table_view_pills SET ${setClause} WHERE id=?`).run(...values, id)
 
   const updated = db.prepare('SELECT * FROM table_view_pills WHERE id=?').get(id)
   res.json(parsePill(updated))
@@ -358,7 +371,7 @@ router.put('/detail/:entityType', requireAdmin, (req, res) => {
       .run(JSON.stringify(field_order), existing.id)
   } else {
     db.prepare('INSERT INTO detail_field_configs (id, entity_type, field_order) VALUES (?,?,?)')
-      .run(uuidv4(), req.params.entityType, JSON.stringify(field_order))
+      .run(newRecordId(), req.params.entityType, JSON.stringify(field_order))
   }
   res.json({ ok: true })
 })

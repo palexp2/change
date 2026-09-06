@@ -1,14 +1,14 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import {
-  ArrowLeft, ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight,
   RefreshCw, AlertCircle, CheckCircle, Clock, BookOpen, ReceiptText,
   Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail, Sparkles, FileX, Paperclip,
   ArrowLeftRight,
 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
-import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { CurrencyConversionModal } from '../components/CurrencyConversionModal.jsx'
@@ -49,6 +49,8 @@ function withRecomputedTotal(receipt, patch) {
 }
 
 import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
+import { Field } from '../components/Field.jsx'
+import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
 
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
@@ -680,10 +682,9 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
               value={vendorId}
               options={vendorOptions}
               onChange={v => { setVendorId(v); saveDraft({ vendor_id: v || null }) }}
-              placeholder="— Aucun —"
             />
           ) : (
-            <input type="text" placeholder="Nom du fournisseur" value={newVendorName} onChange={e => setNewVendorName(e.target.value)} className="input-field text-xs w-full" />
+            <input type="text" value={newVendorName} onChange={e => setNewVendorName(e.target.value)} className="input-field text-xs w-full" />
           )}
         </div>
 
@@ -694,7 +695,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             value={expenseAccountId}
             options={expenseOptions}
             onChange={touchAndDraft(setExpenseAccountId, 'expense_account_id')}
-            placeholder="— Sélectionner —"
           />
           {partsApplied && !userTouchedRef.current && (
             <p data-testid="qb-parts-account-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
@@ -722,7 +722,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
               value={paymentAccountId}
               options={type === 'cc_credit' ? creditCardOptions : paymentOptions}
               onChange={touchAndDraft(setPaymentAccountId, 'payment_account_id')}
-              placeholder="— Sélectionner —"
             />
             {type === 'cc_credit' && (
               <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
@@ -846,7 +845,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             value={transactionType}
             options={txTypeOptions}
             onChange={changeTransactionType}
-            placeholder="— Sélectionner le statut fiscal —"
           />
           {!transactionType && (
             <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1 mt-1.5 leading-snug" data-testid="qb-txtype-missing">
@@ -907,7 +905,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             value={taxCodeId}
             options={taxCodeOptions}
             onChange={changeDocCode}
-            placeholder="— Aucune taxe —"
           />
           {selectedType ? (
             fiscalOk ? (
@@ -947,7 +944,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                 type="text"
                 value={anomalyReason}
                 onChange={e => setAnomalyReason(e.target.value)}
-                placeholder="Pourquoi ce n'est pas un doublon (facultatif)"
                 data-testid="qb-anomaly-reason"
                 className="input-field text-[11px] w-full bg-white"
               />
@@ -1084,7 +1080,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                     value={forceReason}
                     onChange={e => setForceReason(e.target.value)}
                     rows={2}
-                    placeholder="Ex. cas particulier hors-Sheet, fournisseur avec régime spécifique…"
                     className="input-field text-xs w-full"
                   />
                 </div>
@@ -1135,8 +1130,7 @@ function CurrencyField({ receipt, onUpdate }) {
   }
 
   return (
-    <div>
-      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">Devise</p>
+    <Field table="sale_receipts" id="currency" label="Devise" labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
       <div className="flex items-center gap-2 mt-0.5">
         <select
           className="input-field text-sm py-1 px-2"
@@ -1152,16 +1146,15 @@ function CurrencyField({ receipt, onUpdate }) {
         </select>
         {saving && <RefreshCw size={12} className="animate-spin text-slate-400" />}
       </div>
-    </div>
+    </Field>
   )
 }
 
-function InfoField({ label, value }) {
+function InfoField({ id, label, value }) {
   return (
-    <div>
-      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">{label}</p>
+    <Field table="sale_receipts" id={id} label={label} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
       <p className="text-sm text-slate-700 mt-0.5">{value || <span className="text-slate-300">—</span>}</p>
-    </div>
+    </Field>
   )
 }
 
@@ -1195,8 +1188,7 @@ function EditableDateField({ receipt, field, label, onUpdate, testId }) {
   }
 
   return (
-    <div>
-      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">{label}</p>
+    <Field table="sale_receipts" id={field} label={label} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
       <div className="flex items-center gap-1 mt-0.5">
         {editing ? (
           <input
@@ -1221,11 +1213,11 @@ function EditableDateField({ receipt, field, label, onUpdate, testId }) {
         )}
         {saving && <RefreshCw size={11} className="animate-spin text-slate-400 flex-shrink-0" />}
       </div>
-    </div>
+    </Field>
   )
 }
 
-function EditableTextField({ receipt, field, label, placeholder, onUpdate, testId }) {
+function EditableTextField({ receipt, field, label, onUpdate, testId }) {
   const { addToast } = useToast()
   const [value, setValue] = useState(receipt[field] || '')
   const [saving, setSaving] = useState(false)
@@ -1248,8 +1240,7 @@ function EditableTextField({ receipt, field, label, placeholder, onUpdate, testI
   }
 
   return (
-    <div>
-      <p className="text-xs text-slate-400 uppercase tracking-wide font-medium">{label}</p>
+    <Field table="sale_receipts" id={field} label={label} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
       <div className="flex items-center gap-1 mt-0.5">
         <input
           type="text"
@@ -1258,13 +1249,12 @@ function EditableTextField({ receipt, field, label, placeholder, onUpdate, testI
           onChange={e => setValue(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
-          placeholder={placeholder || '—'}
           disabled={saving}
           className="w-full text-sm text-slate-700 bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded px-2 py-0.5 -ml-2 outline-none"
         />
         {saving && <RefreshCw size={11} className="animate-spin text-slate-400 flex-shrink-0" />}
       </div>
-    </div>
+    </Field>
   )
 }
 
@@ -1303,7 +1293,6 @@ function EditableMemoField({ receipt, onUpdate }) {
           value={desc}
           onChange={e => setDesc(e.target.value)}
           onBlur={() => commitField('general_description', desc, receipt.general_description, setSavingDesc, () => setDesc(receipt.general_description || ''))}
-          placeholder="Objet principal de la facture (ex. « Pièces de plomberie »)"
           disabled={savingDesc}
           className="w-full text-sm text-slate-700 bg-white border border-slate-300 hover:border-slate-400 focus:border-brand-500 rounded px-3 py-2 outline-none placeholder:text-slate-300"
         />
@@ -1328,7 +1317,6 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
         options={options}
         emptyOption="— Aucun achat —"
         onChange={val => onSelect(val || null)}
-        placeholder="— Aucun achat —"
       />
       {item.purchase_id && (
         <div className="flex items-center gap-1.5 px-1 text-[11px] min-w-0">
@@ -1626,7 +1614,6 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                 value={item.description || ''}
                 onChange={e => updateItem(i, { description: e.target.value })}
                 onBlur={() => commit()}
-                placeholder="Description"
                 title={item.description || ''}
                 className="flex-1 min-w-0 px-2 py-1 text-sm bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded outline-none"
               />
@@ -1636,7 +1623,6 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                 value={item.total ?? ''}
                 onChange={e => updateItem(i, { total: e.target.value })}
                 onBlur={() => commit()}
-                placeholder="—"
                 aria-label="Total de la ligne"
                 className="w-28 shrink-0 px-2 py-1 text-sm text-right tabular-nums font-medium bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded outline-none"
               />
@@ -1672,7 +1658,6 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                   options={taxCodeOptions}
                   emptyOption="— Code du document —"
                   onChange={val => setTaxCode(i, val)}
-                  placeholder="— Code du document —"
                 />
               </div>
             </div>
@@ -1688,7 +1673,6 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                 options={lineAccountOptions}
                 emptyOption="— Compte du document —"
                 onChange={val => setLineExpenseAccount(i, val)}
-                placeholder="— Compte du document —"
               />
             </div>
           </div>
@@ -1798,7 +1782,6 @@ function EditableAmountRow({ receipt, field, label, bold, onUpdate, readOnly, hi
           onChange={e => setValue(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
-          placeholder="—"
           disabled={saving}
           className={`tabular-nums text-right bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded px-2 py-0.5 w-28 text-sm outline-none ${
             bold ? 'font-bold text-slate-900 text-base' : 'text-slate-700'
@@ -2021,7 +2004,6 @@ function EditableTotalTaxesRow({ receipt, onUpdate }) {
           onChange={e => setValue(e.target.value)}
           onBlur={commit}
           onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
-          placeholder="—"
           disabled={saving}
           title="Modifier le total des taxes — réparti au prorata sur TPS / TVQ / Autres taxes"
           className="tabular-nums text-right bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded px-2 py-0.5 w-28 text-sm font-medium text-slate-700 outline-none"
@@ -2400,9 +2382,15 @@ function PrepaidStatementBanner({ receipt, onDone }) {
   )
 }
 
-export default function SaleReceiptDetail() {
-  const { id } = useParams()
+// Fiche d'un reçu / facture fournisseur. Rendue exclusivement dans un panneau
+// latéral (large : le PDF et l'extraction cohabitent) — `recordId`/`onClose`
+// viennent du panneau, `useParams` sert au montage depuis l'URL.
+export default function SaleReceiptDetail({ recordId, onClose }) {
+  const { id: paramId } = useParams()
+  const id = recordId ?? paramId
   const navigate = useNavigate()
+  // Quitter la fiche : refermer le panneau (ou, à défaut, revenir à la liste).
+  const leave = () => { if (onClose) onClose(); else navigate('/sale-receipts') }
   const { addToast } = useToast()
   const confirm = useConfirm()
   const { record: receipt, setRecord: setReceipt, loading, loadError, reload: load } =
@@ -2452,7 +2440,7 @@ export default function SaleReceiptDetail() {
       setReceipt(updated)
       addToast({ message: updated.archived_at ? 'Reçu archivé' : 'Reçu désarchivé', type: 'success' })
       // À l'archivage, on sort du document et on revient à l'interface Extraction de données.
-      if (updated.archived_at) navigate('/sale-receipts')
+      if (updated.archived_at) leave()
     } catch (e) {
       addToast({ message: 'Erreur: ' + e.message, type: 'error' })
     } finally {
@@ -2502,7 +2490,7 @@ export default function SaleReceiptDetail() {
     try {
       await api.saleReceipts.delete(receipt.id)
       addToast({ message: 'Reçu supprimé', type: 'success' })
-      navigate('/sale-receipts')
+      leave()
     } catch (e) {
       addToast({ message: 'Erreur: ' + e.message, type: 'error' })
       setActing(false)
@@ -2520,7 +2508,7 @@ export default function SaleReceiptDetail() {
     try {
       await api.saleReceipts.markUnread(receipt.id)
       addToast({ message: 'Marqué non lu', type: 'success' })
-      navigate('/sale-receipts')
+      leave()
     } catch (e) {
       addToast({ message: 'Erreur: ' + e.message, type: 'error' })
     }
@@ -2584,49 +2572,27 @@ export default function SaleReceiptDetail() {
   const prevId = currentIdx > 0 ? allIds[currentIdx - 1] : null
   const nextId = currentIdx >= 0 && currentIdx < allIds.length - 1 ? allIds[currentIdx + 1] : null
 
-  if (loading) {
-    return (
-      <Layout>
-        <Spinner center />
-      </Layout>
-    )
-  }
+  if (loading) return <Spinner center />
 
   if (loadError && !receipt) {
-    return <Layout><DetailLoadError message={loadError} onRetry={load} /></Layout>
+    return <DetailLoadError message={loadError} onRetry={load} />
   }
 
   if (!receipt) {
-    return (
-      <Layout>
-        <div className="p-6 max-w-4xl mx-auto">
-          <button onClick={() => navigate('/sale-receipts')} className="inline-flex items-center gap-2 text-sm text-slate-500 hover:text-slate-700">
-            <ArrowLeft size={16} /> Retour à la liste
-          </button>
-          <div className="mt-6 text-slate-500">Reçu introuvable.</div>
-        </div>
-      </Layout>
-    )
+    return <div className="p-6 text-slate-500">Reçu introuvable.</div>
   }
 
   const isPdf = receipt.file_type === '.pdf'
 
   return (
-    <Layout>
+    <>
       <div className="p-6">
         <div className="flex items-start gap-4 mb-4">
-          <button
-            onClick={() => navigate('/sale-receipts')}
-            className="mt-1 p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg"
-            title="Retour à la liste"
-            aria-label="Retour"
-          >
-            <ArrowLeft size={18} />
-          </button>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
-              <ReceiptText size={20} className="text-slate-400" />
-              <h1 className="text-2xl font-bold text-slate-900 truncate">{receipt.company || receipt.original_name}</h1>
+              <PageTitle className="min-w-0" titleClassName="text-2xl font-bold text-slate-900 truncate">
+                {receipt.company || receipt.original_name}
+              </PageTitle>
               <StatusBadge status={receipt.status} />
               {receipt.quickbooks_id && (
                 receipt.quickbooks_url ? (
@@ -2778,18 +2744,19 @@ export default function SaleReceiptDetail() {
                     // (même ordre que les flèches ‹ › — vue filtrée/triée mémorisée au clic
                     // sur la ligne) pour traiter la pile sans repasser par le menu. Dernier
                     // document de la liste → retour à l'interface Extraction de données.
-                    navigate(nextId ? `/sale-receipts/${nextId}` : '/sale-receipts')
+                    if (nextId) navigate(`/sale-receipts/${nextId}`); else leave()
                   }}
                 />
               )}
 
               <div className="grid grid-cols-2 gap-4">
-                <EditableTextField receipt={receipt} field="company" label="Entreprise" placeholder="Nom du fournisseur" onUpdate={setReceipt} testId="receipt-company" />
+                <EditableTextField receipt={receipt} field="company" label="Entreprise" onUpdate={setReceipt} testId="receipt-company" />
                 <EditableDateField receipt={receipt} field="receipt_date" label="Date" onUpdate={setReceipt} testId="receipt-date" />
                 <EditableTextField receipt={receipt} field="receipt_number" label="N° de reçu" onUpdate={setReceipt} testId="receipt-number" />
                 <EditableTextField receipt={receipt} field="payment_method" label="Mode de paiement" onUpdate={setReceipt} testId="receipt-payment-method" />
                 <CurrencyField receipt={receipt} onUpdate={setReceipt} />
-                <InfoField label="Fichier" value={receipt.original_name} />
+                <InfoField id="original_name" label="Fichier" value={receipt.original_name} />
+                <CustomDetailFields table="sale_receipts" record={receipt} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium" />
               </div>
 
               <EditableItems receipt={receipt} onUpdate={setReceipt} taxCodes={taxCodes} accounts={accounts} />
@@ -2854,6 +2821,6 @@ export default function SaleReceiptDetail() {
           addToast({ message: 'Montants convertis', type: 'success' })
         }}
       />
-    </Layout>
+    </>
   )
 }

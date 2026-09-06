@@ -1,5 +1,5 @@
-import { randomUUID } from 'crypto'
 import path from 'path'
+import { newRecordId } from '../utils/recordId.js'
 import fs from 'fs'
 import db from './../db/database.js'
 import { emitEntity } from './realtimeEmitters.js'
@@ -7,6 +7,7 @@ import { logSync } from './syncLog.js'
 import {
   getConfig, isDigikeyConfigured, digikeyGet, digikeyGetBinary,
 } from '../connectors/digikey.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // ── Sync des commandes DigiKey ────────────────────────────────────────────────
 // Interroge périodiquement l'Order History / Order Details de DigiKey, crée (ou
@@ -28,7 +29,7 @@ import {
 // essaie plusieurs noms de champ, et la réponse brute est conservée dans
 // `digikey_orders.raw` pour pouvoir calibrer au premier vrai passage.
 
-const UPLOADS_ROOT = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+const UPLOADS_ROOT = uploadsPath()
 const FACTURES_DIR = path.join(UPLOADS_ROOT, 'factures', 'digikey')
 const REL_DIR = 'factures/digikey' // chemin relatif à uploads/, convention CLAUDE.md
 
@@ -209,7 +210,7 @@ function upsertAchat(fields, existingAchatId, userId) {
     if (dup) return { id: dup.id, action: 'linked_existing' }
   }
 
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO achats_fournisseurs
       (id, type, date_achat, vendor, vendor_id, vendor_invoice_number, reference, description,
@@ -240,7 +241,7 @@ function storeInvoicePdf({ buffer, invoiceKey, achatId, userId }) {
     db.prepare(`
       INSERT INTO attachments (id, entity_type, entity_id, file_name, content_type, file_size, file_path, uploaded_by)
       VALUES (?, 'achats_fournisseurs', ?, ?, 'application/pdf', ?, ?, ?)
-    `).run(randomUUID(), achatId, fileName, buffer.length, relPath, userId)
+    `).run(newRecordId(), achatId, fileName, buffer.length, relPath, userId)
   }
   return relPath
 }
@@ -381,7 +382,7 @@ export async function syncDigikey({ days, trigger = 'scheduled', dryRun = false 
             INSERT INTO digikey_orders
               (id, track_key, sales_order_id, invoice_id, achat_id, pdf_path, order_date, total, currency, raw)
             VALUES (?,?,?,?,?,?,?,?,?,?)
-          `).run(randomUUID(), trackKey, order.salesOrderId, invoiceId, achatId, pdfPath,
+          `).run(newRecordId(), trackKey, order.salesOrderId, invoiceId, achatId, pdfPath,
             order.orderDate, order.total, fields.currency, rawJson)
         }
       } catch (e) {

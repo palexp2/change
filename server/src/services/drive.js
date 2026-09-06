@@ -1,9 +1,11 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync } from 'fs'
+import { createReadStream, createWriteStream, existsSync } from 'fs'
+import { newRecordId } from '../utils/recordId.js'
 import { join } from 'path'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { getDriveClient } from '../connectors/google.js'
 import { enqueueTranscription } from './whisper.js'
+import { ensureUploadsDir } from '../config/uploads.js'
 
 function parseAcrFilename(filename) {
   const m = filename.match(/^(\d{4}-\d{2}-\d{2}) (\d{2}-\d{2}-\d{2}) \(phone\) (.+?) \(([+\d\s\-()]+)\) ([↗↙])/)
@@ -40,7 +42,7 @@ function findOrCreateContact(phone, contactName) {
     const byName = db.prepare(`SELECT id FROM contacts WHERE last_name LIKE ? LIMIT 1`).get(`%${lastName}%`)
     if (byName) return byName.id
   }
-  const id = uuid()
+  const id = newRecordId()
   const parts = (contactName || '').trim().split(' ')
   db.prepare('INSERT INTO contacts (id, first_name, last_name, phone) VALUES (?,?,?,?)')
     .run(id, parts[0] || '', parts.slice(1).join(' ') || '', phone || null)
@@ -86,8 +88,7 @@ export async function uploadFileToDrive(connectorOAuthId, {
 }
 
 async function syncFolder(drive, folderId, userId) {
-  const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
-  if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
+  const uploadsDir = ensureUploadsDir('calls')
 
   const params = {
     q: `'${folderId}' in parents and (mimeType contains 'audio/' or mimeType contains 'video/') and trashed=false`,
@@ -133,8 +134,8 @@ async function syncFolder(drive, folderId, userId) {
       ? findOrCreateContact(phone, parsed.contactName)
       : null
 
-    const interactionId = uuid()
-    const callId = uuid()
+    const interactionId = newRecordId()
+    const callId = newRecordId()
 
     db.prepare('INSERT INTO interactions (id, contact_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?)')
       .run(interactionId, contactId, userId || null, 'call', direction, parsed.timestamp)

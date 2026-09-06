@@ -1,5 +1,5 @@
 import { Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
 import { NavPrefsProvider } from './lib/navPrefs.jsx'
 import { DecimalPrefsProvider } from './lib/decimalPrefs.jsx'
@@ -13,8 +13,11 @@ import { UndoSendProvider } from './components/UndoSendProvider.jsx'
 import { TravauxQuickProvider } from './components/TravauxQuickPanel.jsx'
 import ServerOfflineOverlay from './components/ServerOfflineOverlay.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import RecordRoutePanel from './components/RecordRoutePanel.jsx'
+import { FeedbackFab } from './components/FeedbackFab.jsx'
 import { useFavicon } from './hooks/useFavicon.js'
 import { legacyFinanceTarget } from './lib/financeSections.js'
+import { PEEK_ROUTES, matchPeekRoute, canOpenRecord } from './lib/recordPeekRoutes.jsx'
 
 import Login from './pages/Login.jsx'
 import Setup from './pages/Setup.jsx'
@@ -22,23 +25,15 @@ import Dashboard from './pages/Dashboard.jsx'
 import Pipeline from './pages/Pipeline.jsx'
 import FieldConfig, { AirtableFieldsRedirect } from './pages/FieldConfig.jsx'
 import Orders from './pages/Orders.jsx'
-import OrderDetail from './pages/OrderDetail.jsx'
 import Products from './pages/Products.jsx'
-import ProductDetail from './pages/ProductDetail.jsx'
 import Tickets from './pages/Tickets.jsx'
-import TicketDetail from './pages/TicketDetail.jsx'
-import Admin from './pages/Admin.jsx'
 import Interactions from './pages/Interactions.jsx'
 import Connectors from './pages/Connectors.jsx'
 import Purchases from './pages/Purchases.jsx'
-import PurchaseDetail from './pages/PurchaseDetail.jsx'
 import SerialNumbers from './pages/SerialNumbers.jsx'
-import SerialDetail from './pages/SerialDetail.jsx'
 import SerialAccountingRules from './pages/SerialAccountingRules.jsx'
 import Retours from './pages/Retours.jsx'
-import RetourDetail from './pages/RetourDetail.jsx'
 import Factures from './pages/Factures.jsx'
-import FactureDetail from './pages/FactureDetail.jsx'
 import Paiements from './pages/Paiements.jsx'
 import PaiementsEmis from './pages/PaiementsEmis.jsx'
 import ItemsVendus from './pages/ItemsVendus.jsx'
@@ -46,23 +41,18 @@ import Abonnements from './pages/Abonnements.jsx'
 import AbonnementMouvements from './pages/AbonnementMouvements.jsx'
 import Assemblages from './pages/Assemblages.jsx'
 import PrioriteAssemblage from './pages/PrioriteAssemblage.jsx'
-import ProjectDetail from './pages/ProjectDetail.jsx'
-import SoumissionDetail from './pages/SoumissionDetail.jsx'
 import Envois from './pages/Envois.jsx'
-import EnvoisDetail from './pages/EnvoisDetail.jsx'
 import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
 import Tasks from './pages/Tasks.jsx'
 import RelanceQualification from './pages/RelanceQualification.jsx'
 import QualificationCall from './pages/QualificationCall.jsx'
-import Agent from './pages/Agent.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import VendorSubscriptions from './pages/VendorSubscriptions.jsx'
 import VendorProfiles from './pages/VendorProfiles.jsx'
 import PrepaidAccounts from './pages/PrepaidAccounts.jsx'
 import DriveInventory from './pages/DriveInventory.jsx'
 import TestsAntoine from './pages/TestsAntoine.jsx'
-import ReqProspects from './pages/ReqProspects.jsx'
 import FinDeMois from './pages/FinDeMois.jsx'
 import Travaux from './pages/Travaux.jsx'
 import DettesLT from './pages/DettesLT.jsx'
@@ -70,28 +60,22 @@ import MarketingBudget from './pages/MarketingBudget.jsx'
 import InstagramProspects from './pages/InstagramProspects.jsx'
 import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
-import SaleReceiptDetail from './pages/SaleReceiptDetail.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import Employees from './pages/Employees.jsx'
-import EmployeeDetail from './pages/EmployeeDetail.jsx'
 import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
 import CodesActivite from './pages/CodesActivite.jsx'
 import BanqueHeures from './pages/BanqueHeures.jsx'
 import Paies from './pages/Paies.jsx'
 import Contacts from './pages/Contacts.jsx'
-import ContactDetail from './pages/ContactDetail.jsx'
 import Companies from './pages/Companies.jsx'
-import CompanyDetail from './pages/CompanyDetail.jsx'
 import StripePayouts from './pages/StripePayouts.jsx'
-import StripePayoutDetail from './pages/StripePayoutDetail.jsx'
-import DirectDepositDetail from './pages/DirectDepositDetail.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
 import TicketSurvey from './pages/TicketSurvey.jsx'
 import DiscoveryForms from './pages/DiscoveryForms.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
-import Settings from './pages/Settings.jsx'
+import Parametres, { AdminRedirect } from './pages/Parametres.jsx'
 import ActivityFeed from './pages/ActivityFeed.jsx'
 import Changelog from './pages/Changelog.jsx'
 import Architecture from './pages/Architecture.jsx'
@@ -128,6 +112,22 @@ function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
   return children
 }
 
+// Formulaire de découverte technique — page publique (le client la remplit sans
+// compte), donc montée hors Layout : la bulle « Modifier le système » n'y était
+// pas. Quand une session ERP est ouverte dans le navigateur, c'est un employé de
+// Boréal qui regarde le formulaire : on superpose la bulle pour qu'il puisse
+// demander un changement AU formulaire depuis le formulaire. Le client, lui, ne
+// voit jamais rien.
+function DiscoveryFormPage() {
+  const { user } = useAuth()
+  return (
+    <>
+      <CustomerPostPayment />
+      {user && <FeedbackFab contextRecord="Formulaire de découverte technique (client)" />}
+    </>
+  )
+}
+
 function AppRoutes() {
   const { user } = useAuth()
   const location = useLocation()
@@ -153,7 +153,27 @@ function AppRoutes() {
   // pap@orisha.io (id ci-dessous) atterrit sur /agent ; tout le monde sur /dashboard.
   // On cible par id car le JWT ne porte pas l'email (payload = { id, role, name }).
   const PAP_USER_ID = '5637ebf2-74e8-4245-9f1e-64d80b53b216'
-  const homePath = user?.id === PAP_USER_ID ? '/agent' : '/dashboard'
+  const homePath = user?.id === PAP_USER_ID ? '/travaux' : '/dashboard'
+
+  // ── Fiches : toujours en panneau, jamais en pleine page ───────────────────
+  // Aucune route ne monte de fiche : quand l'URL courante est celle d'un
+  // enregistrement (/orders/<id>, /contacts/<id>…), on rend la page de FOND
+  // (celle d'où l'on vient) et on superpose le panneau latéral. Un lien collé
+  // ou un rechargement n'a pas de page d'où venir : le fond est alors la liste
+  // d'origine de la ressource. Résultat : la fiche pleine page n'existe plus
+  // comme état possible de l'app, quel que soit le chemin d'arrivée.
+  const recordMatch = matchPeekRoute(location.pathname)
+  const recordDef = recordMatch ? PEEK_ROUTES[recordMatch.resource] : null
+  const backgroundRef = useRef(null)
+  if (!recordMatch) backgroundRef.current = location
+  // Fermer le panneau = revenir en arrière quand on venait d'une page de l'app,
+  // sinon retomber sur la liste (pas d'historique à remonter).
+  const canGoBack = !!backgroundRef.current
+  const background = recordMatch
+    ? (backgroundRef.current || {
+      pathname: recordDef?.list || homePath, search: '', hash: '', state: null, key: 'record-background',
+    })
+    : null
 
   return (
     // key={pageKey(...)} : remonte le boundary quand on change réellement de
@@ -162,14 +182,18 @@ function AppRoutes() {
     // changent pas la clé : sinon cliquer une section du dashboard détruisait
     // toute la page et renvoyait le scroll en haut.
     // resetKey : efface l'état d'erreur même sur ces navigations internes.
-    <ErrorBoundary key={pageKey(location.pathname)} resetKey={location.pathname}>
-    <Routes>
+    // La clé suit la page de FOND : ouvrir/fermer une fiche en panneau ne doit
+    // pas remonter (ni recharger, ni faire remonter le scroll de) la page
+    // dessous.
+    <ErrorBoundary key={pageKey((background || location).pathname)} resetKey={location.pathname}>
+    <>
+    <Routes location={background || undefined}>
       <Route path="/" element={<Navigate to={user ? homePath : '/login'} replace />} />
       <Route path="/login" element={user ? <Navigate to={homePath} replace /> : <Login />} />
       <Route path="/setup" element={<Setup />} />
-      <Route path="/customer/post-payment" element={<CustomerPostPayment />} />
+      <Route path="/customer/post-payment" element={<DiscoveryFormPage />} />
       {/* Lien public court vers le formulaire de découverte technique — accessible sans login. */}
-      <Route path="/d/:token" element={<CustomerPostPayment />} />
+      <Route path="/d/:token" element={<DiscoveryFormPage />} />
       {/* Sondage de satisfaction envoyé par SMS — public, le jeton est le secret. */}
       <Route path="/s/:token" element={<TicketSurvey />} />
 
@@ -183,27 +207,19 @@ function AppRoutes() {
       <Route path="/airtable/fields/:module" element={<ProtectedRoute adminOnly><AirtableFieldsRedirect /></ProtectedRoute>} />
       <Route path="/champs/:table" element={<ProtectedRoute><FieldConfig /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
-      <Route path="/orders/:id" element={<ProtectedRoute><OrderDetail /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
-      <Route path="/products/:id" element={<ProtectedRoute><ProductDetail /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
       <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
       <Route path="/qualification-call" element={<ProtectedRoute><QualificationCall /></ProtectedRoute>} />
       <Route path="/discovery-forms" element={<ProtectedRoute><DiscoveryForms /></ProtectedRoute>} />
       <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
-      <Route path="/tickets/:id" element={<ProtectedRoute><TicketDetail /></ProtectedRoute>} />
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />
       <Route path="/connectors" element={<ProtectedRoute><Connectors /></ProtectedRoute>} />
       <Route path="/purchases" element={<ProtectedRoute><Purchases /></ProtectedRoute>} />
-      <Route path="/purchases/:id" element={<ProtectedRoute><PurchaseDetail /></ProtectedRoute>} />
       <Route path="/serials" element={<ProtectedRoute><SerialNumbers /></ProtectedRoute>} />
-      <Route path="/serials/:id" element={<ProtectedRoute><SerialDetail /></ProtectedRoute>} />
       <Route path="/comptabilite/regles-serials" element={<ProtectedRoute adminOnly><SerialAccountingRules /></ProtectedRoute>} />
-      <Route path="/projects/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
       <Route path="/retours" element={<ProtectedRoute><Retours /></ProtectedRoute>} />
-      <Route path="/retours/:id" element={<ProtectedRoute><RetourDetail /></ProtectedRoute>} />
       <Route path="/factures" element={<ProtectedRoute><Factures /></ProtectedRoute>} />
-      <Route path="/factures/:id" element={<ProtectedRoute><FactureDetail /></ProtectedRoute>} />
       <Route path="/paiements" element={<ProtectedRoute><Paiements /></ProtectedRoute>} />
       {/* Paiements ÉMIS (remplace l'onglet Pmt_Suivi) — distinct de /paiements (encaissements clients) */}
       <Route path="/paiements-emis" element={<ProtectedRoute><PaiementsEmis /></ProtectedRoute>} />
@@ -212,9 +228,7 @@ function AppRoutes() {
       <Route path="/abonnements/mouvements" element={<ProtectedRoute><AbonnementMouvements /></ProtectedRoute>} />
       <Route path="/assemblages" element={<ProtectedRoute><Assemblages /></ProtectedRoute>} />
       <Route path="/priorite-assemblage" element={<ProtectedRoute><PrioriteAssemblage /></ProtectedRoute>} />
-      <Route path="/soumissions/:id" element={<ProtectedRoute><SoumissionDetail /></ProtectedRoute>} />
       <Route path="/envois" element={<ProtectedRoute><Envois /></ProtectedRoute>} />
-      <Route path="/envois/:id" element={<ProtectedRoute><EnvoisDetail /></ProtectedRoute>} />
       <Route path="/fournisseurs" element={<ProtectedRoute><VendorProfiles /></ProtectedRoute>} />
       <Route path="/fournisseurs/achats" element={<ProtectedRoute><AchatsFournisseurs /></ProtectedRoute>} />
       <Route path="/fournisseurs/abonnements" element={<ProtectedRoute><VendorSubscriptions /></ProtectedRoute>} />
@@ -223,10 +237,6 @@ function AppRoutes() {
       <Route path="/comptes-prepayes" element={<ProtectedRoute><PrepaidAccounts /></ProtectedRoute>} />
       <Route path="/inventaire-drive" element={<ProtectedRoute><DriveInventory /></ProtectedRoute>} />
       <Route path="/tests-antoine" element={<ProtectedRoute><TestsAntoine /></ProtectedRoute>} />
-      {/* Sous-route de « Tests – Antoine » : elle apparaît dans le sous-menu de
-          cette entrée du flyout Espace finance (cf. lib/navSubsections.js), et
-          Projets y renvoie depuis sa barre d'actions. */}
-      <Route path="/tests-antoine/prospects-req" element={<ProtectedRoute><ReqProspects /></ProtectedRoute>} />
       <Route path="/fin-de-mois" element={<ProtectedRoute><FinDeMois /></ProtectedRoute>} />
       <Route path="/travaux" element={<ProtectedRoute><Travaux /></ProtectedRoute>} />
       <Route path="/dettes-lt" element={<ProtectedRoute><DettesLT /></ProtectedRoute>} />
@@ -245,42 +255,40 @@ function AppRoutes() {
       <Route path="/depenses" element={<Navigate to="/fournisseurs/achats" replace />} />
       <Route path="/factures-fournisseurs" element={<Navigate to="/fournisseurs/achats" replace />} />
       <Route path="/sale-receipts" element={<ProtectedRoute><SaleReceipts /></ProtectedRoute>} />
-      <Route path="/sale-receipts/:id" element={<ProtectedRoute><SaleReceiptDetail /></ProtectedRoute>} />
       <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
-      <Route path="/stripe-payouts/:stripeId" element={<ProtectedRoute><StripePayoutDetail /></ProtectedRoute>} />
-      <Route path="/depots-directs/:id" element={<ProtectedRoute><DirectDepositDetail /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
-      <Route path="/employees/:id" element={<ProtectedRoute hrOnly><EmployeeDetail /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
       <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />
       <Route path="/banque-heures" element={<ProtectedRoute><BanqueHeures /></ProtectedRoute>} />
       <Route path="/paies" element={<ProtectedRoute><Paies /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
-      <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetail /></ProtectedRoute>} />
       <Route path="/companies" element={<ProtectedRoute><Companies /></ProtectedRoute>} />
-      <Route path="/companies/:id" element={<ProtectedRoute><CompanyDetail /></ProtectedRoute>} />
-      <Route path="/admin" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
-      <Route path="/admin/:tab" element={<ProtectedRoute adminOnly><Admin /></ProtectedRoute>} />
+      {/* L'admin est devenu la partie « Administration » des Paramètres. */}
+      <Route path="/admin" element={<AdminRedirect />} />
+      <Route path="/admin/:tab" element={<AdminRedirect />} />
 
       <Route path="/public-files" element={<ProtectedRoute><PublicFiles /></ProtectedRoute>} />
       <Route path="/activity" element={<ProtectedRoute adminOnly><ActivityFeed /></ProtectedRoute>} />
-      <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+      <Route path="/parametres" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
+      <Route path="/parametres/:section" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
+      <Route path="/settings" element={<Navigate to="/parametres" replace />} />
       <Route path="/changelog" element={<ProtectedRoute><Changelog /></ProtectedRoute>} />
       <Route path="/architecture" element={<ProtectedRoute adminOnly><Architecture /></ProtectedRoute>} />
       <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
       <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
-      <Route path="/agent" element={<ProtectedRoute><Agent /></ProtectedRoute>} />
-      {/* File de prompts propre à la section Agent — même page que /travaux, mais
-          liste distincte (space='agent') ; suggestions et idées partagées. */}
-      <Route path="/agent/travaux" element={<ProtectedRoute><Travaux space="agent" /></ProtectedRoute>} />
-
       <Route path="/__boom" element={<ProtectedRoute adminOnly><CrashTest /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    {/* La fiche de l'enregistrement pointé par l'URL, par-dessus la page de
+        fond. Les gardes de rôle de la liste s'appliquent (RH, admin). */}
+    {recordMatch && canOpenRecord(user, recordDef) && (
+      <RecordRoutePanel key={recordMatch.path} match={recordMatch} canGoBack={canGoBack} />
+    )}
+    </>
     </ErrorBoundary>
   )
 }

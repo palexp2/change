@@ -129,7 +129,7 @@ export default function TestsAntoine() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <input className={`${inputCls} w-44`} placeholder="Région (optionnel)" value={region}
+            <input className={`${inputCls} w-44`} value={region}
               data-testid="mapaq-region" onChange={e => setRegion(e.target.value)} />
             <input ref={fileRef} type="file" accept=".csv,text/csv,text/plain" className="hidden"
               data-testid="mapaq-file" onChange={onFile} />
@@ -154,7 +154,6 @@ export default function TestsAntoine() {
           <textarea
             className={`${inputCls} mt-2 w-full font-mono text-xs`} rows={5} value={csv}
             data-testid="mapaq-csv"
-            placeholder="Nom de l'exploitation;Adresse;Municipalité;Région;Catégorie de production"
             onChange={e => { setCsv(e.target.value); setFileName('') }}
           />
         </details>

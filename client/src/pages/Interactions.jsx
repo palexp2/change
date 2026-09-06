@@ -4,6 +4,7 @@ import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-reac
 import api from '../lib/api.js'
 import { loadProgressive } from '../lib/loadAll.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, INTERACTION_TYPE_LABELS as TYPE_LABELS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -311,7 +312,7 @@ export default function Interactions() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Interactions</h1>
+            <PageTitle>Interactions</PageTitle>
           </div>
         </div>
 
@@ -361,7 +362,7 @@ export default function Interactions() {
         subtitle={peekContact?.company || ''}
         to={peekContact ? `/contacts/${peekContact.id}` : undefined}
       >
-        {peekContact && <ContactDetail recordId={peekContact.id} embedded />}
+        {peekContact && <ContactDetail recordId={peekContact.id} embedded onClose={() => setPeekContact(null)} />}
       </RecordPeekDrawer>
     </Layout>
   )

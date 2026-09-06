@@ -10,8 +10,8 @@
 // Idempotent et non destructif : rien n'est écrasé si la ligne existe déjà.
 // Les valeurs ci-dessous sont celles des fichiers 25-26 et 26-27 lus le
 // 2026-08-02 ; les mois suivants sont calculés par l'ERP.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 
 export const RD_PROVISION_ID = 'prov_rd_credit'
 export const LB_PROVISION_ID = 'prov_subv_salariale_lb'
@@ -78,7 +78,7 @@ function seedHistory(provisionId, history) {
       SELECT 1 FROM month_end_provision_months WHERE provision_id = ? AND month = ? AND deleted_at IS NULL
     `).get(provisionId, month)
     if (exists) continue
-    insert.run(randomUUID(), provisionId, month, amount, stamp,
+    insert.run(newRecordId(), provisionId, month, amount, stamp,
       JSON.stringify({ note: 'Repris du fichier Provisions_mensuelles_CTB — écriture passée manuellement dans QuickBooks' }))
     n++
   }
@@ -98,7 +98,7 @@ function seedHours() {
         SELECT 1 FROM rd_month_hours WHERE month = ? AND employee_name = ? AND deleted_at IS NULL
       `).get(month, name)
       if (exists) continue
-      insert.run(randomUUID(), month, name, employeeId, hours, contractor,
+      insert.run(newRecordId(), month, name, employeeId, hours, contractor,
         'Repris du fichier R&D_Suivi_Feuilles de temps')
       n++
     }

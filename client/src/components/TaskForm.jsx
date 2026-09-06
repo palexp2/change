@@ -15,7 +15,7 @@ export function parseKeywords(v) {
   return []
 }
 
-function KeywordPicker({ value, onChange }) {
+export function KeywordPicker({ value, onChange, hideLabel = false }) {
   const [catalog, setCatalog] = useState([])
   const [open, setOpen] = useState(false)
   const [newLabel, setNewLabel] = useState('')
@@ -50,7 +50,7 @@ function KeywordPicker({ value, onChange }) {
 
   return (
     <div>
-      <label className="label">Mots-clés</label>
+      {!hideLabel && <label className="label">Mots-clés</label>}
       <div className="relative">
         <button type="button" onClick={() => setOpen(o => !o)} className="input text-left flex flex-wrap gap-1 min-h-[38px] items-center">
           {selectedLabels.length === 0 && <span className="text-slate-400">Choisir…</span>}
@@ -71,7 +71,7 @@ function KeywordPicker({ value, onChange }) {
               </div>
             ))}
             <div className="flex gap-1 p-2 border-t border-slate-200">
-              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreate(e)} className="input flex-1 text-sm" placeholder="Nouveau mot-clé…" />
+              <input value={newLabel} onChange={e => setNewLabel(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleCreate(e)} className="input flex-1 text-sm" />
               <button type="button" onClick={handleCreate} className="btn-secondary px-2"><Plus size={14} /></button>
             </div>
           </div>
@@ -147,11 +147,11 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
     <form onSubmit={handleSubmit} className="space-y-4">
       <div>
         <label className="label">Titre *</label>
-        <input value={form.title} onChange={f('title')} onBlur={fBlur('title')} className="input" placeholder="Titre de la tâche" autoFocus />
+        <input value={form.title} onChange={f('title')} onBlur={fBlur('title')} className="input" autoFocus />
       </div>
       <div>
         <label className="label">Description</label>
-        <textarea value={form.description} onChange={f('description')} onBlur={fBlur('description')} className="input" rows={2} placeholder="Optionnel" />
+        <textarea value={form.description} onChange={f('description')} onBlur={fBlur('description')} className="input" rows={2} />
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -187,7 +187,6 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
             options={companies}
             labelFn={c => c.name}
             getHref={c => `/companies/${c.id}`}
-            placeholder="Entreprise"
             onChange={setKey('company_id')}
           />
         </div>
@@ -199,7 +198,6 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
             options={contacts}
             labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
             getHref={c => `/contacts/${c.id}`}
-            placeholder="Contact"
             onChange={setKey('contact_id')}
           />
         </div>
@@ -212,7 +210,6 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
           options={tickets}
           labelFn={t => t.title || '(sans titre)'}
           getHref={t => `/tickets/${t.id}`}
-          placeholder="Billet"
           onChange={setKey('ticket_id')}
         />
       </div>
@@ -223,7 +220,6 @@ export default function TaskForm({ initial = {}, companies = [], contacts = [], 
           value={form.assigned_to || ''}
           options={users}
           labelFn={u => u.name}
-          placeholder="Responsable"
           onChange={setKey('assigned_to')}
         />
       </div>

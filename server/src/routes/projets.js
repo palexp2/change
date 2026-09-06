@@ -1,11 +1,12 @@
 import { Router } from 'express'
-import { randomUUID } from 'crypto'
+import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHasPendingStripeDeposit, auditFactureReconciliation } from '../services/quickbooks.js'
 import { logSystemRun } from '../services/systemAutomations.js'
+import { readRelation } from '../services/customFieldsView.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
@@ -18,6 +19,9 @@ import { buildExternalLinks } from '../services/externalLinks.js'
 import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../services/addressCheck.js'
 import { getStripeKey } from '../services/stripe.js'
 import { APP_URL } from '../config/appUrl.js'
+import { uploadsPath } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
 // Stratégie :
@@ -95,10 +99,8 @@ router.use(requireAuth)
 // ── Soumissions ──────────────────────────────────────────────────────────────
 
 router.get('/soumissions', (req, res) => {
-  const { project_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { project_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (project_id) { where += ' AND s.project_id = ?'; params.push(project_id) }
@@ -120,7 +122,7 @@ router.get('/soumissions', (req, res) => {
 router.get('/soumissions/:id', (req, res) => {
   const row = db.prepare(`
     SELECT s.*, p.name as project_name, co.pays_de_livraison as shipping_country
-    FROM soumissions s
+    FROM ${readRelation('soumissions')} s
     LEFT JOIN projects p ON s.project_id = p.id
     LEFT JOIN companies co ON co.id = p.company_id
     WHERE s.id = ?
@@ -161,10 +163,8 @@ router.post('/adresses/check', (req, res) => {
 })
 
 router.get('/adresses', (req, res) => {
-  const { company_id, contact_id, address_type, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { company_id, contact_id, address_type } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) {
@@ -192,7 +192,7 @@ router.get('/adresses', (req, res) => {
 router.get('/adresses/:id', (req, res) => {
   const row = db.prepare(`
     SELECT a.*, co.name as company_name
-    FROM adresses a
+    FROM ${readRelation('adresses')} a
     LEFT JOIN companies co ON a.company_id = co.id
     WHERE a.id = ?
   `).get(req.params.id)
@@ -205,7 +205,7 @@ const ADRESSE_COLUMNS = ['line1', 'city', 'province', 'postal_code', 'country', 
 
 router.post('/adresses', (req, res) => {
   const { line1, city, province, postal_code, country, address_type, company_id, contact_id, language } = req.body
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`INSERT INTO adresses (id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
     VALUES (?,?,?,?,?,?,?,?,?,?)`)
     .run(id, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
@@ -219,16 +219,10 @@ router.post('/adresses', (req, res) => {
 // L'autosave du panneau d'édition envoie un champ à la fois — remettre à NULL
 // les colonnes absentes viderait l'adresse à chaque frappe.
 router.put('/adresses/:id', (req, res) => {
-  const sets = []
-  const params = []
-  for (const col of ADRESSE_COLUMNS) {
-    if (!(col in req.body)) continue
-    sets.push(`${col}=?`)
-    params.push(req.body[col] === '' ? null : (req.body[col] ?? null))
-  }
-  if (sets.length) {
-    db.prepare(`UPDATE adresses SET ${sets.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-      .run(...params, req.params.id)
+  const { setClause, values } = buildPartialUpdate(req.body, { allowed: ADRESSE_COLUMNS })
+  if (setClause) {
+    db.prepare(`UPDATE adresses SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(...values, req.params.id)
   }
   checkAddress(req.params.id, { actorUserId: req.user?.id })
   const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id)
@@ -246,10 +240,8 @@ router.delete('/adresses/:id', (req, res) => {
 // ── BOM Items ────────────────────────────────────────────────────────────────
 
 router.get('/bom', (req, res) => {
-  const { product_id, component_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { product_id, component_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (product_id) { where += ' AND b.product_id = ?'; params.push(product_id) }
@@ -292,10 +284,8 @@ router.get('/bom/:id', (req, res) => {
 // ── Serial State Changes ─────────────────────────────────────────────────────
 
 router.get('/serial-changes', (req, res) => {
-  const { serial_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { serial_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (serial_id) { where += ' AND sc.serial_id = ?'; params.push(serial_id) }
@@ -317,18 +307,16 @@ router.get('/serial-changes', (req, res) => {
 // ── Assemblages ──────────────────────────────────────────────────────────────
 
 router.get('/assemblages', (req, res) => {
-  const { product_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { product_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (product_id) { where += ' AND a.product_id = ?'; params.push(product_id) }
 
-  const total = db.prepare(`SELECT COUNT(*) as c FROM assemblages a ${where}`).get(...params).c
+  const total = db.prepare(`SELECT COUNT(*) as c FROM ${readRelation('assemblages')} a ${where}`).get(...params).c
   const rows = db.prepare(`
     SELECT a.*, p.name_fr as product_name, p.sku
-    FROM assemblages a
+    FROM ${readRelation('assemblages')} a
     LEFT JOIN products p ON a.product_id = p.id
     ${where}
     ORDER BY a.assembled_at DESC
@@ -341,7 +329,7 @@ router.get('/assemblages', (req, res) => {
 router.get('/assemblages/:id', (req, res) => {
   const row = db.prepare(`
     SELECT a.*, p.name_fr as product_name, p.sku
-    FROM assemblages a
+    FROM ${readRelation('assemblages')} a
     LEFT JOIN products p ON a.product_id = p.id
     WHERE a.id = ?
   `).get(req.params.id)
@@ -352,10 +340,8 @@ router.get('/assemblages/:id', (req, res) => {
 // ── Factures ─────────────────────────────────────────────────────────────────
 
 router.get('/factures', (req, res) => {
-  const { company_id, project_id, status, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { company_id, project_id, status } = req.query
+  const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) { where += ' AND f.company_id = ?'; params.push(company_id) }
@@ -752,7 +738,7 @@ router.get('/factures/:id/neighbors', (req, res) => {
 router.get('/factures/:id/pdf', (req, res) => {
   const row = db.prepare('SELECT airtable_pdf_path FROM factures WHERE id=?').get(req.params.id)
   if (!row?.airtable_pdf_path) return res.status(404).json({ error: 'PDF non disponible' })
-  const uploadsBase = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+  const uploadsBase = uploadsPath()
   res.sendFile(path.join(uploadsBase, row.airtable_pdf_path))
 })
 
@@ -932,20 +918,20 @@ router.delete('/factures/:id', requireAdmin, (req, res) => {
 // ── Retours ──────────────────────────────────────────────────────────────────
 
 router.get('/retours', (req, res) => {
-  const { company_id, processing_status, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { company_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) { where += ' AND r.company_id = ?'; params.push(company_id) }
-  if (processing_status) { where += ' AND r.processing_status = ?'; params.push(processing_status) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM returns r ${where}`).get(...params).c
+  // `company_name` n'est plus joint ici : c'est un champ perso (lookup sur
+  // company_id, cf. services/nativeFieldConversions.js) porté par la vue. On
+  // sélectionne donc `r.*` sans jamais nommer la colonne — supprimer le champ
+  // la retire de la vue, et la route continue de répondre.
   const rows = db.prepare(`
-    SELECT r.*, co.name as company_name
-    FROM returns r
-    LEFT JOIN companies co ON r.company_id = co.id
+    SELECT r.*
+    FROM ${readRelation('returns')} r
     ${where}
     ORDER BY r.created_at DESC
     LIMIT ? OFFSET ?
@@ -956,9 +942,8 @@ router.get('/retours', (req, res) => {
 
 router.get('/retours/:id', (req, res) => {
   const row = db.prepare(`
-    SELECT r.*, co.name as company_name
-    FROM returns r
-    LEFT JOIN companies co ON r.company_id = co.id
+    SELECT r.*
+    FROM ${readRelation('returns')} r
     WHERE r.id = ?
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
@@ -1052,10 +1037,8 @@ function findRachatCandidate(companyId, cancelDate, usdRate) {
 // company_id résolu via COALESCE(e.company_id, s.company_id) — certains events
 // legacy ont e.company_id null alors que l'abonnement parent est rattaché.
 router.get('/abonnement-events', (req, res) => {
-  const { category, event_type, company_id, subscription_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { category, event_type, company_id, subscription_id } = req.query
+  const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50)
 
   let where = 'WHERE 1=1'
   const params = []
@@ -1192,10 +1175,8 @@ router.post('/abonnement-events/:id/detect-rachat', (req, res) => {
 })
 
 router.get('/abonnements', (req, res) => {
-  const { company_id, status, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { company_id, status } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) { where += ' AND s.company_id = ?'; params.push(company_id) }
@@ -1265,141 +1246,136 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
   const key = getStripeKey()
   if (!key) return res.status(503).json({ error: 'Stripe non configuré' })
 
-  try {
-    const stripe = new Stripe(key)
+  const stripe = new Stripe(key)
 
-    // Fetch subscription with line items expanded.
-    // Stripe API ≥ 2024 : `subscription.discount` (singulier) est déprécié au
-    // profit de `subscription.discounts` (tableau), où chaque discount a une
-    // `source: { coupon: 'xxx', type: 'coupon' }`. L'expand passe par source.
-    const sub = await stripe.subscriptions.retrieve(row.stripe_id, {
-      expand: ['items.data.price.product', 'discounts.source.coupon'],
-    })
+  // Fetch subscription with line items expanded.
+  // Stripe API ≥ 2024 : `subscription.discount` (singulier) est déprécié au
+  // profit de `subscription.discounts` (tableau), où chaque discount a une
+  // `source: { coupon: 'xxx', type: 'coupon' }`. L'expand passe par source.
+  const sub = await stripe.subscriptions.retrieve(row.stripe_id, {
+    expand: ['items.data.price.product', 'discounts.source.coupon'],
+  })
 
-    // Local change history (persistent, survives Stripe 30-day event window)
-    const localEvents = db.prepare(`
-      SELECT e.*, o.order_number AS rachat_order_number
-      FROM subscription_events e
-      LEFT JOIN orders o ON o.id = e.rachat_order_id
-      WHERE e.subscription_id = ?
-      ORDER BY e.event_date DESC
-    `).all(row.id)
+  // Local change history (persistent, survives Stripe 30-day event window)
+  const localEvents = db.prepare(`
+    SELECT e.*, o.order_number AS rachat_order_number
+    FROM subscription_events e
+    LEFT JOIN orders o ON o.id = e.rachat_order_id
+    WHERE e.subscription_id = ?
+    ORDER BY e.event_date DESC
+  `).all(row.id)
 
-    const history = localEvents.map(ev => ({
-      id: ev.id,
-      date: ev.event_date,
-      type: ev.event_type,
-      category: ev.category,
-      currency: ev.currency,
-      previous_amount_cad: ev.previous_amount_cad,
-      new_amount_cad: ev.new_amount_cad,
-      amount_cad_delta: ev.amount_cad_delta,
-      rachat_status: ev.rachat_status,
-      rachat_order_id: ev.rachat_order_id,
-      rachat_order_number: ev.rachat_order_number,
-    }))
+  const history = localEvents.map(ev => ({
+    id: ev.id,
+    date: ev.event_date,
+    type: ev.event_type,
+    category: ev.category,
+    currency: ev.currency,
+    previous_amount_cad: ev.previous_amount_cad,
+    new_amount_cad: ev.new_amount_cad,
+    amount_cad_delta: ev.amount_cad_delta,
+    rachat_status: ev.rachat_status,
+    rachat_order_id: ev.rachat_order_id,
+    rachat_order_number: ev.rachat_order_number,
+  }))
 
-    // Fetch invoices with line items for this subscription. Stripe API ≥ 2024 :
-    // le coupon est sous discount.source.coupon. Stripe limite l'expand à 4
-    // niveaux donc on expand `data.discounts.source.coupon` (la collection au
-    // niveau invoice) et on rejoint avec `total_discount_amounts` par ID de
-    // discount pour récupérer le label par ligne d'amount.
-    const invoices = await stripe.invoices.list({
-      subscription: row.stripe_id,
-      limit: 24,
-      expand: ['data.lines', 'data.discounts.source.coupon'],
-    })
+  // Fetch invoices with line items for this subscription. Stripe API ≥ 2024 :
+  // le coupon est sous discount.source.coupon. Stripe limite l'expand à 4
+  // niveaux donc on expand `data.discounts.source.coupon` (la collection au
+  // niveau invoice) et on rejoint avec `total_discount_amounts` par ID de
+  // discount pour récupérer le label par ligne d'amount.
+  const invoices = await stripe.invoices.list({
+    subscription: row.stripe_id,
+    limit: 24,
+    expand: ['data.lines', 'data.discounts.source.coupon'],
+  })
 
-    const findLocalFacture = db.prepare(
-      `SELECT id FROM factures WHERE document_number = ? OR invoice_id = ? LIMIT 1`
-    )
+  const findLocalFacture = db.prepare(
+    `SELECT id FROM factures WHERE document_number = ? OR invoice_id = ? LIMIT 1`
+  )
 
-    const invoiceHistory = invoices.data.map(inv => {
-      const local = inv.number ? findLocalFacture.get(inv.number, inv.id) : findLocalFacture.get(null, inv.id)
-      // Total avant taxes (après remises). Fallback vers subtotal_excluding_tax
-      // puis subtotal pour les vieilles factures où total_excluding_tax peut être null.
-      const amountCents = inv.total_excluding_tax ?? inv.subtotal_excluding_tax ?? inv.subtotal ?? 0
-      // Map { discount_id → coupon } construite depuis inv.discounts expandé.
-      const couponByDiscountId = {}
-      for (const dd of inv.discounts || []) {
-        if (typeof dd === 'object' && dd?.id) {
-          couponByDiscountId[dd.id] = dd.source?.coupon || dd.coupon || null
-        }
-      }
-      const discounts = (inv.total_discount_amounts || [])
-        .filter(d => d.amount > 0)
-        .map(d => {
-          const discountId = typeof d.discount === 'string' ? d.discount : d.discount?.id
-          const coupon = (discountId && couponByDiscountId[discountId])
-            || (typeof d.discount === 'object' ? (d.discount?.source?.coupon || d.discount?.coupon || null) : null)
-          return {
-            amount: d.amount / 100,
-            label: coupon?.name || coupon?.id || 'Rabais',
-          }
-        })
-      return {
-        date: new Date(inv.created * 1000).toISOString(),
-        amount: amountCents / 100,
-        currency: inv.currency?.toUpperCase(),
-        status: inv.status,
-        pdf: inv.invoice_pdf,
-        number: inv.number,
-        facture_id: local?.id || null,
-        lines: (inv.lines?.data || []).map(li => ({
-          description: li.description,
-          // HT — voir stripeInvoiceItems.normalizeLine pour le pourquoi.
-          amount: (Number.isFinite(li.subtotal) ? li.subtotal : li.amount) / 100,
-          quantity: li.quantity,
-          proration: li.proration || false,
-        })),
-        discounts,
-      }
-    })
-
-    // Premier discount actif sur la subscription (pattern Stripe API récent).
-    const subCoupon = sub.discounts?.[0]?.source?.coupon
-    const discount = subCoupon ? {
-      name: subCoupon.name || subCoupon.id,
-      percent_off: subCoupon.percent_off,
-      amount_off: subCoupon.amount_off ? subCoupon.amount_off / 100 : null,
-    } : null
-
-    // Prix unitaire HT par subscription_item : pour les prix Stripe configurés
-    // `tax_behavior: "inclusive"`, `si.price.unit_amount` est TTC. On déduit le HT
-    // depuis `line.subtotal / quantity` d'une ligne récente non-proration de la
-    // même subscription_item. Fallback sur price.unit_amount (correct pour
-    // tax_behavior=exclusive ou pour les subs sans facture encore générée).
-    const htUnitBySubItem = new Map()
-    for (const inv of invoices.data) {
-      for (const li of inv.lines?.data || []) {
-        if (li.proration) continue
-        const siId = li.parent?.subscription_item_details?.subscription_item
-        if (!siId || htUnitBySubItem.has(siId)) continue
-        if (Number.isFinite(li.subtotal) && Number.isFinite(li.quantity) && li.quantity > 0) {
-          htUnitBySubItem.set(siId, Math.round(li.subtotal / li.quantity))
-        }
+  const invoiceHistory = invoices.data.map(inv => {
+    const local = inv.number ? findLocalFacture.get(inv.number, inv.id) : findLocalFacture.get(null, inv.id)
+    // Total avant taxes (après remises). Fallback vers subtotal_excluding_tax
+    // puis subtotal pour les vieilles factures où total_excluding_tax peut être null.
+    const amountCents = inv.total_excluding_tax ?? inv.subtotal_excluding_tax ?? inv.subtotal ?? 0
+    // Map { discount_id → coupon } construite depuis inv.discounts expandé.
+    const couponByDiscountId = {}
+    for (const dd of inv.discounts || []) {
+      if (typeof dd === 'object' && dd?.id) {
+        couponByDiscountId[dd.id] = dd.source?.coupon || dd.coupon || null
       }
     }
-    const items = sub.items.data.map(si => {
-      const htCents = htUnitBySubItem.get(si.id) ?? si.price.unit_amount ?? null
-      return {
-        id: si.id,
-        product_name: si.price.product?.name || si.price.nickname || si.price.id,
-        description: si.price.product?.description || null,
-        unit_amount: htCents != null ? htCents / 100 : null,
-        currency: si.price.currency?.toUpperCase(),
-        quantity: si.quantity,
-        interval: si.price.recurring?.interval,
-        interval_count: si.price.recurring?.interval_count,
-        total: htCents != null ? (htCents / 100) * si.quantity : null,
-      }
-    })
+    const discounts = (inv.total_discount_amounts || [])
+      .filter(d => d.amount > 0)
+      .map(d => {
+        const discountId = typeof d.discount === 'string' ? d.discount : d.discount?.id
+        const coupon = (discountId && couponByDiscountId[discountId])
+          || (typeof d.discount === 'object' ? (d.discount?.source?.coupon || d.discount?.coupon || null) : null)
+        return {
+          amount: d.amount / 100,
+          label: coupon?.name || coupon?.id || 'Rabais',
+        }
+      })
+    return {
+      date: new Date(inv.created * 1000).toISOString(),
+      amount: amountCents / 100,
+      currency: inv.currency?.toUpperCase(),
+      status: inv.status,
+      pdf: inv.invoice_pdf,
+      number: inv.number,
+      facture_id: local?.id || null,
+      lines: (inv.lines?.data || []).map(li => ({
+        description: li.description,
+        // HT — voir stripeInvoiceItems.normalizeLine pour le pourquoi.
+        amount: (Number.isFinite(li.subtotal) ? li.subtotal : li.amount) / 100,
+        quantity: li.quantity,
+        proration: li.proration || false,
+      })),
+      discounts,
+    }
+  })
 
-    res.json({ items, history, invoices: invoiceHistory, discount })
-  } catch (e) {
-    console.error('Stripe details error:', e.message)
-    res.status(500).json({ error: e.message })
+  // Premier discount actif sur la subscription (pattern Stripe API récent).
+  const subCoupon = sub.discounts?.[0]?.source?.coupon
+  const discount = subCoupon ? {
+    name: subCoupon.name || subCoupon.id,
+    percent_off: subCoupon.percent_off,
+    amount_off: subCoupon.amount_off ? subCoupon.amount_off / 100 : null,
+  } : null
+
+  // Prix unitaire HT par subscription_item : pour les prix Stripe configurés
+  // `tax_behavior: "inclusive"`, `si.price.unit_amount` est TTC. On déduit le HT
+  // depuis `line.subtotal / quantity` d'une ligne récente non-proration de la
+  // même subscription_item. Fallback sur price.unit_amount (correct pour
+  // tax_behavior=exclusive ou pour les subs sans facture encore générée).
+  const htUnitBySubItem = new Map()
+  for (const inv of invoices.data) {
+    for (const li of inv.lines?.data || []) {
+      if (li.proration) continue
+      const siId = li.parent?.subscription_item_details?.subscription_item
+      if (!siId || htUnitBySubItem.has(siId)) continue
+      if (Number.isFinite(li.subtotal) && Number.isFinite(li.quantity) && li.quantity > 0) {
+        htUnitBySubItem.set(siId, Math.round(li.subtotal / li.quantity))
+      }
+    }
   }
+  const items = sub.items.data.map(si => {
+    const htCents = htUnitBySubItem.get(si.id) ?? si.price.unit_amount ?? null
+    return {
+      id: si.id,
+      product_name: si.price.product?.name || si.price.nickname || si.price.id,
+      description: si.price.product?.description || null,
+      unit_amount: htCents != null ? htCents / 100 : null,
+      currency: si.price.currency?.toUpperCase(),
+      quantity: si.quantity,
+      interval: si.price.recurring?.interval,
+      interval_count: si.price.recurring?.interval_count,
+      total: htCents != null ? (htCents / 100) * si.quantity : null,
+    }
+  })
+
+  res.json({ items, history, invoices: invoiceHistory, discount })
 })
 
 router.patch('/abonnements/:id', (req, res) => {
@@ -1465,7 +1441,7 @@ router.post('/abonnements/:id/events', (req, res) => {
     amounts[field] = v
   }
 
-  const id = randomUUID()
+  const id = newRecordId()
   db.prepare(`
     INSERT INTO subscription_events (
       id, subscription_id, company_id, event_date, event_type, category,
@@ -1561,36 +1537,32 @@ router.delete('/abonnements/:id/events/:eventId', (req, res) => {
 // où une transaction QB a été éditée/supprimée manuellement, et propose ensuite
 // un nettoyage des références locales orphelines via les routes admin.
 router.get('/factures/:id/qb-state', async (req, res) => {
-  try {
-    const f = db.prepare(`
-      SELECT id, document_number, currency,
-             deferred_revenue_at, deferred_revenue_qb_ref,
-             deferred_revenue_amount_native, deferred_revenue_amount_cad, deferred_revenue_currency,
-             revenue_recognized_at, revenue_recognized_je_id
-      FROM factures WHERE id = ?
-    `).get(req.params.id)
-    if (!f) return res.status(404).json({ error: 'Facture introuvable' })
+  const f = db.prepare(`
+    SELECT id, document_number, currency,
+           deferred_revenue_at, deferred_revenue_qb_ref,
+           deferred_revenue_amount_native, deferred_revenue_amount_cad, deferred_revenue_currency,
+           revenue_recognized_at, revenue_recognized_je_id
+    FROM factures WHERE id = ?
+  `).get(req.params.id)
+  if (!f) return res.status(404).json({ error: 'Facture introuvable' })
 
-    const checks = []
+  const checks = []
 
-    if (f.deferred_revenue_qb_ref) {
-      const check = await checkDeferredRevenueRef(f)
-      checks.push(check)
-    }
-    if (f.revenue_recognized_je_id) {
-      const check = await checkRevenueRecognitionJE(f)
-      checks.push(check)
-    }
-
-    res.json({
-      facture_id: f.id,
-      document_number: f.document_number,
-      checks,
-      checked_at: new Date().toISOString(),
-    })
-  } catch (e) {
-    res.status(500).json({ error: e.message })
+  if (f.deferred_revenue_qb_ref) {
+    const check = await checkDeferredRevenueRef(f)
+    checks.push(check)
   }
+  if (f.revenue_recognized_je_id) {
+    const check = await checkRevenueRecognitionJE(f)
+    checks.push(check)
+  }
+
+  res.json({
+    facture_id: f.id,
+    document_number: f.document_number,
+    checks,
+    checked_at: new Date().toISOString(),
+  })
 })
 
 async function checkDeferredRevenueRef(f) {

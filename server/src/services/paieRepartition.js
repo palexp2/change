@@ -20,6 +20,7 @@ import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { round2 } from '../utils/money.js'
+import { findBankDebit, shiftDate } from './bankDebitLookup.js'
 
 export const PAIE_REPARTITION_AUTOMATION_ID = 'sys_paie_repartition'
 
@@ -68,6 +69,17 @@ export const PAIE_REPARTITION_DEFAULT_CONFIG = {
   aga_vendor_name: 'Groupe Financier AGA',
   aga_taxcode: 'Exonéré',
   aga_memo: 'AGA ASS. COLL. (répartition au prorata entre les départements)',
+  // ── Débit bancaire : retrouver le mouvement au relevé ──────────────────────
+  // Le montant passé au compte se recopiait à la main du relevé BNC. Depuis
+  // que la banque est branchée, on cherche la transaction qui porte ce libellé
+  // dans une fenêtre autour de la fin de période (paie) ou du mois (AGA).
+  // Motif vide = plus de recherche, retour à la saisie manuelle.
+  bank_account_name: 'BNC CAD',
+  bank_label_pattern: 'NETHRIS PAIE',      // « COMPTE DIVERS DT NETHRIS PAIE »
+  bank_window_before_days: '1',            // avant la fin de période
+  bank_window_after_days: '10',            // après la fin de période
+  aga_bank_label_pattern: 'AGA',           // « AGA ASS. COLL. » / « Assurance Ent. Aga »
+  aga_bank_window_days: '45',              // fenêtre glissante avant aujourd'hui
 }
 
 export function getPaieRepartitionConfig() {
@@ -208,6 +220,25 @@ export function computePaieRepartition(paieId, overrides = {}) {
 // vont dans les comptes de salaires (pas de compte d'assurance) et le compte de
 // banque est celui d'où sort l'argent — pas une ligne de crédit ici : la dépense
 // QB porte le compte de banque sur la transaction elle-même (voir pushAga…).
+// Le prélèvement AGA au relevé bancaire. Même besoin que la paie : le montant
+// (2 737,95 $ depuis avril 2026, mais il change quand un employé assuré entre
+// ou sort) se recopiait du relevé. Il tombe une fois par mois, autour du 10.
+// On écarte les prélèvements DÉJÀ comptabilisés (une écriture QB leur est
+// rattachée) : seul celui qui reste à passer est proposé.
+export function findAgaBankDebit() {
+  const cfg = getPaieRepartitionConfig()
+  if (!cfg.aga_bank_label_pattern) return { match: null, candidates: [], stale_since: null }
+  const today = new Date().toISOString().slice(0, 10)
+  const days = Math.abs(Number(cfg.aga_bank_window_days) || 45)
+  return findBankDebit({
+    accountName: cfg.bank_account_name,
+    pattern: cfg.aga_bank_label_pattern,
+    from: shiftDate(today, -days),
+    to: today,
+    excludeBooked: true,
+  })
+}
+
 export function computeAgaRepartition(amount, txnDate = null) {
   const cfg = getPaieRepartitionConfig()
   const parsed = parseAmount(amount)
@@ -295,7 +326,7 @@ export async function pushPaieRepartitionJE(paieId, overrides = {}) {
 // AGA, une ligne par département en Exonéré, mémo « AGA ASS. COLL. … ». Ce n'est
 // PAS une écriture de journal — l'ancienne voie JE ne laissait ni fournisseur ni
 // code de taxe et n'apparaissait pas dans l'historique du fournisseur.
-export async function pushAgaRepartition(amount, txnDate = null) {
+export async function pushAgaRepartition(amount, txnDate = null, { bankTxnId = null } = {}) {
   const t0 = Date.now()
   try {
     if (!isSystemAutomationActive(PAIE_REPARTITION_AUTOMATION_ID)) {
@@ -354,6 +385,13 @@ export async function pushAgaRepartition(amount, txnDate = null) {
     }
     const created = await qbPost('/purchase', purchase)
     const purchaseId = created.Purchase?.Id || created.Id || null
+
+    // La ligne du relevé porte désormais la dépense : plus de « à traiter » qui
+    // traîne pour un prélèvement déjà comptabilisé.
+    if (bankTxnId) {
+      const { linkTxnToQbEntity } = await import('./bankDebitLookup.js')
+      linkTxnToQbEntity(bankTxnId, { qbTxnId: purchaseId, qbTxnType: 'purchase' })
+    }
 
     logSystemRun(PAIE_REPARTITION_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0, triggerData: { amount, txnDate },

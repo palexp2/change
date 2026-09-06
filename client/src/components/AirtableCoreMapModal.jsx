@@ -1,10 +1,11 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { RefreshCw, AlertCircle, CheckCircle2, Sparkles, ArrowLeft, ArrowRight, ArrowLeftRight } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { SyncDetails } from './SyncDetails.jsx'
 import { MODULE_TO_TABLE } from '../lib/syncSources.js'
+import Spinner from './Spinner.jsx'
 
 // Modale de mapping des champs « cœur » d'un ou plusieurs modules Airtable
 // (field_map de airtable_module_config). Chaque ligne = champ ERP fixe →
@@ -60,6 +61,25 @@ export const DIRECTIONS = {
   pull: { Icon: ArrowLeft, title: 'Airtable → ERP — import seulement, jamais réécrit vers Airtable' },
   push: { Icon: ArrowRight, title: 'ERP → Airtable — export seulement' },
 }
+// Infobulle honnête d'un sens verrouillé en 'pull' : dit POURQUOI le sens n'est
+// pas modifiable, selon la raison servie par le serveur (direction_reason des
+// réponses core-map et mapping-data). Null si aucune raison spécifique →
+// l'appelant retombe sur le titre générique DIRECTIONS.pull.title.
+export function directionLockTitle(reason, moduleLabel) {
+  if (reason === 'module_no_writeback') {
+    return `Import seulement — ce module${moduleLabel ? ` (${moduleLabel})` : ''} ne supporte pas encore la réécriture vers Airtable`
+  }
+  if (reason === 'link_field') return 'Les champs lien ne sont pas réécrits vers Airtable'
+  if (reason === 'computed_push_only') {
+    return 'Champ calculé dans Boréal — poussé vers Airtable, jamais importé'
+  }
+  if (reason === 'core_skip') return 'Champ géré par la synchronisation cœur — sens non modifiable'
+  if (reason === 'resolved_ref') {
+    return 'Le nom importé est résolu vers un enregistrement Boréal — import seulement'
+  }
+  return null
+}
+
 const DIR_OPTIONS = [
   { value: 'both', Icon: ArrowLeftRight, label: 'Bidirectionnel', hint: 'Importé depuis Airtable et réécrit à la modification dans l’ERP' },
   { value: 'pull', Icon: ArrowLeft, label: 'Airtable → ERP', hint: 'Import seulement — jamais réécrit vers Airtable' },
@@ -71,7 +91,7 @@ const DIR_OPTIONS = [
 // petit menu où l'utilisateur choisit pull / push / both (autosave immédiat).
 // `compact` : sans padding vertical, pour une rangée déjà centrée (tableau des
 // champs de /champs/:table) plutôt que la grille alignée en haut du CoreMapPane.
-export function DirectionControl({ module, fieldKey, direction, configurable, mapped, onChange, compact }) {
+export function DirectionControl({ module, fieldKey, direction, configurable, mapped, onChange, compact, lockTitle }) {
   const [open, setOpen] = useState(false)
   const current = DIRECTIONS[direction] || DIRECTIONS.pull
   const CurIcon = current.Icon
@@ -79,7 +99,7 @@ export function DirectionControl({ module, fieldKey, direction, configurable, ma
   if (!configurable) {
     return (
       <span
-        title={current.title}
+        title={lockTitle || current.title}
         data-testid={`coremap-${module}-${fieldKey}-direction`}
         data-direction={direction || 'pull'}
         className={`inline-flex ${compact ? '' : 'pt-2'} cursor-help ${mapped ? 'text-slate-600' : 'text-slate-400'}`}
@@ -178,6 +198,35 @@ export function useCoreMap(module, onSaved) {
     }
   }
 
+  // Autosave d'UNE clé du mapping — utilisé par le tableau des champs de
+  // /champs/:table, où la cellule « Champ Airtable » est la même pour les clés
+  // cœur et les mappings dynamiques : le choix s'enregistre tout de suite, sans
+  // barre « Enregistrer le mapping » (elle ne subsiste que dans CoreMapPane,
+  // pour les modules dont les clés ne se rattachent à aucune colonne ERP).
+  // La resynchronisation n'est PAS déclenchée ici : le bouton « Synchroniser »
+  // de l'en-tête Source Airtable la lance, comme pour un mapping dynamique.
+  // Lève en cas d'échec — l'appelant affiche l'erreur dans la cellule.
+  const draftRef = useRef(draft)
+  useEffect(() => { draftRef.current = draft }, [draft])
+  async function saveField(fieldKey, name) {
+    const prev = draftRef.current
+    const next = { ...prev, [fieldKey]: name || '' }
+    setDraft(next); draftRef.current = next
+    setSaveError(''); setSavedMsg('')
+    setSaving(true)
+    try {
+      const r = await api.airtable.saveModuleCoreMap(module, next)
+      setData(d => ({ ...d, field_map: r.field_map }))
+      setDraft({ ...r.field_map }); draftRef.current = { ...r.field_map }
+      onSaved?.()
+    } catch (e) {
+      setDraft(prev); draftRef.current = prev
+      throw e
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const dirty = useMemo(() => {
     if (!data) return false
     return data.fields.some(f => (draft[f.key] || '') !== (data.field_map[f.key] || ''))
@@ -216,7 +265,7 @@ export function useCoreMap(module, onSaved) {
 
   return {
     data, loadError, draft, setDraft, dirs, changeDirection, dirty, options,
-    save, saving, saveError, savedMsg, setSavedMsg, resyncAfter, setResyncAfter,
+    save, saveField, saving, saveError, savedMsg, setSavedMsg, resyncAfter, setResyncAfter,
   }
 }
 
@@ -237,7 +286,6 @@ export function CoreFieldPicker({ module, field, value, onChange, options, sugge
         getOptionLabel={o => o.missing ? `${o.name} (introuvable dans Airtable)` : o.name}
         getOptionKey={o => o.name}
         emptyOption={field.required ? undefined : '— Non mappé —'}
-        placeholder="— Choisir un champ Airtable —"
         searchPlaceholder="Rechercher un champ…"
         testId={`coremap-${module}-${field.key}`}
       />
@@ -299,13 +347,18 @@ export function CoreMapSaveBar({ module, core }) {
   )
 }
 
-export function CoreMapPane({ module, onSaved }) {
+// `showSync` : afficher les détails de sync en tête du panneau. À couper quand
+// l'hôte les affiche déjà (page /champs/:table, qui montre l'état de la source
+// Airtable au-dessus du tableau des champs).
+export function CoreMapPane({ module, onSaved, showSync = true }) {
   const core = useCoreMap(module, onSaved)
   const { data, loadError, draft, setDraft, dirs, changeDirection, options, setSavedMsg } = core
 
   // Détails de sync de la table ERP alimentée par ce module — affichés en
   // tête du panneau, y compris pendant le chargement et en cas d'erreur.
-  const syncDetails = <SyncDetails table={MODULE_TO_TABLE[module] || module} connector="Airtable" />
+  const syncDetails = showSync
+    ? <SyncDetails table={MODULE_TO_TABLE[module] || module} connector="Airtable" />
+    : null
 
   if (loadError) {
     return (
@@ -321,7 +374,7 @@ export function CoreMapPane({ module, onSaved }) {
     return (
       <div className="space-y-4">
         {syncDetails}
-        <p className="text-sm text-slate-400 py-6 text-center">Chargement…</p>
+        <p className="text-sm text-slate-400 py-6 text-center"><Spinner size="xs" label="Chargement…" /></p>
       </div>
     )
   }
@@ -331,7 +384,7 @@ export function CoreMapPane({ module, onSaved }) {
         {syncDetails}
         <div className="p-3 bg-amber-50 border border-amber-200 rounded text-sm text-amber-800">
           Base et table Airtable non configurées pour « {data.label} ». Configurez-les d'abord dans
-          Admin → Connecteurs → Airtable.
+          Paramètres → Connecteurs → Airtable.
         </div>
       </div>
     )
@@ -379,6 +432,7 @@ export function CoreMapPane({ module, onSaved }) {
                 configurable={f.configurable}
                 mapped={!!draft[f.key]}
                 onChange={dir => changeDirection(f.key, dir)}
+                lockTitle={directionLockTitle(f.direction_reason, data.label)}
               />
               <div className="min-w-0">
                 <CoreFieldPicker

@@ -55,7 +55,10 @@ const NON_INVOICE_SUBJECT =
 // Réponse ou transfert : le fil cite les messages précédents, donc leurs pièces
 // jointes ET les images de signature de chaque intervenant. En autodétection on
 // les ignore — une facture transférée reste ingérable via le label ERP/Factures
-// ou l'alias factures@, deux gestes explicites.
+// ou l'alias factures@, deux gestes explicites. Exception : un expéditeur
+// explicitement whitelisté (`trustedSender`) est lui-même une intention humaine
+// — sur une boîte personnelle en liste blanche, transférer une facture VERS la
+// boîte est justement le geste prévu.
 const REPLY_OR_FORWARD_SUBJECT = /^\s*(re|r[ée]p|fwd?|fw|tr)\s*:/i
 
 /**
@@ -64,11 +67,11 @@ const REPLY_OR_FORWARD_SUBJECT = /^\s*(re|r[ée]p|fwd?|fw|tr)\s*:/i
  * Plus permissive que looksLikeInvoiceEmail (qui exige un montant dans le corps,
  * impossible quand la facture est en pièce jointe) mais toujours gardée par un
  * mot-clé — l'appelant a déjà exclu les envois sortants.
- * @param {{subject?: string, from?: string, bodyText?: string, attachmentNames?: string[], isReply?: boolean}} msg
+ * @param {{subject?: string, from?: string, bodyText?: string, attachmentNames?: string[], isReply?: boolean, trustedSender?: boolean}} msg
  */
-export function looksLikeInvoiceMessage({ subject = '', from = '', bodyText = '', attachmentNames = [], isReply = false } = {}) {
+export function looksLikeInvoiceMessage({ subject = '', from = '', bodyText = '', attachmentNames = [], isReply = false, trustedSender = false } = {}) {
   const hasAttachment = attachmentNames.length > 0
-  if (isReply || REPLY_OR_FORWARD_SUBJECT.test(subject)) return false
+  if (!trustedSender && (isReply || REPLY_OR_FORWARD_SUBJECT.test(subject))) return false
   if (NON_INVOICE_SUBJECT.test(subject)) return false
   if (INVOICE_KEYWORDS.test(subject)) return true
   if (hasAttachment && attachmentNames.some(n => ATTACHMENT_INVOICE_NAME.test(n || ''))) return true

@@ -1,0 +1,7 @@
+{
+  "table": "email_relance_sent",
+  "dropped_at": "2026-09-02T19:26:22.991Z",
+  "ddl": "CREATE TABLE email_relance_sent (\n    qc_id TEXT PRIMARY KEY,\n    sent_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),\n    sent_by_user_id TEXT REFERENCES users(id)\n  )",
+  "row_count": 0,
+  "rows": []
+}

@@ -1,16 +1,22 @@
-import { useState, useMemo } from 'react'
-import { useNavigate, Link } from 'react-router-dom'
-import { Plus, Package } from 'lucide-react'
+import { useState, useMemo, useEffect } from 'react'
+import { useNavigate, Link, useSearchParams } from 'react-router-dom'
+import { Plus, Package, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable, isTableHydrated } from '../lib/dataStore.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { Layout } from '../components/Layout.jsx'
+import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
+import { RecordForm } from '../components/RecordForm.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import OrderDetail from './OrderDetail.jsx'
+import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { fmtAddress } from '../utils/formatters.js'
+import { weekStartOf, fmtWeekStart } from '../lib/isoWeek.js'
 
 
 const RENDERS = {
@@ -20,81 +26,92 @@ const RENDERS = {
     : <span className="text-slate-400">—</span>,
   date_commande: row => <span className="text-slate-600">{fmtDate(row.date_commande)}</span>,
   status: row => <Badge color={orderStatusColor(row.status)}>{row.status}</Badge>,
-  priority: row => row.priority
-    ? <span className="text-orange-500 font-medium text-xs">{row.priority}</span>
-    : <span className="text-slate-400">—</span>,
+  // Priorité : champ perso — son rendu (pastille colorée) vient de sa config.
 }
 
 const COLUMNS = TABLE_COLUMN_META.orders.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-function NewOrderModal({ companies, users, onSave, onClose }) {
-  const [form, setForm] = useState({ company_id: '', assigned_to: '', priority: '', notes: '', date_commande: '' })
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setError('')
-    setSaving(true)
-    // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
-    try { await onSave({ ...form, notes: form.notes.trim() }); onClose() }
-    catch (err) { setError(err.message) }
-    finally { setSaving(false) }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div>
-        <label className="label">Entreprise</label>
+// Champs NATIFS proposés par le formulaire « Nouvelle commande ». Les autres
+// champs saisissables de la table (champs perso, colonnes adoptées d'Airtable)
+// s'y ajoutent tout seuls via le catalogue du registre — `includeAllFields` sur
+// le RecordForm, cf. server/src/services/formFieldCatalog.js. Voir RecordForm.jsx
+// pour la sémantique de `visible` / `required` (configurables par l'utilisateur).
+function orderFormFields({ companies, users, projects, adresses }) {
+  return [
+    {
+      field: 'company_id', label: 'Entreprise',
+      input: ({ value, onChange }) => (
         <LinkedRecordField
           name="order_company_id"
-          value={form.company_id}
+          value={value}
           options={companies}
           labelFn={c => c.name}
-          placeholder="Entreprise"
-          onChange={v => setForm(f => ({ ...f, company_id: v }))}
+          onChange={onChange}
         />
-      </div>
-      <div>
-        <label className="label">Assigné à</label>
+      ),
+    },
+    {
+      field: 'assigned_to', label: 'Assigné à',
+      input: ({ value, onChange }) => (
         <LinkedRecordField
           name="order_assigned_to"
-          value={form.assigned_to}
+          value={value}
           options={users}
           labelFn={u => u.name}
-          placeholder="Assigner"
-          onChange={v => setForm(f => ({ ...f, assigned_to: v }))}
+          onChange={onChange}
         />
-      </div>
-      <div>
-        <label className="label">Priorité</label>
-        <select value={form.priority} onChange={e => setForm(f => ({ ...f, priority: e.target.value }))} className="select">
-          <option value="">— Normale —</option>
-          <option value="Urgent">Urgent</option>
-          <option value="Haute">Haute</option>
-          <option value="Basse">Basse</option>
-        </select>
-      </div>
-      <div>
-        <label className="label">Date de commande</label>
-        <input type="date" value={form.date_commande} onChange={e => setForm(f => ({ ...f, date_commande: e.target.value }))} className="input" />
-      </div>
-      <div>
-        <label className="label">Notes</label>
-        <textarea value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} className="input" rows={3} />
-      </div>
-      {error && <p className="text-red-600 text-sm">{error}</p>}
-      <div className="flex justify-end gap-3 pt-2">
-        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Création...' : 'Créer la commande'}</button>
-      </div>
-    </form>
-  )
+      ),
+    },
+    // Priorité : champ perso, proposé par le catalogue du registre (ses choix
+    // viennent de sa config) — plus besoin de le déclarer ici.
+    { field: 'date_commande', label: 'Date de commande', type: 'date' },
+    { field: 'notes', label: 'Notes', type: 'textarea' },
+    // Masqués par défaut — disponibles via « Modifier le formulaire ».
+    {
+      field: 'project_id', label: 'Projet', visible: false,
+      input: ({ value, onChange }) => (
+        <LinkedRecordField
+          name="order_project_id"
+          value={value}
+          options={projects}
+          labelFn={p => p.name}
+          onChange={onChange}
+        />
+      ),
+    },
+    // Statut : champ FORMULE côté Airtable (Airtable le calcule, Boréal le
+    // recopie), donc en import seul depuis /champs/orders. `readOnly` empêche
+    // de le poser dans le formulaire — la route refuserait le POST en 400, et
+    // la valeur serait de toute façon écrasée au sync suivant. Le serveur pose
+    // le défaut « Commande vide ».
+    { field: 'status', label: 'Statut', type: 'select', visible: false, readOnly: true },
+    {
+      field: 'address_id', label: 'Adresse de livraison', visible: false,
+      input: ({ value, onChange }) => (
+        <LinkedRecordField
+          name="order_address_id"
+          value={value}
+          options={adresses}
+          labelFn={fmtAddress}
+          onChange={onChange}
+          getHref={a => `/adresses/${a.id}`}
+        />
+      ),
+    },
+    { field: 'is_subscription', label: 'Abonnement', type: 'checkbox', visible: false },
+    { field: 'revenue_override_cad', label: 'Revenu forcé (CAD)', type: 'currency', visible: false },
+    { field: 'cogs_override_cad', label: 'Coût des marchandises forcé (CAD)', type: 'currency', visible: false },
+  ]
 }
 
 export default function Orders() {
   const navigate = useNavigate()
+  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
   const [showModal, setShowModal] = useState(false)
+  const [searchParams, setSearchParams] = useSearchParams()
+  // Filtre temporaire posé par un clic sur une barre du graphique « Revenus
+  // expédiés » (vue globale du dashboard) : lundi de la semaine, 'YYYY-MM-DD'.
+  const shippedWeek = searchParams.get('shippedWeek')
 
   // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
   // polling toutes les 10s. Pas de WS direct ici — lag max ~10s acceptable
@@ -103,13 +120,32 @@ export default function Orders() {
   const companies = useTable('companies')
   const users = useTable('users')
   const orderItems = useTable('order_items')
+  const projects = useTable('projects')
+  const shipments = useTable('shipments')
   const loading = !isTableHydrated('orders')
 
-  // Enrichissement : company_name, assigned_name, items_count — joints
-  // côté client depuis les autres tables en cache (vs server-side LEFT JOIN).
+  // Adresses : hors cache global, et seulement utiles quand la modale de
+  // création est ouverte (le champ « Adresse de livraison » est masqué par
+  // défaut) — chargées à l'ouverture, une fois.
+  const [adresses, setAdresses] = useState([])
+  useEffect(() => {
+    if (!showModal || adresses.length) return
+    let alive = true
+    api.adresses.lookup().then(d => { if (alive) setAdresses(Array.isArray(d) ? d : []) }).catch(() => {})
+    return () => { alive = false }
+  }, [showModal, adresses.length])
+
+  const formFields = useMemo(
+    () => orderFormFields({ companies, users, projects, adresses }),
+    [companies, users, projects, adresses],
+  )
+
+  // Enrichissement : company_name, items_count — joints côté client depuis les
+  // autres tables en cache (vs server-side LEFT JOIN). Le nom de l'assigné n'y
+  // est plus : son champ a été supprimé des commandes le 2026-09-03, la colonne
+  // sort du snapshot et plus rien ne l'affiche.
   const orders = useMemo(() => {
     const cById = new Map(companies.map(c => [c.id, c.name]))
-    const uById = new Map(users.map(u => [u.id, u.name]))
     const itemCountByOrder = new Map()
     for (const it of orderItems) {
       itemCountByOrder.set(it.order_id, (itemCountByOrder.get(it.order_id) || 0) + 1)
@@ -117,10 +153,33 @@ export default function Orders() {
     return ordersRaw.map(r => ({
       ...r,
       company_name: cById.get(r.company_id) || r.company_name,
-      assigned_name: uById.get(r.assigned_to) || r.assigned_name,
       items_count: itemCountByOrder.get(r.id) || 0,
     }))
-  }, [ordersRaw, companies, users, orderItems])
+  }, [ordersRaw, companies, orderItems])
+
+  // Semaine d'expédition : mêmes règles que la barre « Revenus expédiés » du
+  // dashboard (voir weeklyProfitability dans server/src/routes/dashboard.js) —
+  // commande au statut « Envoyé », semaine du DERNIER envoi, et au moins un
+  // article facturable (les commandes 100 % remplacement ne portent pas de
+  // revenu et ne sont donc pas dans la barre).
+  const displayedOrders = useMemo(() => {
+    if (!shippedWeek) return orders
+    const lastShippedByOrder = new Map()
+    for (const s of shipments) {
+      if (!s.order_id || !s.shipped_at) continue
+      const prev = lastShippedByOrder.get(s.order_id)
+      if (!prev || String(s.shipped_at) > String(prev)) lastShippedByOrder.set(s.order_id, s.shipped_at)
+    }
+    const billable = new Set()
+    for (const it of orderItems) {
+      if (it.item_type === 'Facturable') billable.add(it.order_id)
+    }
+    return orders.filter(o =>
+      o.status === 'Envoyé' &&
+      billable.has(o.id) &&
+      weekStartOf(lastShippedByOrder.get(o.id)) === shippedWeek
+    )
+  }, [orders, orderItems, shipments, shippedWeek])
 
   async function handleCreate(form) {
     const order = await api.orders.create(form)
@@ -133,7 +192,7 @@ export default function Orders() {
       <div className="p-6">
         <div className="flex items-center justify-between mb-6">
           <div>
-            <h1 className="text-2xl font-bold text-slate-900">Commandes</h1>
+            <PageTitle>Commandes</PageTitle>
           </div>
           <div className="flex items-center gap-2">
             <button onClick={() => setShowModal(true)} className="btn-primary">
@@ -142,21 +201,49 @@ export default function Orders() {
           </div>
         </div>
 
+        {shippedWeek && (
+          <div className="flex items-center gap-2 mb-3 px-3 py-2 bg-brand-50 border border-brand-200 rounded-lg text-sm text-brand-700" data-testid="orders-shipped-week-filter">
+            <span>Commandes expédiées — semaine du {fmtWeekStart(shippedWeek)} ({displayedOrders.length})</span>
+            <button
+              onClick={() => setSearchParams({})}
+              className="ml-auto flex items-center gap-1 text-xs text-brand-500 hover:text-brand-700"
+              data-testid="orders-shipped-week-clear"
+            >
+              <X size={13} /> Effacer
+            </button>
+          </div>
+        )}
+
         <DataTable
           table="orders"
           manageViews
           columns={COLUMNS}
-          data={orders}
+          data={displayedOrders}
           loading={loading}
-          onRowClick={row => navigate(`/orders/${row.id}`)}
+          forceAllView={!!shippedWeek}
+          peek={{
+            // Sans sous-titre : la fiche affiche déjà l'entreprise en chip.
+            title: row => `Commande #${row.order_number}`,
+            to: row => `/orders/${row.id}`,
+            width: 900,
+            openId: peekOpenId,
+            onOpenConsumed: consumePeekOpen,
+            render: (row, { close }) => <OrderDetail recordId={row.id} embedded onClose={close} /> }}
           searchFields={['order_number', 'company_name']}
-          realtimeEntity="orders"
           emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'a encore été créée. Crée une commande pour démarrer une vente.", cta: { label: 'Nouvelle commande', icon: Plus, onClick: () => setShowModal(true) } }}
         />
       </div>
 
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouvelle commande">
-        <NewOrderModal companies={companies} users={users} onSave={handleCreate} onClose={() => setShowModal(false)} />
+        <RecordForm
+          table="orders"
+          fields={formFields}
+          includeAllFields
+          onSubmit={handleCreate}
+          onClose={() => setShowModal(false)}
+          submitLabel="Créer la commande"
+          savingLabel="Création..."
+        />
       </Modal>
 
     </Layout>

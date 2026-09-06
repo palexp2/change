@@ -31,6 +31,7 @@ const PUBLIC_ROUTES = new Map([
   ['POST /api/hooks/:token',                         'Webhook entrant public — le token dans l\'URL est le secret (voir routes/hooks.js)'],
   ['POST /api/instagram/manychat',                   'Webhook ManyChat — secret partagé comparé via timingSafeEqual (connector_config manychat/webhook_secret), 503 fail-closed si non configuré'],
   ['POST /api/hooks/telnyx/dlr',                     'Webhook Telnyx (DLR) — authentifié par signature Telnyx sur le body brut (voir routes/telnyx-webhooks.js)'],
+  ['POST /api/plaid/webhook/',                       'Webhook Plaid — signature JWT vérifiée sur le corps brut (verifyWebhook, 401 si invalide)'],
   ['GET /api/public/ticket-survey/:token',           'Sondage billet public — le token dans l\'URL est le secret'],
   ['POST /api/public/ticket-survey/:token',          'Sondage billet public — le token dans l\'URL est le secret'],
   ['POST /api/calls/ftp-ingest',                     'FTP ingest (requireFtpSecret — X-FTP-Secret header)'],
@@ -81,11 +82,11 @@ const MOUNTS = {
   'carm.js':                    '/api/carm',
   'drive-inventory.js':         '/api/drive-inventory',
   'mapaq.js':                   '/api/mapaq',
-  'req.js':                     '/api/req',
   'marketing-budget.js':        '/api/marketing-budget',
   'weather.js':                 '/api/weather',
   'notifications.js':           '/api/notifications',
   'records.js':                 '/api/records',
+  'record-links.js':            '/api/record-links',
   'reports-taxes.js':           '/api/reports',
   'sideEffects.js':             '/api/side-effects',
   'admin.js':                   '/api/admin',
@@ -108,6 +109,7 @@ const MOUNTS = {
   'email-relance.js':           '/api/email-relance',
   'employees.js':               '/api/employees',
   'field-visibility-rules.js':  '/api/field-visibility-rules',
+  'form-configs.js':            '/api/form-configs',
   'hour-bank.js':               '/api/hour-bank',
   'hubspot.js':                 '/api/hubspot',
   'installation-feedback.js':   '/api/public/installation-feedback',
@@ -116,9 +118,11 @@ const MOUNTS = {
   'novoxpress.js':              '/api/novoxpress',
   'digikey.js':                 '/api/digikey',
   'ups.js':                     '/api/ups',
-  'purolator.js':               '/api/purolator',
   'orders.js':                  '/api/orders',
   'places.js':                  '/api/places',
+  // plaid.js expose deux routeurs : le routeur applicatif (JWT) et le webhook
+  // Plaid monté à part dans index.js (corps brut pour la signature).
+  'plaid.js':                   { router: '/api/plaid', plaidWebhookRouter: '/api/plaid/webhook' },
   // public-files.js exporte deux routers : publicFilesRouter (auth) monté
   // sur /api/public-files, et publicFileServeRouter (token-based) monté
   // sur /erp/p. Le parser distingue les routes par variable de routeur.
@@ -141,6 +145,7 @@ const MOUNTS = {
   'email-tracking.js':          '/api/email-tracking',
   'stripe-invoice-items.js':    '/api/stripe-invoice-items',
   'stripe-invoices.js':         '/api/stripe-invoices',
+  'stripe-subscriptions.js':    '/api/stripe-subscriptions',
   'stripe-payouts.js':          '/api/stripe-payouts',
   'stripe-queue.js':            '/api/stripe-queue',
   'stripe-webhooks.js':         '/api/stripe-webhooks',

@@ -1,6 +1,7 @@
 // Helpers partagés entre NovoxpressLabelModal (envois sortants) et
-// RetourActionsDrawer (étiquettes de retour) — extraits pour éviter la
+// RetourActionsSection (étiquettes de retour) — extraits pour éviter la
 // duplication du choix de boîte / affichage de tarif entre les deux flux.
+import { fmtMoney } from '../utils/formatters.js'
 
 export const BOX_PRESETS = {
   enveloppe: { label: 'Enveloppe (documents légers)', length: '13', width: '10', depth: '1', packagingType: 'envelope' },
@@ -15,7 +16,7 @@ export function fmtPrice(rate) {
   const val = rate.total?.value ?? rate.total_charge ?? rate.total ?? null
   if (val == null) return '—'
   const currency = rate.total?.currency || 'CAD'
-  return new Intl.NumberFormat('fr-CA', { style: 'currency', currency }).format(parseFloat(val))
+  return fmtMoney(parseFloat(val), currency)
 }
 
 export function getRateName(rate) {
@@ -33,6 +34,16 @@ export function getRateDelivery(rate) {
   }
   if (rate.total_transit_day != null) return `${rate.total_transit_day} jour(s)`
   return null
+}
+
+// Libellé d'une adresse candidate de retour : l'adresse + son type
+// (Livraison / Facturation / Ferme). `line1` contient déjà souvent la ville :
+// on ne la répète pas.
+export function addressOptionLabel(a) {
+  const line = a.line1 || ''
+  const city = a.city && !line.includes(a.city) ? a.city : null
+  const addr = [line, city].filter(Boolean).join(', ') || a.postal_code || 'Adresse'
+  return a.address_label ? `${addr} — ${a.address_label}` : addr
 }
 
 export function DebugDetails({ details }) {

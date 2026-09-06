@@ -1,13 +1,17 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { newRecordId } from '../utils/recordId.js';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { validateNumericFields } from '../utils/validateNumbers.js';
 import { checkForeignKeys } from '../utils/fkExists.js';
-import { getActiveCustomColumns, applyCustomFieldDefaults } from './custom-fields.js';
+import { applyCustomFieldDefaults } from './custom-fields.js';
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { writeBackRecord } from '../services/airtableWriteback.js';
+import { readRelation } from '../services/customFieldsView.js';
+import { fetchProjectCommissions } from '../services/projectCommissions.js';
+import { parsePage } from '../utils/pagination.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -38,6 +42,24 @@ router.get('/vendeur-options', (req, res) => {
       label: c.name,
     })),
   ]
+  // Vendeurs déjà portés par un projet mais absents des deux listes : un vendeur
+  // importé d'Airtable est résolu vers l'employé ou l'entreprise du même nom,
+  // qui n'est pas forcément coché « vendeur ». Sans eux, le sélecteur affichait
+  // « Aucun » sur un projet qui a pourtant un vendeur.
+  const known = new Set(data.map(d => d.ref))
+  const used = db.prepare(`
+    SELECT DISTINCT vendeur_ref FROM projects
+    WHERE deleted_at IS NULL AND vendeur_ref IS NOT NULL AND vendeur_ref != ''
+  `).all().map(r => r.vendeur_ref).filter(ref => !known.has(ref))
+  for (const ref of used) {
+    if (ref.startsWith('employee:')) {
+      const e = db.prepare('SELECT first_name, last_name FROM employees WHERE id=?').get(ref.slice(9))
+      if (e) data.push({ ref, kind: 'employee', label: [e.first_name, e.last_name].filter(Boolean).join(' ') })
+    } else if (ref.startsWith('company:')) {
+      const c = db.prepare('SELECT name FROM companies WHERE id=? AND deleted_at IS NULL').get(ref.slice(8))
+      if (c) data.push({ ref, kind: 'company', label: c.name })
+    }
+  }
   res.json({ data })
 })
 
@@ -47,11 +69,9 @@ router.get('/vendeur-options', (req, res) => {
 // notes). Pipeline.jsx l'utilise pour la première peinture, puis recharge en
 // silence la version complète.
 router.get('/', (req, res) => {
-  const { search, status, company_id, page = 1, limit = 100 } = req.query;
+  const { search, status, company_id } = req.query;
   const lite = req.query.lite === '1' || req.query.lite === 'true';
-  const limitAll = limit === 'all';
-  const limitVal = limitAll ? -1 : parseInt(limit);
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { page, limit, limitVal, offset } = parsePage(req.query, 100);
   let where = 'WHERE p.deleted_at IS NULL';
   const params = [];
 
@@ -77,15 +97,15 @@ router.get('/', (req, res) => {
   }
 
   const total = db.prepare(
-    `SELECT COUNT(*) as c FROM projects p LEFT JOIN companies c ON p.company_id = c.id ${where}`
+    `SELECT COUNT(*) as c FROM ${readRelation('projects')} p LEFT JOIN companies c ON p.company_id = c.id ${where}`
   ).get(...params).c;
 
   const liteSelect = `
     SELECT p.id, p.name, p.company_id, p.contact_id, p.type, p.status,
            p.probability, p.value_cad, p.monthly_cad, p.nb_greenhouses,
-           p.close_date, p.creation, p.updated_at, p.refusal_reason, p.vendeur_ref,
+           p.close_date, p.creation, p.updated_at, p.vendeur_ref,
            c.name as company_name
-    FROM projects p
+    FROM ${readRelation('projects')} p
     LEFT JOIN companies c ON p.company_id = c.id
     ${where}
     ORDER BY p.updated_at DESC
@@ -101,10 +121,14 @@ router.get('/', (req, res) => {
              WHEN p.vendeur_ref LIKE 'company:%' THEN (
                SELECT vc.name FROM companies vc WHERE vc.id = substr(p.vendeur_ref, 9)
              )
+             -- Vendeur importé d'Airtable dont le nom ne correspond à aucun
+             -- employé ni entreprise : on affiche le nom tel quel plutôt que
+             -- rien (cf. services/airtableNativeMappedColumns.js).
+             ELSE NULLIF(TRIM(p.vendeur_ref), '')
            END AS vendeur_label,
            (SELECT json_group_array(json_object('id', o.id, 'order_number', o.order_number))
               FROM orders o WHERE o.project_id = p.id AND o.deleted_at IS NULL) as orders_json
-    FROM projects p
+    FROM ${readRelation('projects')} p
     LEFT JOIN companies c ON p.company_id = c.id
     LEFT JOIN contacts ct ON p.contact_id = ct.id
     ${where}
@@ -136,8 +160,9 @@ router.get('/:id', (req, res) => {
               WHEN p.vendeur_ref LIKE 'company:%' THEN (
                 SELECT vc.name FROM companies vc WHERE vc.id = substr(p.vendeur_ref, 9)
               )
+              ELSE NULLIF(TRIM(p.vendeur_ref), '')
             END AS vendeur_label
-     FROM projects p
+     FROM ${readRelation('projects')} p
      LEFT JOIN companies c ON p.company_id = c.id
      LEFT JOIN contacts ct ON p.contact_id = ct.id
      WHERE p.id = ?`
@@ -147,6 +172,21 @@ router.get('/:id', (req, res) => {
     `SELECT id, order_number, status FROM orders WHERE project_id = ? AND deleted_at IS NULL ORDER BY order_number`
   ).all(req.params.id);
   res.json(project);
+});
+
+// GET /api/projects/:id/commissions — commissions du projet, lues en direct
+// dans Airtable. La table « Commissions » n'est pas miroitée dans Boréal
+// (périmètre du miroir gelé le 2026-09-03) : la colonne `projects.commissions`
+// ne porte que des record IDs, on va donc chercher les lignes à l'affichage.
+router.get('/:id/commissions', async (req, res) => {
+  const project = db.prepare('SELECT id, commissions FROM projects WHERE id = ?').get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const data = await fetchProjectCommissions(project.commissions);
+    res.json({ data });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
 });
 
 // POST /api/projects
@@ -171,7 +211,7 @@ router.post('/', (req, res) => {
   const monthly_cad = nums.monthly_cad ?? 0;
   const nb_greenhouses = nums.nb_greenhouses ?? 0;
 
-  const id = uuidv4();
+  const id = newRecordId();
   // `creation` est le champ canonique de date de création (originellement importé d'Airtable).
   // On le remplit aussi pour les projets créés nativement dans l'ERP afin que le même champ
   // soit utilisable uniformément (graphiques, filtres, affichage) — voir aussi le backfill
@@ -190,7 +230,7 @@ router.post('/', (req, res) => {
   applyCustomFieldDefaults('projects', id);
 
   const project = db.prepare(
-    `SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`
+    `SELECT p.*, c.name as company_name FROM ${readRelation('projects')} p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`
   ).get(id);
   emitEntity('project', 'created', id, project, req.user?.id);
   res.status(201).json(project);
@@ -211,10 +251,17 @@ router.put('/:id', (req, res) => {
   ]);
   if (numError) return res.status(400).json({ error: numError });
 
-  const customCols = getActiveCustomColumns('projects').map(c => c.column_name)
+  // Whitelist d'update : seules les colonnes custom ÉDITABLES (règle unique —
+  // services/customFieldWritability.js). Un champ Airtable en import seul est
+  // refusé en 400 explicite plutôt qu'ignoré en silence par buildPartialUpdate :
+  // l'écriture aurait de toute façon été écrasée au prochain sync.
+  if (refusedAirtablePullKeys('projects', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+  const customCols = getWritableCustomColumns('projects').map(c => c.column_name)
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['name', 'company_id', 'contact_id', 'type', 'status', 'probability',
-      'value_cad', 'monthly_cad', 'nb_greenhouses', 'close_date', 'refusal_reason', 'notes',
+      'value_cad', 'monthly_cad', 'nb_greenhouses', 'close_date', 'notes',
       'vendeur_ref', ...customCols],
     nonNullable: new Set(['name']),
     // Stocke des nombres (et non la chaîne brute) ; la validation ci-dessus
@@ -235,7 +282,7 @@ router.put('/:id', (req, res) => {
     writeBackRecord('projets', req.params.id, Object.keys(req.body));
   }
 
-  const updated = db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id)
+  const updated = db.prepare(`SELECT p.*, c.name as company_name FROM ${readRelation('projects')} p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`).get(req.params.id)
   emitEntity('project', 'updated', req.params.id, updated, req.user?.id);
   res.json(updated);
 });
@@ -245,14 +292,16 @@ router.patch('/:id/status', (req, res) => {
   const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Project not found' });
 
-  const { status, refusal_reason } = req.body;
+  // Le statut seul : « Raison du refus » n'est plus une colonne native (elle
+  // vit comme champ personnalisé alimenté par Airtable — migration 025).
+  const { status } = req.body;
   if (!['Ouvert', 'Gagné', 'Perdu'].includes(status)) {
     return res.status(400).json({ error: 'Invalid status' });
   }
-  db.prepare(`UPDATE projects SET status=?, refusal_reason=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-    .run(status, refusal_reason || null, req.params.id);
-  writeBackRecord('projets', req.params.id, ['status', 'refusal_reason']);
-  const updated = db.prepare('SELECT p.*, c.name as company_name FROM projects p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?').get(req.params.id)
+  db.prepare(`UPDATE projects SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+    .run(status, req.params.id);
+  writeBackRecord('projets', req.params.id, ['status']);
+  const updated = db.prepare(`SELECT p.*, c.name as company_name FROM ${readRelation('projects')} p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`).get(req.params.id)
   emitEntity('project', 'updated', req.params.id, updated, req.user?.id);
   res.json({ message: 'Status updated' });
 });

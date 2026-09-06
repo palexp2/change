@@ -78,7 +78,7 @@ export const defaultNavItems = [
     { to: '/interactions', icon: MessageSquare, label: 'Interactions' },
     { to: '/qualification-call', icon: PhoneCall, label: 'Appels de qualification' },
     { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
-    { to: '/discovery-forms', icon: FileText, label: 'Formulaires de découverte' },
+    { to: '/discovery-forms', icon: FileText, label: 'System builder' },
     { to: '/prospects-instagram', icon: Instagram, label: 'Prospects Instagram' },
   ]},
   { group: 'Transport', icon: Truck, accent: 'envois', items: [
@@ -121,8 +121,8 @@ export const defaultNavItems = [
   { group: 'Autres outils', icon: Wrench, accent: 'outils', items: [
     { to: '/priorite-assemblage', icon: ListChecks, label: "Priorité d'assemblage" },
     { to: '/automations',  icon: Zap,             label: 'Automatisations' },
-    // La page existait mais n'était joignable que par l'onglet Connecteurs de
-    // /admin (réservé aux admins) : introuvable pour tout le monde d'autre, et
+    // La page existait mais n'était joignable que par la section Connecteurs
+    // des Paramètres (réservée aux admins) : introuvable pour les autres, et
     // absente de la palette ⌘K qui se construit sur cette même liste. Entrée à
     // plat, comme la route (ProtectedRoute sans adminOnly) et l'API (requireAuth).
     { to: '/connectors',   icon: Plug,            label: 'Connecteurs' },

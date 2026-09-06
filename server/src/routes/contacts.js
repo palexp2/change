@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { v4 as uuidv4 } from 'uuid';
+import { newRecordId } from '../utils/recordId.js';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { rematchCalls } from './calls.js';
@@ -7,6 +7,8 @@ import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { emitEntity, emitCompanyContactsChanged } from '../services/realtimeEmitters.js';
 import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
 import { findContactDuplicates } from '../utils/duplicateMatch.js';
+import { readRelation } from '../services/customFieldsView.js'
+import { parsePage } from '../utils/pagination.js'
 
 const router = Router();
 router.use(requireAuth);
@@ -45,10 +47,8 @@ function loadCompanies(contactId) {
 
 // GET /api/contacts
 router.get('/', (req, res) => {
-  const { search, company_id, page = 1, limit = 50 } = req.query;
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit);
+  const { search, company_id } = req.query;
+  const { page, limit, limitAll, limitVal, offset } = parsePage(req.query, 50);
   let where = 'WHERE ct.deleted_at IS NULL';
   const params = [];
 
@@ -103,7 +103,7 @@ router.get('/duplicates', (req, res) => {
 router.get('/:id', (req, res) => {
   const contact = db.prepare(
     `SELECT ct.*, c.name as company_name
-     FROM contacts ct
+     FROM ${readRelation('contacts')} ct
      LEFT JOIN companies c ON ct.company_id = c.id
      WHERE ct.id = ?`
   ).get(req.params.id);
@@ -137,7 +137,7 @@ router.post('/:id/companies', (req, res) => {
     'SELECT 1 FROM contact_companies WHERE contact_id = ? AND is_primary = 1'
   ).get(req.params.id);
   const makePrimary = is_primary ? 1 : (hasPrimary ? 0 : 1);
-  const linkId = uuidv4();
+  const linkId = newRecordId();
   const txn = db.transaction(() => {
     if (makePrimary) {
       db.prepare('UPDATE contact_companies SET is_primary = 0 WHERE contact_id = ?').run(req.params.id);
@@ -242,7 +242,7 @@ router.post('/', (req, res) => {
     if (!co) return res.status(400).json({ error: 'Invalid company' });
   }
 
-  const id = uuidv4();
+  const id = newRecordId();
   const txn = db.transaction(() => {
     db.prepare(
       `INSERT INTO contacts (id, first_name, last_name, email, phone, mobile, company_id, language, notes)
@@ -252,7 +252,7 @@ router.post('/', (req, res) => {
     if (company_id) {
       db.prepare(
         `INSERT INTO contact_companies (id, contact_id, company_id, is_primary) VALUES (?, ?, ?, 1)`
-      ).run(uuidv4(), id, company_id);
+      ).run(newRecordId(), id, company_id);
     }
   });
   txn();
@@ -293,7 +293,7 @@ router.put('/:id', (req, res) => {
         } else {
           db.prepare(
             'INSERT INTO contact_companies (id, contact_id, company_id, is_primary) VALUES (?, ?, ?, 1)'
-          ).run(uuidv4(), req.params.id, newCid);
+          ).run(newRecordId(), req.params.id, newCid);
         }
       }
     }

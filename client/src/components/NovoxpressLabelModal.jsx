@@ -1,8 +1,10 @@
 import { useState } from 'react'
+import { fmtMoney } from '../utils/formatters.js'
 import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope, Truck } from 'lucide-react'
 import api from '../lib/api.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails } from './novoxpressShared.jsx'
+import ErrorBanner from './ErrorBanner.jsx'
 
 export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
   const [step, setStep] = useState('package') // 'package' | 'rates' | 'confirm' | 'done'
@@ -16,10 +18,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   const [rates, setRates] = useState([])
   const [requestId, setRequestId] = useState(null)
   const [selectedRate, setSelectedRate] = useState(null)
-  // Transporteur du service sélectionné — détermine quel achat effectuer à la
-  // confirmation ('novoxpress' | 'purolator'). Les deux offrent le même achat
-  // réel (étiquette + suivi), affichés côte à côte dans l'étape 'rates'.
-  const [selectedCarrier, setSelectedCarrier] = useState('novoxpress')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [errorDetails, setErrorDetails] = useState(null) // { sent, responseBody, response } pour debug
@@ -36,13 +34,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   const [ups, setUps] = useState(null) // { rates, customs, environment }
   const [upsLoading, setUpsLoading] = useState(false)
   const [upsError, setUpsError] = useState('')
-
-  // Tarifs Purolator (ERP → Purolator) — contrairement à UPS ci-dessus, ces
-  // tarifs sont ACTIONABLES : sélectionner un service Purolator déclenche
-  // l'achat réel de l'étiquette (bouton « Tarifer » du CLAUDE.md).
-  const [purolator, setPurolator] = useState(null) // { rates, environment }
-  const [purolatorLoading, setPurolatorLoading] = useState(false)
-  const [purolatorError, setPurolatorError] = useState('')
 
   const isEnvelope = BOX_PRESETS[preset]?.packagingType === 'envelope'
   const effectiveQty = isEnvelope ? 1 : qty
@@ -135,30 +126,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     setErrorDetails(null)
     setDiagnostic(null)
 
-    if (selectedCarrier === 'purolator') {
-      const sentPayload = {
-        service_id: selectedRate.service_id,
-        service_name: getRateName(selectedRate) || null,
-        packages: buildPackages(),
-      }
-      try {
-        const res = await api.purolator.createLabel(envoi.id, sentPayload)
-        setResult(res)
-        setStep('done')
-        onDone?.()
-      } catch (e) {
-        setError(e.message)
-        setErrorDetails({
-          sent: e.details?.sent || sentPayload,
-          responseBody: e.details?.responseBody || null,
-          novoxpressStatus: e.details?.purolatorStatus || null,
-        })
-      } finally {
-        setLoading(false)
-      }
-      return
-    }
-
     const sentPayload = {
       request_id: requestId,
       service_id: selectedRate.service_id,
@@ -201,27 +168,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     }
   }
 
-  async function handlePurolatorRates() {
-    setPurolatorLoading(true); setPurolatorError(''); setPurolator(null)
-    try {
-      const res = await api.purolator.shipmentRates(envoi.id, { packages: buildPackages() })
-      setPurolator(res)
-    } catch (e) {
-      // Message brut de l'API Purolator — jamais un échec silencieux (CLAUDE.md).
-      setPurolatorError(e.message)
-    } finally {
-      setPurolatorLoading(false)
-    }
-  }
-
-  // Sélection d'un service Purolator : va directement à la confirmation
-  // d'achat, comme pour un service Novoxpress.
-  function selectPurolatorRate(rate) {
-    setSelectedRate(rate)
-    setSelectedCarrier('purolator')
-    setStep('confirm')
-  }
-
   async function handleCompareUps() {
     setUpsLoading(true); setUpsError(''); setUps(null)
     try {
@@ -233,53 +179,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     } finally {
       setUpsLoading(false)
     }
-  }
-
-  // Tarifs Purolator — côte à côte avec Novoxpress, mais SÉLECTIONNABLES :
-  // cliquer un service Purolator achète réellement l'étiquette (contrairement
-  // à la comparaison UPS ci-dessous, purement informative).
-  function renderPurolatorRates() {
-    return (
-      <div className="border-t border-slate-100 pt-3 space-y-2" data-testid="purolator-rate-comparison">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5"><Truck size={14} className="text-purple-700" /> Tarifs Purolator</p>
-          <button onClick={handlePurolatorRates} disabled={purolatorLoading} className="btn-secondary btn-sm text-xs" data-testid="purolator-get-rates">
-            {purolatorLoading ? 'Interrogation…' : purolator ? 'Rafraîchir' : 'Tarifer'}
-          </button>
-        </div>
-        {purolatorError && (
-          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 whitespace-pre-wrap break-words" data-testid="purolator-rate-error">{purolatorError}</p>
-        )}
-        {purolator?.rates?.length > 0 && (
-          <>
-            {purolator.environment !== 'production' && (
-              <p className="text-[11px] text-amber-700">Environnement de développement Purolator — n'achetez que pour tester.</p>
-            )}
-            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {purolator.rates.map(r => (
-                <button
-                  key={r.service_id}
-                  onClick={() => selectPurolatorRate(r)}
-                  className="w-full flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 hover:border-purple-400 hover:bg-purple-50 transition-colors text-left"
-                  data-testid="purolator-rate-option"
-                >
-                  <div>
-                    <p className="font-medium text-slate-800 text-sm">{r.service_name}</p>
-                    <p className="text-xs text-slate-400">
-                      Purolator{r.total_transit_day ? ` · ${r.total_transit_day} jour(s)` : ''}
-                    </p>
-                  </div>
-                  <span className="font-semibold text-slate-700 whitespace-nowrap">{fmtPrice(r)}</span>
-                </button>
-              ))}
-            </div>
-          </>
-        )}
-        {purolator && !purolator.rates?.length && !purolatorError && (
-          <p className="text-xs text-slate-400">Purolator n'a retourné aucun tarif pour cet envoi.</p>
-        )}
-      </div>
-    )
   }
 
   // Rendue par appel de fonction (pas <UpsComparison />) pour ne pas recréer un
@@ -355,9 +254,9 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         <div>
           <label className="label">Dimensions (pouces) — L × l × H</label>
           <div className="grid grid-cols-3 gap-2">
-            <input type="number" min="1" className="input text-center" placeholder="Long." value={custom.length} onChange={e => setCustom(c => ({ ...c, length: e.target.value }))} />
-            <input type="number" min="1" className="input text-center" placeholder="Larg." value={custom.width}  onChange={e => setCustom(c => ({ ...c, width: e.target.value }))} />
-            <input type="number" min="1" className="input text-center" placeholder="Haut." value={custom.depth}  onChange={e => setCustom(c => ({ ...c, depth: e.target.value }))} />
+            <input type="number" min="1" className="input text-center" value={custom.length} onChange={e => setCustom(c => ({ ...c, length: e.target.value }))} />
+            <input type="number" min="1" className="input text-center" value={custom.width}  onChange={e => setCustom(c => ({ ...c, width: e.target.value }))} />
+            <input type="number" min="1" className="input text-center" value={custom.depth}  onChange={e => setCustom(c => ({ ...c, depth: e.target.value }))} />
           </div>
         </div>
       )}
@@ -371,7 +270,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
               className="input"
               value={totalWeight}
               onChange={e => setTotalWeight(e.target.value)}
-              placeholder="ex. 2.5"
             />
             {orderItemsTotalWeight > 0 && (
               <p className="text-xs text-slate-400 mt-1">
@@ -411,7 +309,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         </div>
       ) : error ? (
         <div className="space-y-4">
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">{error}</p>
+          <ErrorBanner>{error}</ErrorBanner>
           <NovoxpressDiagnosticPanel diagnostic={diagnostic} />
           {!diagnostic?.available && (
             <button onClick={() => handleDiagnose('rate')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
@@ -421,7 +319,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
             </button>
           )}
           <DebugDetails details={errorDetails} />
-          {renderPurolatorRates()}
           <div className="flex justify-between">
             <button onClick={() => { setStep('package'); setError(''); setErrorDetails(null); setDiagnostic(null) }} className="btn-secondary">← Retour</button>
           </div>
@@ -430,7 +327,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         <div className="space-y-4">
           <p className="text-sm text-slate-500 text-center py-4">Aucun tarif disponible pour cet envoi.</p>
           <DebugDetails details={errorDetails} />
-          {renderPurolatorRates()}
           <button onClick={() => { setStep('package'); setErrorDetails(null) }} className="btn-secondary">← Retour</button>
         </div>
       ) : (
@@ -440,7 +336,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
             {rates.map((rate, i) => (
               <button
                 key={rate.service_id || i}
-                onClick={() => { setSelectedRate(rate); setSelectedCarrier('novoxpress'); setStep('confirm') }}
+                onClick={() => { setSelectedRate(rate); setStep('confirm') }}
                 className="w-full text-left p-3 rounded-xl border border-slate-200 hover:border-brand-400 hover:bg-brand-50 transition-colors"
               >
                 <div className="flex items-center justify-between gap-3">
@@ -454,7 +350,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
               </button>
             ))}
           </div>
-          {renderPurolatorRates()}
           {renderUpsComparison()}
           <button onClick={() => setStep('package')} className="btn-secondary text-sm">← Retour</button>
         </>
@@ -488,32 +383,28 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
       </div>
       {(() => {
         const isIntl = envoi.address_country && envoi.address_country !== 'CA'
-        // Déclaration douanière internationale : implémentée pour Novoxpress
-        // seulement (Purolator vise le Canada domestique pour l'instant).
-        if (!isIntl || selectedCarrier !== 'novoxpress') return null
+        if (!isIntl) return null
         const totalValue = (envoi.order_items || []).reduce((s, i) => s + (i.unit_cost || 0) * (i.qty || 0), 0)
         return (
           <div className="bg-blue-50 border border-blue-200 rounded-xl px-4 py-3 text-xs text-blue-800 space-y-1">
             <p className="font-semibold">Envoi international — facture commerciale incluse automatiquement</p>
             <p>Produit déclaré : <span className="font-medium">Intelligent greenhouse thermostat</span></p>
             <p>Code HS : <span className="font-mono">9032.10.0030</span> · Origine : Canada · Raison : Permanent</p>
-            <p>Valeur déclarée : <span className="font-medium">{new Intl.NumberFormat('fr-CA', { style: 'currency', currency: 'CAD' }).format(Math.ceil(totalValue))}</span></p>
+            <p>Valeur déclarée : <span className="font-medium">{fmtMoney(Math.ceil(totalValue))}</span></p>
             <p className="text-blue-600">Note : les coordonnées de votre broker doivent être configurées dans votre compte Novoxpress.</p>
           </div>
         )
       })()}
       <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-        Cette action va facturer l'étiquette sur votre compte {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'}.
-        {selectedCarrier === 'novoxpress' && <>
-          <br />Le ramassage du colis se commande séparément après l'achat de l'étiquette.
-          <br />En cas d'erreur inexpliquée, un diagnostic automatique (~20 s, environnement de test, aucun achat) tentera d'en isoler la cause.
-        </>}
+        Cette action va facturer l'étiquette sur votre compte Novoxpress.
+        <br />Le ramassage du colis se commande séparément après l'achat de l'étiquette.
+        <br />En cas d'erreur inexpliquée, un diagnostic automatique (~20 s, environnement de test, aucun achat) tentera d'en isoler la cause.
       </p>
       {error && (
         <>
-          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">{error}</p>
-          {selectedCarrier === 'novoxpress' && <NovoxpressDiagnosticPanel diagnostic={diagnostic} />}
-          {selectedCarrier === 'novoxpress' && !diagnostic?.available && (
+          <ErrorBanner>{error}</ErrorBanner>
+          <NovoxpressDiagnosticPanel diagnostic={diagnostic} />
+          {!diagnostic?.available && (
             <button onClick={() => handleDiagnose('label')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
               {diagLoading
                 ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~20 s)</>
@@ -557,9 +448,20 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
               N° de suivi : <span className="font-mono font-semibold text-slate-900">{result.tracking_id}</span>
             </p>
           )}
+          {result?.tracking_url && (
+            <a
+              href={result.tracking_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs text-brand-600 hover:underline"
+              data-testid="direct-carrier-tracking-link"
+            >
+              Suivre le colis sur Novoxpress
+            </a>
+          )}
           {result?.shipment_id && (
             <p className="text-xs text-slate-400">
-              N° {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'} : <span className="font-mono">{result.shipment_id}</span>
+              N° Novoxpress : <span className="font-mono">{result.shipment_id}</span>
             </p>
           )}
         </div>
@@ -571,39 +473,33 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
                 <CheckCircle size={15} className="text-green-600" /> L'achat de l'étiquette a bien été effectué.
               </p>
               <p>
-                Votre compte {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'} a été facturé et l'envoi est marqué « Envoyé ».
+                Votre compte Novoxpress a été facturé et l'envoi est marqué « Envoyé ».
                 Seul le <span className="font-medium">téléchargement du PDF</span> a échoué — l'étiquette,
-                elle, existe bien chez {selectedCarrier === 'purolator' ? 'Purolator' : 'Novoxpress'}.
+                elle, existe bien chez Novoxpress.
               </p>
               {result?.label_error && (
                 <p className="text-xs text-amber-700">
                   Raison du blocage : <span className="font-mono break-all">{result.label_error}</span>
                 </p>
               )}
-              {selectedCarrier === 'novoxpress' && (
-                <p className="text-xs">
-                  Aucune nouvelle facturation : « Réessayer » récupère le même PDF déjà acheté.
-                </p>
-              )}
+              <p className="text-xs">
+                Aucune nouvelle facturation : « Réessayer » récupère le même PDF déjà acheté.
+              </p>
             </div>
-            {selectedCarrier === 'novoxpress' && (
-              <>
-                {retryError && (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-4 py-3 whitespace-pre-wrap break-words">
-                    {retryError}
-                  </p>
-                )}
-                <button
-                  onClick={handleRetryPdf}
-                  disabled={retrying}
-                  className="btn-primary w-full flex items-center justify-center gap-2"
-                >
-                  {retrying
-                    ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Téléchargement…</>
-                    : <><RefreshCw size={15} /> Réessayer le téléchargement</>}
-                </button>
-              </>
+            {retryError && (
+              <ErrorBanner>
+                {retryError}
+              </ErrorBanner>
             )}
+            <button
+              onClick={handleRetryPdf}
+              disabled={retrying}
+              className="btn-primary w-full flex items-center justify-center gap-2"
+            >
+              {retrying
+                ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Téléchargement…</>
+                : <><RefreshCw size={15} /> Réessayer le téléchargement</>}
+            </button>
             <button onClick={onClose} className="btn-secondary w-full">Fermer (récupérable plus tard depuis l'envoi)</button>
           </>
         ) : (

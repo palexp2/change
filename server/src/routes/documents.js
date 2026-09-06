@@ -1,12 +1,14 @@
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { randomUUID } from 'crypto'
 import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import PDFDocument from 'pdfkit'
 import { emitEntity, emitOrder } from '../services/realtimeEmitters.js'
+import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
+import { parsePage } from '../utils/pagination.js'
 
 // Reuse the LIST query shape so realtime payload matches what the
 // soumissions list page consumes (Soumissions.jsx).
@@ -29,10 +31,7 @@ router.use(requireAuth)
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function uploadsDir() {
-  const base = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
-  const dir = path.join(base, 'documents')
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-  return dir
+  return ensureUploadsDir('documents')
 }
 
 function fmtPrice(n, currency = 'CAD') {
@@ -251,10 +250,8 @@ async function generateSoumissionPdf(soumission, items, company, contact, tenant
 // ── Soumissions ───────────────────────────────────────────────────────────────
 
 router.get('/soumissions', (req, res) => {
-  const { company_id, project_id, status, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { company_id, project_id, status } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
   if (company_id) { where += ' AND s.company_id = ?'; params.push(company_id) }
@@ -336,7 +333,7 @@ router.post('/soumissions', async (req, res) => {
   const autoTitle = `QTE-Z-${next_num}`
   const autoExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
-  const id = randomUUID()
+  const id = newRecordId()
   // Soumission + ses lignes dans une seule transaction : un échec de contrainte
   // au milieu de la boucle d'items ne doit pas laisser une soumission orpheline.
   const insertSoumission = db.prepare(`
@@ -352,7 +349,7 @@ router.post('/soumissions', async (req, res) => {
            discount_pct, discount_amount)
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
-      insertItem.run(randomUUID(), id, it.catalog_product_id || null,
+      insertItem.run(newRecordId(), id, it.catalog_product_id || null,
                      it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
                      it.description_fr || null, it.description_en || null, i)
     }
@@ -365,7 +362,7 @@ router.post('/soumissions', async (req, res) => {
     const contact = contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id) : null
     const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
-    const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
+    const relPath = path.relative(uploadsPath(), pdfPath)
     db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(relPath, id)
   } catch (e) {
     console.error('PDF generation error:', e)
@@ -406,7 +403,7 @@ router.put('/soumissions/:id', async (req, res) => {
       deleteItems.run(req.params.id)
       for (let i = 0; i < items.length; i++) {
         const it = items[i]
-        insertItem.run(randomUUID(), req.params.id, it.catalog_product_id || null,
+        insertItem.run(newRecordId(), req.params.id, it.catalog_product_id || null,
                        it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
                        it.description_fr || null, it.description_en || null, i)
       }
@@ -420,7 +417,7 @@ router.put('/soumissions/:id', async (req, res) => {
     const contact = soumission.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(soumission.contact_id) : null
     const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
-    const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
+    const relPath = path.relative(uploadsPath(), pdfPath)
     db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(relPath, req.params.id)
   } catch (e) {
     console.error('PDF regeneration error:', e)
@@ -447,7 +444,7 @@ router.delete('/soumissions/:id', (req, res) => {
   // Clean up PDF
   if (row.generated_pdf_path) {
     try {
-      const uploadsBase = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+      const uploadsBase = uploadsPath()
       const fromUploads = path.join(uploadsBase, row.generated_pdf_path)
       const fromCwd     = path.resolve(process.cwd(), row.generated_pdf_path)
       fs.unlinkSync(fs.existsSync(fromUploads) ? fromUploads : fromCwd)
@@ -465,7 +462,7 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
   let pdfPath
   if (soumission.generated_pdf_path) {
     // Essaie uploads-relative (nouvelles soumissions), puis cwd-relative (legacy)
-    const uploadsBase = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+    const uploadsBase = uploadsPath()
     const fromUploads = path.join(uploadsBase, soumission.generated_pdf_path)
     const fromCwd     = path.resolve(process.cwd(), soumission.generated_pdf_path)
     pdfPath = fs.existsSync(fromUploads) ? fromUploads : fromCwd
@@ -479,7 +476,7 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
     const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     try {
       pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
-      const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
+      const relPath = path.relative(uploadsPath(), pdfPath)
       db.prepare("UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?").run(relPath, req.params.id)
     } catch {
       return res.status(500).json({ error: 'PDF generation failed' })
@@ -502,7 +499,7 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
   const src = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!src) return res.status(404).json({ error: 'Not found' })
 
-  const newId = randomUUID()
+  const newId = newRecordId()
   // Auto-number for the copy
   const { next_num: copyNum } = db.prepare(
     `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions`
@@ -528,7 +525,7 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
     VALUES (?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const it of srcItems) {
-    insertItem.run(randomUUID(), newId, it.catalog_product_id, it.qty, it.unit_price_cad, it.discount_pct ?? 0, it.discount_amount ?? 0, it.description_fr, it.description_en, it.sort_order)
+    insertItem.run(newRecordId(), newId, it.catalog_product_id, it.qty, it.unit_price_cad, it.discount_pct ?? 0, it.discount_amount ?? 0, it.description_fr, it.description_en, it.sort_order)
   }
 
   // Generate PDF
@@ -539,7 +536,7 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
     const contact = src.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(src.contact_id) : null
     const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
-    const relPath = path.relative(path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads'), pdfPath)
+    const relPath = path.relative(uploadsPath(), pdfPath)
     db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(relPath, newId)
   } catch (e) {
     console.error('PDF generation error (duplicate):', e)
@@ -580,7 +577,7 @@ router.post('/soumissions/:id/convert-to-order', (req, res) => {
     ORDER BY di.sort_order
   `).all(req.params.id)
 
-  const orderId = randomUUID()
+  const orderId = newRecordId()
   const { m } = db.prepare('SELECT MAX(order_number) as m FROM orders').get()
   const orderNumber = (m || 0) + 1
   const refLabel = soumission.title || (soumission.quote_number ? `QTE-Z-${soumission.quote_number}` : req.params.id)
@@ -604,7 +601,7 @@ router.post('/soumissions/:id/convert-to-order', (req, res) => {
       const desc = lang === 'English'
         ? (it.description_en || it.description_fr || '')
         : (it.description_fr || it.description_en || '')
-      insertItem.run(randomUUID(), orderId, it.catalog_product_id || null,
+      insertItem.run(newRecordId(), orderId, it.catalog_product_id || null,
         it.qty || 1, it.product_cost ?? 0, desc || null, i)
     }
     // Convertir un devis = il est accepté. On promeut Brouillon/Envoyée → Acceptée.

@@ -5,8 +5,8 @@
 // une ligne durable (hebdo / mensuel / trimestriel / annuel / ad hoc) qu'on coche
 // PAR PÉRIODE. Cocher « CTB les transactions » cette semaine n'efface donc rien :
 // la case se rouvre d'elle-même la semaine suivante.
-import { randomUUID } from 'crypto'
 import db from '../db/database.js'
+import { newRecordId } from '../utils/recordId.js'
 import { broadcastAll } from './realtime.js'
 import { localDay, dayDiff as daysBetween } from '../utils/datetime.js'
 export { localDay, daysBetween }
@@ -248,6 +248,13 @@ export function previousPeriodKey(cadence, periodKey) {
   return periodKeyFor(cadence, addDays(r.start, -1))
 }
 
+/** Recule une clé de période de `n` pas (pour `period_offset`). `n` ≤ 0 = clé inchangée. */
+export function shiftPeriodKey(cadence, periodKey, n) {
+  let key = periodKey
+  for (let i = 0; i < n && key; i++) key = previousPeriodKey(cadence, key)
+  return key
+}
+
 /**
  * Date d'échéance d'une période mensuelle quand un jour du mois est fixé. Le
  * jour est ramené au dernier jour du mois (« le 31 » en février = le 28/29),
@@ -372,7 +379,7 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
   const rows = db.prepare(`
     SELECT * FROM recurring_tasks WHERE ${where.join(' AND ')}
     ORDER BY CASE cadence WHEN 'bihebdo' THEN 0 WHEN 'hebdo' THEN 1 WHEN 'mensuel' THEN 2
-                          WHEN 'trimestriel' THEN 3 WHEN 'annuel' THEN 4 ELSE 5 END, position, created_at
+                          WHEN 'trimestriel' THEN 3 WHEN 'annuel' THEN 4 ELSE 5 END, priority DESC, position, created_at
   `).all(...params)
 
   const completion = db.prepare(`
@@ -384,13 +391,16 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
   const today = localDay()
   return rows.map(t => {
     if (t.cadence === 'bihebdo') return biweeklyTask(t, { date, today, completion })
-    const period_key = periodKeyFor(t.cadence, date)
+    // period_offset décale la période « courante » en arrière (travaux qui ne se
+    // font qu'une fois le mois terminé) : la ligne affiche alors directement la
+    // période décalée, plus besoin d'un rattrapage pour dire la même chose.
+    const period_key = shiftPeriodKey(t.cadence, periodKeyFor(t.cadence, date), t.period_offset || 0)
     const c = completion.get(t.id, period_key)
     const done = !!c
     return {
       ...t,
       period_key,
-      period_label: periodLabel(t.cadence, date),
+      period_label: periodLabel(t.cadence, periodRange(t.cadence, period_key)?.start || date),
       done,
       done_at: c?.done_at || null,
       done_by_name: doneByName(t, c),
@@ -464,7 +474,7 @@ export function createRecurringTask({
   const text = String(label || '').trim()
   if (!text) throw new Error('label requis')
   if (!CADENCES.includes(cadence)) throw new Error('cadence invalide')
-  const id = randomUUID()
+  const id = newRecordId()
   const pos = (db.prepare(`SELECT MAX(position) AS m FROM recurring_tasks WHERE deleted_at IS NULL`).get()?.m ?? 0) + 1
   db.prepare(`
     INSERT INTO recurring_tasks (id, label, cadence, owner, day_hint, notes, due_date, due_day, position, source)
@@ -474,7 +484,7 @@ export function createRecurringTask({
   return db.prepare('SELECT * FROM recurring_tasks WHERE id=?').get(id)
 }
 
-const EDITABLE = ['label', 'cadence', 'owner', 'day_hint', 'notes', 'due_date', 'due_day', 'active', 'position']
+const EDITABLE = ['label', 'cadence', 'owner', 'day_hint', 'notes', 'due_date', 'due_day', 'active', 'position', 'priority', 'period_offset']
 
 /** Jour du mois validé (1-31), ou `null` — champ vidé, valeur farfelue. */
 function cleanDueDay(v) {
@@ -493,7 +503,12 @@ export function updateRecurringTask(id, patch) {
     if (k === 'cadence' && !CADENCES.includes(v)) continue
     if (k === 'owner' && !OWNERS.includes(v)) continue
     sets.push(`${k}=?`)
-    vals.push(k === 'active' ? (v ? 1 : 0) : k === 'due_day' ? cleanDueDay(v) : v)
+    vals.push(
+      k === 'active' || k === 'priority' ? (v ? 1 : 0) :
+      k === 'due_day' ? cleanDueDay(v) :
+      k === 'period_offset' ? Math.max(0, Math.trunc(Number(v)) || 0) :
+      v
+    )
   }
   if (!sets.length) return row
   db.prepare(`UPDATE recurring_tasks SET ${sets.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
@@ -526,11 +541,15 @@ const SEED = [
   { owner: 'AL', cadence: 'hebdo', slug: 'remettre-20k-epargne', label: 'Remettre 20 k$ dans le compte Épargne' },
   { owner: 'AL', cadence: 'mensuel', slug: 'payer-visa', label: 'Payer Visa CAD et Visa USD', day_hint: 'le 25', due_day: 25,
     notes: 'Un rappel Slack automatique existe déjà (automation « Rappel de paiement des cartes »).' },
-  { owner: 'AL', cadence: 'mensuel', slug: 'debourses-gui', label: 'Fournir à Gui les déboursés en pièces pour le mois' },
+  // Ces trois-là se font APRÈS la fin du mois qu'elles décrivent (déboursés,
+  // relevés, écritures de fin de mois) : period_offset:1 fait afficher direct
+  // « août » tout septembre, plutôt qu'une ligne « septembre » à côté d'un
+  // rattrapage « août » qui répétait la même chose sous une autre forme.
+  { owner: 'AL', cadence: 'mensuel', slug: 'debourses-gui', label: 'Fournir à Gui les déboursés en pièces pour le mois', period_offset: 1 },
   { owner: 'AL', cadence: 'mensuel', slug: 'releves-bancaires-drive', label: 'Télécharger les relevés bancaires sur le Drive',
-    notes: 'Relevé Mastercard disponible vers le 15-17 du mois.' },
+    notes: 'Relevé Mastercard disponible vers le 15-17 du mois.', period_offset: 1 },
   { owner: 'AL', cadence: 'mensuel', slug: 'ej-mensuelle', label: "E/J mensuelle (crédit d'impôt RSDE, Pari, subvention LB, FPA)",
-    notes: 'Voir la page « Écritures de fin de mois ».' },
+    notes: 'Voir la page « Écritures de fin de mois ».', period_offset: 1 },
   { owner: 'AL', cadence: 'trimestriel', slug: 'rapport-taxes-rq', label: 'Produire le rapport de taxes (Revenu Québec)',
     notes: 'Trimestre au 30 septembre : à produire avant le 31 octobre. Envoyer le paiement au moins 5 jours avant la date limite.' },
 
@@ -549,8 +568,8 @@ const SEED = [
 
 export function seedRecurringWork() {
   const insert = db.prepare(`
-    INSERT OR IGNORE INTO recurring_tasks (id, label, cadence, owner, day_hint, notes, due_day, position, source)
-    VALUES (?,?,?,?,?,?,?,?,'travaux_os_ml')
+    INSERT OR IGNORE INTO recurring_tasks (id, label, cadence, owner, day_hint, notes, due_day, period_offset, position, source)
+    VALUES (?,?,?,?,?,?,?,?,?,'travaux_os_ml')
   `)
   // Le jour d'échéance est arrivé après le seed initial : les lignes existent
   // déjà, donc INSERT OR IGNORE ne les toucherait pas. On le pose une fois, et
@@ -565,7 +584,7 @@ export function seedRecurringWork() {
   const run = db.transaction(() => {
     SEED.forEach((t, i) => {
       const id = `rt-${t.owner.toLowerCase()}-${t.slug}`
-      const info = insert.run(id, t.label, t.cadence, t.owner, t.day_hint || null, t.notes || null, t.due_day || null, i + 1)
+      const info = insert.run(id, t.label, t.cadence, t.owner, t.day_hint || null, t.notes || null, t.due_day || null, t.period_offset || 0, i + 1)
       if (info.changes) added++
       else if (t.due_day) backfill.run(t.due_day, id)
     })
@@ -573,6 +592,25 @@ export function seedRecurringWork() {
   run()
   if (added) console.log(`✅ Travaux récurrents seedés (${added} nouveau(x))`)
   migrateToBiweekly()
+  migratePeriodOffset()
+}
+
+// period_offset est arrivé après le seed initial : ces lignes existent déjà,
+// INSERT OR IGNORE ne les touche pas. On le pose une fois, sur une ligne
+// jamais retouchée à la main — même garde que le backfill de due_day.
+const RETRO_MONTHLY_IDS = ['rt-al-debourses-gui', 'rt-al-releves-bancaires-drive', 'rt-al-ej-mensuelle']
+
+function migratePeriodOffset() {
+  const backfill = db.prepare(`
+    UPDATE recurring_tasks SET period_offset=1
+    WHERE id=? AND period_offset=0 AND deleted_at IS NULL
+      AND (updated_at IS NULL OR updated_at = created_at)
+  `)
+  let moved = 0
+  db.transaction(() => {
+    for (const id of RETRO_MONTHLY_IDS) moved += backfill.run(id).changes
+  })()
+  if (moved) console.log(`✅ ${moved} travail(aux) mensuel(s) recalé(s) sur le mois précédent`)
 }
 
 // Bascule unique hebdo → bi-hebdomadaire des trois travaux qui se font le mardi
@@ -636,7 +674,7 @@ export function setCompletion(taskId, { done, periodKey = null, userId = null, n
       VALUES (?,?,?,?,?)
       ON CONFLICT(task_id, period_key) DO UPDATE SET
         done_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), done_by=excluded.done_by, note=excluded.note
-    `).run(randomUUID(), taskId, key, userId, note)
+    `).run(newRecordId(), taskId, key, userId, note)
   } else {
     db.prepare('DELETE FROM recurring_task_completions WHERE task_id=? AND period_key=?').run(taskId, key)
   }

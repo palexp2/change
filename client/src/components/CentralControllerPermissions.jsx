@@ -1,3 +1,5 @@
+import { fmtNumber } from '../utils/formatters.js'
+
 const PERMISSION_LABELS = {
   maxNumberOfCirculationFans: 'Ventilateurs de circulation',
   maxNumberOfFans: 'Ventilateurs',
@@ -26,7 +28,7 @@ function formatValue(v) {
   if (v === '' || v == null) return '—'
   const n = Number(v)
   if (!Number.isFinite(n)) return String(v)
-  return n.toLocaleString('fr-CA')
+  return fmtNumber(n)
 }
 
 export function CentralControllerPermissions({ permissions, compact = false }) {

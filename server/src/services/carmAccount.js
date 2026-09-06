@@ -7,9 +7,13 @@
 // portail.
 //   • Notre versement (ex. 500 $ par carte) → Dépense sur la carte, imputée à
 //     21000 avec ASFC en fournisseur. Aucune taxe : c'est une avance.
-//   • Évaluation B3 → facture fournisseur ASFC : droits de douane en coût
-//     (duty_acctnum) et TPS à l'importation en CTI 100 % RÉCUPÉRABLE. Passer un
-//     B3 en bloc dans une dépense ferait perdre le CTI et gonflerait les charges.
+//   • Évaluation B3 → ÉCRITURE DE JOURNAL (pas une facture fournisseur — voir
+//     carmQb.js) : droits de douane en coût (duty_acctnum) et TPS à
+//     l'importation en CTI 100 % RÉCUPÉRABLE portée directement au compte
+//     d'attente TPS/TVH (gst_suspense_acctnum), en contrepartie de 21000. Une
+//     JE ne crée jamais de facture « à payer » dans QuickBooks — décidé le
+//     2026-09-01 (Guillaume) après avoir constaté que la facture fournisseur
+//     restait ouverte indéfiniment (rien ne l'applique au crédit accumulé).
 //   • Intérêts (IN) → charge financière, hors champ, aucun CTI.
 //   • Corrections (C1) → même ventilation que le B3 corrigé, en sens inverse.
 //   • Ligne réglée par un courtier (FedEx, UPS, Axxess paient l'ASFC puis nous
@@ -43,6 +47,7 @@ export const CARM_DEFAULT_CONFIG = {
   penalty_acctnum: '70100',      // pénalités → Intérêts et pénalités non déductibles
   card_acctnum: '22000',         // Mastercard BNC — versements « Lot de cartes »
   bank_acctnum: '10000',         // Compte chèques BNC — versements électroniques
+  gst_suspense_acctnum: '25000', // Compte d'attente pour la TPS/TVH — CTI porté manuellement par écriture de journal
   vendor_name: 'ASFC',           // fournisseur QB qui porte le compte
   gst_tax_code_name: 'TPS',      // code de taxe du CTI à l'importation
   notax_tax_code_name: 'Hors champ',

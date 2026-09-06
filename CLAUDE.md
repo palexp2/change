@@ -7,9 +7,19 @@ App **single-tenant** dédiée aux opérations d'Orisha, entreprise d'IoT & auto
 ## Stack
 - **Frontend** : React + Vite, dans `client/`
 - **Backend** : Node.js + Express + SQLite (better-sqlite3), dans `server/`
-- **Reverse proxy** : nginx → port 3004
+- **Reverse proxy** : nginx → port 3004 pour l'API et les routes dynamiques ;
+  **le frontend statique est servi par nginx lui-même** depuis `client/dist`
+  (racine `client/web`, un lien `erp → ../dist`). Node ne sert plus la coquille
+  de la page : mono-thread, il la faisait attendre derrière tout ce qu'il avait
+  en cours (mesuré : 4,78 s pour un index.html de 1,6 ko).
+  Les préfixes encore proxiés vers Express : `/erp/api/`, `/erp/ws`, `/erp/p/`,
+  `/erp/pay`. **Toute nouvelle route montée sous `/erp/` dans
+  `server/src/index.js` doit recevoir sa `location` nginx**, sinon elle tombe
+  dans le fallback SPA et renvoie index.html.
 
 ## Règle impérative — frontend
+
+Affiche le moins de texte possible au péril d'être moins clair, ce n'est pas grave.
 
 Après **toute modification** d'un fichier dans `client/src/`, tu dois rebuilder :
 
@@ -27,15 +37,11 @@ Format d'une entrée (à ajouter en tête de `entries`) :
 
 ```json
 { "date": "YYYY-MM-DD", "title": "Titre court", "category": "Comptabilité",
+  "requester": "Prénom Nom",
   "changes": [ { "type": "new|improved|fixed", "text": "…" } ] }
 ```
 
-Une entrée sans date ISO, sans titre ou sans changement décrit **ne compte pas**.
-
-C'est vérifié, pas conseillé :
-- `deploy.sh` **bloque** le déploiement si du code applicatif a changé depuis le dernier déploiement (`.last-deploy-commit`) sans nouvelle entrée. Échappatoire explicite : `./deploy.sh --skip-changelog` (ou `SKIP_CHANGELOG=1`).
-- La page `/changelog` affiche l'état de la garde (bandeau vert / orange) via `GET /api/changelog/status`.
-- Logique partagée : `server/src/services/changelogGuard.js` ; vérification manuelle : `node server/src/scripts/check-changelog.js`.
+`requester` est optionnel : le nom de la personne qui a demandé le changement (colonne « Demandé par » sur `/changelog`). À renseigner quand le brief le donne (« Signalement utilisateur (par X) »). Sans lui, le serveur tente de déduire le demandeur de la demande traitée le même jour.
 
 ## Redémarrage serveur
 
@@ -67,8 +73,6 @@ pm2 restart erp-server
   - `labels/` — étiquettes Novoxpress
   - `attachments/` — pièces jointes
 
-Les chemins fichiers en DB sont **relatifs à `uploads/`** (ex: `factures/xxx.pdf`). Le chemin absolu se construit via `UPLOADS_PATH` (env var, défaut `./uploads`).
-
 ## Patterns backend
 
 ### Ordre des middlewares — Stripe webhooks
@@ -81,37 +85,31 @@ Middleware `requireAuth` (`server/src/middleware/auth.js`) accepte :
 
 Pour admin-only : `requireAdmin`.
 
-### Datetime — toujours ISO UTC avec suffixe Z
-
-**Toutes les colonnes datetime en DB sont stockées en ISO 8601 UTC avec suffixe Z** (ex: `2026-04-23T18:47:10.533Z`).
-
-- **En SQL** : utiliser `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` (pas `datetime('now')` qui produit l'ancien format espace-séparé). Les DEFAULTs des tables existantes ont été mis à jour. Les modificateurs classiques marchent : `strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')`.
-- **En Node** : utiliser `new Date().toISOString()` — jamais `.toLocaleString()`, `.replace('T', ' ')` ni autres transformations qui retirent le Z.
-- **À la réception** : les routes qui acceptent un timestamp externe (ex: `/api/calls/ftp-ingest` depuis Cube ARC, qui envoie du naïf local Montréal) doivent le normaliser via `normalizeToUtcIso(value)` de `server/src/utils/datetime.js`.
-- **Colonnes date-only** (`YYYY-MM-DD`, ex: `document_date`, `due_date`, `receipt_date`) : intouchées — ce sont des dates métier sans composante horaire.
-
-**Pourquoi** : mélanger du naïf local (sans Z) et du UTC (avec Z) cassait les comparaisons de chaînes (tris, filtres, bornes `WHERE col >= date`) puisque V8 parse les naïfs selon le fuseau du navigateur alors que SQLite les compare lexicographiquement.
-
-### Logging des syncs
-Tous les sync doivent être tracées :
-- `logSync(module, trigger, { status, modified, error, durationMs })` → table `sync_log`
-- `logSystemRun(...)` → table `system_runs` (macros système)
-
-Voir `server/src/services/syncLog.js` et `syncState.js`.
-
-### Validation
-Pas de Zod/Joi — chaque route valide manuellement. Réponses d'erreur uniformes : `res.status(4xx).json({ error: 'message' })`. Toujours valider côté serveur, ne pas dépendre du front.
-
-### Soft deletes
-Toutes les tables doivent utiliser `deleted_at`, filtrer `WHERE deleted_at IS NULL` et faire `UPDATE ... SET deleted_at = datetime('now')` plutôt qu'un `DELETE`.
-
 ## Patterns frontend
 
+### Règle de design — une fiche ne s'affiche QUE dans un panneau latéral
+
+Un enregistrement se consulte toujours en side-peek, jamais en pleine page. L'invariant est tenu par le routage, pas par la discipline :
+
+- `client/src/lib/recordPeekRoutes.jsx` est LE registre des fiches (`/<ressource>/<id>` → page `*Detail.jsx`, largeur, liste d'origine, garde de rôle).
+- `App.jsx` ne monte **aucune** route de fiche : quand l'URL est celle d'un enregistrement, il rend la page de fond (celle d'où l'on vient, sinon la liste d'origine) et superpose `components/RecordRoutePanel.jsx`.
+- Les pages `*Detail.jsx` n'importent plus `Layout` — leur `shell()` est l'identité. Elles reçoivent `recordId` (jamais `useParams` en pratique) et `onClose`.
+
+Pour rendre une nouvelle table consultable : ajouter une entrée au registre, rendre la page détail embarquable (`{ recordId, onClose }`, pas de `Layout`). Ne pas ajouter de `<Route>` de fiche.
+
+### Deux types de DataTable — lecture, ou manipulable
+
+Par défaut un `DataTable` est une table de **lecture** (voir, trier, filtrer, ouvrir la fiche) : les enregistrements naissent et meurent ailleurs (bouton « Ajouter » + formulaire, page dédiée…).
+
+Passer une instance de `RecordOps` (`client/src/lib/recordOps.js`) en prop `recordOps` fait basculer la table dans son **second type, manipulable** :
+- clic droit sur une ligne → menu « Dupliquer » / « Supprimer » l'enregistrement ;
+- « + » sous la dernière ligne → création **en ligne**, sans formulaire ; avec `onCellEdit`, le curseur ouvre la première cellule éditable de la ligne neuve.
+
+La classe ne porte que le contrat (opérations + libellés + garde-fou de confirmation) ; la page fournit `create` / `duplicate` / `remove` et rafraîchit son état. Exemple de référence : le tableau « Articles » de la fiche Commande (`pages/OrderDetail.jsx`, `itemOps`). Une colonne peut aussi fournir son propre éditeur de cellule via `renderEditor({ row, col, commit, cancel })` — c'est ainsi que la cellule « Produit » offre une liste recherchable du catalogue.
+
 ### Règle de design — dropdowns avec recherche
-Tout dropdown / menu de sélection susceptible d'offrir **plus de 10 options** doit inclure une zone de recherche (input avec filtrage live des options). Voir `FieldSelect` dans `client/src/components/FilterRow.jsx` ou `FieldsPanel` / `GroupPanel` dans `ViewToolbar.jsx` pour le pattern de référence. 
 
 ### Règle de design — autosave partout
-Tout champ éditable doit sauvegarder automatiquement (on blur ou debounce ~500ms) via un `PATCH` sur la route concernée. **Pas de bouton "Enregistrer"** dans les formulaires de détail (pages `*Detail.jsx`, panneaux d'édition, modales d'édition de ligne existante). L'état de sauvegarde doit être visible (ex. spinner discret, toast d'erreur en cas d'échec réseau) mais ne doit pas bloquer l'utilisateur. Exceptions admises uniquement quand l'autosave serait impraticable : création d'un nouvel enregistrement (formulaire "Nouveau X" qui n'a pas encore d'`id`), actions destructrices/transactionnelles (envoi de facture, soumission de paie, paiement Stripe), formulaires multi-étapes où les champs s'influencent mutuellement. Dans ces cas, documenter la raison en commentaire à côté du bouton.
 
 ### Règle de design — champs référence (FK)
 Tout champ qui référence un record dans une fiche détaillée (pas dans un tableau) d'une autre table (ex. `company_id`, `contact_id`, `product_id`, `assigned_to`…) doit offrir **deux affordances** côté UI :
@@ -120,39 +118,8 @@ Tout champ qui référence un record dans une fiche détaillée (pas dans un tab
 
 S'applique aux formulaires, aux fiches détail, et aux colonnes de `DataTable` affichant des noms de records liés (`company_name`, `contact_name`, `product_name`…). Pour ces colonnes, utiliser un `render` custom qui produit un `<Link>` vers la fiche cible.
 
-### Règle de design — interface la plus smooth possible avec une grande attention aux détails. Prendre exemple sur l'interface d'Airtable.
-
-### Règle de design - Codebase clean et minimaliste réutilisant le plus possible de composantes.
 
 ### Règle de design - La visibilité sur les actions effectuées en side effect est primordiale ; il doit y avoir un endroit où l'utilisateur peut visualiser l'historique des déclenchements de side effect, activer / désactiver les side effect et modifier le code des side effect manuellement directement dans l'interface. Ex.: de side effect: lorsqu'une commande liée à une facture est liée à un envoi, publier une écriture de journal sur QB. L'utilisateur doit aussi pouvoir modifier les triggers de ces side effects basés sur des valeurs de la base de données. Autre exemple: envoyer une notification sur un canal Slack lorsqu'un projet est fermé et gagné. Pas besoin de code d'idempotance, l'utilisateur pourra le coder au besoin à l'aide d'un champ personnalisé.
-
-### Règle de design - Champs personnalisés
-
-L'utilisateur doit pouvoir créer des champs personnalisés de différents types dans chaque table. Les types sont les suivants: 
-- Number avec choix du nombre de décimales affiché de 0 à 5
-- Text
-- Currency
-- Link to another table avec le choix one to one ou one to many
-- URL (devient cliquable lorsque lien valide)
-- Created by
-- Last modified by
-- Created time
-- Single select (configurable avec ajout, retrait, renommer et choix de couleur pour chacun des choix + possibilité d'ajouter un choix par défaut et d'alphabésifier les choix).
-- Last modified by
-- Lookup d'un champ dans une table liée
-- Rollup d'un champ dans une table liée
-- Formule avec les fonctions suivantes: 
-ABS, AND, ARRAYCOMPACT, ARRAYFLATTEN, ARRAYJOIN, ARRAYUNIQUE, AVERAGE, BLANK, CEILING, CONCATENATE, COUNT, COUNTA, COUNTALL, CREATED_TIME, DATEADD, DATEDIFF, DATETIME_DIFF, DATETIME_FORMAT, DATETIME_PARSE, DAY, EVEN, EXP, FIND, FLOOR, FROMUNIXTIMESTAMP, HOUR, IF, IS_BEFORE, IS_SAME, ISAFTER, LAST_MODIFIED_TIME, LEFT, LEN, LOG, LOWER, MAX, MID, MIN, MINUTE, MOD, MONTH, NOT, NOW, ODD, OR, PI, POWER, RECORD_ID, REPLACE, RIGHT, ROUND, ROUNDDOWN, ROUNDUP, SEARCH, SECOND, SQRT, SUBSTITUTE, SUM, SWITCH, T, TIMESTAMPTOTEXT, TODAY, TRIM, TRUE, UPPER, VALUE, WEEKDAY, WEEKNUM, YEAR
-
-## Variables d'environnement critiques
-
-Définies dans `server/.env` (pas de `.env.example` — demander si une variable manque). Les plus load-bearing :
-- `JWT_SECRET` — signature des tokens auth
-- `CONNECTOR_ENCRYPTION_KEY` — chiffrement des tokens OAuth en DB
-- `AGENT_INTERNAL_SECRET` — auth endpoint agent interne
-- `AIRTABLE_CLIENT_ID/SECRET`, `QB_CLIENT_ID/SECRET`, `STRIPE_*`, `GOOGLE_CLIENT_ID/SECRET`, `HUBSPOT_*` — OAuth intégrations
-- `OPENAI_API_KEY`, `POSTMARK_API_KEY`, `FTP_INGEST_SECRET` — services externes
-- `UPLOADS_PATH` — racine des fichiers uploadés (défaut `./uploads`)
 
 ## Commandes utiles
 
@@ -165,16 +132,25 @@ Définies dans `server/.env` (pas de `.env.example` — demander si une variable
 | Lint serveur | `cd server && npm run lint` |
 | Lint client | `cd client && npm run lint` |
 | Tests unitaires serveur | `cd server && npm test` (node --test) |
-| Tests E2E Playwright | `cd e2e && ERP_PASS=... npm test` (cible le déployé, voir `e2e/README.md`) |
-| Déploiement complet | `./deploy.sh` (git pull + build + pm2 restart) |
+| Déploiement complet | `./deploy.sh` (git pull + build/restart **si les sources ont changé**) |
+| Déploiement forcé | `./deploy.sh --rebuild` (ignore les empreintes) |
 
 **Attention** : `cd client && npm run dev` lance Vite en mode dev — **ne pas l'utiliser**, le projet tourne uniquement via build + nginx sur le port 3004.
 
 ## Déploiement
 
 - Script canonique : `/home/ec2-user/erp/deploy.sh` (pull `main` → build client → `pm2 restart erp-server`)
+- Lancé **toutes les heures par cron**. Il ne travaille que si quelque chose a
+  changé : une empreinte de `client/**` et une de `server/**` sont comparées à
+  celles du dernier déploiement (`.deploy-fingerprints`). Le build ne part que si
+  `client/` a bougé, le redémarrage que si `server/` a bougé — un cycle à vide ne
+  dérange plus personne (avant : ~50 s de lenteurs et ~4 s d'indisponibilité par
+  heure, pour rien). `--rebuild` force les deux.
+- Le build va dans `client/.dist-build` puis bascule par renommage, et tourne en
+  `nice -n 19` : il ne réécrit plus `dist` en place (nginx y sert la page) et ne
+  vole plus le CPU au serveur. Il prend ~43 s au lieu de ~18 s, c'est voulu.
+  L'ancien build est gardé un cycle dans `client/dist.prev`.
 - Le repo est cloné **directement sur le serveur de prod** — dev et prod partagent l'environnement. Les modifs locales sont visibles immédiatement après build/restart.
-- E2E tests ciblent `https://customer.orisha.io/erp`.
 
 ## Migrations DB
 
@@ -195,23 +171,6 @@ Pour ajouter un champ : ajouter l'`ALTER TABLE ... try/catch` dans `schema.js`, 
 - `troubleshoot-server` — outil diagnostic interne
 
 Toucher à un autre process que `erp-server` → demander confirmation.
-
-## Glossaire domaine (FR ↔ EN)
-
-Le code mixe français et anglais. Correspondances utiles :
-
-| FR | EN / sens |
-|---|---|
-| Soumission | Quote / estimate |
-| Envoi | Shipment (livraison client) |
-| Retour | Return / RMA |
-| Achat / Facture fournisseur | Purchase / vendor invoice |
-| Assemblage | Bundle / kit |
-| Abonnement | Subscription (Stripe) |
-| Paie | Payroll |
-| Dépense | Expense |
-| Reçu de vente | Sale receipt |
-| Bon de livraison | Delivery slip |
 
 ## Limites auto-imposées
 

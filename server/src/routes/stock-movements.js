@@ -1,15 +1,14 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { parsePage } from '../utils/pagination.js'
 
 const router = Router()
 router.use(requireAuth)
 
 router.get('/', (req, res) => {
-  const { type, reason, product_id, page = 1, limit = 50 } = req.query
-  const limitAll = limit === 'all'
-  const limitVal = limitAll ? -1 : parseInt(limit)
-  const offset = limitAll ? 0 : (parseInt(page) - 1) * parseInt(limit)
+  const { type, reason, product_id } = req.query
+  const { page, limit, limitVal, offset } = parsePage(req.query, 50)
 
   let where = ''
   const params = []

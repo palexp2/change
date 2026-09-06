@@ -1,8 +1,9 @@
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import { v4 as uuid } from 'uuid'
-import multer from 'multer'
+import { makeUpload } from '../utils/upload.js'
 import { join, extname } from 'path'
-import { existsSync, mkdirSync } from 'fs'
+import { existsSync } from 'fs'
 import { spawn } from 'child_process'
 import { requireAuth } from '../middleware/auth.js'
 import db from '../db/database.js'
@@ -10,6 +11,8 @@ import { enqueueTranscription } from '../services/whisper.js'
 import { getDriveClient } from '../connectors/google.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { normalizeUploadName } from '../utils/uploadFileName.js'
+import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 
 function buildCallRow(callId) {
   return db.prepare(`
@@ -71,14 +74,13 @@ export function rematchCalls() {
   return matched
 }
 
-const uploadsDir = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls')
-if (!existsSync(uploadsDir)) mkdirSync(uploadsDir, { recursive: true })
+const uploadsDir = ensureUploadsDir('calls')
 
-const storage = multer.diskStorage({
+const upload = makeUpload({
   destination: uploadsDir,
-  filename: (req, file, cb) => cb(null, `${uuid()}${extname(file.originalname)}`),
+  filename: (req, file) => `${uuid()}${extname(file.originalname)}`,
+  fileSize: 200 * 1024 * 1024,
 })
-const upload = multer({ storage, limits: { fileSize: 200 * 1024 * 1024 } })
 
 // Middleware: secret partagé pour l'ingestion FTP (sans JWT utilisateur)
 function requireFtpSecret(req, res, next) {
@@ -111,15 +113,15 @@ router.post('/ftp-ingest', requireFtpSecret, upload.single('recording'), async (
   }
 
   // Deduplication: skip if this original filename was already ingested
-  const origName = req.file.originalname
+  const origName = normalizeUploadName(req.file.originalname)
   const existing = db.prepare('SELECT id FROM calls WHERE original_filename=?').get(origName)
   if (existing) {
     console.log(`📞 FTP ingest (doublon ignoré): ${origName}`)
     return res.status(200).json({ id: existing.id, duplicate: true })
   }
 
-  const interactionId = uuid()
-  const callId = uuid()
+  const interactionId = newRecordId()
+  const callId = newRecordId()
   // FTP ingest from Cube ARC sends naive local timestamps parsed from filenames
   // (device clock, Montreal local). Normalize to ISO UTC before storage.
   const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
@@ -157,8 +159,8 @@ router.post('/upload', requireAuth, upload.single('recording'), async (req, res)
     }
   }
 
-  const interactionId = uuid()
-  const callId = uuid()
+  const interactionId = newRecordId()
+  const callId = newRecordId()
   const ts = normalizeToUtcIso(timestamp) || new Date().toISOString()
 
   // Atomique : interaction + call insérés ensemble, sinon rollback (pas d'interaction orpheline)
@@ -205,7 +207,7 @@ router.get('/:id/recording', requireAuth, async (req, res) => {
 
   // Try local file first
   if (row.recording_path) {
-    const localPath = join(process.cwd(), process.env.UPLOADS_PATH || 'uploads', 'calls', row.recording_path)
+    const localPath = uploadsPath('calls', row.recording_path)
     if (existsSync(localPath)) {
       // Convert AMR/AMR-in-MP4 to MP3 on-the-fly (browsers don't support AMR codec)
       if (/\.(amr|mp4)$/i.test(localPath)) {

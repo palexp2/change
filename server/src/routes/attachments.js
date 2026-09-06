@@ -1,10 +1,13 @@
 import { Router } from 'express'
+import { newRecordId } from '../utils/recordId.js'
 import { randomUUID } from 'crypto'
-import multer from 'multer'
+import { makeUpload } from '../utils/upload.js'
 import path from 'path'
 import fs from 'fs'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
+import { normalizeUploadName } from '../utils/uploadFileName.js'
+import { uploadsPath } from '../config/uploads.js'
 
 // Pièces jointes polymorphes : un fichier (PDF, photo, doc…) attaché à
 // n'importe quel enregistrement de l'app. L'entité cible est identifiée par
@@ -15,7 +18,7 @@ import { requireAuth } from '../middleware/auth.js'
 const router = Router()
 router.use(requireAuth)
 
-const UPLOADS_ROOT = path.resolve(process.cwd(), process.env.UPLOADS_PATH || 'uploads')
+const UPLOADS_ROOT = uploadsPath()
 const ATTACH_DIR = path.join(UPLOADS_ROOT, 'attachments')
 
 // Whitelist des types d'entité autorisés → table SQL utilisée pour vérifier
@@ -56,7 +59,7 @@ const ALLOWED_EXT = [
   '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt', '.zip',
 ]
 
-const storage = multer.diskStorage({
+const upload = makeUpload({
   destination: (req, file, cb) => {
     const { entityType, entityId } = req.params
     const dir = path.join(ATTACH_DIR, entityType, entityId)
@@ -67,19 +70,10 @@ const storage = multer.diskStorage({
       cb(e)
     }
   },
-  filename: (req, file, cb) => {
-    const safe = sanitizeFileName(file.originalname)
-    cb(null, `${randomUUID()}_${safe}`)
-  },
-})
-const upload = multer({
-  storage,
-  limits: { fileSize: 25 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase()
-    if (ALLOWED_EXT.includes(ext)) cb(null, true)
-    else cb(new Error(`Type de fichier non supporté: ${ext || 'inconnu'}`))
-  },
+  filename: (req, file) => `${randomUUID()}_${sanitizeFileName(file.originalname)}`,
+  fileSize: 25 * 1024 * 1024,
+  allowedExt: ALLOWED_EXT,
+  rejectMessage: ext => `Type de fichier non supporté: ${ext || 'inconnu'}`,
 })
 
 function serialize(row) {
@@ -128,9 +122,9 @@ router.post('/:entityType/:entityId', (req, res) => {
     const created = []
     const tx = db.transaction(() => {
       for (const f of files) {
-        const id = randomUUID()
+        const id = newRecordId()
         const relPath = path.relative(UPLOADS_ROOT, f.path)
-        insert.run(id, entityType, entityId, f.originalname, f.mimetype, f.size, relPath, req.user?.id || null)
+        insert.run(id, entityType, entityId, normalizeUploadName(f.originalname), f.mimetype, f.size, relPath, req.user?.id || null)
         created.push(id)
       }
     })

@@ -12,6 +12,8 @@ import { writeBackRecord } from '../services/airtableWriteback.js';
 import { readRelation } from '../services/customFieldsView.js';
 import { fetchProjectCommissions } from '../services/projectCommissions.js';
 import { parsePage } from '../utils/pagination.js';
+import { mountCrud } from '../utils/crudRouter.js';
+import { RECORD_REGISTRY } from '../db/recordRegistry.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -307,12 +309,6 @@ router.patch('/:id/status', (req, res) => {
 });
 
 // DELETE /api/projects/:id
-router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM projects WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Project not found' });
-  db.prepare("UPDATE projects SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
-  emitEntity('project', 'deleted', req.params.id, { id: req.params.id }, req.user?.id);
-  res.json({ message: 'Deleted' });
-});
+mountCrud(router, RECORD_REGISTRY.projects, { only: ['delete'] });
 
 export default router;

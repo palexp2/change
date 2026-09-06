@@ -171,6 +171,10 @@ function parseFile(content) {
   const routes = []
   const ROUTER_NAME = '([a-zA-Z_]\\w*[Rr]outer|router)'
 
+  // utils/crudRouter.js pose `spec.auth || requireAuth` sur le routeur qu'il
+  // fabrique ; les routes ajoutées via `extend(router)` en héritent.
+  if (/\bcrudRouter\(/.test(content)) blanketByVar.router = 'requireAuth'
+
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
 

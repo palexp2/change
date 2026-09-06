@@ -2,7 +2,7 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-09-06T17:43:20.219Z",
+  "generatedAt": "2026-09-06T18:01:58.035Z",
   "stats": {
     "routes": 78,
     "pages": 70,

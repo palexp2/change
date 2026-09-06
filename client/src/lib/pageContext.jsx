@@ -40,6 +40,33 @@ export function describeElement(el) {
   return desc.slice(0, 400)
 }
 
+// Plomberie React et cadres sans intérêt pour situer un élément.
+const CHAIN_SKIP = new Set([
+  'Fragment', 'Suspense', 'Provider', 'Consumer', 'ErrorBoundary', 'RecordScope',
+  'Layout', 'ProtectedRoute', 'Routes', 'Route', 'Outlet', 'Router', 'BrowserRouter',
+  'App', 'AppRoutes', 'StrictMode', 'Link', 'NavLink', 'LinkWithRef', 'RenderedRoute',
+])
+
+/**
+ * Composants React qui englobent l'élément, du plus proche au plus lointain
+ * (ex. ['Badge', 'DataTable', 'ListPage', 'Orders']). Lu sur le fiber que React
+ * accroche au nœud DOM ; suppose `esbuild.keepNames` (vite.config.js).
+ */
+export function componentChain(el) {
+  if (!(el instanceof Element)) return []
+  const key = Object.keys(el).find(k => k.startsWith('__reactFiber$'))
+  const names = []
+  for (let fiber = key && el[key]; fiber && names.length < 8; fiber = fiber.return) {
+    const t = fiber.type
+    const inner = typeof t === 'function' ? t : (t && typeof t === 'object' ? (t.render || t.type) : null)
+    if (!inner) continue
+    const name = t.displayName || inner.displayName || inner.name
+    if (!name || CHAIN_SKIP.has(name) || !/^[A-Z]/.test(name) || /Provider$|Boundary$|Context$/.test(name)) continue
+    if (names[names.length - 1] !== name) names.push(name)
+  }
+  return names
+}
+
 /**
  * Libellé du record affiché quand la page est une fiche détail (`/factures/123`,
  * `/companies/42`…) : le titre `h1` de la page, c'est-à-dire ce que l'utilisateur
@@ -64,12 +91,14 @@ export function currentRecordLabel(pathname = '') {
  * inchangé) ou un tableau : plusieurs éléments sont alors numérotés sur une seule
  * ligne, la partie « page » du contexte restant en tête (voir PageLink).
  */
-export function buildPageContext({ pathname = '', search = '', element = '', record = '', appWide = false } = {}) {
+export function buildPageContext({ pathname = '', search = '', element = '', record = '', appWide = false, chain = [], scope = 'page' } = {}) {
   const page = `${pathname}${search || ''}`
   const picked = (Array.isArray(element) ? element : [element])
     .map(d => String(d || '').trim())
     .filter(Boolean)
-  return (appWide
+  const isApp = appWide || scope === 'app'
+  const component = !isApp && scope !== 'page' ? scope : ''
+  return (isApp
     ? `Demande concernant l'ensemble de l'application (pas seulement la page ${page})`
     : page)
     + (record ? ` — fiche affichée : « ${record} »` : '')
@@ -78,6 +107,12 @@ export function buildPageContext({ pathname = '', search = '', element = '', rec
       ? ` — éléments ciblés par l'utilisateur (${picked.length}) : `
         + picked.map((d, i) => `[${i + 1}] ${d}`).join(' ; ')
       : '')
+    + (chain.length ? ` — composants englobants : ${chain.join(' ‹ ')}` : '')
+    + (component
+      ? ` — portée : le composant partagé « ${component} » — modifier ce composant lui-même pour que le changement s'applique partout où il est utilisé, ne pas le dupliquer`
+      : (!isApp && chain.length
+        ? ` — portée : cette page seulement — si le changement touche un composant partagé, passer par une option/variante du composant plutôt que par une copie`
+        : ''))
 }
 
 /**
@@ -242,7 +277,7 @@ export function useElementPicker(picking, { onPick, onCancel, multiple = false, 
       e.preventDefault()
       e.stopPropagation()
       const target = hoverEl || (e.target instanceof Element ? e.target : null)
-      if (!multiple) { cb.current.onPick?.(describeElement(target)); return }
+      if (!multiple) { cb.current.onPick?.(describeElement(target), componentChain(target)); return }
       if (!target) return
       // Re-clic sur un élément déjà retenu : on le retire (le plus direct pour
       // corriger une erreur sans quitter le mode ciblage).

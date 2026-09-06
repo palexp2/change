@@ -15,14 +15,11 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { emitEntity } from '../services/realtimeEmitters.js'
-import { buildPartialUpdate } from '../utils/partialUpdate.js'
-import { getRecordSpec } from '../db/recordRegistry.js'
+import { patchRow, deleteRow } from '../utils/crudRouter.js'
+import { getRecordSpec, listRecordTables } from '../db/recordRegistry.js'
 
 const router = Router()
 router.use(requireAuth)
-
-const NOW_SQL = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 
 // Mapping table SQL → entity_type (activity_log) pour l'historique par
 // enregistrement. Les clés sont hardcodées (sûres pour l'interpolation SQL) ;
@@ -133,8 +130,10 @@ router.get('/:table/:id/history', (req, res) => {
 
 // Récupère le spec ou répond 404. Les noms table/colonnes proviennent du registre
 // (constantes hardcodées) — aucune valeur utilisateur n'entre dans le SQL.
+// Seules les tables sans auth spécifique (listRecordTables) passent par ici :
+// la porte générique n'a que requireAuth.
 function resolveSpec(req, res) {
-  const spec = getRecordSpec(req.params.table)
+  const spec = listRecordTables().includes(req.params.table) ? getRecordSpec(req.params.table) : null
   if (!spec) {
     res.status(404).json({ error: `Table inconnue ou non gérée par l'API générique : ${req.params.table}` })
     return null
@@ -142,51 +141,18 @@ function resolveSpec(req, res) {
   return spec
 }
 
-function findExisting(spec, id) {
-  const where = spec.softDelete
-    ? `${spec.idColumn} = ? AND deleted_at IS NULL`
-    : `${spec.idColumn} = ?`
-  return db.prepare(`SELECT ${spec.idColumn} FROM ${spec.table} WHERE ${where}`).get(id)
-}
-
-// PATCH /api/records/:table/:id — update partiel des champs autorisés.
 router.patch('/:table/:id', (req, res) => {
   const spec = resolveSpec(req, res)
   if (!spec) return
-
-  if (!findExisting(spec, req.params.id)) return res.status(404).json({ error: 'Not found' })
-
-  const { setClause, values, error } = buildPartialUpdate(req.body || {}, {
-    allowed: spec.allowed,
-    coerce: spec.coerce,
-    nonNullable: spec.nonNullable,
-  })
-  if (error) return res.status(400).json({ error })
-  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
-
-  const fullClause = spec.touchUpdatedAt ? `${setClause}, updated_at = ${NOW_SQL}` : setClause
-  db.prepare(`UPDATE ${spec.table} SET ${fullClause} WHERE ${spec.idColumn} = ?`).run(...values, req.params.id)
-
-  const updated = db.prepare(`SELECT * FROM ${spec.table} WHERE ${spec.idColumn} = ?`).get(req.params.id)
-  if (spec.entity) emitEntity(spec.entity, 'updated', req.params.id, updated, req.user?.id)
-  res.json(updated)
+  const r = patchRow(spec, req.params.id, req.body, req)
+  res.status(r.status).json(r.json)
 })
 
-// DELETE /api/records/:table/:id — soft delete si la table a deleted_at, sinon hard.
 router.delete('/:table/:id', (req, res) => {
   const spec = resolveSpec(req, res)
   if (!spec) return
-
-  if (!findExisting(spec, req.params.id)) return res.status(404).json({ error: 'Not found' })
-
-  if (spec.softDelete) {
-    db.prepare(`UPDATE ${spec.table} SET deleted_at = ${NOW_SQL} WHERE ${spec.idColumn} = ?`).run(req.params.id)
-  } else {
-    db.prepare(`DELETE FROM ${spec.table} WHERE ${spec.idColumn} = ?`).run(req.params.id)
-  }
-
-  if (spec.entity) emitEntity(spec.entity, 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
-  res.json({ success: true })
+  const r = deleteRow(spec, req.params.id, req)
+  res.status(r.status).json(r.json)
 })
 
 export default router

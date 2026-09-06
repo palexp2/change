@@ -1,85 +1,17 @@
-import { Router } from 'express'
-import { newRecordId } from '../utils/recordId.js'
-import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
-import { emitEntity } from '../services/realtimeEmitters.js'
+import { crudRouter } from '../utils/crudRouter.js'
+import { RECORD_REGISTRY } from '../db/recordRegistry.js'
 import { vacationBalance } from '../services/vacationBalance.js'
-import { buildPartialUpdate, toBoolDefaultTrue } from '../utils/partialUpdate.js'
 
-const router = Router()
-router.use(requireAuth)
-
-// GET /api/vacations/balance?employee_id=X&year=YYYY
-// Solde de vacances payées calculé : droit annuel, jours pris, jours restants
-// et indicateur de dépassement. Doit précéder les routes /:id.
-router.get('/balance', (req, res) => {
-  const { employee_id } = req.query
-  if (!employee_id) return res.status(400).json({ error: 'employee_id requis' })
-  const year = parseInt(req.query.year, 10) || new Date().getFullYear()
-  const bal = vacationBalance(employee_id, year)
-  if (!bal) return res.status(404).json({ error: 'Employé introuvable' })
-  res.json(bal)
+export default crudRouter(RECORD_REGISTRY.vacations, {
+  extend(router) {
+    // GET /api/vacations/balance?employee_id=X&year=YYYY
+    router.get('/balance', (req, res) => {
+      const { employee_id } = req.query
+      if (!employee_id) return res.status(400).json({ error: 'employee_id requis' })
+      const year = parseInt(req.query.year, 10) || new Date().getFullYear()
+      const bal = vacationBalance(employee_id, year)
+      if (!bal) return res.status(404).json({ error: 'Employé introuvable' })
+      res.json(bal)
+    })
+  },
 })
-
-router.get('/', (req, res) => {
-  const { employee_id } = req.query
-  let rows
-  if (employee_id) {
-    rows = db.prepare(`
-      SELECT * FROM vacations
-      WHERE employee_id = ?
-      ORDER BY COALESCE(start_date, '') DESC, created_at DESC
-    `).all(employee_id)
-  } else {
-    rows = db.prepare(`
-      SELECT * FROM vacations
-      ORDER BY COALESCE(start_date, '') DESC, created_at DESC
-    `).all()
-  }
-  res.json({ data: rows })
-})
-
-router.post('/', (req, res) => {
-  const { employee_id, start_date, end_date, paid, notes } = req.body || {}
-  if (!employee_id) return res.status(400).json({ error: 'employee_id requis' })
-  const emp = db.prepare('SELECT id FROM employees WHERE id = ?').get(employee_id)
-  if (!emp) return res.status(400).json({ error: 'Employé introuvable' })
-  const id = newRecordId()
-  db.prepare(`
-    INSERT INTO vacations (id, employee_id, start_date, end_date, paid, notes)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    employee_id,
-    start_date || null,
-    end_date || null,
-    paid === 0 || paid === false ? 0 : 1,
-    notes || null,
-  )
-  const row = db.prepare('SELECT * FROM vacations WHERE id = ?').get(id)
-  emitEntity('vacation', 'created', id, row, req.user?.id)
-  res.status(201).json(row)
-})
-
-const PATCHABLE = new Set(['start_date', 'end_date', 'paid', 'notes'])
-
-router.patch('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM vacations WHERE id = ?').get(req.params.id)
-  if (!existing) return res.status(404).json({ error: 'Not found' })
-  const { setClause, values } = buildPartialUpdate(req.body || {}, { allowed: [...PATCHABLE], coerce: { paid: toBoolDefaultTrue } })
-  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
-  db.prepare(`UPDATE vacations SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
-  const updated = db.prepare('SELECT * FROM vacations WHERE id = ?').get(req.params.id)
-  emitEntity('vacation', 'updated', req.params.id, updated, req.user?.id)
-  res.json(updated)
-})
-
-router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id FROM vacations WHERE id = ?').get(req.params.id)
-  if (!existing) return res.status(404).json({ error: 'Not found' })
-  db.prepare('DELETE FROM vacations WHERE id = ?').run(req.params.id)
-  emitEntity('vacation', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
-  res.json({ ok: true })
-})
-
-export default router

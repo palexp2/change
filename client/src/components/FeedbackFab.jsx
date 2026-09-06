@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
-import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, Globe, File } from 'lucide-react'
+import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, Globe, File, Component } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { api } from '../lib/api.js'
 import { getIsOffline } from '../lib/serverStatus.js'
@@ -55,9 +55,14 @@ export function FeedbackFab({ contextRecord = '' }) {
   const [mode, setMode] = useState(() => readPersisted().mode === 'question' ? 'question' : 'implement')
   // Descriptif de l'élément de la page cliqué en étape 1 ('' = demande générale).
   const [element, setElement] = useState(() => readPersisted().element || '')
-  // Portée de la demande : false = liée à la page courante (défaut), true = concerne
-  // l'ensemble de l'app. Change le contexte joint (chemin de page vs mention globale).
-  const [appWide, setAppWide] = useState(() => !!readPersisted().appWide)
+  // Composants React qui englobent l'élément ciblé, du plus proche au plus lointain.
+  const [chain, setChain] = useState(() => readPersisted().chain || [])
+  // Portée : 'page' (défaut), 'app', ou le nom d'un composant partagé de `chain`
+  // — le changement est alors demandé sur le composant lui-même, pour partout.
+  const [scope, setScope] = useState(() => {
+    const p = readPersisted()
+    return p.scope || (p.appWide ? 'app' : 'page')
+  })
   // Où la demande se dépose dans la file : 'last' (défaut, on respecte l'ordre
   // déjà en place) ou 'first' (elle passe devant tout le reste).
   const [placement, setPlacement] = useState(() => readPersisted().placement === 'first' ? 'first' : 'last')
@@ -73,15 +78,15 @@ export function FeedbackFab({ contextRecord = '' }) {
 
   useEffect(() => {
     try {
-      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, appWide, placement }))
+      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain, scope, placement }))
       else sessionStorage.removeItem(STORAGE_KEY)
     } catch { /* stockage indisponible (mode privé strict) — dégradation silencieuse */ }
-  }, [open, text, mode, element, appWide, placement])
+  }, [open, text, mode, element, chain, scope, placement])
 
   // Étape « picking » — surbrillance, neutralisation des clics de la page et
   // description de l'élément choisi : lib/pageContext.jsx.
   useElementPicker(picking, {
-    onPick: (desc) => { setElement(desc); setPicking(false); setOpen(true) },
+    onPick: (desc, names) => { setElement(desc); setChain(names || []); setPicking(false); setOpen(true) },
     onCancel: () => { setPicking(false); if (fromFormRef.current) setOpen(true) },
   })
 
@@ -89,8 +94,15 @@ export function FeedbackFab({ contextRecord = '' }) {
     setText('')
     setMode('implement')
     setElement('')
-    setAppWide(false)
+    setChain([])
+    setScope('page')
     setPlacement('last')
+  }
+
+  function removeElement() {
+    setElement('')
+    setChain([])
+    if (scope !== 'app') setScope('page')
   }
 
   function close() {
@@ -133,7 +145,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     if (!trimmed || sendingRef.current) return
     sendingRef.current = true
     const context = buildPageContext({
-      pathname: location.pathname, search: location.search, element, appWide,
+      pathname: location.pathname, search: location.search, element, chain, scope,
       record: contextRecord,
     })
     // Fermeture IMMÉDIATE, sans attendre le serveur : le dépôt dans la file ne
@@ -142,7 +154,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     // « Envoi… » une demi-seconde ou plus quand le serveur est occupé. Le
     // brouillon est mis de côté : si l'envoi échoue, la fenêtre revient telle
     // qu'elle était, rien n'est perdu.
-    const draft = { text, mode, element, appWide, placement }
+    const draft = { text, mode, element, chain, scope, placement }
     setOpen(false)
     reset()
     try {
@@ -171,7 +183,8 @@ export function FeedbackFab({ contextRecord = '' }) {
       setText(draft.text)
       setMode(draft.mode)
       setElement(draft.element)
-      setAppWide(draft.appWide)
+      setChain(draft.chain)
+      setScope(draft.scope)
       setPlacement(draft.placement)
       setOpen(true)
       addToast({ message: 'Échec de l\'envoi de la suggestion', type: 'error' })
@@ -258,7 +271,7 @@ export function FeedbackFab({ contextRecord = '' }) {
               <button
                 type="button"
                 data-testid="feedback-element-remove"
-                onClick={() => setElement('')}
+                onClick={removeElement}
                 aria-label="Retirer l'élément ciblé"
                 title="Retirer l'élément ciblé"
                 className="text-slate-400 hover:text-slate-600 flex-shrink-0 mt-0.5"
@@ -304,13 +317,12 @@ export function FeedbackFab({ contextRecord = '' }) {
               onChange={setPlacement}
             />
           </div>
-          <div className="flex items-center justify-between gap-3 pt-1">
-            {/* Portée de la demande : les DEUX options sont affichées côte à
-                côte. Avant, un seul libellé basculait au clic — la portée
-                « toute l'application » restait invisible tant qu'on ne cliquait
-                pas dessus, donc personne ne savait qu'elle existait. */}
+          <div className="space-y-2 pt-1">
+            {/* Portée : toutes les options côte à côte — la page, chaque
+                composant partagé qui englobe l'élément ciblé (le changement se
+                fait alors sur le composant, donc partout), toute l'app. */}
             <div
-              className="flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg min-w-0"
+              className="flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg flex-wrap"
               role="radiogroup"
               aria-label="Portée de la demande"
             >
@@ -318,28 +330,48 @@ export function FeedbackFab({ contextRecord = '' }) {
                 type="button"
                 data-testid="feedback-scope-page"
                 role="radio"
-                aria-checked={!appWide}
-                onClick={() => setAppWide(false)}
+                aria-checked={scope === 'page'}
+                onClick={() => setScope('page')}
                 title="La demande concerne la page courante"
-                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium min-w-0 transition-colors ${!appWide ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium min-w-0 transition-colors ${scope === 'page' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 <File size={12} className="flex-shrink-0" />
-                <span className="font-mono truncate">{location.pathname}{location.search}</span>
+                <span className="font-mono truncate max-w-[10rem]">{location.pathname}{location.search}</span>
               </button>
+              {chain.slice(0, 5).map(name => (
+                <button
+                  key={name}
+                  type="button"
+                  data-testid={`feedback-scope-component-${name}`}
+                  role="radio"
+                  aria-checked={scope === name}
+                  onClick={() => setScope(name)}
+                  title={`Modifier le composant ${name} — partout où il est utilisé`}
+                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${scope === name ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  <Component size={12} className="flex-shrink-0" />
+                  <span className="font-mono">{name}</span>
+                </button>
+              ))}
               <button
                 type="button"
                 data-testid="feedback-scope-app"
                 role="radio"
-                aria-checked={appWide}
-                onClick={() => setAppWide(true)}
+                aria-checked={scope === 'app'}
+                onClick={() => setScope('app')}
                 title="La demande concerne toute l'application, pas seulement cette page"
-                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${appWide ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${scope === 'app' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
               >
                 <Globe size={12} className="flex-shrink-0" />
                 Toute l'app
               </button>
             </div>
-            <div className="flex gap-3 flex-shrink-0">
+            {scope !== 'page' && scope !== 'app' && (
+              <p className="text-xs text-violet-700" data-testid="feedback-scope-hint">
+                Le changement s'appliquera partout où « {scope} » est utilisé.
+              </p>
+            )}
+            <div className="flex justify-end gap-3">
               <button type="button" onClick={close} className="btn-secondary">Annuler</button>
               <button
                 type="submit"

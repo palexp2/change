@@ -6,6 +6,8 @@ import { requireAuth } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { findMissingReceipts, linkSubscriptionVendorAlias } from '../services/vendorSubscriptions.js'
 import { lookupCancelUrl } from '../services/subscriptionCancelUrls.js'
+import { mountCrud } from '../utils/crudRouter.js'
+import { RECORD_REGISTRY } from '../db/recordRegistry.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -81,12 +83,6 @@ router.post('/:id/link-vendor', (req, res) => {
   }
 })
 
-router.get('/:id', (req, res) => {
-  const row = db.prepare('SELECT * FROM vendor_subscriptions WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
-  if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(row)
-})
-
 router.post('/', (req, res) => {
   const error = validate(req.body)
   if (error) return res.status(400).json({ error })
@@ -147,13 +143,6 @@ router.put('/:id', (req, res) => {
   res.json(updated)
 })
 
-router.delete('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id, vendor FROM vendor_subscriptions WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
-  if (!existing) return res.status(404).json({ error: 'Not found' })
-  db.prepare(`UPDATE vendor_subscriptions SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-    .run(req.params.id)
-  emitEntity('vendor_subscription', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
-  res.json({ ok: true })
-})
+mountCrud(router, RECORD_REGISTRY.vendor_subscriptions, { only: ['get', 'delete'] })
 
 export default router

@@ -2,6 +2,17 @@
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
     {
+      "date": "2026-09-06",
+      "title": "Modifier le système : choisir la portée d'un changement",
+      "category": "Général",
+      "requester": "Charles Rousseau",
+      "changes": [
+        { "type": "new", "text": "Quand on cible un élément, la fenêtre montre les briques réutilisables qui le composent (tableau, cadre de fiche, barre de sections…). On choisit si la demande vise cette page seulement, une de ces briques — le changement s'applique alors partout où elle sert — ou toute l'app." },
+        { "type": "improved", "text": "L'agent reçoit cette portée et sait s'il doit modifier la brique commune ou lui ajouter une variante ; il ne duplique plus une brique pour un cas local." },
+        { "type": "improved", "text": "Côté serveur, les tables simples (vacances, codes d'activité, employés, règles de visibilité, banque d'heures…) passent par une même mécanique de lecture/création/modification/suppression : mêmes réponses, mêmes erreurs, et chaque écriture est maintenant diffusée en temps réel aux autres utilisateurs." }
+      ]
+    },
+    {
       "date": "2026-09-02",
       "title": "Envois : cr\u00e9ation uniquement depuis la commande",
       "category": "Envois",

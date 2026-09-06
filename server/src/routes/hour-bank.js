@@ -4,7 +4,8 @@ import db from '../db/database.js'
 import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { vacationBalance } from '../services/vacationBalance.js'
-import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { mountCrud } from '../utils/crudRouter.js'
+import { RECORD_REGISTRY } from '../db/recordRegistry.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -105,30 +106,6 @@ router.post('/', ensureHR, (req, res) => {
   res.status(201).json(row)
 })
 
-const PATCHABLE = new Set(['hours', 'date', 'notes'])
-
-router.patch('/entry/:id', ensureHR, (req, res) => {
-  const existing = db.prepare('SELECT id FROM hour_bank_entries WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
-  if (!existing) return res.status(404).json({ error: 'Not found' })
-  const { setClause, values, error } = buildPartialUpdate(req.body || {}, {
-    allowed: [...PATCHABLE],
-    coerce: { hours: v => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v)) },
-    nonNullable: new Set(['hours']),
-  })
-  if (error) return res.status(400).json({ error: 'hours invalide' })
-  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
-  db.prepare(`UPDATE hour_bank_entries SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id)
-  const updated = db.prepare('SELECT * FROM hour_bank_entries WHERE id = ?').get(req.params.id)
-  emitEntity('hour_bank_entry', 'updated', req.params.id, updated, req.user?.id)
-  res.json(updated)
-})
-
-router.delete('/entry/:id', ensureHR, (req, res) => {
-  const existing = db.prepare('SELECT id FROM hour_bank_entries WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
-  if (!existing) return res.status(404).json({ error: 'Not found' })
-  db.prepare(`UPDATE hour_bank_entries SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id)
-  emitEntity('hour_bank_entry', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
-  res.json({ success: true })
-})
+router.use('/entry', mountCrud(Router(), RECORD_REGISTRY.hour_bank_entries, { only: ['update', 'delete'] }))
 
 export default router

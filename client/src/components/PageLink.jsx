@@ -12,7 +12,7 @@ import { architectureManifest } from '../lib/architectureManifest.js'
 // reste disponible au survol.
 // Un seul élément (« élément ciblé… ») ou plusieurs (« éléments ciblés (3)… ») :
 // dans les deux cas la partie « page » s'arrête au premier séparateur.
-const CONTEXT_ELEMENT_SEP = / — (?:éléments? cibl[ée]s? par l'utilisateur|fiche affichée)/
+const CONTEXT_ELEMENT_SEP = / — (?:éléments? cibl[ée]s? par l'utilisateur|fiche affichée|composants englobants|portée)/
 function contextPage(context) {
   if (!context) return ''
   const i = context.search(CONTEXT_ELEMENT_SEP)

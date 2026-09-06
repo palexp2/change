@@ -87,6 +87,15 @@ Pour admin-only : `requireAdmin`.
 
 ## Patterns frontend
 
+### Règle impérative — composants partagés et portée d'une demande
+
+Les cadres communs sont : `components/DetailShell.jsx` (+ `detailPending`, `lib/useSectionNav.js`) pour **toute** fiche, `components/ListPage.jsx` (+ `FilterBanner`, `lib/useListData.js`) pour **toute** page liste, `DataTable`, `Modal`, `RecordForm`, `Badge`, `SearchableSelect`, `ErrorBanner`, `Spinner`, `fmtMoney`/`fmtDate`. Une nouvelle page passe par ces cadres ; on n'en recopie jamais le squelette.
+
+Avant de modifier un composant importé par plus d'un fichier, compter ses appelants (`grep -rl`). Les demandes venant du FAB « Modifier le système » portent une ligne « Contexte (ERP) » qui dit la portée choisie par l'utilisateur :
+- **`portée : le composant partagé « X »`** → modifier `X` lui-même ; le changement doit s'appliquer à tous ses appelants. Ne pas créer de copie `X2`, ne pas conditionner sur la page appelante.
+- **`portée : cette page seulement`** alors que l'élément vit dans un composant partagé → ajouter une **option/variante** au composant (prop, slot, classe modificatrice) et l'utiliser depuis cette page. Jamais de copie du composant.
+- Pas de ligne de portée mais le changement touche un composant partagé → **poser la question** avant de coder, en donnant le nombre d'appelants (« ce bouton vient de `DataTable`, utilisé par 39 pages : partout, ou seulement ici ? »).
+
 ### Règle de design — une fiche ne s'affiche QUE dans un panneau latéral
 
 Un enregistrement se consulte toujours en side-peek, jamais en pleine page. L'invariant est tenu par le routage, pas par la discipline :

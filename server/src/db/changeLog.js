@@ -201,6 +201,7 @@ export function computedFieldSignatures() {
     const rows = db.prepare(`
       SELECT erp_table, column_name, kind, type, result_type, formula_expr,
              lookup_fk, lookup_target_table, lookup_target_column,
+             lookup_limit_n, lookup_limit_dir,
              rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
              link_target_table, link_group_id, link_role, view_error
         FROM custom_fields

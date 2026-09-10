@@ -3,6 +3,25 @@
   "entries": [
     {
       "date": "2026-09-10",
+      "title": "La fiche envoi se met à jour toute seule après un ramassage",
+      "category": "Envois",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "Après un ramassage ou l'achat d'une étiquette, la fiche restait figée : le bouton « Demander un ramassage » revenait et le champ « Ramassage » n'apparaissait pas. Ces actions diffusent maintenant leur résultat en direct, comme le reste de l'app — sans rechargement ni fermeture de la fenêtre." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Articles d'une commande : le produit se change comme dans Airtable",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans le tableau des articles, le produit s'affiche en pastille. Un clic sur la case fait apparaître le « × » qui retire le produit et, sur une case vide, un « + » qui ouvre la liste du catalogue avec recherche — plus besoin de double-cliquer pour découvrir ces gestes." },
+        { "type": "improved", "text": "La pastille reste un lien vers la fiche produit une fois la case sélectionnée." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
       "title": "Courriel de suivi : champ Cci",
       "category": "Envois",
       "requester": "Pierre-Alexandre Papillon",

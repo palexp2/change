@@ -1725,13 +1725,15 @@ export default function OrderDetail({ recordId, onClose }) {
     // Colonne « Produit » (champ `product_id`, le lien vers la fiche produit) :
     // on affiche le NOM du produit, cliquable — jamais l'id brut. Les numéros de
     // série assignés à la ligne ont leur propre colonne (`serials`).
+    // Pastille de fiche liée (comme dans Airtable) : la cellule sélectionnée
+    // offre le « × » qui dissocie et le « + » qui ouvre le catalogue — voir la
+    // colonne `linkChips` plus bas et components/LinkChipsCell.jsx. Ce render
+    // ne sert plus qu'aux rendus hors mode tableur.
     product_id: item => (
       <div className="flex items-center min-w-0">
-        <span className="font-medium text-slate-900 truncate">
-          {item.product_id
-            ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="hover:text-brand-700 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
-            : (item.product_name || 'Produit inconnu')}
-        </span>
+        {item.product_id
+          ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="chip-record">{item.product_name || 'Produit inconnu'}</Link>
+          : <span className="chip-record">{item.product_name || 'Produit inconnu'}</span>}
       </div>
     ),
     serials: item => (item.serials?.length > 0
@@ -1817,8 +1819,18 @@ export default function OrderDetail({ recordId, onClose }) {
     // associer) plutôt qu'une saisie texte — cf. components/LinkCellEditor.jsx.
     // La liste vient de la page et non du serveur : seuls les produits ACTIFS
     // du catalogue sont proposés, comme dans le formulaire d'ajout.
+    // La cellule porte ses pastilles : sélectionnée, elle affiche le « × » qui
+    // dissocie le produit et le « + » qui ouvre la liste du catalogue — un
+    // double-clic n'est plus nécessaire pour comprendre qu'on peut y toucher.
     ...(meta.id === 'product_id'
-      ? { linkTarget: 'products', linkOptions: productLinkOptions }
+      ? {
+        linkTarget: 'products',
+        linkOptions: productLinkOptions,
+        linkChips: true,
+        // La ligne porte déjà le nom du produit : la pastille s'affiche sans
+        // attendre la résolution réseau du lien.
+        linkChipLabel: item => item.product_name,
+      }
       : {}),
     ...(meta.id === 'item_type'
       ? { selectChoices: ITEM_TYPES.map(t => ({ id: t, label: t, color: ITEM_TYPE_COLORS[t] || 'gray' })) }

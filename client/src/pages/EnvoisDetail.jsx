@@ -582,7 +582,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
         </div>
       </DetailShell>
 
-      <Modal isOpen={showLabel} onClose={() => { setShowLabel(false); endGuided() }} title="Créer une étiquette postale">
+      <Modal isOpen={showLabel} onClose={() => { setShowLabel(false); load(); endGuided() }} title="Créer une étiquette postale">
         <NovoxpressLabelModal
           envoi={envoi}
           orderItemsTotalWeight={
@@ -621,7 +621,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
         </div>
       </Modal>
 
-      <Modal isOpen={showPickup} onClose={() => { setShowPickup(false); endGuided() }} title="Demander un ramassage">
+      <Modal isOpen={showPickup} onClose={() => { setShowPickup(false); load(); endGuided() }} title="Demander un ramassage">
         <NovoxpressPickupModal
           envoi={envoi}
           defaultWeight={

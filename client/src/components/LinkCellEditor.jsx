@@ -36,7 +36,11 @@ import { useRecordLinks } from '../lib/useRecordLinks.js'
 
 const REC_ID = /^rec[A-Za-z0-9]{14}$/
 
-export default function LinkCellEditor({ col, value, onCommit, onCancel }) {
+// `showCurrent` (défaut vrai) : le panneau porte l'en-tête des liens déjà posés
+// (pastilles + « × »). Une colonne `linkChips` garde ces pastilles dans la
+// cellule elle-même — le panneau n'est alors QUE la liste recherchable, comme
+// dans Airtable (cf. components/LinkChipsCell.jsx).
+export default function LinkCellEditor({ col, value, onCommit, onCancel, showCurrent = true }) {
   const multi = !!col.linkMulti
   const pageOptions = Array.isArray(col.linkOptions) ? col.linkOptions : null
 
@@ -130,6 +134,10 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel }) {
     const key = keyFor(rec)
     if (multi) {
       if (sel.includes(key)) return
+      // Sans l'en-tête des pastilles, une association composée dans le panneau
+      // serait invisible jusqu'à la fermeture : on l'écrit tout de suite, la
+      // cellule montre la nouvelle pastille.
+      if (!showCurrent) { onCommit(serialize([...sel, key])); return }
       setSel(prev => [...prev, key])
       setQ('')
       inputRef.current?.focus()
@@ -170,14 +178,14 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel }) {
         // dissociations comprises). Mono : choisir COMMIT déjà, un abandon ne
         // doit rien écrire.
         if (!e.currentTarget.contains(e.relatedTarget)) {
-          if (multi) onCommit(serialize(sel)); else onCancel()
+          if (multi && showCurrent) onCommit(serialize(sel)); else onCancel()
         }
       }}
       style={pos ? { position: 'fixed', top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight } : { visibility: 'hidden' }}
       className="z-50 overflow-y-auto rounded-lg border border-brand-500 bg-white shadow-lg py-1"
     >
       {/* Liens en place — un « × » par pastille pour dissocier. */}
-      {sel.length > 0 && (
+      {showCurrent && sel.length > 0 && (
         <div className="flex flex-wrap gap-1 px-2 pb-1.5 border-b border-slate-100" data-testid="link-editor-current">
           {sel.map((key, i) => {
             const rec = resolved[i]

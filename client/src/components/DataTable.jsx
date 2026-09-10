@@ -20,6 +20,7 @@ import { FieldAirtableMapping, prefetchFieldConfig } from './FieldAirtableMappin
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue, columnChoiceValues, parseSelectChoices, formatCurrency, currencySymbolOf, NO_COLOR } from '../lib/customFieldDisplay.jsx'
 import LinkCellEditor from './LinkCellEditor.jsx'
+import LinkChipsCell from './LinkChipsCell.jsx'
 import { LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import { summarizeDependents } from '../lib/customFieldDeps.js'
 import { useFieldOverrides, applyFieldOverrides, applyFieldOrder } from '../lib/fieldOverrides.jsx'
@@ -2673,11 +2674,27 @@ export function DataTable({
                               // Cellule de lien : pastilles avec « × » pour
                               // dissocier, liste recherchable pour associer.
                               // Voir components/LinkCellEditor.jsx.
+                              // Variante `linkChips` : les pastilles restent
+                              // DANS la cellule (avec leur « × »), le panneau
+                              // n'est plus que la liste recherchable.
                               <>
-                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                {col.linkChips ? (
+                                  <LinkChipsCell
+                                    col={col}
+                                    row={item}
+                                    value={item[col.field]}
+                                    active
+                                    editing
+                                    onCommit={() => {}}
+                                    onOpenPicker={() => {}}
+                                  />
+                                ) : (
+                                  <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                )}
                                 <LinkCellEditor
                                   col={col}
                                   value={item[col.field]}
+                                  showCurrent={!col.linkChips}
                                   onCommit={(value) => {
                                     if (value !== undefined && value !== item[col.field]) applyCellChanges([{ row: item, col, value }])
                                     setEditingCell(null); focusGrid()
@@ -2743,7 +2760,27 @@ export function DataTable({
                             // par défaut du `<a>` passait outre. La fiche visée
                             // reste à un clic dans l'éditeur de lien (pastilles
                             // cliquables) et par la gouttière d'ouverture de ligne.
+                            //
+                            // Colonne `linkChips` : la cellule porte elle-même
+                            // ses pastilles et, quand elle est sélectionnée, le
+                            // « × » de chacune et le « + » qui ouvre la liste —
+                            // plus besoin de double-cliquer pour découvrir
+                            // qu'un lien se défait (cf. LinkChipsCell.jsx).
+                            col.linkChips ? (
+                              <LinkChipsCell
+                                col={col}
+                                row={item}
+                                value={item[col.field]}
+                                active={isActive}
+                                onCommit={(value) => {
+                                  if (value !== undefined && value !== item[col.field]) applyCellChanges([{ row: item, col, value }])
+                                  focusGrid()
+                                }}
+                                onOpenPicker={() => startEdit(item.id, col.id)}
+                              />
+                            ) : (
                             <span className={`block truncate${editable ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
+                            )
                           )}
                         </div>
                       )

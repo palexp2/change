@@ -18,6 +18,7 @@ import {
   isOpaqueNovoError,
   runDiagnostic
 } from '../services/novoxpressDiagnostic.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 import {
   SHIPMENT_ITEMS_COLUMN,
   refreshShipmentItemsMirror,
@@ -27,6 +28,18 @@ import {
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
 router.use(requireAuth)
+
+// Les routes Novoxpress écrivent dans `shipments` sans passer par
+// PATCH /api/shipments : sans cet émetteur, la fiche ouverte ne voyait ni
+// l'étiquette ni le ramassage tant qu'on ne la rechargeait pas. On n'envoie que
+// les colonnes touchées — le client fusionne, et la ligne entière ferait
+// entrer les colonnes legacy Airtable (cf. orders.items).
+function emitShipmentColumns(req, shipmentId, columns) {
+  const cols = columns.join(', ')
+  const payload = db.prepare(`SELECT id, ${cols} FROM shipments WHERE id = ?`).get(shipmentId)
+  if (!payload) return
+  emitEntity('shipment', 'updated', shipmentId, payload, req.user?.id, { fields: columns })
+}
 
 const pad2 = n => String(n).padStart(2, '0')
 // Le ramassage est une date/heure locale d'entrepôt (le coursier passe à 9h
@@ -184,6 +197,9 @@ router.post('/label/:shipmentId', async (req, res) => {
       carrier_name || null,
       req.params.shipmentId
     )
+    emitShipmentColumns(req, req.params.shipmentId, [
+      'novoxpress_shipment_id', 'label_pdf_path', 'tracking_number', 'carrier', 'status', 'shipped_at',
+    ])
 
     // Constat de vente : plus déclenché ici. L'UPDATE ci-dessus (status='Envoyé')
     // est journalisé dans change_log et capté par revenueRecognitionWatcher, qui
@@ -256,6 +272,7 @@ router.post('/label/:shipmentId/retry-pdf', async (req, res) => {
           tracking_number = COALESCE(?, tracking_number)
       WHERE id = ?
     `).run(pdf.filename, pdf.trackingNumber || null, req.params.shipmentId)
+    emitShipmentColumns(req, req.params.shipmentId, ['label_pdf_path', 'tracking_number'])
     // Le suivi peut n'apparaître qu'ici (transporteur qui ne le renvoie qu'avec
     // le PDF) : il doit repartir vers Airtable comme à l'achat.
     if (pdf.trackingNumber) pushShipmentToAirtable(req.params.shipmentId, ['tracking_number'])
@@ -378,6 +395,7 @@ router.post('/pickup/:shipmentId', async (req, res) => {
     }
     db.prepare('UPDATE shipments SET novoxpress_pickup_id = ?, novoxpress_pickup_details = ? WHERE id = ?')
       .run(result.pickup_id || null, JSON.stringify(details), req.params.shipmentId)
+    emitShipmentColumns(req, req.params.shipmentId, ['novoxpress_pickup_id', 'novoxpress_pickup_details'])
     res.json({ pickup_id: result.pickup_id, message: result.message, details })
   } catch (e) {
     console.error('Novoxpress pickup error:', e.message)
@@ -405,6 +423,7 @@ router.delete('/pickup/:shipmentId', async (req, res) => {
     await cancelPickup(shipment.novoxpress_pickup_id)
     db.prepare('UPDATE shipments SET novoxpress_pickup_id = NULL, novoxpress_pickup_details = NULL WHERE id = ?')
       .run(req.params.shipmentId)
+    emitShipmentColumns(req, req.params.shipmentId, ['novoxpress_pickup_id', 'novoxpress_pickup_details'])
     res.json({ success: true })
   } catch (e) {
     console.error('Novoxpress cancel-pickup error:', e.message)

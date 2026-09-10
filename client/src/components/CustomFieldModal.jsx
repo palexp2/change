@@ -1108,6 +1108,10 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   const [lookupFk, setLookupFk] = useState('')
   const [lookupTargetTable, setLookupTargetTable] = useState('')
   const [lookupTargetColumn, setLookupTargetColumn] = useState('')
+  // Champ de référence portant plusieurs enregistrements liés : ne récupérer que
+  // les N premiers ('first') / derniers ('last'). '' = tous (lien direct).
+  const [lookupLimitDir, setLookupLimitDir] = useState('')
+  const [lookupLimitN, setLookupLimitN] = useState('1')
   // pour kind='rollup'
   const [rollupSource, setRollupSource] = useState('')   // `${table}::${fk}` encodé
   const [rollupColumn, setRollupColumn] = useState('')

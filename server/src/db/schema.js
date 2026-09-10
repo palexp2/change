@@ -2284,6 +2284,12 @@ export function initSchema() {
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_fk TEXT') } catch {}
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_target_table TEXT') } catch {}
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_target_column TEXT') } catch {}
+  // Un champ de référence peut porter PLUSIEURS enregistrements liés (champ lien
+  // Airtable : « recA,recB » ou '["recA","recB"]'). lookup_limit_n / _dir limitent
+  // la récupération aux N premiers ('first') ou derniers ('last') de cette liste ;
+  // NULL = comportement d'origine (lien direct, un seul enregistrement).
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_limit_n INTEGER') } catch {}
+  try { db.exec('ALTER TABLE custom_fields ADD COLUMN lookup_limit_dir TEXT') } catch {}
   try { db.exec('ALTER TABLE custom_fields ADD COLUMN result_type TEXT') } catch {}
   // kind = 'rollup' : agrège une colonne d'une table ENFANT qui référence la
   //   table source via une FK inverse (ex: projects ← orders.project_id), exposé

@@ -608,6 +608,58 @@ export function validateFormulaReferences(formulaExpr, erpTable) {
   }
 }
 
+// ── Lookup limité aux N premiers / derniers enregistrements liés ─────────────
+//
+// Un champ de référence ne pointe pas toujours UN enregistrement : les champs
+// lien importés d'Airtable stockent une liste ('["recA","recB"]', « recA,recB »).
+// Le JOIN direct `cible.id = source.fk` ne matche alors rien — la colonne restait
+// vide. lookup_limit_n / lookup_limit_dir découpent la liste en gardant son ordre
+// et ne rapatrient que les N premiers ('first') ou derniers ('last').
+export const LOOKUP_LIMIT_DIRS = new Set(['first', 'last'])
+export const LOOKUP_LIMIT_MAX = 50
+
+// Normalise la limite : null (= pas de limite, comportement d'origine) ou
+// { n: 1..LOOKUP_LIMIT_MAX, dir: 'first'|'last' }. Lève sur une valeur absurde.
+export function normalizeLookupLimit(limitN, limitDir) {
+  if (limitN === null || limitN === undefined || limitN === '') return { n: null, dir: null }
+  const n = Number(limitN)
+  if (!Number.isInteger(n) || n < 1 || n > LOOKUP_LIMIT_MAX) {
+    throw new Error(`Nombre d'enregistrements liés invalide (1 à ${LOOKUP_LIMIT_MAX})`)
+  }
+  const dir = (limitDir == null || limitDir === '') ? 'first' : String(limitDir)
+  if (!LOOKUP_LIMIT_DIRS.has(dir)) throw new Error('Sens invalide : premiers ou derniers')
+  return { n, dir }
+}
+
+// Liste des clés liées d'une colonne, en JSON, quelle que soit sa forme de
+// stockage : tableau JSON tel quel, sinon valeur simple / liste à virgules
+// convertie en tableau. Les guillemets sont retirés avant reconstruction —
+// json_each() lève sur du JSON invalide, ce qui casserait toute la vue.
+function linkedKeysJson(colRef) {
+  return `CASE WHEN json_valid(${colRef}) AND trim(${colRef}) LIKE '[%' THEN ${colRef} ` +
+    `ELSE '["' || replace(replace(replace(trim(coalesce(${colRef}, '')), '"', ''), ' ', ''), ',', '","') || '"]' END`
+}
+
+// Expression SELECT d'un lookup limité. Une seule valeur (n=1) reste scalaire —
+// donc typée comme la colonne récupérée (date, nombre…) ; au-delà, les valeurs
+// sont listées « , » comme un rollup ARRAY.
+function limitedLookupExpr(cf, erpTable, n, dir) {
+  const tgt = cf.lookup_target_table
+  const tgtCols = childColumns(tgt)
+  // Les listes d'Airtable portent des recXXX ; la sync traduit parfois en id ERP.
+  const byAirtable = tgtCols.includes('airtable_id') ? ` OR _t.airtable_id = _k.value` : ''
+  const soft = tgtCols.includes('deleted_at') ? ` AND _t.deleted_at IS NULL` : ''
+  const order = dir === 'last' ? 'DESC' : 'ASC'
+  const rows =
+    `FROM json_each(${linkedKeysJson(`${erpTable}.${cf.lookup_fk}`)}) _k ` +
+    `JOIN ${tgt} AS _t ON (_t.id = _k.value${byAirtable}) ` +
+    `WHERE _k.value IS NOT NULL AND _k.value <> ''${soft} ` +
+    `ORDER BY _k.key ${order} LIMIT ${n}`
+  if (n === 1) return `(SELECT _t.${cf.lookup_target_column} ${rows}) AS ${cf.column_name}`
+  return `(SELECT group_concat(_v, ', ') FROM ` +
+    `(SELECT _t.${cf.lookup_target_column} AS _v ${rows})) AS ${cf.column_name}`
+}
+
 // Construit l'expression SELECT (et les éventuels JOIN) d'une colonne virtuelle.
 // `alias` est un compteur mutable { n } partagé pour générer des alias de JOIN
 // uniques. Lève une erreur de configuration (token interdit, table non
@@ -620,6 +672,8 @@ function buildVirtualColumn(cf, erpTable, alias) {
   }
   if (cf.kind === 'lookup') {
     validateLookup(cf, erpTable)
+    const { n, dir } = normalizeLookupLimit(cf.lookup_limit_n, cf.lookup_limit_dir)
+    if (n) return { selectExpr: limitedLookupExpr(cf, erpTable, n, dir), joins: [] }
     const a = `_j${++alias.n}`
     return {
       selectExpr: `${a}.${cf.lookup_target_column} AS ${cf.column_name}`,
@@ -710,7 +764,10 @@ function probeVirtualColumn(erpTable, selectExpr, joins) {
   db.prepare(sql)
 }
 
-export function validateLookup({ lookup_fk, lookup_target_table, lookup_target_column }, erpTable) {
+export function validateLookup(
+  { lookup_fk, lookup_target_table, lookup_target_column, lookup_limit_n, lookup_limit_dir }, erpTable
+) {
+  normalizeLookupLimit(lookup_limit_n, lookup_limit_dir)
   if (!SAFE_IDENT.test(lookup_fk || '')) throw new Error('Colonne FK invalide')
   if (!SAFE_IDENT.test(lookup_target_table || '')) throw new Error('Table cible invalide')
   if (!SAFE_IDENT.test(lookup_target_column || '')) throw new Error('Colonne cible invalide')
@@ -1161,7 +1218,8 @@ export function regenerateView(erpTable) {
 
   const virtualCols = db.prepare(`
     SELECT id, name, column_name, kind, formula_expr,
-           lookup_fk, lookup_target_table, lookup_target_column, result_type,
+           lookup_fk, lookup_target_table, lookup_target_column,
+           lookup_limit_n, lookup_limit_dir, result_type,
            rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
            link_target_table, link_group_id, link_role, link_single
     FROM custom_fields

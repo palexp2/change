@@ -3,7 +3,7 @@ import { newRecordId } from '../utils/recordId.js'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
+import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, normalizeLookupLimit, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
 import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
 import { normalizePercentDisplay } from '../services/percent.js'
 import { runRuleActionForRecord } from '../services/fieldRuleEngine.js'
@@ -397,7 +397,8 @@ router.get('/:erpTable', (req, res) => {
   if (!ALLOWED_TABLES.has(erpTable)) return res.status(400).json({ error: 'Table non supportée pour les champs custom' })
   const rows = db.prepare(
     `SELECT cf.id, cf.name, cf.column_name, cf.type, cf.decimals, cf.sort_order,
-            cf.kind, cf.formula_expr, cf.lookup_fk, cf.lookup_target_table, cf.lookup_target_column, cf.result_type,
+            cf.kind, cf.formula_expr, cf.lookup_fk, cf.lookup_target_table, cf.lookup_target_column,
+            cf.lookup_limit_n, cf.lookup_limit_dir, cf.result_type,
             cf.rollup_target_table, cf.rollup_target_fk, cf.rollup_target_column, cf.rollup_agg, cf.view_error, cf.options, cf.default_value,
             cf.link_target_table, cf.link_group_id, cf.link_role, cf.link_single, cf.source, cf.airtable_mapping_id,
             cf.description,
@@ -1048,10 +1049,15 @@ const FIELD_KINDS = {
   lookup: {
     virtual: true, regenerate: true,
     build(erpTable, body) {
+      const limit = normalizeLookupLimit(body?.lookup_limit_n, body?.lookup_limit_dir)
       const lookup = {
         lookup_fk: body?.lookup_fk,
         lookup_target_table: body?.lookup_target_table,
         lookup_target_column: body?.lookup_target_column,
+        // Champ de référence portant plusieurs enregistrements liés : n premiers
+        // / derniers. NULL = pas de limite (lien direct).
+        lookup_limit_n: limit.n,
+        lookup_limit_dir: limit.dir,
       }
       validateLookup(lookup, erpTable)
       // Le format n'est pas demandé : un lookup recopie une valeur, donc il
@@ -1115,6 +1121,7 @@ for (const [autoType, spec] of Object.entries(AUTO_TYPES)) {
 const CF_INSERT_COLUMNS = [
   'decimals', 'options', 'default_value', 'formula_expr', 'result_type',
   'lookup_fk', 'lookup_target_table', 'lookup_target_column',
+  'lookup_limit_n', 'lookup_limit_dir',
   'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg',
   'link_target_table', 'link_group_id', 'link_role', 'link_single',
   'source', 'airtable_mapping_id', 'description',
@@ -1144,6 +1151,7 @@ function insertFieldRow({ id, erpTable, name, columnName, type, kind, sortOrder,
 const FIELD_SELECT = `
   SELECT id, name, column_name, type, kind, decimals, sort_order, options, default_value,
          formula_expr, result_type, lookup_fk, lookup_target_table, lookup_target_column,
+         lookup_limit_n, lookup_limit_dir,
          rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
          link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id, description
   FROM custom_fields WHERE id=?`
@@ -1332,12 +1340,14 @@ router.post('/:erpTable/duplicate', (req, res) => {
     db.prepare(`
       INSERT INTO custom_fields
         (id, erp_table, name, column_name, type, decimals, sort_order, options, kind,
-         formula_expr, lookup_fk, lookup_target_table, lookup_target_column, result_type,
+         formula_expr, lookup_fk, lookup_target_table, lookup_target_column,
+         lookup_limit_n, lookup_limit_dir, result_type,
          rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, description, source)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'native')
     `).run(
       id, erpTable, name, columnName, type, src.decimals, sortOrder, src.options, src.kind,
-      src.formula_expr, src.lookup_fk, src.lookup_target_table, src.lookup_target_column, src.result_type,
+      src.formula_expr, src.lookup_fk, src.lookup_target_table, src.lookup_target_column,
+      src.lookup_limit_n, src.lookup_limit_dir, src.result_type,
       src.rollup_target_table, src.rollup_target_fk, src.rollup_target_column, src.rollup_agg, src.description ?? null,
     )
     regenerateView(erpTable)
@@ -1603,6 +1613,7 @@ router.put('/:id', (req, res) => {
     // Les colonnes de l'ancien kind sont remises à NULL : un rollup devenu
     // formule ne doit pas garder son agrégat fantôme en base.
     for (const c of ['formula_expr', 'result_type', 'lookup_fk', 'lookup_target_table', 'lookup_target_column',
+      'lookup_limit_n', 'lookup_limit_dir',
       'rollup_target_table', 'rollup_target_fk', 'rollup_target_column', 'rollup_agg']) {
       updates.push(`${c}=?`); values.push(built.columns?.[c] ?? null)
     }
@@ -1699,16 +1710,28 @@ router.put('/:id', (req, res) => {
   // Format déjà posé par le bloc lookup ci-dessous (déduit du champ récupéré) :
   // le bloc `result_type` ne doit pas écrire une seconde fois la colonne.
   let lookupResultType = null
-  if (!wantedKind && ('lookup_target_column' in (req.body || {}) || 'lookup_target_table' in (req.body || {}) || 'lookup_fk' in (req.body || {}))) {
+  const LOOKUP_KEYS = ['lookup_target_column', 'lookup_target_table', 'lookup_fk', 'lookup_limit_n', 'lookup_limit_dir']
+  if (!wantedKind && LOOKUP_KEYS.some(k => k in (req.body || {}))) {
     if (existing.kind !== 'lookup') return res.status(400).json({ error: 'Champs lookup uniquement' })
+    let limit
+    try {
+      limit = normalizeLookupLimit(
+        'lookup_limit_n' in req.body ? req.body.lookup_limit_n : existing.lookup_limit_n,
+        'lookup_limit_dir' in req.body ? req.body.lookup_limit_dir : existing.lookup_limit_dir,
+      )
+    } catch (e) { return res.status(400).json({ error: e.message }) }
     const merged = {
       lookup_fk: req.body.lookup_fk ?? existing.lookup_fk,
       lookup_target_table: req.body.lookup_target_table ?? existing.lookup_target_table,
       lookup_target_column: req.body.lookup_target_column ?? existing.lookup_target_column,
+      lookup_limit_n: limit.n,
+      lookup_limit_dir: limit.dir,
     }
     try { validateLookup(merged, existing.erp_table) } catch (e) { return res.status(400).json({ error: e.message }) }
-    updates.push('lookup_fk=?', 'lookup_target_table=?', 'lookup_target_column=?')
-    values.push(merged.lookup_fk, merged.lookup_target_table, merged.lookup_target_column)
+    updates.push('lookup_fk=?', 'lookup_target_table=?', 'lookup_target_column=?',
+      'lookup_limit_n=?', 'lookup_limit_dir=?')
+    values.push(merged.lookup_fk, merged.lookup_target_table, merged.lookup_target_column,
+      merged.lookup_limit_n, merged.lookup_limit_dir)
     // Le format suit la colonne récupérée (il ne se choisit pas, cf. build).
     lookupResultType = inferLookupResultType(merged.lookup_target_table, merged.lookup_target_column)
     updates.push('result_type=?', 'type=?')
@@ -1902,7 +1925,8 @@ router.put('/:id', (req, res) => {
 
   const updated = db.prepare(`
     SELECT id, name, column_name, type, decimals, kind, formula_expr,
-           lookup_fk, lookup_target_table, lookup_target_column, result_type, sort_order,
+           lookup_fk, lookup_target_table, lookup_target_column, lookup_limit_n, lookup_limit_dir,
+           result_type, sort_order,
            rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg, view_error, options, default_value,
            link_target_table, link_group_id, link_role, link_single, source, airtable_mapping_id, description
     FROM custom_fields WHERE id=?

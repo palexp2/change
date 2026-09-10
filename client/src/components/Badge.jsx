@@ -58,14 +58,8 @@ export function orderStatusColor(status) {
   return map[status] || 'gray'
 }
 
-export function ticketStatusColor(status) {
-  const map = {
-    'Waiting on us': 'orange',
-    'Waiting on them': 'yellow',
-    'Closed': 'green',
-  }
-  return map[status] || 'gray'
-}
+// `ticketStatusColor` a été retiré avec `tickets.status` (migration 040) : un
+// billet n'a plus de statut à colorer.
 
 // ── Maps de statut partagées liste ↔ fiche détail ───────────────────────────
 // Chaque map est utilisée à la fois par la page liste et la page détail du
@@ -95,7 +89,8 @@ export const SOUMISSION_STATUS_COLORS = {
   'legacy': 'purple',
 }
 
-export const PURCHASE_STATUS_COLORS = { 'Commandé': 'blue', 'Reçu partiellement': 'yellow', 'Reçu': 'green', 'Annulé': 'red' }
+// PURCHASE_STATUS_COLORS retirée : le champ « Statut » des achats a été supprimé
+// (colonne droppée, migration 032) — plus rien à colorer.
 
 export const STRIPE_PAYOUT_STATUS_COLORS = {
   paid: 'green', pending: 'yellow', in_transit: 'blue', canceled: 'gray', failed: 'red',

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'url'
 import { broadcastAll } from './realtime.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import {
-  AGENT_MODEL, KNOWN_MODELS, modelChain, resolveModel, chainAvailableAt,
+  AGENT_MODEL, CLAUDE_MODELS, modelChain, resolveModel, chainAvailableAt,
   noteModelLimit, nextLimitExpiryAt, purgeExpiredLimits, fetchLimitScope,
   syncScopedModelLimit, agentModelState, preferredAgentModel, setPreferredAgentModel,
 } from './agentModel.js'
@@ -58,6 +58,12 @@ const STEER_SETTINGS = resolve(fileURLToPath(import.meta.url), '../../../scripts
 
 // ─── Tunables (settled during the design grilling) ────────────────────────────
 const EXEC_TIMEOUT_MS    = 30 * 60_000  // hard kill an execution after 30 min
+// Codex a besoin de plus de temps sur le même chantier. Relevé le 2026-09-10 : sur
+// les 19 tâches codex de la journée, SIX ont été fauchées par le délai de 30 min
+// (aucune côté Claude, même travail, même arbre). Le délai lui est donc doublé —
+// au-delà d'une heure, c'est une exécution réellement partie en vrille.
+const CODEX_EXEC_TIMEOUT_MS = 60 * 60_000
+function execTimeoutFor(model) { return model === 'codex' ? CODEX_EXEC_TIMEOUT_MS : EXEC_TIMEOUT_MS }
 
 // ─── Plafonds de ressources d'une exécution (incident du 2026-08-27) ─────────
 // Une seule exécution `effort: high` a saturé la machine (2 vCPU / 8 Go) : +350
@@ -87,7 +93,11 @@ const EXEC_SWAP_MAX    = `${Math.floor(EXEC_SWAP_BUDGET_MB / EXEC_LANES)}M`     
 // s'effacent devant erp-server et nginx plutôt que de rendre l'app inutilisable.
 const EXEC_CPU_QUOTA   = '150%'
 const EXEC_CPU_WEIGHT  = 30
-const EXEC_TASKS_MAX   = 128     // borne l'explosion de processus (l'incident : +350)
+// 128 était trop juste depuis le passage à quatre files : le build client (vite +
+// esbuild, très gourmand en threads) échouait dans l'unité avec « newosproc,
+// errno=11 » — la tâche rendait alors du code non buildé. La mémoire reste le vrai
+// garde-fou (MemoryMax par file) ; ceci ne borne que le nombre de tâches noyau.
+const EXEC_TASKS_MAX   = 256     // borne l'explosion de processus (l'incident : +350)
 
 /**
  * Nom d'unité systemd déterministe — reconstructible sans plomberie d'état.
@@ -518,6 +528,28 @@ function writeTasks(tasks) {
   writeFileSync(TASKS_TMP, JSON.stringify(tasks, null, 2) + '\n', 'utf8')
   renameSync(TASKS_TMP, TASKS_FILE)
   _fileCache.delete(TASKS_FILE)
+  _taskIndex = null
+}
+
+// Index id → tâche, reconstruit à chaque nouvelle version du fichier.
+//
+// Le cache de TEXTE ci-dessus ne suffisait pas : `agent-tasks.json` pèse 3 Mo et
+// son `JSON.parse` coûte ~8 ms. `/travaux/prompts` cherche UNE tâche par item de
+// file, soit 267 recherches → 2,2 s de boucle d'événements bloquée à chaque appel
+// (mesuré le 2026-09-07). Or ce point d'entrée est appelé au chargement de
+// N'IMPORTE QUELLE page (pastille du panneau de travaux) : toutes les pages de
+// l'ERP attendaient donc 2 s derrière lui.
+let _taskIndex = null // { key, map }
+
+function taskIndex() {
+  let st
+  try { st = statSync(TASKS_FILE) } catch { return new Map() }
+  const key = `${st.mtimeMs}:${st.size}`
+  if (_taskIndex && _taskIndex.key === key) return _taskIndex.map
+  const map = new Map()
+  for (const t of readTasks()) if (t?.id) map.set(t.id, t)
+  _taskIndex = { key, map }
+  return map
 }
 
 export function getSettings() {
@@ -567,13 +599,18 @@ setPreferredAgentModel(getSettings().preferredModel)
 // cours finit normalement (donc aucun travail perdu, aucun jeton gaspillé à
 // refaire ce qui était commencé). La reprise redémarre exactement là où la file
 // s'était arrêtée — l'item suivant n'a jamais été lancé, il n'a rien à rattraper.
-export function isQueuePaused() { return !!getSettings().queuePaused }
+export function isQueuePaused(model = null) {
+  const settings = getSettings()
+  return !!settings.queuePaused && !(model === 'codex' && settings.quotaPauseActive)
+}
 
-export function setQueuePaused(paused, { reason = null } = {}) {
+export function setQueuePaused(paused, { reason = null, quotaGuard = false } = {}) {
   const next = setSettings({
     queuePaused: !!paused,
     queuePausedAt: paused ? new Date().toISOString() : null,
     queuePausedReason: paused ? (reason || null) : null,
+    // A manual pause always applies to every provider, even after a quota pause.
+    ...(paused && !quotaGuard ? { quotaPauseActive: false, quotaPauseResetAt: null } : {}),
   })
   if (!paused) setImmediate(kick)
   return {
@@ -1031,8 +1068,8 @@ async function handleLimitHit(taskId, limit, sessionId) {
   const task = readTasks().find(t => t.id === taskId) || {}
   const wanted = task.model || preferredAgentModel()
   const ranModel = task.run_model || wanted
-  const scope = await fetchLimitScope()
-  noteLimit(scope === 'account' ? KNOWN_MODELS : [ranModel], limit)
+  const scope = ranModel === 'codex' ? 'model' : await fetchLimitScope()
+  noteLimit(scope === 'account' ? CLAUDE_MODELS : [ranModel], limit)
 
   const hops = task.model_fallbacks || 0
   const fallback = resolveModel(wanted)
@@ -1059,7 +1096,7 @@ async function handleLimitHit(taskId, limit, sessionId) {
     // Item de file : c'est la file qui le relancera (nouvelle tâche) → celle-ci sort
     // du jeu. Suggestion/backlog : le runner la reprendra lui-même.
     status: isQueue ? 'cancelled' : 'approved',
-    agent_result: `(limite de session Claude atteinte — reprise automatique à ${limit.label})`,
+    agent_result: `(limite ${ranModel === 'codex' ? 'Codex' : 'Claude'} atteinte — reprise automatique à ${limit.label})`,
     user_summary: null,
     run_model: null,
     session_id: sessionId || null,
@@ -1091,7 +1128,7 @@ function kick() {
   // File de travaux en pause : ses tâches restent « approved » sans démarrer. Le reste
   // de l'agent (signalements de la bulle d'aide, réponses de conversation) continue —
   // la pause vise la consommation de jetons des chantiers, pas l'app entière.
-  const tasks = readTasks().filter(t => !(isQueuePaused() && t.kind === 'queue'))
+  const tasks = readTasks().filter(t => !(isQueuePaused(t.model || preferredAgentModel()) && t.kind === 'queue'))
   const byPriority = (a, b) => (b.priority - a.priority) || a.created_at.localeCompare(b.created_at)
   // Quota épuisé : une tâche n'attend QUE si son modèle et tous ses replis sont à sec
   // (un timer relance kick à la réinitialisation). Le plafond hebdomadaire de fable
@@ -1199,9 +1236,10 @@ function spawnClaude({ prompt, allowedTools, streamTaskId = null, timeoutMs }) {
 export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execLane = null } = {}) {
   const LOG = EXEC_LOG(taskId)
   const CODE = EXEC_CODE(taskId)
-  const myLane = lane === 'exec'
-    ? (execLane ?? execLaneOf(readTasks().find(t => t.id === taskId)))
-    : null
+  const known = readTasks().find(t => t.id === taskId)
+  const myLane = lane === 'exec' ? (execLane ?? execLaneOf(known)) : null
+  // Délai propre au moteur : `run_model` est déjà posé quand le monitor démarre.
+  const timeoutMs = execTimeoutFor(known?.run_model || known?.model)
   const pidFile = lane === 'question' ? QPID_FILE(taskId) : (lane === 'recover' ? null : EPID_FILE(myLane))
   const startedAt = Date.now()
   let offset = 0
@@ -1242,7 +1280,7 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
       agent_result = (text ? text + '\n\n' : '') + '(arrêté manuellement par l\'utilisateur)'
     } else if (killedTimeout) {
       status = 'blocked'
-      agent_result = `(interrompu: dépassement du délai de ${Math.round(EXEC_TIMEOUT_MS / 60000)} min)\n\n${text}`
+      agent_result = `(interrompu: dépassement du délai de ${Math.round(timeoutMs / 60000)} min)\n\n${text}`
     } else if (code === 0) {
       status = 'done'
       agent_result = text || '(terminé sans rapport)'
@@ -1390,7 +1428,7 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
     // Primary signal: the wrapper wrote the exit code → done/blocked by code.
     if (existsSync(CODE)) { finalize(); return }
     // Hard timeout: kill the whole detached group, mark blocked.
-    if (Date.now() - startedAt > EXEC_TIMEOUT_MS) {
+    if (Date.now() - startedAt > timeoutMs) {
       killExecutionTree(taskId, lane, currentPid())
       finalize({ killedTimeout: true })
       return
@@ -1669,7 +1707,13 @@ export function enqueueAgentTask({
   return task
 }
 
-export function findAgentTask(id) { return readTasks().find(t => t.id === id) || null }
+// Copie de surface : l'index est partagé entre appelants, la retouche d'un champ
+// chez l'un ne doit pas se voir chez les autres (les écritures passent de toute
+// façon par writeTasks, qui invalide l'index).
+export function findAgentTask(id) {
+  const t = taskIndex().get(id)
+  return t ? { ...t } : null
+}
 
 /**
  * Retouche d'une tâche remise à l'ordonnanceur mais PAS ENCORE démarrée : c'est ce
@@ -1688,6 +1732,11 @@ export function updatePendingAgentTask(id, patch = {}) {
   const allowed = ['title', 'description', 'model', 'effort', 'mode']
   const updates = {}
   for (const k of allowed) if (patch[k] !== undefined) updates[k] = patch[k]
+  // Une session Claude n'est pas réutilisable par Codex, ni l'inverse.
+  // Le brief de la file contient déjà le fil complet pour repartir sans session.
+  if (patch.model !== undefined && (patch.model === 'codex') !== (task.model === 'codex')) {
+    updates.resume_session_id = null
+  }
   if (!Object.keys(updates).length) return true
   const updated = updateTask(id, updates)
   if (updated) broadcastTask(updated)

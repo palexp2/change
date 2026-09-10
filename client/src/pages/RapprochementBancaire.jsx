@@ -42,7 +42,7 @@ function docLink(type, id, label) {
     : type === 'receipt' ? `/sale-receipts/${id}`
     : type === 'stripe_payout' ? '/stripe-payouts' : null
   if (!to) return label || '—'
-  return <Link to={to} onClick={(e) => e.stopPropagation()} className="text-brand-600 hover:underline">{label || type}</Link>
+  return <Link to={to} onClick={(e) => e.stopPropagation()} className="link-record">{label || type}</Link>
 }
 
 // ── Modale d'import par collage ──────────────────────────────────────────────

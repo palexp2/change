@@ -4,9 +4,10 @@ import { SearchableSelect } from './SearchableSelect.jsx'
 import { MultiSelectField } from './MultiSelectField.jsx'
 import { InlineText, InlineTextarea, InlineUrl, InlineNumber, InlineDate, InlineCheckbox } from './InlineFields.jsx'
 import { AttachmentField } from './AttachmentField.jsx'
+import { RatingInput } from './RatingStars.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { useExtraCustomFields } from '../lib/useDetailFields.jsx'
-import { parseSelectChoices, isAirtableLinkField } from '../lib/customFieldDisplay.jsx'
+import { parseSelectChoices, colorForChoice, ChoiceBadge, isAirtableLinkField, LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
 
 // Les champs personnalisés d'une table, rendus comme des blocs de champ
 // ordinaires d'une fiche.
@@ -43,13 +44,15 @@ const NO_SAVING = {}
 
 // Un champ personnalisé porte-t-il une valeur qu'on peut écrire ?
 export function isEditableCustomField(f) {
-  // Un champ LIEN ne se tape pas : sa valeur est un identifiant de fiche. Il
-  // s'affiche donc toujours en pastille de lien (rendu commun, cf.
-  // LinkedRecordsValue) — sans quoi la fiche offrait un champ texte montrant des
-  // « recXXXX » bruts. Les liens se font et se défont dans le tableau
-  // (LinkCellEditor) ou depuis la fiche visée.
-  if (isAirtableLinkField(f.field) || f.field?.record_link) return false
   return (!f.kind || f.kind === 'data') && f.writable !== false
+}
+
+// Champ dont la valeur est un identifiant de fiche : il ne se tape pas, il se
+// choisit dans un picker recherchable (CLAUDE.md → « champs référence »). Un
+// LOOKUP qui rapatrie un lien porte la même métadonnée sans être écrivable pour
+// autant — c'est isEditableCustomField (kind) qui l'écarte.
+export function isLinkCustomField(f) {
+  return isAirtableLinkField(f?.field) || !!f?.field?.record_link
 }
 
 // Éditeur inline correspondant au type du champ. `null` → pas d'éditeur pour ce
@@ -57,8 +60,18 @@ export function isEditableCustomField(f) {
 //
 // `recordId` n'est utile qu'au champ Attachement, dont les fichiers sont
 // rattachés à l'enregistrement côté serveur.
-export function CustomFieldEditor({ field, value, saving, onSave, recordId }) {
+//
+// `selectPills` : variante d'affichage d'une Sélection — la valeur choisie et
+// les options du menu portent la pastille de couleur configurée sur le champ,
+// comme dans les tableaux. Par défaut l'éditeur reste en texte simple.
+export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false }) {
   const commit = v => onSave?.(field.key, v)
+  // Champ lien : la valeur est un (ou des) identifiant(s) de fiche — pastille
+  // cliquable + picker recherchable de la table cible, le même dans toutes les
+  // fiches. Traité avant le switch : son type STOCKÉ est 'text'.
+  if (isLinkCustomField(field)) {
+    return <LinkedRecordsValue field={field.field} value={value} detail onChange={commit} saving={saving} />
+  }
   switch (field.type) {
     // Attachement : s'écrit tout seul par sa route de dépôt (les octets partent
     // au serveur de toute façon) — d'où l'absence de dépendance à `onSave`.
@@ -82,23 +95,37 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId }) {
     case 'number':
     case 'currency':
       return <InlineNumber value={value} saving={saving} onSave={commit} className="input text-sm w-full" testId={`cf-input-${field.key}`} />
+    // Pourcentage : la colonne porte le nombre de pourcents — on saisit 45, le
+    // « % » est là pour le dire (la barre de progression, elle, est un rendu de
+    // lecture : cf. PercentValue).
+    case 'percent':
+      return <InlineNumber value={value} saving={saving} onSave={commit} suffix="%" className="input text-sm w-full" testId={`cf-input-${field.key}`} />
     case 'date':
       return <InlineDate value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     case 'checkbox':
       return <InlineCheckbox value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
-    case 'single_select':
+    // Évaluation : les 5 étoiles, cliquables (re-cliquer l'étoile courante
+    // retire la note). Autosave comme les autres champs de fiche.
+    case 'rating':
+      return <RatingInput value={value} disabled={saving} onChange={commit} testId={`cf-input-${field.key}`} />
+    case 'single_select': {
+      const choices = parseSelectChoices(field.field)
+      const pill = o => <ChoiceBadge color={colorForChoice(choices, o.label)}>{o.label}</ChoiceBadge>
       return (
         <SearchableSelect
           value={value ?? ''}
-          options={parseSelectChoices(field.field).map(c => ({ value: c.label ?? c.id, label: c.label ?? c.id }))}
+          options={choices.map(c => ({ value: c.label ?? c.id, label: c.label ?? c.id }))}
           emptyOption="—"
           onChange={commit}
           className="input text-sm w-full"
           size="sm"
           disabled={saving}
+          renderValue={selectPills ? pill : undefined}
+          renderOption={selectPills ? pill : undefined}
           testId={`cf-input-${field.key}`}
         />
       )
+    }
     case 'multi_select':
       return (
         <MultiSelectField

@@ -27,7 +27,7 @@ function mutateFtpUsers(mutator) {
 }
 
 import { getAuthUrl as googleAuthUrl, exchangeCode as googleExchange } from '../connectors/google.js'
-import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken, getBaseTablesCached } from '../connectors/airtable.js'
+import { getAuthUrl as airtableAuthUrl, exchangeCode as airtableExchange, airtableFetch, getAccessToken, getBaseTablesCached, invalidateBaseTables } from '../connectors/airtable.js'
 import { getAuthUrl as qbAuthUrl, exchangeCode as qbExchange, qbGet } from '../connectors/quickbooks.js'
 import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonConfigured } from '../connectors/amazon.js'
 import { syncAmazon } from '../services/amazon.js'
@@ -57,7 +57,11 @@ import {
   pushableLinkColumn,
   coreDirectionLockReason,
   pushOnlyColumns,
+  resetComputedKeyCache,
 } from '../services/airtableWriteback.js'
+import {
+  AIRTABLE_READONLY_TYPES, isComputedAirtableType, rememberAirtableFieldTypes,
+} from '../services/airtableFieldTypes.js'
 import { nativeMappedColumn } from '../services/airtableNativeMappedColumns.js'
 import { uploadsPath } from '../config/uploads.js'
 
@@ -112,6 +116,13 @@ const AIRTABLE_FIELD_MODULES = {
   // écriture. Sans cette entrée, /champs/employees n'offrait aucune colonne
   // « Champ Airtable » alors que la table est bel et bien miroir d'Airtable.
   employees:    { erpTable: 'employees',      label: 'Employés',           source: 'module',  syncKey: 'employees' },
+  // Paies — config dans airtable_module_config module='paies'. Le module n'y
+  // figurait pas : /champs/paies n'offrait donc AUCUNE colonne « Champ
+  // Airtable », alors que ses 15 champs cœur venaient d'Airtable. Depuis le
+  // retrait du field_map (retirePaiesCoreFieldMap), c'est ici que chacun se
+  // branche sur son champ Airtable. Le module a un write-back : la colonne
+  // « Sens » est donc utile.
+  paies:        { erpTable: 'paies',          label: 'Paies',              source: 'module',  syncKey: 'paies' },
   // Factures Airtable (backfill des liens + mappings dynamiques) — config dans
   // airtable_module_config module='factures'. PAS de write-back : Stripe et le
   // sync Airtable restent les seules sources d'écriture (ne pas ajouter à
@@ -119,6 +130,20 @@ const AIRTABLE_FIELD_MODULES = {
   // colonne « Champ Airtable » ni la colonne « Sens » alors que la table a bel
   // et bien des mappings dynamiques.
   factures:     { erpTable: 'factures',       label: 'Factures',           source: 'module',  syncKey: 'factures' },
+  // Nomenclature (BOM) — config dans airtable_module_config module='bom'. PAS de
+  // write-back (absent de WRITEBACK_MODULES) : le sync entrant est la seule
+  // écriture. Sans cette entrée, /champs/bom_items n'offrait aucune colonne
+  // « Champ Airtable » alors que la table est un miroir d'Airtable — ses clés
+  // cœur se règlent maintenant là (cf. retireBomCoreFieldMap).
+  bom:          { erpTable: 'bom_items',      label: 'BOM',                source: 'module',  syncKey: 'bom' },
+  // Mouvements d'inventaire — config dans airtable_module_config
+  // module='stock_movements'. La table est un miroir Airtable à part entière
+  // (moteur unifié, webhook + rattrapage quotidien), mais elle ne figurait pas
+  // ici : /champs/stock_movements (et le tableau « Mouvements » d'une fiche
+  // produit) n'offrait AUCUNE colonne « Champ Airtable », comme si les données
+  // naissaient dans Boréal. PAS de write-back (absent de WRITEBACK_MODULES) :
+  // le sens reste l'import.
+  stock_movements: { erpTable: 'stock_movements', label: "Mouvements d'inventaire", source: 'module', syncKey: 'stock_movements' },
 }
 
 // Résout la config Airtable d'un module : { module, erpTable, label, syncKey,
@@ -537,18 +562,22 @@ router.put('/frozen-columns/:erpTable', requireAuth, (req, res) => {
 })
 
 // ── Save Airtable CRM config (legacy full save)
+//
+// Ni `field_map_contacts` ni `field_map_companies` ne sont plus écrits : le
+// mapping des champs cœur des contacts et des entreprises se règle dans
+// /champs/contacts et /champs/companies (cf. retireContactsCoreFieldMap /
+// retireCompaniesCoreFieldMap). Les laisser dans l'UPSERT ressusciterait ces
+// blobs à la première sauvegarde de la page Connecteurs — et re-verrouillerait
+// ces champs, exclus du picker dès qu'ils sont nommés par un field_map.
 function saveCrmConfig(req, res) {
-  const { base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies } = req.body
+  const { base_id, contacts_table_id, companies_table_id } = req.body
   db.prepare(`
-    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
-    VALUES (?,?,?,?,?)
+    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id)
+    VALUES (?,?,?)
     ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, contacts_table_id=excluded.contacts_table_id,
-      companies_table_id=excluded.companies_table_id, field_map_contacts=excluded.field_map_contacts,
-      field_map_companies=excluded.field_map_companies
-  `).run(base_id || null, contacts_table_id || null, companies_table_id || null,
-    field_map_contacts ? JSON.stringify(field_map_contacts) : null,
-    field_map_companies ? JSON.stringify(field_map_companies) : null)
+      companies_table_id=excluded.companies_table_id
+  `).run(base_id || null, contacts_table_id || null, companies_table_id || null)
   res.json({ ok: true })
   if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 }
@@ -556,66 +585,66 @@ router.put('/airtable/sync-config', requireAuth, saveCrmConfig)
 router.put('/airtable/crm-config', requireAuth, saveCrmConfig)
 
 // ── Save Airtable Contacts config (partial — only contacts fields)
+// Base et table seulement : le mapping champ par champ vit dans
+// /champs/contacts (même raison que ci-dessus).
 router.put('/airtable/contacts-config', requireAuth, (req, res) => {
-  const { base_id, contacts_table_id, field_map_contacts } = req.body
+  const { base_id, contacts_table_id } = req.body
   const existing = db.prepare('SELECT * FROM airtable_sync_config').get()
   db.prepare(`
-    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
-    VALUES (?,?,?,?,?)
+    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id)
+    VALUES (?,?,?)
     ON CONFLICT DO UPDATE SET
-      base_id=excluded.base_id, contacts_table_id=excluded.contacts_table_id,
-      field_map_contacts=excluded.field_map_contacts
-  `).run(base_id || null, contacts_table_id || null, existing?.companies_table_id || null,
-    field_map_contacts ? JSON.stringify(field_map_contacts) : null, existing?.field_map_companies || null)
+      base_id=excluded.base_id, contacts_table_id=excluded.contacts_table_id
+  `).run(base_id || null, contacts_table_id || null, existing?.companies_table_id || null)
   res.json({ ok: true })
   if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 // ── Save Airtable Companies config (partial — only companies fields)
+// Base et table seulement : le mapping champ par champ vit dans
+// /champs/companies (même raison que ci-dessus).
 router.put('/airtable/companies-config', requireAuth, (req, res) => {
-  const { base_id, companies_table_id, field_map_companies } = req.body
+  const { base_id, companies_table_id } = req.body
   const existing = db.prepare('SELECT * FROM airtable_sync_config').get()
   db.prepare(`
-    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id, field_map_contacts, field_map_companies)
-    VALUES (?,?,?,?,?)
+    INSERT INTO airtable_sync_config (base_id, contacts_table_id, companies_table_id)
+    VALUES (?,?,?)
     ON CONFLICT DO UPDATE SET
-      base_id=excluded.base_id, companies_table_id=excluded.companies_table_id,
-      field_map_companies=excluded.field_map_companies
-  `).run(base_id || null, existing?.contacts_table_id || null, companies_table_id || null,
-    existing?.field_map_contacts || null, field_map_companies ? JSON.stringify(field_map_companies) : null)
+      base_id=excluded.base_id, companies_table_id=excluded.companies_table_id
+  `).run(base_id || null, existing?.contacts_table_id || null, companies_table_id || null)
   res.json({ ok: true })
   if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 })
 
 // ── Save Projets config
+// `field_map_projects` n'est PLUS écrit : le mapping des projets vit dans
+// /champs/projects (retireProjetsCoreFieldMap). Le laisser dans l'UPSERT
+// ressusciterait le blob à chaque enregistrement de la page Connecteurs — et un
+// field_map non vide exclut à nouveau « ID » et « Client final » du picker de
+// champs. La colonne reste en base (NULL) : rien à migrer, rien à perdre.
+//
+// Le mapping du champ « ID » vers la colonne `name` reste la garde d'insertion
+// du sync (un record sans nom n'est pas un projet) : le démapper depuis
+// /champs/projects arrête l'import de nouveaux projets, comme le faisait un
+// field_map vidé.
 function saveProjetsConfig(req, res) {
-  const { base_id, projects_table_id, field_map_projects, extra_tables } = req.body
+  const { base_id, projects_table_id, extra_tables } = req.body
 
-  // Garde-fou : ne JAMAIS blanchir field_map_projects avec un objet vide.
-  // La clé `name` (mappée vers le champ Airtable "ID") est l'unique pièce qui
-  // n'a pas d'équivalent dynamique (airtable_field_defs) : c'est elle qui sert
-  // de garde `if (!name) continue` ET qui déclenche l'INSERT de la ligne dans
-  // syncProjets. Sans elle, AUCUN projet n'est importé (le sync rapporte
-  // "success / 0 importés" en silence). Or l'UI ProjectFields.jsx envoie
-  // `field_map_projects: {}` à chaque sauvegarde de config → sans ce garde,
-  // chaque save casse les imports. On préserve donc la map existante quand
-  // l'entrée est vide/absente. Idem pour extra_tables.
-  const existing = db.prepare('SELECT field_map_projects, extra_tables FROM airtable_projets_config WHERE id=?').get('default')
-  const incomingMapEmpty = !field_map_projects || (typeof field_map_projects === 'object' && Object.keys(field_map_projects).length === 0)
-  const fieldMapToStore = incomingMapEmpty
-    ? (existing?.field_map_projects ?? null)
-    : JSON.stringify(field_map_projects)
+  // extra_tables : conservé quand l'appelant ne l'envoie pas (la page en fait
+  // l'économie sur certaines sauvegardes) — l'écraser à NULL perdrait les
+  // tables secondaires de projets.
+  const existing = db.prepare('SELECT extra_tables FROM airtable_projets_config WHERE id=?').get('default')
   const extraToStore = extra_tables?.length
     ? JSON.stringify(extra_tables)
     : (extra_tables === undefined ? (existing?.extra_tables ?? null) : null)
 
   db.prepare(`
-    INSERT INTO airtable_projets_config (base_id, projects_table_id, field_map_projects, extra_tables)
-    VALUES (?,?,?,?)
+    INSERT INTO airtable_projets_config (base_id, projects_table_id, extra_tables)
+    VALUES (?,?,?)
     ON CONFLICT DO UPDATE SET
       base_id=excluded.base_id, projects_table_id=excluded.projects_table_id,
-      field_map_projects=excluded.field_map_projects, extra_tables=excluded.extra_tables
-  `).run(base_id || null, projects_table_id || null, fieldMapToStore, extraToStore)
+      extra_tables=excluded.extra_tables
+  `).run(base_id || null, projects_table_id || null, extraToStore)
   res.json({ ok: true })
   if (base_id) registerWebhookForBaseTraced(base_id, 'config-save')
 }
@@ -663,6 +692,7 @@ async function airtableFieldsHandler(moduleKey, req, res) {
     tableMeta = (data.tables || []).find(t => t.id === tableId)
   } catch (e) { return res.status(500).json({ error: 'Erreur metadata Airtable: ' + e.message }) }
   if (!tableMeta) return res.json({ fields: [], hardcoded: [] })
+  rememberAirtableFieldTypes(baseId, tableId, tableMeta.fields || [])
 
   // Les "hardcoded" Airtable field names = valeurs string du field_map (les
   // *_choices, etc. sont des objets et ne sont pas des field names).
@@ -689,6 +719,25 @@ async function airtableFieldsHandler(moduleKey, req, res) {
 
   res.json({ fields, hardcoded: [...hardcoded] })
 }
+// POST /api/connectors/airtable/schema-refresh
+// Body : { module? }
+// Oublie les métadonnées de table mémorisées (cache 60 s de getBaseTablesCached)
+// pour que le prochain chargement d'un sélecteur de champ Airtable relise la
+// vraie liste des champs. C'est le « Rafraîchir » du bas des dropdowns : sans
+// lui, un champ ajouté à l'instant dans Airtable restait invisible jusqu'à
+// l'expiration du cache. On cible la base du module quand on sait la résoudre ;
+// sinon (module à mapping cœur seul, ou pas de module) on vide tout — l'unique
+// coût est une relecture des métadonnées.
+router.post('/airtable/schema-refresh', requireAuth, (req, res) => {
+  const moduleKey = req.body?.module || null
+  const baseId = moduleKey
+    ? (resolveAirtableModule(moduleKey)?.baseId
+       || (CORE_FIELD_SPECS[moduleKey] ? coreMapConfig(CORE_FIELD_SPECS[moduleKey], moduleKey).base_id : null))
+    : null
+  invalidateBaseTables(baseId || null)
+  res.json({ ok: true, base_id: baseId || null })
+})
+
 router.get('/airtable/projets/airtable-fields', requireAuth, (req, res) => airtableFieldsHandler('projets', req, res))
 router.get('/airtable/module-fields/:module/airtable-fields', requireAuth, (req, res) => airtableFieldsHandler(req.params.module, req, res))
 
@@ -755,21 +804,36 @@ const COMPUTED_CF_KINDS = new Set([
   'created_time', 'last_modified_time', 'created_by', 'last_modified_by',
 ])
 
-// Types de champs Airtable que l'API refuse d'écrire (422) : un champ calculé de
-// Boréal ne peut donc pas y être poussé. Sert de garde-fou au mapping push-only,
-// en plus du filtrage de la liste côté client.
-const AIRTABLE_READONLY_TYPES = new Set([
-  'formula', 'rollup', 'count', 'autoNumber', 'lookup', 'multipleLookupValues',
-  'createdTime', 'lastModifiedTime', 'createdBy', 'lastModifiedBy',
-  'button', 'externalSyncSource', 'aiText',
-])
+// Types de champs Airtable que l'API refuse d'écrire (422) : AIRTABLE_READONLY_TYPES,
+// désormais défini dans services/airtableFieldTypes.js — la même liste sert au
+// garde-fou du mapping push-only ci-dessous, au verrouillage du sens de sync et
+// au filtrage du payload de write-back.
 
 const TYPE_COMPAT = {
-  text:          new Set(['text', 'long_text']),
+  // Un champ Airtable qui produit une CHAÎNE alimente aussi une colonne
+  // « Sélection » : c'est le cas des champs FORMULE (et rollup/lookup à résultat
+  // texte), qui n'ont pas de type propre côté ERP et retombent tous sur 'text'.
+  // Un « Statut » calculé par formule dans Airtable n'avait donc aucune colonne
+  // d'accueil dès qu'elle était rendue en Choix unique. La valeur est stockée
+  // telle quelle (convertValue), et les choix rencontrés entrent dans le champ
+  // au sync (services/airtableSelectChoices.js) — pastille grise en attendant.
+  // 'multi_select' reste exclu : sa colonne stocke un tableau JSON, une chaîne
+  // n'y aurait pas la même forme selon le chemin d'import.
+  text:          new Set(['text', 'long_text', 'single_select']),
   long_text:     new Set(['text', 'long_text']),
-  number:        new Set(['number']),
+  // Un montant Airtable peut alimenter une colonne affichée en DEVISE : le type
+  // ERP décrit le rendu, pas la donnée (les deux stockent un nombre). Sans ça,
+  // une colonne passée en « Devise » (products.unit_cost) n'avait plus aucun
+  // champ Airtable compatible et devenait impossible à re-mapper.
+  // 'percent' suit la même logique : la colonne stocke un nombre, seul son
+  // rendu change (« 45 % » ou barre de progression).
+  // 'rating' suit la même logique (note de 0 à 5 rendue en étoiles).
+  number:        new Set(['number', 'currency', 'percent', 'rating']),
   date:          new Set(['date']),
-  single_select: new Set(['single_select']),
+  // Une Sélection Airtable atterrit très bien dans une colonne TEXTE : c'est le
+  // cas de products.type, et de toute colonne adoptée avant que la liste de
+  // choix existe côté ERP. Les choix, eux, remontent au sync (airtableSelectChoices).
+  single_select: new Set(['single_select', 'text', 'long_text']),
   multi_select:  new Set(['multi_select']),
   checkbox:      new Set(['checkbox']),
   // Champ « enregistrement lié » Airtable : la colonne ERP qui le reçoit est du
@@ -871,6 +935,16 @@ async function mappingDataHandler(moduleKey, req, res) {
   // Les champs du field_map en sont exclus, comme dans le sync : il les traite
   // par le chemin hardcodé et n'en fait jamais un mapping dynamique.
   const atFieldNames = new Set((tableMeta.fields || []).map(f => f.name).filter(n => !hardcoded.has(n)))
+  // Type Airtable de chaque champ : c'est lui qui dit si Airtable acceptera une
+  // écriture. Un champ FORMULE (ou rollup, lookup, autoNumber…) la refuse — le
+  // sens de sync d'une colonne qu'il alimente ne peut donc pas être réglé sur
+  // « Bidirectionnel » ni « Boréal → Airtable ». On mémorise au passage ces
+  // types pour les chemins synchrones (write-back, garde d'enregistrement du
+  // sens), qui n'ont pas les métadonnées Airtable sous la main.
+  const atTypeByName = new Map((tableMeta.fields || []).map(f => [f.name, f.type]))
+  rememberAirtableFieldTypes(baseId, tableId, tableMeta.fields || [])
+  resetComputedKeyCache()
+  const isComputedAtField = name => isComputedAirtableType(atTypeByName.get(name))
 
   // Mappings Airtable existants pour la table ERP du module, jointure vers
   // custom_fields pour le type/nom de rendu (ex-field_type/display_label).
@@ -970,6 +1044,8 @@ async function mappingDataHandler(moduleKey, req, res) {
       const linkTarget = opts.link_target_table || opts.target_table
         || cfOpts.link_target_table || cfOpts.target_table || null
       const pushableLink = !!(wbModule && pushableLinkColumn(wbModule, c))
+      // Champ Airtable calculé derrière ce mapping : rien ne peut y être écrit.
+      const atComputed = !!(isMapped && isComputedAtField(d.airtable_field_name))
       // Colonne native à résolveur (ex. projects.vendeur_ref → « Vendeur ») :
       // mappable comme les autres, mais son libellé/type viennent du registre
       // (elle n'a pas de champ de rendu) et son sens est figé en import — cf.
@@ -1011,14 +1087,21 @@ async function mappingDataHandler(moduleKey, req, res) {
         field_type: cf?.type || d?.field_type || opts.native_field_type || 'text',
         target_table: linkTarget,
         mapped: isMapped,
-        direction: isMapped ? dynamicFieldDirection(wbModule, c) : null,
-        direction_configurable: !!(isMapped && wbModule && (!linkTarget || pushableLink)),
+        // Un champ Airtable calculé n'est jamais réécrit : sens figé en import.
+        direction: isMapped ? (atComputed ? 'pull' : dynamicFieldDirection(wbModule, c)) : null,
+        direction_configurable: !!(isMapped && wbModule && !atComputed && (!linkTarget || pushableLink)),
         // Pourquoi le sens n'est PAS configurable (null si configurable ou non
         // mappé) — permet au client d'afficher une infobulle honnête au lieu du
         // texte générique « Airtable → ERP ».
-        direction_reason: !isMapped || (wbModule && (!linkTarget || pushableLink))
+        direction_reason: !isMapped
           ? null
-          : (!wbModule ? 'module_no_writeback' : 'link_field'),
+          : atComputed ? 'airtable_computed'
+            : !wbModule ? 'module_no_writeback'
+              : (linkTarget && !pushableLink) ? 'link_field'
+                : null,
+        // Type brut du champ Airtable mappé (ex. 'formula') — le client s'en
+        // sert pour nommer la raison du verrouillage dans l'infobulle.
+        airtable_field_type: isMapped ? (atTypeByName.get(d.airtable_field_name) || null) : null,
         // Métadonnées pour la page de gestion :
         def_id: d?.id || null,
         cf_id: cf?.id || d?.cf_id || null,
@@ -1035,6 +1118,10 @@ async function mappingDataHandler(moduleKey, req, res) {
       const d = defByColumn.get(c)
       const cf = cfByColumn.get(c)
       const isMapped = !!d && d.import_disabled !== 1
+      // Champ calculé de Boréal poussé vers un champ… lui aussi calculé côté
+      // Airtable : les deux bouts sont en lecture seule, rien ne circule. Le
+      // mapping est refusé depuis, mais d'anciens réglages peuvent subsister.
+      const atComputed = !!(isMapped && isComputedAtField(d.airtable_field_name))
       return {
         column_name: c,
         label: cf.name,
@@ -1047,7 +1134,8 @@ async function mappingDataHandler(moduleKey, req, res) {
         // Sens figé : un champ calculé ne se remplit jamais depuis Airtable.
         direction: isMapped ? 'push' : null,
         direction_configurable: false,
-        direction_reason: isMapped ? 'computed_push_only' : null,
+        direction_reason: !isMapped ? null : (atComputed ? 'airtable_computed' : 'computed_push_only'),
+        airtable_field_type: isMapped ? (atTypeByName.get(d.airtable_field_name) || null) : null,
         def_id: d?.id || null,
         cf_id: cf.id,
         cf_kind: cf.kind,
@@ -1113,7 +1201,7 @@ router.get('/airtable/module-fields/:module/mapping-data', requireAuth, (req, re
 function airtableFieldMappingHandler(moduleKey, req, res) {
   const resolved = resolveAirtableModule(moduleKey)
   if (!resolved) return res.status(400).json({ error: `Module inconnu : ${moduleKey}` })
-  const { erpTable, fieldMap } = resolved
+  const { erpTable, fieldMap, baseId, tableId } = resolved
 
   const { airtable_field_id, airtable_field_name, airtable_field_type, column_name, link_target_table, unmap } = req.body || {}
 
@@ -1157,6 +1245,7 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
     } else if (target) {
       db.prepare('DELETE FROM airtable_field_mappings WHERE id=?').run(target.id)
     }
+    resetComputedKeyCache()
     return res.json({ ok: true, mapped: false })
   }
 
@@ -1198,6 +1287,15 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
   // que l'erreur utilisateur reflète la cause la plus directe (target invalide >
   // slot pris).
   let optionsToStore = {}
+  // Options du mapping en place. `native_field_type` décrit la COLONNE ERP (son
+  // type quand aucun champ de rendu ne le dit — cf. ensureCoreMappingOptions),
+  // pas le champ Airtable qu'on remplace : il se reporte, sinon un remappage
+  // faisait retomber la colonne sur « texte » et le picker de /champs proposait
+  // ensuite n'importe quel champ (« Produit » des assemblages, les liens des
+  // articles de retour, la nomenclature…).
+  let priorColumnOpts = {}
+  try { priorColumnOpts = JSON.parse(defByColumn?.options || '{}') } catch {}
+  if (priorColumnOpts.native_field_type) optionsToStore.native_field_type = priorColumnOpts.native_field_type
   // Colonne native à résolveur : la valeur importée est traduite en référence
   // Boréal par le sync (cf. services/airtableNativeMappedColumns.js). Le type du
   // champ Airtable doit rester compatible avec ce que le résolveur sait lire.
@@ -1347,6 +1445,15 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
       // Colonne native à résolveur : aucune ligne custom_fields. La colonne a
       // déjà sa présentation dans l'ERP (le champ « Vendeur » d'un projet) — en
       // créer une seconde ajouterait un champ homonyme à tous les tableaux.
+    } else if (!cfByColumn && optionsToStore.link_target_table) {
+      // Même raison, autre famille : le mapping RÉSOUT le lien vers une fiche
+      // Boréal (`link_target_table`), donc la colonne porte un id Boréal —
+      // `assemblages.product_id`, les liens des articles de retour, de la
+      // nomenclature… Elle a déjà sa présentation : la ligne du nom joint
+      // (« Produit ») dont la cellule « Champ Airtable » pilote justement ce
+      // mapping (`mappingColumn`, client/src/lib/tableDefs.js). Lui créer un
+      // champ de rendu ajouterait une colonne d'ids bruts, homonyme, dans tous
+      // les tableaux.
     } else if (cfByColumn) {
       // `source` n'est PAS repassé à 'airtable' : il dit d'où vient le CHAMP
       // (créé à la main ici), pas d'où vient sa valeur — et les fiches n'y
@@ -1383,6 +1490,15 @@ function airtableFieldMappingHandler(moduleKey, req, res) {
   try { tx() }
   catch (e) { return res.status(500).json({ error: e.message }) }
 
+  // Le type du champ visé décide si le sens de sync sera réglable (une formule
+  // Airtable n'accepte aucune écriture) : on le mémorise avec le mapping, et on
+  // oublie les clés calculées déjà mémoïsées — sans quoi le sélecteur de sens
+  // resterait ouvert jusqu'à une minute après un mapping vers une formule.
+  rememberAirtableFieldTypes(baseId, tableId, [
+    { id: airtable_field_id || null, name: airtable_field_name, type: airtable_field_type },
+  ])
+  resetComputedKeyCache()
+
   res.json({ ok: true, mapped: true, column_name, link_target_table: optionsToStore.link_target_table || null })
 }
 router.post('/airtable/projets/airtable-field-mapping', requireAdmin, (req, res) => airtableFieldMappingHandler('projets', req, res))
@@ -1415,46 +1531,25 @@ const CORE_FIELD_SPECS = {
       { key: 'changed_at',      label: 'Date du changement',     required: false, hint: "Date utilisée pour la fenêtre d'analyse et l'agrégation hebdomadaire", candidates: ['date', 'changed at', 'date du changement'] },
     ],
   },
-  serials: {
-    label: 'Numéros de série',
-    syncKey: 'serials',
-    erpTable: 'serial_numbers',
-    fields: [
-      { key: 'serial',               label: 'Numéro de série',          required: true, candidates: ['numéro de série', 'numero de serie', 'serial', 'serial number', 's/n', 'sn'] },
-      { key: 'product',              label: 'Produit (lien)',           candidates: ['produit', 'pièce', 'piece', 'product', 'item'] },
-      { key: 'company',              label: 'Entreprise (lien)',        candidates: ['entreprise', 'company', 'client', 'compte'] },
-      { key: 'order_item',           label: 'Item de commande (lien)',  candidates: ['item de commande', 'order item', 'ligne de commande', 'item'] },
-      { key: 'address',              label: 'Adresse',                  candidates: ['adresse', 'address'] },
-      { key: 'manufacture_date',     label: 'Date de fabrication',      candidates: ['date de fabrication', 'manufacture date', 'date fabrication', 'fabrication'] },
-      { key: 'last_programmed_date', label: 'Dernière programmation',   candidates: ['date de la dernière programmation', 'date derniere programmation', 'dernière programmation', 'last programmed', 'programmation'] },
-      { key: 'manufacture_value',    label: 'Valeur de fabrication',    hint: 'Base des écritures comptables générées par les règles de mouvements', candidates: ['valeur au moment de la fabrication', 'valeur fabrication', 'manufacture value', 'valeur'] },
-      { key: 'status',               label: 'Statut',                   hint: 'Statut courant du numéro de série', candidates: ['statut', 'status', 'état'] },
-      { key: 'notes',                label: 'Notes',                    candidates: ['notes', 'commentaires'] },
-    ],
-  },
-  // Modale demandée depuis /paies — candidats identiques à l'auto-détection de
-  // syncPaies / syncPaieItems (services/airtable.js).
-  paies: {
-    label: 'Paies',
-    syncKey: 'paies',
-    erpTable: 'paies',
-    fields: [
-      { key: 'number',                       label: 'Numéro',                          candidates: ['number', 'numéro', 'numero'] },
-      { key: 'period_end',                   label: 'Fin de période',                  required: true, hint: 'Date de fin de la période de paie', candidates: ['fin', 'end', 'date de fin'] },
-      { key: 'status',                       label: 'Statut',                          candidates: ['statut des feuilles de temps', 'statut', 'status'] },
-      { key: 'csv',                          label: 'CSV',                             candidates: ['csv'] },
-      { key: 'nb_holiday_days',              label: 'Nombre de congés fériés',         candidates: ['nombre de congés fériés', 'nombre de conges feries', 'nb congés fériés'] },
-      { key: 'total_with_charges_and_reimb', label: 'Total de la paie',                hint: 'Incluant remises aux organismes et remboursements de dépenses — base de la répartition comptable', candidates: ['total de la paie incluant les remises aux organismes et les remboursements de dépenses', 'total paie', 'total'] },
-      { key: 'timesheets_deadline',          label: 'Date limite correction FdT',      candidates: ['date limite pour correction des feuille de temps', 'date limite correction', 'deadline feuilles de temps'] },
-      { key: 'includes_hourly',              label: 'Inclut heures employés horaires', candidates: ["heures pour employés payés à l'heure", 'heures payés heure', 'hourly hours'] },
-      { key: 'includes_mileage',             label: 'Inclut kilométrage',              candidates: ['kilométrage', 'kilometrage', 'mileage'] },
-      { key: 'includes_expense_reimb',       label: 'Inclut remb. de dépenses',        candidates: ['remboursement de dépenses', 'remboursement de depenses', 'expense reimbursement'] },
-      { key: 'includes_paid_leave',          label: 'Inclut congés payés',             candidates: ['congés payés', 'conges payes', 'paid leave'] },
-      { key: 'includes_holiday_hours',       label: 'Inclut heures fériées',           candidates: ['heures férié', 'heures ferie', 'holiday hours'] },
-      { key: 'includes_sales_commissions',   label: 'Inclut commissions vendeurs',     candidates: ['commissions vendeurs', 'sales commissions'] },
-      { key: 'timesheets_sent',              label: 'Feuilles de temps envoyées',      candidates: ['envoi des feuilles de temps', 'timesheets sent'] },
-    ],
-  },
+  // Numéros de série : PLUS de mapping cœur. Le field_map du module a été retiré
+  // (services/airtableUiFieldMap.js → retireSerialsCoreFieldMap) et ses 10 clés
+  // reprises en lignes de mapping ordinaires : n° de série, produit, entreprise,
+  // item de commande, adresse, dates, valeur de fabrication, statut et notes se
+  // règlent désormais dans /champs/serial_numbers, où chaque champ est
+  // renommable, convertible et supprimable. Ne PAS réintroduire d'entrée
+  // `serials` ici — elle ferait réapparaître la modale de mapping cœur,
+  // exclurait à nouveau ces champs Airtable du picker (liste `hardcoded` de
+  // mapping-data) et re-verrouillerait leur sens de sync.
+  // `serial_changes` garde le sien : sa bascule est un chantier distinct.
+  // Paies : PLUS de mapping cœur. Le field_map du module a été retiré
+  // (services/airtableUiFieldMap.js → retirePaiesCoreFieldMap) et ses 15 clés
+  // reprises en lignes de mapping ordinaires : numéro, période, statut, totaux
+  // et cases « Inclut … » se règlent désormais dans /champs/paies, où chaque
+  // champ est renommable, convertible et supprimable. Ne PAS réintroduire
+  // d'entrée `paies` ici — elle ferait réapparaître la modale de mapping cœur,
+  // exclurait à nouveau ces champs Airtable du picker (liste `hardcoded` de
+  // mapping-data) et re-verrouillerait leur sens de sync.
+  // `paie_items` garde le sien : sa bascule est un chantier distinct.
   // Modale demandée depuis /factures. Le sync complet Airtable→factures est
   // débranché (Stripe est la source de vérité) — seul le sync de liens
   // projet/commande tourne encore (services/factureLinks.js), déclenché par
@@ -1469,38 +1564,14 @@ const CORE_FIELD_SPECS = {
       { key: 'order',           label: 'Commande (lien)',    hint: 'Champ lié vers la table des commandes — copié vers la facture ERP si elle n’a encore aucun lien', candidates: ['commande', 'commandes', 'order'] },
     ],
   },
-  // Produits — candidats identiques à l'auto-détection de syncPieces
-  // (services/airtable.js). Chaque clé déclare sa colonne ERP (`column`), donc
-  // le mapping cœur se fusionne ligne à ligne dans /champs/products : un seul
-  // tableau, plus de panneau « Champs alimentés par Airtable » sous celui-ci
-  // (même façon de faire que les lignes de commande).
-  pieces: {
-    label: 'Produits',
-    syncKey: 'pieces',
-    erpTable: 'products',
-    fields: [
-      { key: 'name_fr',                 column: 'name_fr',                 label: 'Nom (FR)',                  required: true, hint: 'Sans lui, la ligne Airtable est ignorée à l’import', candidates: ['nom', 'name fr', 'nom français', 'name_fr'] },
-      { key: 'name_en',                 column: 'name_en',                 label: 'Nom (EN)',                  candidates: ['name', 'name en', 'nom anglais', 'name_en'] },
-      { key: 'sku',                     column: 'sku',                     label: 'SKU',                       candidates: ['sku', 'code', 'référence', 'ref', 'numéro'] },
-      { key: 'type',                    column: 'type',                    label: 'Type',                      candidates: ['type', 'catégorie', 'categorie', 'category'] },
-      { key: 'unit_cost',               column: 'unit_cost',               label: 'Coût unitaire',             candidates: ['coût unitaire', 'cout', 'unit cost', 'cost'] },
-      { key: 'price_cad',               column: 'price_cad',               label: 'Prix de vente (CAD)',       candidates: ['prix', 'price', 'prix cad'] },
-      { key: 'stock_qty',               column: 'stock_qty',               label: 'Qté en stock',              candidates: ['stock', 'quantité', 'qty', 'quantity'] },
-      { key: 'min_stock',               column: 'min_stock',               label: 'Stock minimum',             candidates: ['stock min', 'min stock', 'seuil', 'minimum'] },
-      { key: 'supplier',                column: 'supplier',                label: 'Fournisseur',               candidates: ['fournisseur', 'supplier', 'vendor'] },
-      { key: 'procurement_type',        column: 'procurement_type',        label: 'Approvisionnement',         hint: 'Valeurs reconnues : Acheté, Fabriqué, Drop ship', candidates: ['approvisionnement', 'procurement', 'type achat'] },
-      { key: 'weight_lbs',              column: 'weight_lbs',              label: 'Poids (lbs)',               candidates: ['poids', 'weight', 'poids lbs'] },
-      // Le champ pièce jointe Airtable n'atterrit pas dans une colonne `image` :
-      // le fichier est recopié dans l'ERP et c'est son chemin local qui est
-      // stocké — d'où `image_url` (cf. syncPieces).
-      { key: 'image',                   column: 'image_url',               label: 'Image',                     hint: 'Champ pièce jointe — la première image est téléchargée dans l’ERP', candidates: ['image', 'photo', 'images', 'photos', 'picture'] },
-      { key: 'assembly_status',         column: 'assembly_status',         label: "Statut d'assemblage",       hint: 'Priorité d’assemblage (étape 5) — Airtable → ERP seulement', candidates: ["status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status'] },
-      { key: 'finished_min_stock',      column: 'finished_min_stock',      label: 'Seuil min. produits finis', candidates: ['seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis'] },
-      { key: 'projected_available_qty', column: 'projected_available_qty', label: 'Qté disponible projetée',   candidates: ['quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée'] },
-      { key: 'producible_qty',          column: 'producible_qty',          label: 'Nb de produits possibles',  candidates: ['nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible'] },
-      { key: 'supplier_link',           column: 'supplier_link',           label: 'Lien fournisseur',          hint: 'URL du bouton « Acheter » dans Priorité d’assemblage', candidates: ['lien fournisseur', "lien d'achat", 'url fournisseur', 'lien'] },
-    ],
-  },
+  // Produits : PLUS de mapping cœur. Le field_map du module « pieces » a été
+  // retiré (services/airtableUiFieldMap.js → retirePiecesCoreFieldMap) et ses
+  // 17 clés reprises en lignes de mapping ordinaires : nom, SKU, coût, image,
+  // approvisionnement et les champs de la priorité d'assemblage se règlent
+  // désormais dans /champs/products, où chacun est un champ renommable,
+  // convertible et supprimable. Ne PAS réintroduire d'entrée `pieces` ici — elle
+  // ferait réapparaître la modale de mapping cœur et exclurait à nouveau ces
+  // champs Airtable du picker (liste `hardcoded` de mapping-data).
   // Commandes : PLUS de mapping cœur. Le field_map de `orders` a été retiré
   // (services/airtableUiFieldMap.js → retireOrdersCoreFieldMap) et ses 7 clés
   // reprises en lignes de mapping ordinaires : tout se règle désormais dans
@@ -1552,6 +1623,24 @@ const CORE_FIELD_SPECS = {
       { key: 'notes',           label: 'Notes',                 candidates: ['notes', 'note'] },
     ],
   },
+  // Mouvements d'inventaire. Les 6 clés déclarent leur colonne ERP : le mapping
+  // cœur se fusionne donc ligne à ligne dans /champs/stock_movements, sans
+  // onglet séparé. Sans cette spec, les champs Airtable du field_map restaient
+  // invisibles ET exclus du picker : chaque colonne de la table s'affichait
+  // « non mappé » alors que le sync la remplit à chaque passage.
+  stock_movements: {
+    erpTable: 'stock_movements',
+    label: "Mouvements d'inventaire",
+    syncKey: 'stock_movements',
+    fields: [
+      { key: 'product',        column: 'product_id',     label: 'Produit (lien)', required: true, hint: 'Champ lié vers la table des pièces — sans produit, le mouvement est ignoré à l’import', candidates: ['pièces', 'pieces', 'produit', 'product'] },
+      { key: 'qty_change',     column: 'qty',            label: 'Quantité',       hint: 'Variation signée : la quantité du mouvement en est la valeur absolue, et son signe décide entrée / sortie', candidates: ['changement', 'quantité', 'quantite', 'qty', 'change'] },
+      { key: 'type',           column: 'type',           label: 'Type',           hint: 'Texte repris tel quel dans « Raison » ; « Ajustement » donne le type ajustement, sinon le signe de la quantité décide', candidates: ['type', 'raison', 'reason'] },
+      { key: 'occurred_at',    column: 'created_at',     label: 'Date',           hint: 'À défaut, la date de création du record Airtable', candidates: ['created', 'date', 'créé le', 'cree le'] },
+      { key: 'unit_cost',      column: 'unit_cost',      label: 'Coût unitaire',  candidates: ['coût unitaire au moment du mouvement', 'cout unitaire', 'coût unitaire', 'unit cost'] },
+      { key: 'movement_value', column: 'movement_value', label: 'Valeur',         candidates: ['valeur du mouvement', 'valeur', 'movement value', 'value'] },
+    ],
+  },
 }
 
 // Config Airtable d'un module à mapping cœur : la plupart vivent dans
@@ -1582,6 +1671,24 @@ async function coreMapHandler(moduleKey, req, res) {
   // (« Champ inconnu ») puisque la modale renvoie le draft entier.
   const specKeys = new Set(spec.fields.map(f => f.key))
   fieldMap = Object.fromEntries(Object.entries(fieldMap).filter(([k]) => specKeys.has(k)))
+  // Métadonnées Airtable AVANT de décrire les champs : le sens de sync d'une clé
+  // dépend du TYPE du champ Airtable qu'elle vise (une formule n'accepte aucune
+  // écriture, donc aucun sens autre que l'import). Les mémoriser ici met à jour
+  // le cache que consultent fieldMapDirection / isDirectionConfigurable.
+  let airtableFields = []
+  let airtableError = null
+  if (cfg.base_id && cfg.table_id) {
+    try {
+      const data = await getBaseTablesCached(cfg.base_id)
+      const tableMeta = (data.tables || []).find(t => t.id === cfg.table_id)
+      airtableFields = (tableMeta?.fields || []).map(f => ({ id: f.id, name: f.name, type: f.type }))
+      rememberAirtableFieldTypes(cfg.base_id, cfg.table_id, airtableFields)
+      resetComputedKeyCache()
+    } catch (e) {
+      airtableError = e.message
+    }
+  }
+
   const out = {
     module: moduleKey,
     label: spec.label,
@@ -1601,34 +1708,27 @@ async function coreMapHandler(moduleKey, req, res) {
       column: column || null,
       direction: fieldMapDirection(moduleKey, key),
       configurable: isDirectionConfigurable(moduleKey, key),
-      // Pourquoi le sens est verrouillé ('module_no_writeback' | 'core_skip',
-      // null si configurable) — infobulle honnête côté client.
+      // Pourquoi le sens est verrouillé ('module_no_writeback' | 'core_skip' |
+      // 'airtable_computed', null si configurable) — infobulle honnête côté client.
       direction_reason: coreDirectionLockReason(moduleKey, key),
     })),
     field_map: fieldMap,
-    airtable_fields: [],
+    airtable_fields: airtableFields,
     suggested: {},
-    airtable_error: null,
+    airtable_error: airtableError,
   }
-  if (out.configured) {
-    try {
-      const data = await getBaseTablesCached(cfg.base_id)
-      const tableMeta = (data.tables || []).find(t => t.id === cfg.table_id)
-      out.airtable_fields = (tableMeta?.fields || []).map(f => ({ id: f.id, name: f.name, type: f.type }))
-      // Suggestions pour les clés non mappées — même normalisation qu'autoMapField,
-      // mais sur les métadonnées de table (stables, contrairement aux records où
-      // Airtable omet les champs vides).
-      const norm = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '')
-      const byNorm = new Map(out.airtable_fields.map(f => [norm(f.name), f.name]))
-      for (const f of spec.fields) {
-        if (fieldMap[f.key]) continue
-        for (const cand of f.candidates || []) {
-          const hit = byNorm.get(norm(cand))
-          if (hit) { out.suggested[f.key] = hit; break }
-        }
+  if (airtableFields.length) {
+    // Suggestions pour les clés non mappées — même normalisation qu'autoMapField,
+    // mais sur les métadonnées de table (stables, contrairement aux records où
+    // Airtable omet les champs vides).
+    const norm = s => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '')
+    const byNorm = new Map(airtableFields.map(f => [norm(f.name), f.name]))
+    for (const f of spec.fields) {
+      if (fieldMap[f.key]) continue
+      for (const cand of f.candidates || []) {
+        const hit = byNorm.get(norm(cand))
+        if (hit) { out.suggested[f.key] = hit; break }
       }
-    } catch (e) {
-      out.airtable_error = e.message
     }
   }
   res.json(out)
@@ -1692,6 +1792,9 @@ router.put('/airtable/module-fields/:module/core-map', requireAdmin, (req, res) 
   } else {
     db.prepare('UPDATE airtable_module_config SET field_map=? WHERE module=?').run(JSON.stringify(next), moduleKey)
   }
+  // Les clés ne visent plus les mêmes champs Airtable : le verrouillage du sens
+  // sur les champs calculés doit être recalculé.
+  resetComputedKeyCache()
   // Réponse filtrée aux clés de la spec, comme le GET : le client en refait son
   // draft et le renverra tel quel au prochain enregistrement — une clé hors spec
   // le ferait alors échouer (« Champ inconnu »).

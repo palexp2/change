@@ -472,7 +472,7 @@ function LedgerTab() {
                           {e.qb_url ? (
                             // Facture/dépense détectée de QB → ouvre la transaction dans QuickBooks.
                             <a href={e.qb_url} target="_blank" rel="noreferrer"
-                              className="inline-flex items-center gap-1 max-w-full text-brand-600 hover:text-brand-700 hover:underline"
+                              className="inline-flex items-center gap-1 max-w-full link-record"
                               title="Ouvrir dans QuickBooks">
                               <span className="truncate">{e.description || `${e.qb_txn_type} #${e.qb_txn_id}`}</span>
                               <ExternalLink size={11} className="shrink-0" />

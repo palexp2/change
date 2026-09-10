@@ -14,10 +14,10 @@ import { fmtDate } from '../lib/formatDate.js'
 const RENDERS = {
   serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
   product_name: row => row.product_id
-    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.product_name || row.sku || '—'}</Link>
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.product_name || row.sku || '—'}</Link>
     : <span className="text-slate-400">—</span>,
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   address: row => row.address
     ? <span className="font-mono text-slate-700">{row.address}</span>

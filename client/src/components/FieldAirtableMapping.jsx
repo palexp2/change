@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Lock } from 'lucide-react'
 import api from '../lib/api.js'
+import { readStale, writeStale } from '../lib/swr.js'
+import { prefetch } from '../lib/prefetch.js'
 import { AirtableFieldCell, MappingPicker, useModuleFields } from './AirtableModuleFields.jsx'
 import { useCoreMap } from './AirtableCoreMapModal.jsx'
 import { MappingBlock } from './CustomFieldModal.jsx'
@@ -26,55 +28,104 @@ import { sqlTableForView } from '../lib/customFieldDisplay.jsx'
 // pas de table propre mais configure bien serial_state_changes.
 const FIELD_KEY_TO_SQL = {
   serial_transitions: 'serial_state_changes',
+  // /champs/product_movements (URL mise en favori avant que la clé de champs ne
+  // renvoie vers la table mère) : le module Airtable est celui de
+  // `stock_movements`.
+  product_movements: 'stock_movements',
 }
 export function sqlTableForFieldKey(t) {
   return FIELD_KEY_TO_SQL[t] || sqlTableForView(t)
 }
 
+// Registre des modules Airtable (deux listes serveur, quelques ko). Persisté
+// comme le mapping-data : au retour sur une page de configuration des champs, il
+// est connu dès le premier rendu — sans quoi la requête du mapping-data
+// n'attendait que lui pour partir (deux allers-retours en série avant le moindre
+// champ à l'écran).
+const REGISTRY_KEY = 'connectors:airtable-module-registry'
+
+function fetchRegistry() {
+  return Promise.all([
+    api.airtable.coreMapModules().catch(() => []),
+    api.airtable.fieldModules().catch(() => []),
+  ]).then(([core, all]) => {
+    const reg = { core: core || [], all: all || [] }
+    writeStale(REGISTRY_KEY, reg)
+    return reg
+  })
+}
+
 // Modules Airtable de la table courante — et d'elle SEULE. Un module qui
 // alimente une autre table ERP (ex. `order_items` vu depuis /champs/orders)
 // n'a rien à faire ici : il se règle depuis la page de SA table.
+function modulesForTable(reg, table, sqlTable) {
+  const { core, all } = reg
+  // Les registres serveur parlent en VRAI nom de table SQL (erp_table)…
+  // sauf le registre des mappings cœur, où quelques specs désignent la
+  // table par sa clé de VUE (`serial_transitions`). On accepte les deux.
+  const isOwn = m => m.erp_table === sqlTable || m.erp_table === table
+  const mine = list => (list || []).filter(isOwn)
+  const coreMine = mine(core)
+  const coreKeys = new Set((core || []).map(m => m.module))
+  const linkMine = mine(all).filter(m => !coreKeys.has(m.module))
+  // Modules du registre de contrôle de champ (peuvent aussi avoir un mapping cœur).
+  // Un module peut avoir les deux : mapping cœur (colonnes ERP fixes) ET
+  // contrôle des champs Airtable supplémentaires. On fusionne par clé.
+  const fieldKeys = new Set((all || []).map(m => m.module))
+  const merged = new Map()
+  for (const m of coreMine) {
+    // `inline` : toutes les clés cœur du module déclarent leur colonne ERP,
+    // donc son mapping se fusionne ligne à ligne dans le tableau. Sinon il
+    // s'affiche en panneau sous le tableau (CoreMapPane).
+    merged.set(m.module, { module: m.module, title: m.label, coremap: true, inline: !!m.inline_columns, fields: fieldKeys.has(m.module) })
+  }
+  for (const m of linkMine) {
+    if (!merged.has(m.module)) merged.set(m.module, { module: m.module, title: m.label, coremap: false, inline: false, fields: true })
+  }
+  return [...merged.values()]
+}
+
 export function useAirtableModules(table, sqlTable) {
-  const [modules, setModules] = useState([])
-  const [loaded, setLoaded] = useState(false)
+  const staleReg = table ? readStale(REGISTRY_KEY) : null
+  const [modules, setModules] = useState(() => (staleReg ? modulesForTable(staleReg, table, sqlTable) : []))
+  // `loaded` dès le premier rendu quand le registre est déjà connu : la cellule
+  // de mapping n'a pas à clignoter en attendant une liste qu'on a déjà.
+  const [loaded, setLoaded] = useState(!!staleReg)
   useEffect(() => {
     if (!table) return
     let alive = true
-    setLoaded(false)
-    Promise.all([
-      api.airtable.coreMapModules().catch(() => []),
-      api.airtable.fieldModules().catch(() => []),
-    ])
-      .then(([core, all]) => {
-        if (!alive) return
-        // Les registres serveur parlent en VRAI nom de table SQL (erp_table)…
-        // sauf le registre des mappings cœur, où quelques specs désignent la
-        // table par sa clé de VUE (`serial_transitions`). On accepte les deux.
-        const isOwn = m => m.erp_table === sqlTable || m.erp_table === table
-        const mine = list => (list || []).filter(isOwn)
-        const coreMine = mine(core)
-        const coreKeys = new Set((core || []).map(m => m.module))
-        const linkMine = mine(all).filter(m => !coreKeys.has(m.module))
-        // Modules du registre de contrôle de champ (peuvent aussi avoir un mapping cœur).
-        // Un module peut avoir les deux : mapping cœur (colonnes ERP fixes) ET
-        // contrôle des champs Airtable supplémentaires. On fusionne par clé.
-        const fieldKeys = new Set((all || []).map(m => m.module))
-        const merged = new Map()
-        for (const m of coreMine) {
-          // `inline` : toutes les clés cœur du module déclarent leur colonne ERP,
-          // donc son mapping se fusionne ligne à ligne dans le tableau. Sinon il
-          // s'affiche en panneau sous le tableau (CoreMapPane).
-          merged.set(m.module, { module: m.module, title: m.label, coremap: true, inline: !!m.inline_columns, fields: fieldKeys.has(m.module) })
-        }
-        for (const m of linkMine) {
-          if (!merged.has(m.module)) merged.set(m.module, { module: m.module, title: m.label, coremap: false, inline: false, fields: true })
-        }
-        setModules([...merged.values()])
-        setLoaded(true)
-      })
+    const known = readStale(REGISTRY_KEY)
+    if (known) {
+      setModules(modulesForTable(known, table, sqlTable))
+      setLoaded(true)
+    } else {
+      setLoaded(false)
+    }
+    fetchRegistry().then(reg => {
+      if (!alive) return
+      setModules(modulesForTable(reg, table, sqlTable))
+      setLoaded(true)
+    })
     return () => { alive = false }
   }, [table, sqlTable])
   return { modules, loaded }
+}
+
+// Précharge tout ce dont la page de configuration des champs a besoin pour
+// s'afficher : le registre des modules, puis le mapping-data du module de la
+// table. Appelé au SURVOL du bouton « Configurer les champs » d'un tableau —
+// la réponse est déjà là (cache de prefetch, TTL 30 s) quand la page monte.
+export function prefetchFieldConfig(table) {
+  const sqlTable = sqlTableForFieldKey(table)
+  if (!table) return
+  prefetch(() => api.airtable.directSource(table))
+  const known = readStale(REGISTRY_KEY)
+  const go = reg => {
+    const own = modulesForTable(reg, table, sqlTable).find(m => m.fields)
+    if (own) prefetch(() => api.airtable.moduleMappingData(own.module))
+  }
+  if (known) { go(known); return }
+  prefetch(() => fetchRegistry().then(go))
 }
 
 // Table lue EN DIRECT dans Airtable (hors miroir) : pas de module, pas de
@@ -83,15 +134,20 @@ export function useAirtableModules(table, sqlTable) {
 // simplement à ces tables. Il est servi par le serveur pour qu'il ne puisse pas
 // dériver du lecteur. `null` = table normale.
 export function useAirtableDirectSource(table) {
-  const [source, setSource] = useState(null)
+  const key = table ? `connectors:airtable-direct-source:${table}` : null
+  const [source, setSource] = useState(() => (key ? readStale(key) : null))
   useEffect(() => {
-    setSource(null)
+    setSource(key ? readStale(key) : null)
     if (!table) return
     let alive = true
     api.airtable.directSource(table)
-      .then(d => { if (alive && d?.fields) setSource(d) })
+      .then(d => {
+        if (!alive) return
+        if (d?.fields) { setSource(d); writeStale(key, d) }
+      })
       .catch(() => { /* table normale, ou route indisponible : rien à afficher */ })
     return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table])
   return source
 }
@@ -129,6 +185,8 @@ export function buildCoreProps(coreModule, coreField, core) {
     onPick: name => core.saveField(coreField.key, name),
     onUnmap: () => core.saveField(coreField.key, ''),
     onDirection: dir => core.changeDirection(coreField.key, dir),
+    // « Rafraîchir » du bas du menu : relit les champs de la table Airtable.
+    onRefresh: core.refreshFields,
   }
 }
 
@@ -139,6 +197,8 @@ export function buildCoreProps(coreModule, coreField, core) {
 export function mappingCellFor({
   showMapping, column, cfKind, coreProps, at, airtableFields, tableMap,
   ownModule, onSaveMapping, savingId,
+  // Relit la liste des champs Airtable du module (« Rafraîchir » du dropdown).
+  onRefreshFields,
   // Table lue en direct : nom du champ Airtable fixé en code pour cette colonne.
   fixedField, fixedReason,
 }) {
@@ -161,6 +221,7 @@ export function mappingCellFor({
           : undefined}
         onPick={coreProps.onPick}
         onUnmap={coreProps.onUnmap}
+        onRefresh={coreProps.onRefresh}
       />
     )
   }
@@ -172,6 +233,7 @@ export function mappingCellFor({
         tableMap={tableMap}
         onSave={onSaveMapping}
         savingId={savingId}
+        onRefresh={onRefreshFields}
       />
     )
   }
@@ -186,7 +248,7 @@ export function FieldAirtableMapping({ table, column, cfKind = null }) {
   const { modules, loaded } = useAirtableModules(table, sqlTable)
   const ownModule = modules.find(m => m.fields) || null
   const {
-    data: atData, savingId, saveMapping,
+    data: atData, savingId, saveMapping, refreshFields,
   } = useModuleFields(ownModule?.module || null)
   const inlineCoreModule = modules.find(m => m.coremap && m.inline) || null
   const core = useCoreMap(inlineCoreModule?.module || null, () => {})
@@ -228,6 +290,7 @@ export function FieldAirtableMapping({ table, column, cfKind = null }) {
     ownModule,
     onSaveMapping: saveMapping,
     savingId,
+    onRefreshFields: refreshFields,
     fixedField,
     fixedReason: directSource?.reason,
   })

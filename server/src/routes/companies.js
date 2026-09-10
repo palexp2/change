@@ -7,6 +7,7 @@ import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermission
 import { emitCompany } from '../services/realtimeEmitters.js';
 import { findCompanyDuplicates } from '../utils/duplicateMatch.js';
 import { readRelation } from '../services/customFieldsView.js'
+import { RETURN_COMPANY_SQL } from '../services/returnCompany.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 
@@ -25,30 +26,29 @@ router.get('/lookup', (req, res) => {
 // téléphone) avant de créer une entreprise. Non bloquant : juste un avertissement.
 // Doit rester AVANT la route GET /:id pour ne pas être capturé par celle-ci.
 router.get('/duplicates', (req, res) => {
-  const { name, email, phone, exclude_id } = req.query;
-  const matches = findCompanyDuplicates(db, { name, email, phone, excludeId: exclude_id });
+  // Le téléphone n'entre plus dans le rapprochement : colonne droppée (045).
+  const { name, email, exclude_id } = req.query;
+  const matches = findCompanyDuplicates(db, { name, email, excludeId: exclude_id });
   res.json({ matches });
 })
 
 // GET /api/companies
 router.get('/', (req, res) => {
-  const { search, lifecycle_phase, type, farm_province, shipping_province } = req.query;
+  // Plus de filtre `?type=` : la colonne `companies.type` a été droppée
+  // (migration 045), comme la recherche par téléphone.
+  const { search, lifecycle_phase, farm_province, shipping_province } = req.query;
   const { page, limit, limitVal, offset } = parsePage(req.query, 50);
   let where = 'WHERE c.deleted_at IS NULL';
   const params = [];
 
   if (search) {
-    where += ' AND (c.name LIKE ? OR c.email LIKE ? OR c.phone LIKE ? OR c.city LIKE ?)';
+    where += ' AND (c.name LIKE ? OR c.email LIKE ? OR c.city LIKE ?)';
     const q = `%${search}%`;
-    params.push(q, q, q, q);
+    params.push(q, q, q);
   }
   if (lifecycle_phase && lifecycle_phase !== 'Tous') {
     where += ' AND c.lifecycle_phase = ?';
     params.push(lifecycle_phase);
-  }
-  if (type) {
-    where += " AND (c.type = ? OR c.type = 'Client / Fournisseur')";
-    params.push(type);
   }
   if (farm_province) {
     where += ` AND c.id IN (
@@ -120,9 +120,8 @@ router.get('/:id', (req, res) => {
      FROM orders o LEFT JOIN users u ON o.assigned_to = u.id
      WHERE o.company_id = ? AND o.deleted_at IS NULL ORDER BY o.created_at DESC LIMIT 20`
   ).all(req.params.id);
-  const tickets = db.prepare(
-    'SELECT t.*, u.name as assigned_name FROM tickets t LEFT JOIN users u ON t.assigned_to = u.id WHERE t.company_id = ? ORDER BY t.created_at DESC LIMIT 20'
-  ).all(req.params.id);
+  // `tickets.company_id` a été droppée (migration 040) : un billet n'est plus
+  // rattaché à une entreprise, il n'y a donc plus de « Support » à lister ici.
   const serials = db.prepare(`
     SELECT sn.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image
     FROM serial_numbers sn
@@ -131,22 +130,27 @@ router.get('/:id', (req, res) => {
     ORDER BY sn.created_at DESC
   `).all(req.params.id);
 
-  const returnsCount = db.prepare('SELECT COUNT(*) as count FROM returns WHERE company_id = ?').get(req.params.id);
+  // L'entreprise d'un retour se lit par ses articles depuis la migration 037.
+  const returnsCount = db.prepare(
+    `SELECT COUNT(*) as count FROM returns r WHERE ${RETURN_COMPANY_SQL('r.id')} = ?`
+  ).get(req.params.id);
   const central_controllers = getCentralControllers(req.params.id);
-  res.json({ ...company, contacts, projects, orders, tickets, serials, returns_count: returnsCount?.count || 0, central_controllers });
+  res.json({ ...company, contacts, projects, orders, serials, returns_count: returnsCount?.count || 0, central_controllers });
 });
 
 // POST /api/companies
 router.post('/', (req, res) => {
-  const { name, type, lifecycle_phase, phone, email, website, address, city, province, country, notes, currency, language } = req.body;
+  // `type`, `phone` et `website` ne sont plus des colonnes (migration 045) :
+  // un body qui les porte encore est simplement ignoré.
+  const { name, lifecycle_phase, email, address, city, province, country, notes, currency, language } = req.body;
   if (name === undefined || name === null) return res.status(400).json({ error: 'Name is required' });
 
   const id = newRecordId();
   db.prepare(
-    `INSERT INTO companies (id, name, type, lifecycle_phase, phone, email, website, address, city, province, country, notes, currency, language)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, name, type || null, lifecycle_phase || null, phone || null, email || null,
-    website || null, address || null, city || null, province || null, country || 'Canada', notes || null,
+    `INSERT INTO companies (id, name, lifecycle_phase, email, address, city, province, country, notes, currency, language)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(id, name, lifecycle_phase || null, email || null,
+    address || null, city || null, province || null, country || 'Canada', notes || null,
     currency || 'CAD', language || null);
 
   emitCompany('created', id, req.user?.id);
@@ -159,7 +163,7 @@ router.put('/:id', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Company not found' });
 
   const { setClause, values } = buildPartialUpdate(req.body, {
-    allowed: ['name','type','lifecycle_phase','phone','email','website','address','city','province','country','notes','currency','language','is_vendeur_orisha'],
+    allowed: ['name','lifecycle_phase','email','address','city','province','country','notes','currency','language','is_vendeur_orisha'],
     coerce: { is_vendeur_orisha: v => (v === true || v === 1 || v === '1' ? 1 : 0) },
   });
   if (setClause) {
@@ -172,15 +176,15 @@ router.put('/:id', (req, res) => {
 
 // GET /api/companies/:id/returns
 router.get('/:id/returns', (req, res) => {
+  // Plus de contact ni d'entreprise sur le retour lui-même (migration 037) :
+  // l'entreprise vient de ses articles, le contact n'est plus affiché.
   const rows = db.prepare(`
     SELECT r.*,
-           ct.first_name as contact_first_name, ct.last_name as contact_last_name,
            o.order_number,
            (SELECT COUNT(*) FROM return_items ri WHERE ri.return_id = r.id) as items_count
     FROM returns r
-    LEFT JOIN contacts ct ON r.contact = ct.id
     LEFT JOIN orders o ON r.order_id = o.id
-    WHERE r.company_id = ?
+    WHERE ${RETURN_COMPANY_SQL('r.id')} = ?
     ORDER BY r.created_at DESC
   `).all(req.params.id)
   res.json({ data: rows })

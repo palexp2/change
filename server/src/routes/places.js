@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
+import { parseAddressComponents } from '../services/geocode.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -15,29 +16,9 @@ router.use(requireAuth)
 // autocomplete + details en un seul billing event Google.
 const PLACES_BASE = 'https://maps.googleapis.com/maps/api/place'
 
-// Convertit les address_components Google (street_number, route, locality, …)
-// en { line1, city, province, postal_code, country } structurés utilisables
-// par Stripe customer.address et par computeCanadaTaxes.
-// `province` et `country` sont retournés en codes courts (QC, CA) — Google les
-// expose via short_name, c'est aussi ce qu'attend Stripe pour address.state/country.
-function parseAddressComponents(components) {
-  const out = { line1: '', city: '', province: '', postal_code: '', country: '' }
-  let streetNumber = ''
-  let route = ''
-  for (const c of components) {
-    const types = c.types || []
-    if (types.includes('street_number')) streetNumber = c.long_name || ''
-    else if (types.includes('route')) route = c.long_name || ''
-    else if (types.includes('locality')) out.city = c.long_name || ''
-    else if (!out.city && types.includes('sublocality')) out.city = c.long_name || ''
-    else if (!out.city && types.includes('postal_town')) out.city = c.long_name || ''
-    else if (types.includes('administrative_area_level_1')) out.province = c.short_name || ''
-    else if (types.includes('postal_code')) out.postal_code = c.long_name || ''
-    else if (types.includes('country')) out.country = c.short_name || ''
-  }
-  out.line1 = [streetNumber, route].filter(Boolean).join(' ').trim()
-  return out
-}
+// Conversion des address_components Google en { line1, city, province,
+// postal_code, country } : services/geocode.js — partagée avec le confirmateur
+// d'adresses (services/addressConfirm.js).
 
 router.get('/autocomplete', async (req, res) => {
   const key = process.env.GOOGLE_MAPS_API_KEY

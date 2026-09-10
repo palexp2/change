@@ -14,6 +14,10 @@ const VERDICTS = {
     title: 'Novoxpress est en panne (même un payload témoin échoue)',
     cls: 'bg-amber-50 border-amber-200 text-amber-800',
   },
+  dev_unreachable: {
+    title: 'Diagnostic non concluant — env. dev injoignable',
+    cls: 'bg-slate-50 border-slate-200 text-slate-700',
+  },
   carrier_unavailable: {
     title: 'Diagnostic impossible pour ce transporteur',
     cls: 'bg-slate-50 border-slate-200 text-slate-700',

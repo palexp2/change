@@ -20,9 +20,9 @@ function buildParams(kind, values, excludeId) {
   const trim = (s) => (s ?? '').toString().trim()
   const params = {}
   if (kind === 'company') {
+    // Pas de téléphone : une entreprise n'a plus cette colonne.
     if (trim(v.name).length >= 2) params.name = trim(v.name)
     if (trim(v.email)) params.email = trim(v.email)
-    if (trim(v.phone)) params.phone = trim(v.phone)
   } else {
     if (trim(v.first_name) && trim(v.last_name)) {
       params.first_name = trim(v.first_name)
@@ -83,7 +83,7 @@ export function DuplicateWarning({ kind, values, excludeId }) {
                 to={to}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-brand-600 hover:underline font-medium"
+                className="link-record font-medium"
                 onClick={e => e.stopPropagation()}
               >
                 {label || '(sans nom)'}

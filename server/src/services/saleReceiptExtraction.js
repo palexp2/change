@@ -309,14 +309,17 @@ async function callOpenAI(apiKey, messages) {
 }
 
 // Consolidation « article LIA unique » : quand un reçu contient EXACTEMENT UN article
-// dont la description commence par un code LIA (« LIA-1968 … »), les autres lignes
-// (transport, frais de carte, etc.) sont des frais rattachés à cet article — on les
-// fusionne dans la ligne LIA : un seul item, au montant TOTAL des lignes, qui garde la
+// dont la description commence par un code LIA (« LIA-1968 … ») ET que toutes les
+// AUTRES lignes sont des frais rattachés (transport, frais de carte…), on les fusionne
+// dans la ligne LIA : un seul item, au montant TOTAL des lignes, qui garde la
 // description LIA verbatim. Les libellés des lignes de frais sont jetés.
 //
-// On ne touche à RIEN dès qu'il y a PLUSIEURS articles LIA (plusieurs codes/produits) :
-// chaque ligne reste alors distincte. Idem s'il n'y a aucun article LIA ou une seule ligne.
+// On ne touche à RIEN dès qu'il y a PLUSIEURS articles LIA, aucun article LIA, une
+// seule ligne, OU qu'une des autres lignes n'est PAS un frais reconnu (ex. DigiKey
+// LIA-2012 + « HEX STANDOFF M3X0.5 NYLON 11MM » — un second composant, pas un frais :
+// le fusionner effaçait purement et simplement le libellé de cette pièce).
 const LIA_REF = /^\s*lia-\d+/i
+const FEE_LINE = /\b(transport|freight|shipping|frais|surcharge|handling|card\s*fee)\b/i
 
 // Alias de fournisseurs : nom imprimé sur le document → nom canonique à enregistrer.
 // « Groupe Alliances et Privilèges » (marque NovoXpress) correspond au fournisseur
@@ -348,6 +351,8 @@ export function consolidateSoleLiaItem(items) {
   if (list.length <= 1) return list
   const liaItems = list.filter(it => LIA_REF.test(it?.description || ''))
   if (liaItems.length !== 1) return list
+  const others = list.filter(it => it !== liaItems[0])
+  if (!others.every(it => FEE_LINE.test(it?.description || ''))) return list
   const lineAmount = it => Number(it?.total) || (Number(it?.unit_price) * Number(it?.quantity)) || 0
   const total = Math.round(list.reduce((s, it) => s + lineAmount(it), 0) * 100) / 100
   // Le rattachement à l'achat LIA (purchase_id / lia_ref) survit à la fusion : c'est la
@@ -439,14 +444,15 @@ export function reconcileItemsResidual(items, htBase) {
 // de la ligne. C'est mathématiquement équivalent à mettre chaque ligne à l'échelle vers
 // la cible (montant pièces - escompte + transport) : on réutilise rescaleLineAmounts.
 //
-// Portée volontairement limitée : factures de PIÈCES (compte 14000) à PLUSIEURS lignes
-// à comptabiliser (plusieurs pièces/codes LIA distincts). Une facture à UNE seule pièce
-// (une ligne, un code LIA) n'a rien à répartir : tout l'escompte/transport revient de
-// toute façon à cette unique ligne — pas de prorata à faire.
+// S'applique aussi bien aux factures à plusieurs pièces (prorata réel entre lignes)
+// qu'à une facture à UNE seule pièce : dans ce dernier cas rescaleLineAmounts ramène
+// simplement l'unique ligne à la cible (montant pièce - escompte + transport), sans
+// quoi le transport/escompte disparaît (incident Scale Instrument, facture à 1920 $
+// alors que le Grand Total imprimé incluant le fret était 2054,24 $).
 export function reconcileDiscountFreightProrata(items, { discount = 0, freight = 0 } = {}) {
   const list = Array.isArray(items) ? items : []
   const priced = list.filter(it => it && it.total != null)
-  if (priced.length <= 1) return null
+  if (!priced.length) return null
   const disc = round2(Number(discount) || 0)
   const frt = round2(Number(freight) || 0)
   if (!disc && !frt) return null
@@ -595,23 +601,19 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     if (profile) company = profile.name
 
     if (!shipments.length) {
-      // Achats LIA : les lignes qui correspondent à un achat de la table Achats
-      // (même fournisseur, prix/quantité/nom concordants) prennent la description
-      // « LIA-xxxx<TAB>Nom de la pièce » attendue en comptabilité. Les appariements
-      // incertains ne sont PAS écrits ici : ils sont proposés dans la fiche du reçu
-      // (GET /api/sale-receipts/:id/lia-matches). Le fournisseur doit être résolu avant.
-      const linked = autoLinkReceiptItems({
+      // Achats LIA : rattachement d'office des lignes dont l'appariement au moteur de
+      // score (purchaseLiaMatch.js) est jugé certain (SKU/référence fabricant identifiés,
+      // ou concordance monétaire complète). Les suggestions moins sûres restent
+      // affichées sur la ligne du reçu, l'opérateur confirme d'un clic (voir aussi
+      // GET /api/sale-receipts/:id/lia-matches).
+      items = autoLinkReceiptItems({
         items,
         company,
         vendorProfileId: profile?.id || null,
         receiptDate: extracted.receipt_date || null,
         orderDate: extracted.order_date || null,
         excludeReceiptId: saleReceiptId,
-      })
-      items = linked.items
-      if (linked.applied.length) {
-        console.log(`Extraction ${saleReceiptId}: ${linked.applied.length} ligne(s) rattachée(s) à un achat LIA — ${linked.applied.map(a => `${a.lia_ref} (${a.score})`).join(', ')}`)
-      }
+      }).items
       // Fusionne les frais dans la ligne LIA quand il n'y a qu'un seul article LIA.
       items = consolidateSoleLiaItem(items)
       // Crédits de proration imprimés sans signe → passés en négatif pour que la somme
@@ -773,6 +775,23 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       syncReceiptAnomalies(saleReceiptId)
     } catch (e) {
       console.warn(`Anomaly scan ${saleReceiptId}: ${e.message}`)
+    }
+    // Le débit correspondant est peut-être déjà au relevé (facture arrivée
+    // après la sortie d'argent) : on referme la boucle tout de suite plutôt
+    // que d'attendre le prochain import bancaire, qui ne repasse jamais sur
+    // une transaction déjà connue. Best effort — jamais bloquant.
+    try {
+      const { autoMatchReceipt, RECEIPT_BANK_MATCH_AUTOMATION_ID, refreshStatuses } = await import('./bankReconciliation.js')
+      const { isSystemAutomationActive } = await import('./systemAutomations.js')
+      if (isSystemAutomationActive(RECEIPT_BANK_MATCH_AUTOMATION_ID)) {
+        const hit = autoMatchReceipt(saleReceiptId)
+        if (hit?.matched) {
+          refreshStatuses(hit.accountId)
+          console.log(`Extraction ${saleReceiptId}: débit bancaire ${hit.txnId} rattaché automatiquement`)
+        }
+      }
+    } catch (e) {
+      console.warn(`Bank match ${saleReceiptId}: ${e.message}`)
     }
     const updated = fetchSaleReceiptRow(saleReceiptId)
     if (updated) emitEntity('sale_receipt', 'updated', saleReceiptId, updated, userId)

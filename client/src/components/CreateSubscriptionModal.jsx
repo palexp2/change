@@ -422,7 +422,7 @@ function SuccessView({ result, onClose }) {
       {result.hosted_invoice_url && (
         <div className="rounded-lg border border-slate-200 p-3 text-sm">
           <div className="label">Première facture</div>
-          <a href={result.hosted_invoice_url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline break-all font-mono text-xs">{result.hosted_invoice_url}</a>
+          <a href={result.hosted_invoice_url} target="_blank" rel="noreferrer" className="link-record break-all font-mono text-xs">{result.hosted_invoice_url}</a>
         </div>
       )}
       <div className="flex justify-end gap-2">

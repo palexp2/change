@@ -261,7 +261,7 @@ export default function AttachmentPreview({
         <a
           href={url}
           download={downloadName || fileName || true}
-          className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline max-w-full"
+          className="inline-flex items-center gap-1 text-xs link-record max-w-full"
           style={{ width: dims.width }}
           data-testid={`${testId}-download`}
         >

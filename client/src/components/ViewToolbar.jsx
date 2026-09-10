@@ -8,6 +8,7 @@ import { useConfirm } from './ConfirmProvider.jsx'
 import { countFilterRules } from '../lib/tableFilters.js'
 import { FieldTypeIcon } from '../lib/fieldTypeIcons.jsx'
 import { typeLabel, kindLabel } from '../lib/fieldOverrides.jsx'
+import { columnChoiceValues } from '../lib/customFieldDisplay.jsx'
 import { usePeekFieldEdit } from '../lib/detailFieldLayout.jsx'
 import api from '../lib/api.js'
 
@@ -20,7 +21,7 @@ const TOOLTIP_DELAY_MS = 1000
 // montre que son icône ; le libellé n'apparaît qu'après TOOLTIP_DELAY_MS de
 // survol, dans une infobulle rendue en portal (position:fixed) pour ne pas être
 // clippée par les `overflow` du panneau latéral.
-function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn, disabled, compact }) {
+function ToolbarBtn({ icon, label, active, badge, onClick, onHover, dataPanelBtn, disabled, compact }) {
   const btnRef = useRef(null)
   const timerRef = useRef(null)
   const [tip, setTip] = useState(null)
@@ -46,7 +47,7 @@ function ToolbarBtn({ icon, label, active, badge, onClick, dataPanelBtn, disable
       <button
         ref={btnRef}
         onClick={(e) => { hideTip(); if (!disabled) onClick(e) }}
-        onMouseEnter={scheduleTip}
+        onMouseEnter={() => { scheduleTip(); if (!disabled) onHover?.() }}
         onMouseLeave={hideTip}
         onBlur={hideTip}
         disabled={disabled}
@@ -647,7 +648,9 @@ function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onC
             const col = columns.find(c => c.field === field)
             const broken = !!(disabledColumns && disabledColumns.has(field))
             const order = groupOrderArr[idx] || null
-            const hasOpts = Array.isArray(col?.options) && col.options.length > 0
+            const choices = columnChoiceValues(col)
+            const hasOpts = choices.length > 0
+            const byChoices = hasOpts && (order == null || order === 'default' || order === 'default_desc')
             return (
               <div key={`${field}-${idx}`} className="bg-slate-50 border border-slate-200 rounded p-1.5">
                 <div className="flex items-center gap-1">
@@ -688,12 +691,14 @@ function GroupPanel({ columns, groupBy, onChange, groupOrder, setGroupOrder, onC
                 {setGroupOrder && (
                   <div className="flex items-center gap-1 mt-1">
                     {hasOpts && (
+                      // Ordre des choix du champ, et son inverse : re-cliquer le
+                      // bouton actif retourne la liste.
                       <button
-                        onClick={() => setLevelOrder(idx, 'default')}
-                        className={orderBtnCls(order === 'default' || order == null)}
-                        title={`Ordre des options (${col.options.slice(0, 3).join(', ')}${col.options.length > 3 ? '…' : ''})`}
+                        onClick={() => setLevelOrder(idx, order === 'default' || order == null ? 'default_desc' : 'default')}
+                        className={orderBtnCls(byChoices)}
+                        title={`Ordre des choix du champ (${choices.slice(0, 3).join(', ')}${choices.length > 3 ? '…' : ''})`}
                       >
-                        Défaut
+                        {order === 'default_desc' ? <ChevronDown size={10} /> : <ChevronUp size={10} />} Choix
                       </button>
                     )}
                     <button
@@ -826,7 +831,9 @@ export function ViewToolbar({
   disabledColumns = null,
   manageViews = false,
   manageViewsBulkDelete = false,
+  renameOnAddView = true,   // le « + » ouvre aussitôt le renommage, nom par défaut présélectionné (défaut partout ; passer false pour l'inhiber)
   onOpenFieldConfig,        // () => void — ouvre la modale « Configuration des champs » (fournie par DataTable)
+  onPrefetchFieldConfig,    // () => void — précharge ses données au survol du bouton
   onApplyColumnWidths,      // (widths) => void — pousse des largeurs de colonnes dans l'état du DataTable (copie de config d'une vue)
 }) {
   const [openPanel, setOpenPanel] = useState(null)
@@ -870,9 +877,11 @@ export function ViewToolbar({
     const v = views.find(x => x.id === m?.viewId)
     const name = m?.name?.trim()
     setViewMenu(null)
-    if (!v || !name || name === v.label) return
+    // `v` peut manquer sur une vue tout juste créée : la liste des pills se
+    // recharge de façon asynchrone. L'id du menu suffit pour renommer.
+    if (!m?.viewId || !name || name === v?.label) return
     try {
-      await api.views.updatePill(table, v.id, { label: name })
+      await api.views.updatePill(table, m.viewId, { label: name })
       window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
     } catch {}
   }
@@ -960,10 +969,15 @@ export function ViewToolbar({
   // Bouton « + » de la barre des vues (admin) : crée une vue vide et l'active
   // aussitôt. Le renommage / verrouillage / suppression se font ensuite par
   // clic droit sur l'onglet — plus besoin d'une modale « Gérer les vues ».
-  async function createViewInline() {
+  // Avec `renameOnAddView`, on enchaîne directement sur le champ de renommage,
+  // ancré sous le « + », avec le nom provisoire présélectionné : l'utilisateur
+  // tape le vrai nom sans avoir à effacer « Vue N » ni à faire un clic droit.
+  async function createViewInline(e) {
+    const anchor = e?.currentTarget?.getBoundingClientRect?.()
+    const label = `Vue ${views.length + 1}`
     try {
       const pill = await api.views.createPill(table, {
-        label: `Vue ${views.length + 1}`,
+        label,
         color: 'blue',
         filters: [],
         visible_columns: [],
@@ -973,6 +987,17 @@ export function ViewToolbar({
       })
       setActiveViewId?.(pill.id)
       window.dispatchEvent(new CustomEvent('views:updated', { detail: { table } }))
+      if (renameOnAddView && anchor) {
+        setViewMenu({
+          x: Math.max(8, Math.min(anchor.left, window.innerWidth - 232)),
+          y: anchor.bottom + 4,
+          viewId: pill.id,
+          renaming: true,
+          name: pill.label || label,
+          selectName: true,
+          pending: true,
+        })
+      }
     } catch {}
   }
 
@@ -1217,7 +1242,10 @@ export function ViewToolbar({
       {/* Menu contextuel de vue (clic droit sur un onglet, admin only).
           Position fixed → pas clippé par l'overflow-x-auto de la barre. */}
       {viewMenu && (() => {
+        // Vue tout juste créée par le « + » : elle n'est pas encore dans `views`
+        // (rechargement asynchrone), on l'affiche à partir de l'état du menu.
         const v = views.find(x => x.id === viewMenu.viewId)
+          || (viewMenu.pending ? { id: viewMenu.viewId, label: viewMenu.name, locked: false } : null)
         if (!v) return null
         const itemCls = 'flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left'
         const lastView = views.length <= 1
@@ -1243,7 +1271,8 @@ export function ViewToolbar({
                     autoFocus
                     data-testid="view-rename-input"
                     value={viewMenu.name}
-                    onChange={e => setViewMenu(m => ({ ...m, name: e.target.value }))}
+                    onFocus={e => { if (viewMenu.selectName) e.target.select() }}
+                    onChange={e => setViewMenu(m => ({ ...m, name: e.target.value, selectName: false }))}
                     onKeyDown={e => {
                       if (e.key === 'Enter') renameViewFromMenu()
                       if (e.key === 'Escape') setViewMenu(null)
@@ -1427,6 +1456,9 @@ export function ViewToolbar({
               label="Configurer les champs"
               dataPanelBtn="field-config"
               compact={compact}
+              // Survol = les champs Airtable de la table partent en
+              // chargement : la page s'ouvre déjà remplie au clic.
+              onHover={onPrefetchFieldConfig}
               onClick={() => onOpenFieldConfig()}
             />
           )}

@@ -85,3 +85,32 @@ test('restaurer le champ le fait revenir dans le snapshot', () => {
   invalidateColumnsCache()
   assert.ok(colonnes('contacts').has(CIBLE))
 })
+
+// ── Empreinte des champs calculés ────────────────────────────────────────────
+//
+// Changer la DÉFINITION d'un rollup (ou d'une formule) recalcule toutes les
+// lignes sans en modifier aucune : le delta est vide. Sans empreinte dédiée,
+// la signature du snapshot ne bougeait pas et le cache du navigateur gardait
+// les anciennes valeurs — le symptôme : une colonne rollup restée vide.
+test('changer la définition d\'un rollup change l\'empreinte des calculs', () => {
+  db.prepare(`
+    INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind,
+                               rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg)
+    VALUES ('cf-test-rollup', 'contacts', 'Rollup test', 'cf_rollup_test', 'text', 'rollup',
+            'tasks', 'contact_id', 'title', 'ARRAYUNIQUE')
+    ON CONFLICT(erp_table, column_name) DO UPDATE SET kind = excluded.kind
+  `).run()
+  invalidateColumnsCache()
+  const avant = getCachedTableSpec('contacts').computedSignature
+  assert.ok(avant, 'une table à champ calculé porte une empreinte')
+
+  db.prepare(`UPDATE custom_fields SET rollup_agg='COUNT' WHERE id='cf-test-rollup'`).run()
+  invalidateColumnsCache()
+  assert.notEqual(getCachedTableSpec('contacts').computedSignature, avant)
+})
+
+test('sans changement de définition, l\'empreinte est stable', () => {
+  const a = getCachedTableSpec('contacts').computedSignature
+  invalidateColumnsCache()
+  assert.equal(getCachedTableSpec('contacts').computedSignature, a)
+})

@@ -41,6 +41,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS airtable_field_mappings (
 db.exec(`CREATE TABLE IF NOT EXISTS airtable_frozen_columns (
   erp_table TEXT NOT NULL, column_name TEXT NOT NULL, PRIMARY KEY (erp_table, column_name)
 )`)
+// Type Airtable de chaque champ (migration 043) + config du module : c'est de
+// ces deux tables que se déduit « ce champ est une formule dans Airtable ».
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_field_types (
+  base_id TEXT NOT NULL, table_id TEXT NOT NULL, field_name TEXT NOT NULL,
+  field_id TEXT, field_type TEXT NOT NULL,
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  PRIMARY KEY (base_id, table_id, field_name)
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_module_config (
+  module TEXT PRIMARY KEY, base_id TEXT, table_id TEXT, field_map TEXT
+)`)
 
 db.exec(`CREATE TABLE IF NOT EXISTS custom_fields (
   id TEXT PRIMARY KEY,
@@ -56,15 +67,22 @@ db.exec(`CREATE TABLE IF NOT EXISTS custom_fields (
 db.exec(`CREATE TABLE IF NOT EXISTS tickets (
   id TEXT PRIMARY KEY, airtable_id TEXT, titre TEXT
 )`)
+// Lignes de commande : cible du lien « Items commande » des numéros de série,
+// c'est là que l'id Boréal se résout en record id Airtable.
+db.exec(`CREATE TABLE IF NOT EXISTS order_items (
+  id TEXT PRIMARY KEY, airtable_id TEXT
+)`)
 db.exec(`DROP VIEW IF EXISTS tickets_v`)
 db.exec(`CREATE VIEW tickets_v AS SELECT t.*, 'rec' || t.id AS cf_boreal_recordid FROM tickets t`)
 
 const {
   recordWriteback, consumeWritebackEcho,
   setFieldDirection, dynamicFieldDirection, fieldMapDirection, writebackModuleForTable,
-  airtableFieldValue, WRITEBACK_MODULES, buildColumnMap, pushableLinkColumn,
-  pushOnlyColumns,
+  airtableFieldValue, WRITEBACK_MODULES, buildColumnMap, pushableLinkColumn, airtableLinkIds,
+  pushOnlyColumns, isAirtableComputedKey, isDirectionConfigurable,
+  coreDirectionLockReason, resetComputedKeyCache,
 } = await import('./airtableWriteback.js')
+const { rememberAirtableFieldTypes } = await import('./airtableFieldTypes.js')
 
 test('echo reconnu : mêmes valeurs poussées puis reçues → ignoré par le sync', () => {
   recordWriteback('recEchoSame', { Statut: 'Reçu', 'Prix unitaire': 12.5 })
@@ -141,7 +159,10 @@ test('setFieldDirection refuse une clé dyn: sur un module sans write-back', () 
 })
 
 test('setFieldDirection refuse toujours une clé cœur non configurable (skipKeys)', () => {
-  assert.throws(() => setFieldDirection('achats', 'product', 'both'), /ne supporte pas/)
+  // `achats` n'a plus AUCUNE clé cœur (migration 035) : son write-back passe
+  // entièrement par les clés `dyn:`. Le refus se vérifie donc sur les envois,
+  // dont `items` (linked record) reste dans skipKeys.
+  assert.throws(() => setFieldDirection('envois', 'items', 'both'), /ne supporte pas/)
 })
 
 test('writebackModuleForTable : table ERP → clé module write-back', () => {
@@ -252,11 +273,12 @@ function mapShipmentField(column, atName, options) {
     .run(`m-${column}`, `fld${column}`, atName, column, JSON.stringify(options))
 }
 
-test('envois : commande et adresse sont les champs lien déclarés poussables', () => {
+test('envois : commande, adresse et articles expédiés sont les liens poussables', () => {
   assert.equal(pushableLinkColumn('envois', 'order_id'), 'orders')
   assert.equal(pushableLinkColumn('envois', 'address_id'), 'adresses')
-  // Non déclarés : « items expédiés » côté envois, le produit d'un achat.
-  assert.equal(pushableLinkColumn('envois', 'items_expedies'), null)
+  // « items expédiés » : colonne miroir recalculée depuis order_items.shipment_id.
+  assert.equal(pushableLinkColumn('envois', 'items_expedies'), 'order_items')
+  // Non déclaré : le produit d'un achat.
   assert.equal(pushableLinkColumn('achats', 'product_id'), null)
 })
 
@@ -271,8 +293,13 @@ test('envois : les liens déclarés en « both » entrent dans le payload, les a
   const map = buildColumnMap('envois', {})
   assert.equal(map.order_id, 'Commande lié')
   assert.equal(map.address_id, 'Adresse de livraison')
-  // Lien non déclaré : le sens a beau être réglé sur « both », il reste hors payload.
-  assert.equal(map.items_expedies, undefined)
+  assert.equal(map.items_expedies, 'items expédiés')
+})
+
+test('envois : un lien non déclaré reste hors payload même réglé en « both »', () => {
+  mapShipmentField('cf_autre_lien', 'Autre lien', { linked_table_id: 'tblYYY' })
+  setFieldDirection('envois', 'dyn:cf_autre_lien', 'both')
+  assert.equal(buildColumnMap('envois', {}).cf_autre_lien, undefined)
 })
 
 test('envois : un lien déclaré mais réglé en « pull » ne part pas vers Airtable', () => {
@@ -283,6 +310,59 @@ test('envois : un lien déclaré mais réglé en « pull » ne part pas vers Air
   const map = buildColumnMap('envois', {})
   assert.equal(map.order_id, undefined)
   assert.equal(map.address_id, undefined)
+})
+
+// ── Numéros de série : entreprise et items commande sont renvoyables ────────
+
+function mapSerialField(column, atName, options = {}) {
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_mappings
+    (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, options, import_disabled)
+    VALUES (?, 'serials', 'serial_numbers', ?, ?, ?, ?, 0)`)
+    .run(`s-${column}`, `fld${column}`, atName, column, JSON.stringify(options))
+}
+
+test('serials : entreprise, items commande et produit sont les liens poussables', () => {
+  assert.equal(pushableLinkColumn('serials', 'company_id'), 'companies')
+  assert.equal(pushableLinkColumn('serials', 'order_item_id'), 'order_items')
+  assert.equal(pushableLinkColumn('serials', 'product_id'), 'products')
+  // Lien non déclaré : le retour lié reste en import seulement.
+  assert.equal(pushableLinkColumn('serials', 'retour'), null)
+})
+
+test('serials : l’entreprise réglée en « both » entre dans le payload, en « pull » non', () => {
+  mapSerialField('company_id', 'Entreprise de la dernière commande (lien)', { link_target_table: 'companies' })
+  mapSerialField('retour', 'Retour', { linked_table_id: 'tblRetours' })
+
+  setFieldDirection('serials', 'dyn:company_id', 'both')
+  setFieldDirection('serials', 'dyn:retour', 'both')
+  let map = buildColumnMap('serials', {})
+  assert.equal(map.company_id, 'Entreprise de la dernière commande (lien)')
+  // Lien non déclaré poussable : le sens a beau être réglé, il reste hors payload.
+  assert.equal(map.retour, undefined)
+
+  setFieldDirection('serials', 'dyn:company_id', 'pull')
+  map = buildColumnMap('serials', {})
+  assert.equal(map.company_id, undefined)
+})
+
+test('serials : « Items commande » suit le sens choisi et se traduit en record ids', () => {
+  mapSerialField('order_item_id', 'Items commande', { link_target_table: 'order_items' })
+
+  // Défaut d'un mapping dynamique : 'pull' — déclarer le lien n'allume rien.
+  assert.equal(dynamicFieldDirection('serials', 'order_item_id'), 'pull')
+  assert.equal(buildColumnMap('serials', {}).order_item_id, undefined)
+
+  setFieldDirection('serials', 'dyn:order_item_id', 'both')
+  assert.equal(buildColumnMap('serials', {}).order_item_id, 'Items commande')
+
+  // La colonne porte un id Boréal : le write-back envoie [record id Airtable],
+  // et [] quand le numéro de série n'est plus rattaché (= délier côté Airtable).
+  db.prepare(`INSERT OR REPLACE INTO order_items (id, airtable_id) VALUES ('oi-1', 'recOI0000000001')`).run()
+  assert.deepEqual(airtableLinkIds('order_items', 'oi-1'), ['recOI0000000001'])
+  assert.deepEqual(airtableLinkIds('order_items', null), [])
+  // Ligne sans jumeau Airtable : intraduisible → le champ est SAUTÉ, pas effacé.
+  db.prepare(`INSERT OR REPLACE INTO order_items (id, airtable_id) VALUES ('oi-2', NULL)`).run()
+  assert.equal(airtableLinkIds('order_items', 'oi-2'), null)
 })
 
 // ── Champ CALCULÉ de Boréal : mappable, mais en push seulement ───────────────
@@ -328,4 +408,178 @@ test('une colonne PHYSIQUE portée par un champ calculé garde son sens réglabl
   declareTicketFormula('titre', 'lookup')
   assert.equal(pushOnlyColumns('tickets').has('titre'), false)
   db.prepare(`DELETE FROM custom_fields WHERE id='cf-titre'`).run()
+})
+
+// ── Champ CALCULÉ côté AIRTABLE : pas de bidirectionnel ──────────────────────
+//
+// Symétrique du bloc précédent, et c'est l'autre bout du problème : une FORMULE
+// Airtable n'accepte aucune écriture (422). Peu importe ce que Boréal veut
+// pousser, le sens ne peut être que l'import — le sélecteur ne doit pas proposer
+// « Bidirectionnel », l'API doit refuser de l'enregistrer, et le write-back doit
+// écarter le champ de son payload même si un vieux réglage dit le contraire.
+
+function configureBilletsBase() {
+  db.prepare(`INSERT OR REPLACE INTO airtable_module_config (module, base_id, table_id, field_map)
+    VALUES ('billets', 'appTest', 'tblBillets', '{}')`).run()
+}
+
+function declareAirtableFieldType(name, type) {
+  rememberAirtableFieldTypes('appTest', 'tblBillets', [{ id: `fld${name}`, name, type }])
+  resetComputedKeyCache()
+}
+
+function mapTicketField(column, atName, options = {}) {
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_mappings
+    (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, options, import_disabled)
+    VALUES (?, 'billets', 'tickets', ?, ?, ?, ?, 0)`)
+    .run(`m-${column}`, `fld${atName}`, atName, column, JSON.stringify(options))
+  resetComputedKeyCache()
+}
+
+test('billets : une colonne mappée sur une formule Airtable est reconnue comme non écrivable', () => {
+  configureBilletsBase()
+  mapTicketField('titre', 'Titre calculé')
+  declareAirtableFieldType('Titre calculé', 'formula')
+  assert.equal(isAirtableComputedKey('billets', 'dyn:titre'), true)
+})
+
+test('billets : le sens d’une formule Airtable n’est ni configurable ni bidirectionnel', () => {
+  configureBilletsBase()
+  mapTicketField('titre', 'Titre calculé')
+  declareAirtableFieldType('Titre calculé', 'formula')
+  // Un réglage 'both' posé AVANT que le type soit connu ne doit plus s'appliquer.
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_directions (module, field_key, direction)
+    VALUES ('billets', 'dyn:titre', 'both')`).run()
+  assert.equal(dynamicFieldDirection('billets', 'titre'), 'pull')
+  assert.throws(() => setFieldDirection('billets', 'dyn:titre', 'both'), /formule/)
+  assert.throws(() => setFieldDirection('billets', 'dyn:titre', 'push'), /formule/)
+  // L'import, lui, reste parfaitement légitime.
+  assert.equal(setFieldDirection('billets', 'dyn:titre', 'pull'), 'pull')
+})
+
+test('billets : une formule Airtable sort du payload de write-back', () => {
+  configureBilletsBase()
+  mapTicketField('titre', 'Titre calculé')
+  declareAirtableFieldType('Titre calculé', 'formula')
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_directions (module, field_key, direction)
+    VALUES ('billets', 'dyn:titre', 'both')`).run()
+  assert.equal(buildColumnMap('billets', {}).titre, undefined)
+})
+
+test('billets : un champ Airtable ordinaire reste bidirectionnel', () => {
+  configureBilletsBase()
+  mapTicketField('titre', 'Titre libre')
+  declareAirtableFieldType('Titre libre', 'singleLineText')
+  assert.equal(isAirtableComputedKey('billets', 'dyn:titre'), false)
+  assert.equal(setFieldDirection('billets', 'dyn:titre', 'both'), 'both')
+  assert.equal(dynamicFieldDirection('billets', 'titre'), 'both')
+  assert.equal(buildColumnMap('billets', {}).titre, 'Titre libre')
+})
+
+test('rollup, lookup et autoNumber sont logés à la même enseigne que la formule', () => {
+  configureBilletsBase()
+  for (const type of ['rollup', 'lookup', 'multipleLookupValues', 'autoNumber', 'count']) {
+    mapTicketField('titre', 'Champ dérivé')
+    declareAirtableFieldType('Champ dérivé', type)
+    assert.equal(isAirtableComputedKey('billets', 'dyn:titre'), true, `type ${type}`)
+    assert.throws(() => setFieldDirection('billets', 'dyn:titre', 'both'), /formule/, `type ${type}`)
+  }
+})
+
+// Modules encore dotés d'un mapping « cœur » (les projets et les numéros de
+// série, eux, n'en ont plus : leurs clés se règlent dans /champs/:table — cf.
+// retireProjetsCoreFieldMap / retireSerialsCoreFieldMap).
+test('clé CŒUR visant une formule Airtable : verrouillée avec une raison explicite', () => {
+  db.prepare(`INSERT OR REPLACE INTO airtable_module_config (module, base_id, table_id, field_map)
+    VALUES ('paie_items', 'appTest', 'tblPaieItems', ?)`).run(JSON.stringify({ hours: 'Heures calculées' }))
+  rememberAirtableFieldTypes('appTest', 'tblPaieItems', [{ id: 'fldHours', name: 'Heures calculées', type: 'formula' }])
+  resetComputedKeyCache()
+  assert.equal(fieldMapDirection('paie_items', 'hours'), 'pull')
+  assert.equal(isDirectionConfigurable('paie_items', 'hours'), false)
+  assert.equal(coreDirectionLockReason('paie_items', 'hours'), 'airtable_computed')
+})
+
+// ── Retours et articles de retour : bidirectionnel POSSIBLE, jamais d'office ──
+//
+// Ces deux tables étaient purement importées : /champs/retours verrouillait le
+// sens de chaque champ en « Airtable → Boréal », sans recours. Déclarer les
+// modules rend le sens choisissable — et rien de plus, tant que l'utilisateur
+// n'a rien choisi.
+
+test('retours / retour_items : les tables ERP connaissent leur module write-back', () => {
+  assert.equal(writebackModuleForTable('returns'), 'retours')
+  assert.equal(writebackModuleForTable('return_items'), 'retour_items')
+})
+
+test('retours : un champ dynamique part en pull et accepte le bidirectionnel', () => {
+  assert.equal(dynamicFieldDirection('retours', 'cf_statut'), 'pull')
+  assert.equal(setFieldDirection('retours', 'dyn:cf_statut', 'both'), 'both')
+  assert.equal(dynamicFieldDirection('retours', 'cf_statut'), 'both')
+  setFieldDirection('retours', 'dyn:cf_statut', 'pull')
+  assert.equal(dynamicFieldDirection('retours', 'cf_statut'), 'pull')
+})
+
+test('retour_items : les clés scalaires du field_map cœur sont réglables, pas les liens', () => {
+  assert.equal(fieldMapDirection('retour_items', 'action'), 'pull')
+  assert.equal(isDirectionConfigurable('retour_items', 'action'), true)
+  setFieldDirection('retour_items', 'action', 'both')
+  assert.equal(fieldMapDirection('retour_items', 'action'), 'both')
+  setFieldDirection('retour_items', 'action', 'pull')
+
+  // « Produit à envoyer » n'est plus de la partie : colonne droppée (046).
+  for (const link of ['return', 'serial', 'company', 'product_to_receive']) {
+    assert.throws(() => setFieldDirection('retour_items', link, 'both'), /ne supporte pas/, link)
+    assert.equal(fieldMapDirection('retour_items', link), 'pull', link)
+    assert.equal(coreDirectionLockReason('retour_items', link), 'core_skip', link)
+  }
+})
+
+// ── Billet NÉ dans Boréal → jumeau Airtable ──────────────────────────────────
+//
+// Le support travaille encore les billets dans Airtable : un billet ouvert dans
+// Boréal doit y arriver, et RATTACHÉ à son entreprise et à son contact — sans
+// ces deux liens il n'apparaît sur aucune fiche client. Les deux colonnes
+// portent des record ids Airtable bruts (mapping sans table cible), d'où leur
+// déclaration en `linkColumns`.
+
+test('billets : les liens entreprise et contact sont poussables', () => {
+  assert.equal(pushableLinkColumn('billets', 'cf_entreprise'), 'companies')
+  assert.equal(pushableLinkColumn('billets', 'cf_contact'), 'contacts')
+
+  configureBilletsBase()
+  mapTicketField('cf_entreprise', 'Entreprise', { linked_table_id: 'tblCompanies' })
+  declareAirtableFieldType('Entreprise', 'multipleRecordLinks')
+  setFieldDirection('billets', 'dyn:cf_entreprise', 'both')
+  assert.equal(buildColumnMap('billets', {}).cf_entreprise, 'Entreprise')
+})
+
+test('billets : un lien non déclaré reste hors payload', () => {
+  configureBilletsBase()
+  mapTicketField('items_retours', 'Items retours', { linked_table_id: 'tblRetourItems' })
+  declareAirtableFieldType('Items retours', 'multipleRecordLinks')
+  setFieldDirection('billets', 'dyn:items_retours', 'both')
+  assert.equal(buildColumnMap('billets', {}).items_retours, undefined)
+})
+
+test('billets : « Documents » (pièces jointes) reste hors payload même en bidirectionnel', () => {
+  // La colonne ERP ne stocke que des descripteurs locaux, sans URL publique :
+  // l'inclure ferait échouer le POST/PATCH entier en 422.
+  configureBilletsBase()
+  mapTicketField('documents', 'Documents', { format: 'attachment' })
+  declareAirtableFieldType('Documents', 'multipleAttachments')
+  setFieldDirection('billets', 'dyn:documents', 'both')
+  assert.equal(buildColumnMap('billets', {}).documents, undefined)
+})
+
+test('billets : case à cocher et multi-sélection converties avant l’envoi', () => {
+  const cfg = WRITEBACK_MODULES.billets
+  // « Notifications » est une case à cocher Airtable, la colonne ERP du texte.
+  assert.equal(airtableFieldValue(cfg, 'notifications', '1.0'), true)
+  assert.equal(airtableFieldValue(cfg, 'notifications', 1), true)
+  assert.equal(airtableFieldValue(cfg, 'notifications', 0), false)
+  assert.equal(airtableFieldValue(cfg, 'notifications', null), null)
+  // « Mots clés » est un multipleSelects : Airtable attend un tableau.
+  assert.deepEqual(airtableFieldValue(cfg, 'mots_cles', '["app","toit"]'), ['app', 'toit'])
+  assert.deepEqual(airtableFieldValue(cfg, 'mots_cles', 'app, toit'), ['app', 'toit'])
+  assert.equal(airtableFieldValue(cfg, 'mots_cles', null), null)
 })

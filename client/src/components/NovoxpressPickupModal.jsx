@@ -31,8 +31,6 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
   const [pickupDate, setPickupDate] = useState(getDefaultPickupDate)
   const [pickupReadyAt, setPickupReadyAt] = useState('09:00')
   const [pickupReadyUntil, setPickupReadyUntil] = useState('17:00')
-  const [pickupLocation, setPickupLocation] = useState('OutsideDoor')
-  const [pickupInstructions, setPickupInstructions] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [pickupResult, setPickupResult] = useState(null)
@@ -53,8 +51,7 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
       ready_until: { hour: uH, minute: uM },
       quantity: 1,
       weight,
-      pickup_location: pickupLocation,
-      pickup_instructions: pickupInstructions || undefined,
+      pickup_location: 'Office',
     }
   }
 
@@ -134,16 +131,6 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
         <div>
           <label className="label">Prêt jusqu'à</label>
           <input type="time" className="input" value={pickupReadyUntil} onChange={e => setPickupReadyUntil(e.target.value)} />
-        </div>
-        <div className="col-span-2">
-          <label className="label">Emplacement du colis</label>
-          <select className="select" value={pickupLocation} onChange={e => setPickupLocation(e.target.value)}>
-            {PICKUP_LOCATIONS.map(l => <option key={l.value} value={l.value}>{l.label}</option>)}
-          </select>
-        </div>
-        <div className="col-span-2">
-          <label className="label">Instructions (optionnel)</label>
-          <input type="text" className="input" value={pickupInstructions} onChange={e => setPickupInstructions(e.target.value)} />
         </div>
       </div>
       {error && (

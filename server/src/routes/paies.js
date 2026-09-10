@@ -35,16 +35,52 @@ function validateNbHolidayDays(body) {
   return null
 }
 
+// Tous les champs de la table Paies sont des champs personnalisés : les trois
+// agrégats des lignes de paie (# items, heures régulières, montant des heures
+// régulières) sont des ROLLUPS portés par la vue `paies_v`, plus des
+// sous-requêtes recopiées ici. On ne les nomme donc jamais dans le SQL — un
+// champ supprimé depuis /champs/paies sort de la vue. `debited_date`, qui n'est
+// pas un champ de la table, reste calculée à la volée.
 function buildPaieListRow(id) {
   return db.prepare(`
     SELECT p.*,
-      (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id) AS items_count,
-      (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id) AS total_regular_hours,
-      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id) AS total_regular_amount,
       (SELECT MAX(debited_date) FROM paie_items WHERE paie_id = p.id) AS debited_date
     FROM ${readRelation('paies')} p
     WHERE p.id = ?
   `).get(id)
+}
+
+// Colonnes réellement présentes dans la relation de lecture. Sert à ne trier ni
+// filtrer sur un champ que l'utilisateur vient de supprimer (la liste tomberait
+// en « no such column »).
+function paiesColumns() {
+  return new Set(db.prepare(`SELECT * FROM ${readRelation('paies')} LIMIT 0`).columns().map(c => c.name))
+}
+
+// Les rollups comptent TOUTES les lignes d'une paie. Un non-RH ne doit voir que
+// la sienne : on recalcule sa part et on n'écrase que les clés effectivement
+// présentes (le champ correspondant peut avoir été supprimé).
+function scopeAggregatesToEmployee(rows, empId) {
+  if (!rows.length) return rows
+  const ids = rows.map(r => r.id)
+  const mine = db.prepare(`
+    SELECT paie_id,
+           COUNT(*) AS items_count,
+           COALESCE(SUM(regular_hours), 0) AS total_regular_hours,
+           COALESCE(SUM(COALESCE(regular_hours, 0) * COALESCE(hourly_rate, 0)), 0) AS total_regular_amount
+      FROM paie_items
+     WHERE employee_id = ? AND paie_id IN (${ids.map(() => '?').join(',')})
+     GROUP BY paie_id
+  `).all(empId, ...ids)
+  const byPaie = new Map(mine.map(m => [m.paie_id, m]))
+  const empty = { items_count: 0, total_regular_hours: 0, total_regular_amount: 0 }
+  for (const r of rows) {
+    const m = byPaie.get(r.id) || empty
+    for (const key of ['items_count', 'total_regular_hours', 'total_regular_amount']) {
+      if (key in r) r[key] = m[key]
+    }
+  }
+  return rows
 }
 
 const router = Router()
@@ -64,12 +100,16 @@ router.get('/', (req, res) => {
   const empId = hr ? null : myEmployeeId(req.user.id)
   if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
 
+  const cols = paiesColumns()
   const conditions = []
   const params = []
   if (q) {
-    conditions.push('(p.status LIKE ? OR CAST(p.number AS TEXT) LIKE ?)')
+    // Recherche sur les champs encore vivants seulement.
+    const terms = []
     const like = `%${q}%`
-    params.push(like, like)
+    if (cols.has('status')) { terms.push('p.status LIKE ?'); params.push(like) }
+    if (cols.has('number')) { terms.push('CAST(p.number AS TEXT) LIKE ?'); params.push(like) }
+    if (terms.length) conditions.push(`(${terms.join(' OR ')})`)
   }
   if (!hr) {
     conditions.push('EXISTS (SELECT 1 FROM paie_items pi WHERE pi.paie_id = p.id AND pi.employee_id = ?)')
@@ -83,17 +123,17 @@ router.get('/', (req, res) => {
   // limités à leur propre paie_item afin de ne pas exposer les volumes globaux.
   const itemFilter = hr ? '' : 'AND employee_id = ?'
   const itemParams = hr ? [] : [empId]
+  const order = ['period_end DESC', 'number DESC'].filter(o => cols.has(o.split(' ')[0]))
+  const orderBy = order.length ? order.map(o => `p.${o}`).join(', ') : 'p.created_at DESC'
   const rows = db.prepare(`
     SELECT p.*,
-      (SELECT COUNT(*) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS items_count,
-      (SELECT SUM(regular_hours) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_hours,
-      (SELECT SUM(COALESCE(regular_hours,0) * COALESCE(hourly_rate,0)) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS total_regular_amount,
       (SELECT MAX(debited_date) FROM paie_items WHERE paie_id = p.id ${itemFilter}) AS debited_date
     FROM ${readRelation('paies')} p
     ${where}
-    ORDER BY p.period_end DESC, p.number DESC
+    ORDER BY ${orderBy}
     LIMIT ? OFFSET ?
-  `).all(...itemParams, ...itemParams, ...itemParams, ...itemParams, ...params, limitVal, offset)
+  `).all(...itemParams, ...params, limitVal, offset)
+  if (!hr) scopeAggregatesToEmployee(rows, empId)
 
   for (const r of rows) {
     r.salary_purchase_url = r.salary_purchase_id ? qbEntityUrl('expense', r.salary_purchase_id) : null
@@ -117,6 +157,8 @@ router.get('/:id', (req, res) => {
     ORDER BY e.last_name, e.first_name
   `).all(...itemParams)
   if (!hr && items.length === 0) return res.status(403).json({ error: 'Accès refusé' })
+  // La vue porte les agrégats de TOUTE la paie : même règle que la liste.
+  if (!hr) scopeAggregatesToEmployee([row], empId)
   res.json({ ...row, items })
 })
 
@@ -199,7 +241,7 @@ router.post('/', ensureHR, (req, res) => {
   })()
 
   // Import automatique des heures depuis les feuilles de temps.
-  // Pour les employés avec hours_per_week > 0 : garde regular_hours, enregistre le diff en banque.
+  // Pour les employés avec hours_per_week > 0 : garde regular_hours telles quelles.
   // Pour les autres : écrase regular_hours avec les heures payables de la période.
   let importResult = null
   try {
@@ -260,20 +302,7 @@ router.patch('/:id', ensureHR, (req, res) => {
 router.delete('/:id', ensureHR, (req, res) => {
   const existing = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  // hour_bank_entries.paie_id n'a pas de ON DELETE — soft-delete + délier avant
-  // de supprimer la paie pour éviter le FOREIGN KEY constraint failed.
-  const tx = db.transaction((paieId) => {
-    db.prepare(`
-      UPDATE hour_bank_entries
-         SET paie_id = NULL,
-             paie_item_id = NULL,
-             deleted_at = COALESCE(deleted_at, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-       WHERE paie_id = ?
-    `).run(paieId)
-    db.prepare('DELETE FROM paies WHERE id=?').run(paieId)
-  })
-  tx(req.params.id)
+  db.prepare('DELETE FROM paies WHERE id=?').run(req.params.id)
   emitEntity('paie', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })

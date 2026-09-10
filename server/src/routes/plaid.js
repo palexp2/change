@@ -5,13 +5,52 @@
 import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
-import { createLinkToken, exchangePublicToken, listItems, removeItem, resetItemCursor, requestTransactionsRefresh, resolveWebhookItem, verifyWebhook } from '../connectors/plaid.js'
+import { createLinkToken, exchangePublicToken, listItems, probeLiabilities, recordItemIssue, removeItem, resetItemCursor, requestTransactionsRefresh, resolveWebhookItem, verifyWebhook } from '../connectors/plaid.js'
 import { syncPlaidItem, plaidSyncStatus } from '../services/plaidSync.js'
 
 // Webhook PUBLIC — Plaid appelle directement, pas de session utilisateur.
 // Monté séparément dans index.js AVANT express.json() (corps brut requis pour
 // vérifier la signature JWT — voir connectors/plaid.js:verifyWebhook).
 export const plaidWebhookRouter = Router()
+
+// Ce que Plaid nous demande de faire, d'après le type du webhook. Fonction
+// PURE (exportée pour le test) : elle décide, le handler agit.
+//   'sync'   → des transactions ont bougé
+//   'issue'  → la connexion est abîmée, `message` est destiné à l'utilisateur
+//   'clear'  → la connexion est réparée
+//   'ignore' → rien à faire
+//
+// Avant, le handler synchronisait sur N'IMPORTE quel webhook : les webhooks
+// ITEM déclenchaient une sync vouée à échouer et leur message — le seul endroit
+// où Plaid explique que la banque ne répond plus — était perdu.
+export function webhookAction(body) {
+  const type = body?.webhook_type
+  const code = body?.webhook_code
+  // Tous les codes TRANSACTIONS méritent une sync : SYNC_UPDATES_AVAILABLE (le
+  // seul qui arrive, on utilise /transactions/sync) et les codes hérités
+  // INITIAL_UPDATE / HISTORICAL_UPDATE / DEFAULT_UPDATE / TRANSACTIONS_REMOVED.
+  if (type === 'TRANSACTIONS') return { action: 'sync' }
+  if (type === 'ITEM') {
+    switch (code) {
+      case 'ERROR':
+        return { action: 'issue', message: body?.error?.error_message || 'Erreur signalée par Plaid' }
+      case 'PENDING_DISCONNECT':
+      case 'PENDING_EXPIRATION':
+        return { action: 'issue', message: 'Connexion à renouveler : la banque va couper l\u2019accès sous peu.' }
+      case 'USER_PERMISSION_REVOKED':
+      case 'USER_ACCOUNT_REVOKED':
+        return { action: 'issue', message: 'Accès révoqué par le titulaire du compte — reconnexion nécessaire.' }
+      case 'NEW_ACCOUNTS_AVAILABLE':
+        return { action: 'issue', message: 'Un nouveau compte est disponible chez la banque : à mapper.' }
+      case 'LOGIN_REPAIRED':
+        return { action: 'clear' }
+      default:
+        return { action: 'ignore' }
+    }
+  }
+  return { action: 'ignore' }
+}
+
 plaidWebhookRouter.post('/', async (req, res) => {
   try {
     await verifyWebhook({ rawBody: req.rawBody, verificationHeader: req.headers['plaid-verification'] })
@@ -24,8 +63,12 @@ plaidWebhookRouter.post('/', async (req, res) => {
   // Répondre tout de suite : Plaid retente si la réponse tarde, la sync peut
   // prendre plusieurs secondes (pagination /transactions/sync).
   res.status(200).json({ ok: true })
+  const { action, message } = webhookAction(req.body)
   try {
-    await syncPlaidItem(itemId, 'webhook')
+    if (action === 'sync') await syncPlaidItem(itemId, 'webhook')
+    else if (action === 'issue') recordItemIssue(itemId, message)
+    else if (action === 'clear') recordItemIssue(itemId, null)
+    else console.error('plaid webhook: type ignoré —', req.body?.webhook_type, req.body?.webhook_code)
   } catch (e) {
     console.error('plaid webhook sync:', e.message)
   }
@@ -95,6 +138,15 @@ router.post('/items/:itemId/refresh', async (req, res) => {
   }
   const result = await syncPlaidItem(req.params.itemId, 'manual')
   res.json(result)
+})
+
+// Diagnostic ponctuel, pas une fonctionnalité : Liabilities donnerait
+// l'échéance, le solde de relevé et le paiement minimum de la MasterCard, mais
+// il faut l'activer commercialement chez Plaid ET re-consentir chaque item via
+// Link. Cette sonde dit, avant de payer, si la BNC est seulement non consentie
+// ou franchement non couverte au Canada. Lecture seule.
+router.post('/items/:itemId/probe-liabilities', requireAdmin, async (req, res) => {
+  res.json(await probeLiabilities(req.params.itemId))
 })
 
 router.delete('/items/:itemId', requireAdmin, async (req, res) => {

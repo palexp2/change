@@ -163,22 +163,20 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
   const [abonnementsTables, setAbonnementsTables] = useState([])
   const [loadingBases, setLoadingBases] = useState(false)
 
-  // Contacts sync form
+  // Contacts sync form — base et table seulement : le mapping champ par champ
+  // des contacts se règle dans /champs/contacts (le field_map « cœur » du CRM a
+  // été retiré, cf. retireContactsCoreFieldMap côté serveur).
   const [contactsForm, setContactsForm] = useState({
     base_id: contactsSync?.base_id || '',
     contacts_table_id: contactsSync?.contacts_table_id || '',
-    field_map_contacts: contactsSync?.field_map_contacts
-      ? (typeof contactsSync.field_map_contacts === 'string' ? JSON.parse(contactsSync.field_map_contacts) : contactsSync.field_map_contacts)
-      : {},
   })
 
-  // Companies sync form
+  // Companies sync form — base et table seulement : le mapping champ par champ
+  // des entreprises se règle dans /champs/companies (le field_map « cœur » du
+  // CRM a été retiré, cf. retireCompaniesCoreFieldMap côté serveur).
   const [companiesForm, setCompaniesForm] = useState({
     base_id: companiesSync?.base_id || '',
     companies_table_id: companiesSync?.companies_table_id || '',
-    field_map_companies: companiesSync?.field_map_companies
-      ? (typeof companiesSync.field_map_companies === 'string' ? JSON.parse(companiesSync.field_map_companies) : companiesSync.field_map_companies)
-      : {},
   })
 
   const [companiesTables, setCompaniesTables] = useState([])
@@ -426,12 +424,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <BaseSelect testId="contacts-base-select" value={contactsForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setContactsForm(f => ({ ...f, base_id: v, contacts_table_id: '', field_map_contacts: {} }))} />
+            <BaseSelect testId="contacts-base-select" value={contactsForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setContactsForm(f => ({ ...f, base_id: v, contacts_table_id: '' }))} />
           </div>
           {tables.length > 0 && (
             <div>
               <label className="label">Table contacts</label>
-              <TableSelect testId="contacts-table-select" value={contactsForm.contacts_table_id} tables={tables} onChange={v => setContactsForm(f => ({ ...f, contacts_table_id: v, field_map_contacts: {} }))} />
+              <TableSelect testId="contacts-table-select" value={contactsForm.contacts_table_id} tables={tables} onChange={v => setContactsForm(f => ({ ...f, contacts_table_id: v }))} />
             </div>
           )}
           <div className="flex gap-2">
@@ -448,12 +446,12 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
         <div className="space-y-3">
           <div>
             <label className="label">Base Airtable</label>
-            <BaseSelect testId="companies-base-select" value={companiesForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setCompaniesForm(f => ({ ...f, base_id: v, companies_table_id: '', field_map_companies: {} }))} />
+            <BaseSelect testId="companies-base-select" value={companiesForm.base_id} bases={bases} loadingBases={loadingBases} onChange={v => setCompaniesForm(f => ({ ...f, base_id: v, companies_table_id: '' }))} />
           </div>
           {companiesTables.length > 0 && (
             <div>
               <label className="label">Table entreprises</label>
-              <TableSelect testId="companies-table-select" value={companiesForm.companies_table_id} tables={companiesTables} onChange={v => setCompaniesForm(f => ({ ...f, companies_table_id: v, field_map_companies: {} }))} />
+              <TableSelect testId="companies-table-select" value={companiesForm.companies_table_id} tables={companiesTables} onChange={v => setCompaniesForm(f => ({ ...f, companies_table_id: v }))} />
             </div>
           )}
           <div className="flex gap-2">

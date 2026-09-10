@@ -36,8 +36,8 @@ const WIDGET_DEFS = [
   { id: 'section_bank_accounts', label: 'Trésorerie & soldes bancaires', group: 'Comptabilité', slug: 'soldes-bancaires' },
   { id: 'section_deferred_revenue', label: 'Revenus perçus d\'avance', group: 'Comptabilité', slug: 'revenus-percus-avance' },
   { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité', slug: 'bilan' },
-  { id: 'section_tickets_monthly', label: 'Billets par mois',       group: 'Support',       slug: 'billets-par-mois' },
-  { id: 'section_support_weekly', label: 'Billets par semaine',    group: 'Support',       slug: 'billets-par-semaine' },
+  // « Billets par mois » et « Billets par semaine » : retirés avec la date, le
+  // statut et la durée d'un billet (migration 040).
 ]
 
 // Normalise un slug pour un matching tolérant : minuscules + suppression de
@@ -525,191 +525,6 @@ function ProjectsCreatedChart({ data, onMonthClick }) {
   )
 }
 
-function TicketsMonthlyChart({ data }) {
-  const [tooltip, setTooltip] = useState(null)
-  const [metric, setMetric] = useState('count') // 'count' | 'minutes'
-
-  const buckets = {}
-  for (const r of data || []) buckets[r.month] = { count: r.count || 0, minutes: r.minutes || 0 }
-
-  const now = new Date()
-  // Fenêtre glissante : 12 derniers mois finissant par le mois courant
-  const months = []
-  for (let i = 11; i >= 0; i--) {
-    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
-    const y = d.getFullYear()
-    const mIdx = d.getMonth()
-    const key = `${y}-${String(mIdx + 1).padStart(2, '0')}`
-    const prevKey = `${y - 1}-${String(mIdx + 1).padStart(2, '0')}`
-    const curr = buckets[key] || { count: 0, minutes: 0 }
-    const prev = buckets[prevKey] || { count: 0, minutes: 0 }
-    months.push({
-      key, prevKey,
-      label: d.toLocaleDateString('fr-CA', { month: 'short' }),
-      yearLabel: y,
-      prevYearLabel: y - 1,
-      currCount: curr.count, prevCount: prev.count,
-      currMinutes: curr.minutes, prevMinutes: prev.minutes,
-      isCurrentMonth: i === 0,
-    })
-  }
-
-  const valKey = metric === 'count' ? 'currCount' : 'currMinutes'
-  const prevValKey = metric === 'count' ? 'prevCount' : 'prevMinutes'
-
-  const totalCurr = months.reduce((s, m) => s + m[valKey], 0)
-  const totalPrev = months.reduce((s, m) => s + m[prevValKey], 0)
-  const deltaPct = totalPrev > 0 ? Math.round(((totalCurr - totalPrev) / totalPrev) * 100) : null
-
-  const fmtMinutes = mins => {
-    if (!mins) return '0'
-    if (mins < 60) return `${mins}m`
-    const h = Math.floor(mins / 60)
-    const m = mins % 60
-    return m === 0 ? `${h}h` : `${h}h${String(m).padStart(2, '0')}`
-  }
-  const fmtVal = v => metric === 'count' ? String(v) : fmtMinutes(v)
-
-  const maxVal = Math.max(...months.flatMap(m => [m[valKey], m[prevValKey]]), 1)
-
-  const W = 600, H = 180
-  const padL = 40, padR = 8, padT = 12, padB = 28
-  const chartW = W - padL - padR
-  const chartH = H - padT - padB
-  const n = months.length
-  const groupW = chartW / n
-  const barW = Math.max(Math.floor((groupW - 6) / 2), 6)
-
-  const yPos = v => padT + chartH - (v / maxVal) * chartH
-  const groupCenter = i => padL + (i + 0.5) * groupW
-
-  const niceStep = (() => {
-    if (metric === 'count') {
-      if (maxVal <= 4) return 1
-      if (maxVal <= 10) return 2
-      if (maxVal <= 25) return 5
-      return Math.ceil(maxVal / 5)
-    }
-    if (maxVal <= 60) return Math.max(15, Math.ceil(maxVal / 4))
-    if (maxVal <= 240) return 60
-    if (maxVal <= 600) return 120
-    return Math.ceil(maxVal / 5 / 60) * 60
-  })()
-  const gridVals = []
-  for (let v = 0; v <= maxVal; v += niceStep) gridVals.push(v)
-  if (gridVals[gridVals.length - 1] < maxVal) gridVals.push(maxVal)
-
-  const hasAny = totalCurr + totalPrev > 0
-
-  const ToggleButtons = (
-    <div className="inline-flex bg-slate-100 rounded-md p-0.5">
-      <button
-        onClick={() => setMetric('count')}
-        data-testid="tickets-metric-count"
-        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${metric === 'count' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-      >Billets</button>
-      <button
-        onClick={() => setMetric('minutes')}
-        data-testid="tickets-metric-minutes"
-        className={`px-2.5 py-1 rounded text-xs font-medium transition-colors ${metric === 'minutes' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-      >Temps de support</button>
-    </div>
-  )
-
-  if (!hasAny) {
-    return (
-      <div>
-        <div className="flex justify-end mb-3">{ToggleButtons}</div>
-        <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
-          Pas encore de billets
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="relative w-full">
-      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
-        <div className="flex gap-4 text-xs text-slate-500 items-center">
-          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-brand-500" /> 12 derniers mois <span className="font-semibold text-slate-700 ml-1" data-testid="tickets-total-curr">{fmtVal(totalCurr)}</span></span>
-          <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-3 rounded-sm bg-slate-300" /> 12 mois précédents <span className="font-semibold text-slate-700 ml-1" data-testid="tickets-total-prev">{fmtVal(totalPrev)}</span></span>
-          {deltaPct !== null && (
-            <span className={`text-sm font-semibold ${deltaPct >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-              {deltaPct >= 0 ? '+' : ''}{deltaPct}%
-            </span>
-          )}
-        </div>
-        {ToggleButtons}
-      </div>
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 200 }}>
-        {gridVals.map((v, gi) => (
-          <g key={gi}>
-            <line x1={padL} x2={W - padR} y1={yPos(v)} y2={yPos(v)} stroke={v === 0 ? '#cbd5e1' : '#f1f5f9'} strokeWidth={v === 0 ? 0.8 : 1} />
-            <text x={padL - 4} y={yPos(v) + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{metric === 'count' ? v : fmtMinutes(v)}</text>
-          </g>
-        ))}
-        {months.map((m, i) => {
-          const cx = groupCenter(i)
-          const xPrev = cx - barW - 1
-          const xCurr = cx + 1
-          const vCurr = m[valKey]
-          const vPrev = m[prevValKey]
-          const hPrev = (vPrev / maxVal) * chartH
-          const hCurr = (vCurr / maxVal) * chartH
-          const isHovered = tooltip?.i === i
-          const showYear = i === 0 || months[i].yearLabel !== months[i - 1].yearLabel
-          return (
-            <g key={m.key}
-              data-testid={`tickets-month-${m.key}`}
-              onMouseEnter={() => setTooltip({ i, x: cx, m })}
-              onMouseLeave={() => setTooltip(null)}
-            >
-              <rect x={padL + i * groupW} y={0} width={groupW} height={H} fill="transparent" />
-              {vPrev > 0 && (
-                <rect x={xPrev} y={padT + chartH - hPrev} width={barW} height={hPrev} rx="2"
-                  fill={isHovered ? '#94a3b8' : '#cbd5e1'}
-                />
-              )}
-              {vCurr > 0 && (
-                <rect x={xCurr} y={padT + chartH - hCurr} width={barW} height={hCurr} rx="2"
-                  fill={isHovered ? '#1B8E3C' : '#21B14B'}
-                />
-              )}
-              <text x={cx} y={H - 14} textAnchor="middle" fontSize="9" className={m.isCurrentMonth ? 'fill-slate-900' : 'fill-slate-400'} fontWeight={m.isCurrentMonth ? '600' : 'normal'}>{m.label}</text>
-              {showYear && (
-                <text x={cx} y={H - 3} textAnchor="middle" fontSize="8" fill="#cbd5e1">{m.yearLabel}</text>
-              )}
-            </g>
-          )
-        })}
-        {tooltip && (() => {
-          const m = tooltip.m
-          const tx = Math.min(Math.max(tooltip.x, 80), W - 80)
-          const ty = padT + 8
-          const vCurr = m[valKey]
-          const vPrev = m[prevValKey]
-          const delta = vPrev > 0 ? Math.round(((vCurr - vPrev) / vPrev) * 100) : null
-          return (
-            <g pointerEvents="none">
-              <rect x={tx - 80} y={ty - 4} width={160} height={64} rx="5" fill="#1e293b" opacity="0.93" />
-              <text x={tx} y={ty + 9} textAnchor="middle" fontSize="10" fill="#cbd5e1">{m.label} {m.yearLabel}</text>
-              <text x={tx - 70} y={ty + 25} textAnchor="start" fontSize="10" fill="#21B14B">{m.yearLabel}</text>
-              <text x={tx + 70} y={ty + 25} textAnchor="end" fontSize="11" fontWeight="bold" fill="white">{fmtVal(vCurr)}</text>
-              <text x={tx - 70} y={ty + 40} textAnchor="start" fontSize="10" fill="#94a3b8">{m.prevYearLabel}</text>
-              <text x={tx + 70} y={ty + 40} textAnchor="end" fontSize="11" fontWeight="bold" fill="#cbd5e1">{fmtVal(vPrev)}</text>
-              {delta !== null && (
-                <text x={tx} y={ty + 55} textAnchor="middle" fontSize="9" fill={delta >= 0 ? '#4ade80' : '#f87171'}>
-                  {delta >= 0 ? '+' : ''}{delta}% YoY
-                </text>
-              )}
-            </g>
-          )
-        })()}
-      </svg>
-    </div>
-  )
-}
-
 function ClosingRateChart({ data, onMonthClick }) {
   const [tooltip, setTooltip] = useState(null)
   const [activeType, setActiveType] = useState('Tous')
@@ -1103,68 +918,7 @@ function ShippingCostChart({ data }) {
   )
 }
 
-function pct(num, total) {
-  if (!total) return null
-  return Math.round((num / total) * 100)
-}
-
-function PctCell({ value, invert = false }) {
-  if (value === null) return <td className="px-3 py-2.5 text-center text-slate-300 text-sm">—</td>
-  const good = invert ? value <= 20 : value >= 60
-  const warn = invert ? value <= 40 : value >= 30
-  const cls = good ? 'text-green-600 font-semibold' : warn ? 'text-amber-500 font-medium' : 'text-red-500 font-medium'
-  return <td className={`px-3 py-2.5 text-center text-sm tabular-nums ${cls}`}>{value}%</td>
-}
-
-function SupportWeeklyTable({ data }) {
-  if (!data || data.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-24 text-slate-300 text-sm">
-        Pas encore de données
-      </div>
-    )
-  }
-
-  return (
-    <div className="overflow-x-auto">
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="border-b border-slate-100">
-            <th className="px-3 py-2 text-left text-xs font-semibold text-slate-400 uppercase tracking-wide">Semaine</th>
-            <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">Billets</th>
-            <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">Ligne 2</th>
-            <th className="px-3 py-2 text-center text-xs font-semibold text-slate-400 uppercase tracking-wide">&gt; 15 min</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-50">
-          {data.map(row => {
-            const weekDate = new Date(row.week_start + 'T12:00:00')
-            const endDate = new Date(weekDate)
-            endDate.setDate(weekDate.getDate() + 6)
-            const label = weekDate.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' }) +
-              ' – ' + endDate.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
-            const pctIssue = pct(row.with_issue, row.total)
-            const pct15 = pct(row.over_15min, row.total)
-            return (
-              <tr key={row.week_start} className="hover:bg-slate-50 transition-colors">
-                <td className="px-3 py-2.5 text-slate-600 whitespace-nowrap">{label}</td>
-                <td className="px-3 py-2.5 text-center font-semibold text-slate-900 tabular-nums">{row.total}</td>
-                <PctCell value={pctIssue} invert={true} />
-                <PctCell value={pct15} invert={true} />
-              </tr>
-            )
-          })}
-        </tbody>
-      </table>
-      <div className="mt-3 flex flex-wrap gap-4 text-xs text-slate-400 px-3 pb-1">
-        <span><span className="text-green-600 font-semibold">Vert</span> = bon</span>
-        <span><span className="text-amber-500 font-medium">Jaune</span> = à surveiller</span>
-        <span><span className="text-red-500 font-medium">Rouge</span> = à améliorer</span>
-        <span className="ml-auto">Ligne 2 / &gt;15 min : vert si ≤ 20%, rouge si &gt; 40%</span>
-      </div>
-    </div>
-  )
-}
+// `pct` / `PctCell` sont partis avec « Billets par semaine » (migration 040).
 
 function ProfitabilityChart({ data, recentOrders }) {
   const navigate = useNavigate()
@@ -2156,7 +1910,7 @@ export function BankAccountsPanel() {
           <ChevronDown size={14} className={`transition-transform ${detailOpen ? '' : '-rotate-90'}`} />
           Détail des comptes ({shown.length})
         </button>
-        <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
+        <button onClick={() => load({ refresh: true })} className="link-record">Rafraîchir</button>
       </div>
       {detailOpen && (
         <div data-testid="bank-accounts-detail">
@@ -2248,11 +2002,11 @@ export function DeferredRevenuePanel() {
                   <td className="py-1.5 px-3 whitespace-nowrap">{fmtDate(i.paid_at)}</td>
                   <td className="py-1.5 px-3">
                     {i.company_id
-                      ? <Link to={`/companies/${i.company_id}`} className="text-brand-600 hover:underline">{i.company_name || '—'}</Link>
+                      ? <Link to={`/companies/${i.company_id}`} className="link-record">{i.company_name || '—'}</Link>
                       : (i.company_name || '—')}
                   </td>
                   <td className="py-1.5 px-3">
-                    <Link to={`/factures/${i.id}`} className="text-brand-600 hover:underline">{i.document_number || i.id.slice(0, 8)}</Link>
+                    <Link to={`/factures/${i.id}`} className="link-record">{i.document_number || i.id.slice(0, 8)}</Link>
                   </td>
                   <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
                     {fmtMoney(i.amount_native, i.currency)}
@@ -2272,7 +2026,7 @@ export function DeferredRevenuePanel() {
         </div>
       )}
       <div className="flex justify-end mt-2">
-        <button onClick={load} className="text-xs text-brand-600 hover:underline">Rafraîchir</button>
+        <button onClick={load} className="text-xs link-record">Rafraîchir</button>
       </div>
     </div>
   )
@@ -2350,7 +2104,7 @@ function BalanceSheetPanel() {
     <div data-testid="dashboard-balance-sheet">
       <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
         <span>Au {data.as_of ? fmtDate(data.as_of) : '—'} · Devise {data.currency}</span>
-        <button onClick={() => load({ refresh: true })} className="text-brand-600 hover:underline">Rafraîchir</button>
+        <button onClick={() => load({ refresh: true })} className="link-record">Rafraîchir</button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -2621,7 +2375,7 @@ function ProductivityPanel() {
             </button>
           ))}
         </div>
-        <button onClick={() => load({ refresh: 1 })} className="ml-auto text-brand-600 hover:underline">Rafraîchir</button>
+        <button onClick={() => load({ refresh: 1 })} className="ml-auto link-record">Rafraîchir</button>
       </div>
 
       <div className="overflow-x-auto">
@@ -2803,7 +2557,6 @@ export default function Dashboard() {
       if (el) io.observe(el)
     })
     return () => io.disconnect()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading, visibleKey])
 
   // Map id → JSX. L'ordre d'affichage est piloté par `orderedIds`, pas par
@@ -2962,34 +2715,6 @@ export default function Dashboard() {
         description="Rapport BalanceSheet temps réel — méthode Accrual · cliquer sur une section pour la replier"
       >
         <BalanceSheetPanel />
-      </CollapsibleCard>
-    ),
-    section_tickets_monthly: (
-      <CollapsibleCard
-        {...cardProps('section_tickets_monthly')}
-        title="Billets par mois"
-        description="12 derniers mois — comparé au mois correspondant de l'année précédente · Bascule entre nombre de billets et temps de support"
-        action={
-          <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
-            Voir les billets <ArrowRight size={14} />
-          </Link>
-        }
-      >
-        <TicketsMonthlyChart data={data?.ticketsByMonth} />
-      </CollapsibleCard>
-    ),
-    section_support_weekly: (
-      <CollapsibleCard
-        {...cardProps('section_support_weekly')}
-        title="Billets par semaine"
-        description="Indicateurs de support — 16 dernières semaines"
-        action={
-          <Link to="/tickets" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
-            Voir les billets <ArrowRight size={14} />
-          </Link>
-        }
-      >
-        <SupportWeeklyTable data={data?.weeklySupportStats} />
       </CollapsibleCard>
     ),
   }

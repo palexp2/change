@@ -2,6 +2,145 @@
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
     {
+      "date": "2026-09-10",
+      "title": "Courriel de suivi : champ Cci",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le courriel de suivi d'un envoi accepte maintenant des destinataires en copie invisible : « + Cci » à côté de « + Cc ». Les adresses en Cci sont conservées avec l'historique du courriel." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Ramassage : le résultat s'affiche enfin",
+      "category": "Envois",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "La fenêtre de ramassage n'affichait ni succès ni erreur : le rafraîchissement de la fiche la remettait à zéro juste après l'envoi. Idem pour l'achat d'étiquette." },
+        { "type": "fixed", "text": "Un ramassage accepté par Novoxpress sans référence n'apparaissait plus nulle part et le bouton « Demander un ramassage » réapparaissait. La pastille « Planifié » s'affiche désormais dans tous les cas ; l'annulation depuis l'ERP est indiquée comme impossible faute de référence." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "« Demander un ramassage » sur la fiche envoi",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton « Commander un ramassage » s'appelle maintenant « Demander un ramassage » (même libellé sur la fenêtre qui s'ouvre)." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Statut affiché en haut de la fiche commande",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le statut de la commande s'affiche en pastille de couleur tout en haut de la fiche, sous son titre. Il reste visible même si le statut a été replié dans la liste des champs." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Cocher le prélèvement des produits sans numéro de série",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "En mode expédition, un article dont le produit n'a pas de numéro de série affiche une grande case à cocher : on le prélève d'un clic, sans rien scanner. La case se décoche pour revenir en arrière, et l'indice en haut de la section dit « Cochez pour prélever » au lieu de « Scannez »." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Numéro de série saisi à la main",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un champ de saisie à côté du pictogramme de code-barres permet de taper un numéro de série au clavier, sans pistolet : même effet qu'un scan (prélèvement en mode expédition, liaison de la série à l'article en vue commerciale). Disponible en haut du mode expédition et au-dessus des articles." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Prélèvement sans emplacement",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "L'emplacement du produit ne s'affiche plus dans le mode expédition d'une commande. Les étagères neufs / reconditionnés restent affichées." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "L'étiquette achetée se répercute sur Airtable",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Après l'achat d'une étiquette, le numéro de suivi et le transporteur repartent vers la fiche Airtable de l'envoi." },
+        { "type": "fixed", "text": "Les articles de la commande apparaissent enfin dans « items expédiés » de l'envoi sur Airtable — à l'achat de l'étiquette, à la création de l'envoi et quand on ajoute ou retire un article." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Expédition d'un trait : envoi, étiquette, impression, ramassage",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Créer un envoi ouvre aussitôt sa fiche et la fenêtre d'achat d'étiquette." },
+        { "type": "new", "text": "L'étiquette achetée s'affiche pour impression, puis le bouton « Imprimer » enchaîne sur la demande de ramassage." },
+        { "type": "improved", "text": "La commande reste ouverte dessous : fermer le panneau y ramène." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Adresses de livraison et de ferme confirmées auprès de Google",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Une adresse de livraison ou de ferme est désormais confirmée auprès du service d'adresses de Google au moment où on l'enregistre : si l'écriture officielle diffère, elle est proposée avec un bouton « Utiliser » ; sinon on garde sa saisie." },
+        { "type": "new", "text": "Une adresse que Google ne trouve pas est signalée sur la fiche adresse et dans la liste des adresses de l'entreprise, avant qu'un colis ne parte." },
+        { "type": "new", "text": "Même confirmation dans le formulaire de découverte rempli par le client : son adresse de ferme et son adresse de livraison sont vérifiées à la saisie, avec la version officielle proposée en un clic." },
+        { "type": "improved", "text": "Les adresses arrivées par un autre chemin (import, appel de qualification) sont confirmées en tâche de fond ; les adresses de facturation ne le sont pas. Réglable dans Automations." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Prélèvement lisible à 20 pieds",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "L'article à prélever s'affiche en très gros : nom, quantité, emplacement et image prennent toute la largeur de l'écran, pour être lus de l'autre bout de l'atelier." },
+        { "type": "new", "text": "Bouton plein écran dans la barre d'avancement du prélèvement : l'écran ne garde que l'article à prendre, encore plus gros." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Ramassage : « No shipment is exist » corrigé",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Le ramassage échouait avec « No shipment is exist with this shipment ID » : le numéro d'expédition Novoxpress était enregistré avec un « .0 » de trop et n'était plus reconnu. Les envois déjà touchés ont été réparés — le ramassage repart sans racheter d'étiquette." },
+        { "type": "improved", "text": "Si Novoxpress ne reconnaît vraiment pas l'expédition, le message le dit en clair au lieu du texte brut de leur API." },
+        { "type": "fixed", "text": "Le diagnostic n'annonce plus « Novoxpress est en panne » quand c'est en fait son propre accès à leur environnement de test qui est expiré." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Demande de ramassage simplifiée",
+      "category": "Envois",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La demande de ramassage ne demande plus l'emplacement du colis ni les instructions : l'emplacement est toujours « Bureau ». Il ne reste que la date et la fenêtre horaire." }
+      ]
+    },
+    {
+      "date": "2026-09-10",
+      "title": "Scan d'expédition : contrôles sur les numéros de série",
+      "category": "Envois",
+      "requester": "Charles Rousseau",
+      "changes": [
+        { "type": "improved", "text": "Le numéro de série scanné se rattache à la première ligne non complète du produit ; une fois cette ligne remplie, le scan suivant passe à la ligne suivante du même produit." },
+        { "type": "new", "text": "Scan refusé si la série n'est pas en stock (statut autre que « Disponible - Vente » ou « Disponible - Location »)." },
+        { "type": "new", "text": "Scan refusé si l'adresse de la série est déjà utilisée chez ce client ou ailleurs dans la commande en cours." },
+        { "type": "new", "text": "Sur une commande d'achat, scanner une série « Disponible - Location » demande une confirmation avant de la prélever. L'inverse (neuf sur un abonnement) passe sans question." }
+      ]
+    },
+    {
       "date": "2026-09-06",
       "title": "Modifier le système : choisir la portée d'un changement",
       "category": "Général",

@@ -470,3 +470,93 @@ export function autoMatchAccount(accountId) {
   }
   return { scanned: txns.length, matched }
 }
+
+// ── Sens inverse : une facture cherche son débit ─────────────────────────────
+//
+// autoMatchAccount() part du relevé et cherche le document. Il ne se déclenche
+// qu'à l'arrivée de transactions bancaires — une facture extraite APRÈS le
+// débit (courrier Gmail, dépôt manuel, portail fournisseur) n'était donc jamais
+// rattachée toute seule : la ligne restait « à traiter » alors que la pièce
+// dormait dans l'ERP. Cette fonction referme la boucle depuis l'autre bout.
+//
+// La barre est la même que dans l'autre sens (findCandidates, ≥ 0.8, sans
+// ex æquo) : concrètement, le libellé du relevé doit reconnaître le
+// fournisseur. Un montant identique ne suffit jamais.
+export const RECEIPT_BANK_MATCH_AUTOMATION_ID = 'sys_receipt_bank_match'
+
+export function autoMatchReceipt(receiptId) {
+  const receipt = db.prepare(`
+    SELECT id, receipt_date, total, currency, status
+    FROM sale_receipts WHERE id=? AND deleted_at IS NULL
+  `).get(receiptId)
+  if (!receipt || receipt.status !== 'done') return null
+  if (!receipt.receipt_date || !Number.isFinite(receipt.total) || Math.abs(receipt.total) < 0.011) return null
+
+  // Déjà rattachée (à la main ou par une tournée précédente) : on ne touche pas.
+  const already = db.prepare(`
+    SELECT id FROM bank_transactions
+    WHERE matched_type='receipt' AND matched_id=? AND deleted_at IS NULL
+  `).get(String(receipt.id))
+  if (already) return null
+
+  invalidateVendorProfilesCache()
+  // Le débit suit la facture, jamais l'inverse de beaucoup : même fenêtre que
+  // findCandidates. La devise du compte doit être celle de la facture — sinon
+  // 100 USD s'apparierait à un débit de 100 CAD (le vrai débit d'une facture
+  // USD porte le montant converti, c'est le terrain de bank_charged_total,
+  // décision humaine).
+  const from = shiftDate(receipt.receipt_date, -DATE_WINDOW_DAYS)
+  const to = shiftDate(receipt.receipt_date, DATE_WINDOW_DAYS)
+  const txns = db.prepare(`
+    SELECT t.* FROM bank_transactions t
+    JOIN bank_accounts a ON a.id = t.account_id
+    WHERE t.deleted_at IS NULL AND t.matched_id IS NULL AND t.transfer_txn_id IS NULL
+      AND t.status = 'a_traiter' AND t.amount < 0
+      AND COALESCE(t.pending, 0) = 0
+      AND ABS(ABS(t.amount) - ?) < ?
+      AND t.txn_date BETWEEN ? AND ?
+      AND (? IS NULL OR a.currency = ?)
+  `).all(Math.abs(receipt.total), 0.011, from, to, receipt.currency || null, receipt.currency || null)
+  if (!txns.length) return { scanned: 0, matched: 0 }
+
+  // Une transaction n'est retenue que si CETTE facture est son meilleur
+  // candidat — pas seulement un candidat possible.
+  const eligible = []
+  for (const txn of txns) {
+    const candidates = findCandidates(txn)
+    const best = candidates[0]
+    if (!best || best.type !== 'receipt' || String(best.id) !== String(receipt.id)) continue
+    if (best.confidence < 0.8) continue
+    if (candidates[1] && candidates[1].confidence >= best.confidence - 0.05) continue
+    eligible.push({ txn, confidence: best.confidence })
+  }
+  // Deux débits du même montant chez le même fournisseur : on ne devine pas
+  // lequel porte cette facture-là.
+  if (eligible.length !== 1) return { scanned: txns.length, matched: 0, ambiguous: eligible.length > 1 }
+
+  const { txn, confidence } = eligible[0]
+  const isPlaidAccount = !!db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=?').get(txn.account_id)?.plaid_account_id
+  const status = deriveStatus({ ...txn, matched_type: 'receipt', matched_id: String(receipt.id) }, { isPlaidAccount })
+  db.prepare(`
+    UPDATE bank_transactions
+    SET matched_type='receipt', matched_id=?, match_method='auto', match_confidence=?,
+        status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id=?
+  `).run(String(receipt.id), confidence, status, txn.id)
+  return { scanned: txns.length, matched: 1, txnId: txn.id, accountId: txn.account_id, confidence }
+}
+
+// Transaction bancaire portant le débit d'un document — lue depuis la fiche du
+// document (« où est passé l'argent ? »), sens inverse du lien matched_id.
+export function bankTxnForDocument(matchedType, matchedId) {
+  if (!matchedId) return null
+  return db.prepare(`
+    SELECT t.id, t.txn_date, t.amount, t.status, t.match_method, t.match_confidence,
+           COALESCE(NULLIF(t.details, ''), t.description) AS label,
+           t.account_id, a.name AS account_name, a.currency AS account_currency
+    FROM bank_transactions t
+    JOIN bank_accounts a ON a.id = t.account_id
+    WHERE t.matched_type=? AND t.matched_id=? AND t.deleted_at IS NULL
+    ORDER BY t.txn_date DESC LIMIT 1
+  `).get(matchedType, String(matchedId)) || null
+}

@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useState, useEffect, useMemo, useRef } from 'react'
+import { useSearchParams, useLocation, useNavigate, useHref } from 'react-router-dom'
 import api from './api.js'
 import { useAuth } from './auth.jsx'
 import { applyFilter, applyFilterGroup } from './tableFilters.js'
+import { usePeekFieldEdit } from './detailFieldLayout.jsx'
+import { getSubsections } from './navSubsections.js'
 
 export { applyFilter, applyFilterGroup }
 
@@ -36,6 +38,19 @@ export function applySort(data, sorts, colTypes = {}) {
     }
     return 0
   })
+}
+
+// ── Propriétaire de `?vue=<id>` ─────────────────────────────────────────────
+// La vue active est écrite dans l'URL pour qu'un lien copié rouvre la même vue.
+// Un seul tableau par page peut le faire : les tableaux d'une fiche (panneau
+// latéral) n'y touchent jamais, et entre plusieurs tableaux de page c'est le
+// premier monté qui prend la main — sauf si la route déclare son tableau
+// principal dans NAV_SUBSECTIONS.
+let urlViewOwner = null
+
+function mainViewTableFor(pathname) {
+  const desc = getSubsections(pathname)
+  return desc?.kind === 'views' ? desc.table : null
 }
 
 export function useTableView({ table, columns, data, searchFields = [], forceAllView = false }) {
@@ -125,13 +140,58 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
 
   // `?vue=<id>` qui change alors que la table est déjà montée (clic dans le
   // sous-menu de la sidebar depuis la page elle-même) : on suit l'URL.
+  // On ne réagit qu'à un VRAI changement du paramètre : changer de vue réécrit
+  // `views` (identité neuve), ce qui rejouait cet effet avec l'ancien id encore
+  // dans l'URL — la vue qu'on venait de choisir était aussitôt annulée.
   const askedViewId = searchParams.get('vue')
+  const prevAskedViewId = useRef(askedViewId)
   useEffect(() => {
+    const changed = askedViewId !== prevAskedViewId.current
+    prevAskedViewId.current = askedViewId
+    if (!changed) return
     if (!askedViewId || askedViewId === activeViewId) return
     if (!views.some(v => v.id === askedViewId)) return
     setActiveViewId(askedViewId)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [askedViewId, views])
+
+  // L'inverse : la vue active s'écrit dans l'URL (remplacement, pas d'entrée
+  // d'historique), pour que l'adresse affichée soit partageable telle quelle.
+  const inPeek = !!usePeekFieldEdit()
+  const { pathname, search: locationSearch } = useLocation()
+  const mainTable = mainViewTableFor(pathname)
+  const canOwnUrl = !!table && !forceAllView && !inPeek && (!mainTable || mainTable === table)
+  const ownerToken = useRef(null)
+  if (ownerToken.current === null) ownerToken.current = {}
+  // Adresse réelle de la page courante (basename compris) pour ce `pathname`.
+  // Quand une fiche est ouverte par-dessus (/commandes/<id>), App.jsx rend la
+  // liste de fond avec une location FIGÉE sur la liste : sans cette
+  // comparaison, la liste réécrirait l'adresse de la fiche et la refermerait.
+  const routerHref = useHref(pathname)
+  const navigate = useNavigate()
+  const navigateRef = useRef(navigate)
+  navigateRef.current = navigate
+
+  useEffect(() => () => { if (urlViewOwner === ownerToken.current) urlViewOwner = null }, [])
+
+  useEffect(() => {
+    if (!canOwnUrl || !configReady) return
+    if (urlViewOwner === null) urlViewOwner = ownerToken.current
+    if (urlViewOwner !== ownerToken.current) return
+    const strip = p => p.replace(/\/+$/, '')
+    if (strip(window.location.pathname) !== strip(routerHref)) return
+    const params = new URLSearchParams(locationSearch)
+    const wanted = activeViewId ? String(activeViewId) : null
+    if (params.get('vue') === wanted) return
+    if (wanted) params.set('vue', wanted)
+    else params.delete('vue')
+    const qs = params.toString()
+    // `pathname` explicite (donc absolu) : `setSearchParams` / un `navigate`
+    // relatif se résoudrait sur la route MONTÉE et non sur l'URL courante —
+    // sur /commandes/<id>, la liste de fond aurait réécrit l'adresse en
+    // /commandes, refermant la fiche.
+    navigateRef.current({ pathname, search: qs ? `?${qs}` : '' }, { replace: true })
+  }, [canOwnUrl, configReady, activeViewId, pathname, locationSearch, routerHref])
 
   const activeView = activeViewId === null ? null : (views.find(v => v.id === activeViewId) || null)
 

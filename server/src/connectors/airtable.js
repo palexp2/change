@@ -178,6 +178,15 @@ export async function getBaseTablesCached(baseId) {
   return entry.inflight
 }
 
+// Oublie les métadonnées mémorisées d'une base (toutes si `baseId` est absent).
+// Sert le « Rafraîchir » des sélecteurs de champ Airtable : un champ créé ou
+// renommé à l'instant dans Airtable doit apparaître tout de suite, sans
+// attendre les 60 s de fraîcheur ni un redémarrage du serveur.
+export function invalidateBaseTables(baseId) {
+  if (baseId) baseTablesCache.delete(baseId)
+  else baseTablesCache.clear()
+}
+
 export async function airtableFetch(path, accessToken, retries = 3, timeoutMs = AIRTABLE_FETCH_TIMEOUT_MS) {
   for (let attempt = 0; attempt <= retries; attempt++) {
     const controller = new AbortController()

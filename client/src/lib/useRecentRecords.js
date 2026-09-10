@@ -69,7 +69,9 @@ export function labelFor(table, record) {
     case 'factures':
       return record.document_number ? `${record.document_number}` : firstOf(record, ['invoice_id'])
     case 'returns':
-      return record.n_de_retour ? `#${record.n_de_retour}` : firstOf(record, ['autonumber'])
+      // `n_de_retour` a été droppé (migration serveur 037) : il ne reste que
+      // l'autonumber Airtable quand il a été adopté depuis /champs/retours.
+      return firstOf(record, ['autonumber'])
     case 'shipments':
       // Le « # d'envoi » (ENV-1687) nomme l'envoi partout dans l'app ; le no de
       // suivi n'est qu'un repli pour un envoi pas encore numéroté.
@@ -81,9 +83,11 @@ export function labelFor(table, record) {
     case 'serial_numbers':
       return firstOf(record, ['serial'])
     case 'tickets':
-      return firstOf(record, ['title'])
+      // `title` a été droppée (migration 040) : un billet n'a plus de libellé
+      // propre, seuls ses champs personnalisés peuvent en tenir lieu.
+      return firstOf(record, ['titre'])
     case 'purchases':
-      return firstOf(record, ['nom_de_la_piece', 'reference', 'numero_de_commande'])
+      return firstOf(record, ['nom_de_la_piece', 'numero_de_commande', 'at_id'])
     case 'sale_receipts':
       return firstOf(record, ['receipt_number', 'company', 'original_name'])
     default:
@@ -98,12 +102,12 @@ function subFor(table, record) {
     const co = record.company_id ? getRecord('companies', record.company_id) : null
     return co?.name || record.email || ''
   }
-  if (table === 'orders' || table === 'returns' || table === 'factures' || table === 'tickets') {
+  if (table === 'orders' || table === 'factures') {
     const co = record.company_id ? getRecord('companies', record.company_id) : null
     return co?.name || ''
   }
   if (table === 'products' || table === 'serial_numbers') return firstOf(record, ['sku'])
-  if (table === 'purchases') return firstOf(record, ['supplier', 'fournisseur'])
+  if (table === 'purchases') return firstOf(record, ['supplier_vendor_name', 'fournisseur'])
   if (table === 'sale_receipts') return firstOf(record, ['company'])
   return ''
 }

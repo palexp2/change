@@ -22,7 +22,17 @@ const PORTAL_ID = 'qb-select-portal'
 //  - renderOption(opt)     : JSX custom dans la liste (sinon getOptionLabel).
 //  - renderValue(opt)      : JSX custom sur le bouton fermé (sinon getOptionLabel).
 //  - filterOption(opt, q)  : filtre custom (q déjà en minuscules).
+//  - onSearchTerm(q)       : VARIANTE « liste servie » — le terme saisi est remonté
+//                            (débounce 200 ms, plus à l'ouverture) et c'est à
+//                            l'appelant de renvoyer les `options` correspondantes.
+//                            Le filtrage local est alors désactivé : re-filtrer
+//                            retirerait des résultats que la source a jugés bons
+//                            (ex. une fiche trouvée par le nom de son entreprise).
+//                            Pour les listes qu'on ne peut pas charger en entier.
 //  - emptyOption           : libellé d'une entrée « vide » (value '') ajoutée en tête.
+//  - footer                : JSX épinglé sous la liste, dans le menu ouvert (le
+//                            clic n'y sélectionne rien et ne referme pas — ex. le
+//                            « Rafraîchir » des champs Airtable).
 //  - className             : classes du bouton déclencheur. Défaut: ancien look QB.
 //  - size                  : 'xs' | 'sm' — taille typographique du menu. Défaut 'xs'.
 //  - disabled              : bool.
@@ -37,7 +47,9 @@ export function SearchableSelect({
   renderOption,
   renderValue,
   filterOption,
+  onSearchTerm,
   emptyOption,
+  footer,
   className = 'input-field text-xs w-full',
   size = 'xs',
   disabled = false,
@@ -65,12 +77,25 @@ export function SearchableSelect({
     return typeof l === 'string' || typeof l === 'number' ? String(l) : undefined
   }
 
+  // Liste servie par l'appelant : la recherche part à la source, pas en local.
+  const remoteSearch = typeof onSearchTerm === 'function'
+  // Le callback est tenu dans une ref : passé en fonction inline (le cas normal),
+  // son identité change à chaque rendu — dans les deps de l'effet, chaque
+  // réponse relancerait une requête, en boucle.
+  const searchCb = useRef(onSearchTerm)
+  useEffect(() => { searchCb.current = onSearchTerm })
+  useEffect(() => {
+    if (!remoteSearch || !open) return
+    const t = setTimeout(() => searchCb.current?.(search.trim()), 200)
+    return () => clearTimeout(t)
+  }, [search, open, remoteSearch])
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q) return options
+    if (!q || remoteSearch) return options
     const match = filterOption || ((o, query) => String(getOptionLabel(o) ?? '').toLowerCase().includes(query))
     return options.filter(o => match(o, q))
-  }, [options, search, filterOption, getOptionLabel])
+  }, [options, search, filterOption, getOptionLabel, remoteSearch])
 
   const computePos = useCallback(() => {
     const rect = btnRef.current?.getBoundingClientRect()
@@ -208,6 +233,9 @@ export function SearchableSelect({
               )
             })}
           </div>
+          {footer && (
+            <div className="border-t border-slate-100 p-1 flex-shrink-0">{footer}</div>
+          )}
         </div>,
         document.body
       )}

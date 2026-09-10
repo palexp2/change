@@ -1,6 +1,8 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { RefreshCw, AlertCircle, CheckCircle2, Sparkles, ArrowLeft, ArrowRight, ArrowLeftRight } from 'lucide-react'
 import api from '../lib/api.js'
+import { readStale, writeStale, pruneStale } from '../lib/swr.js'
+import { RefreshFieldsButton, refreshAirtableSchema, useRefreshFields } from './AirtableRefreshFields.jsx'
 import { Modal } from './Modal.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { SyncDetails } from './SyncDetails.jsx'
@@ -70,6 +72,11 @@ export function directionLockTitle(reason, moduleLabel) {
     return `Import seulement — ce module${moduleLabel ? ` (${moduleLabel})` : ''} ne supporte pas encore la réécriture vers Airtable`
   }
   if (reason === 'link_field') return 'Les champs lien ne sont pas réécrits vers Airtable'
+  // Formule (ou rollup, lookup, autoNumber…) côté Airtable : Airtable rejette
+  // tout PATCH dessus, donc ni « Bidirectionnel » ni « Boréal → Airtable ».
+  if (reason === 'airtable_computed') {
+    return 'Champ calculé dans Airtable (formule, rollup, lookup…) : Airtable en refuse toute modification — import seulement'
+  }
   if (reason === 'computed_push_only') {
     return 'Champ calculé dans Boréal — poussé vers Airtable, jamais importé'
   }
@@ -160,29 +167,64 @@ export function DirectionControl({ module, fieldKey, direction, configurable, ma
 // /champs/:table, qui fusionne ces mêmes champs dans son tableau unique.
 // `module` peut être null (table sans mapping cœur fusionnable) : rien n'est
 // chargé et `data` reste null.
+// Mapping « cœur » persisté, comme le mapping-data des champs dynamiques : au
+// retour sur la page, les cellules « Champ Airtable » s'affichent remplies dès
+// le premier rendu, le serveur ne fait que confirmer derrière.
+function coreMapCacheKey(module) {
+  return `connectors:airtable-core-map:${module}`
+}
+
 export function useCoreMap(module, onSaved) {
-  const [data, setData] = useState(null)
+  const stale = module ? readStale(coreMapCacheKey(module)) : null
+  const [data, setData] = useState(stale)
   const [loadError, setLoadError] = useState('')
-  const [draft, setDraft] = useState({})
-  const [dirs, setDirs] = useState({})
+  const [draft, setDraft] = useState(() => ({ ...(stale?.field_map || {}) }))
+  const [dirs, setDirs] = useState(
+    () => Object.fromEntries((stale?.fields || []).map(f => [f.key, f.direction]))
+  )
   const [resyncAfter, setResyncAfter] = useState(true)
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [savedMsg, setSavedMsg] = useState('')
 
-  useEffect(() => {
-    if (!module) { setData(null); return }
-    let alive = true
-    api.airtable.moduleCoreMap(module)
+  // `moduleRef` : garde contre la réponse d'un module qu'on a quitté entre-temps
+  // (l'ancien effet le faisait avec un drapeau `alive` ; `load` est maintenant
+  // rappelable à la demande par « Rafraîchir »).
+  const moduleRef = useRef(module)
+  useEffect(() => { moduleRef.current = module }, [module])
+  const load = useCallback(() => {
+    if (!module) { setData(null); return Promise.resolve() }
+    return api.airtable.moduleCoreMap(module)
       .then(d => {
-        if (!alive) return
+        if (moduleRef.current !== module) return
+        setLoadError('')
         setData(d)
         setDraft({ ...d.field_map })
         setDirs(Object.fromEntries(d.fields.map(f => [f.key, f.direction])))
+        writeStale(coreMapCacheKey(module), d)
+        pruneStale('connectors:airtable-core-map:', 4)
       })
-      .catch(e => alive && setLoadError(e.message))
-    return () => { alive = false }
+      .catch(e => { if (moduleRef.current === module) setLoadError(e.message) })
   }, [module])
+
+  // Changement de module : on repart de SON dernier état connu (sinon les
+  // cellules afficheraient un instant le mapping du module précédent).
+  useEffect(() => {
+    const known = module ? readStale(coreMapCacheKey(module)) : null
+    setData(known)
+    setDraft({ ...(known?.field_map || {}) })
+    setDirs(Object.fromEntries((known?.fields || []).map(f => [f.key, f.direction])))
+    load()
+  }, [module, load])
+
+  // « Rafraîchir » du bas du sélecteur de champ : le serveur oublie les
+  // métadonnées Airtable mémorisées, puis on relit — un champ créé à l'instant
+  // dans la table apparaît dans la liste.
+  const refreshFields = useCallback(async () => {
+    if (!module) return
+    await refreshAirtableSchema(module)
+    await load()
+  }, [module, load])
 
   // Choix du sens de sync d'un champ — autosave immédiat (revert visuel si échec).
   async function changeDirection(fieldKey, direction) {
@@ -266,14 +308,16 @@ export function useCoreMap(module, onSaved) {
   return {
     data, loadError, draft, setDraft, dirs, changeDirection, dirty, options,
     save, saveField, saving, saveError, savedMsg, setSavedMsg, resyncAfter, setResyncAfter,
+    reload: load, refreshFields,
   }
 }
 
 // Cellule « champ Airtable » d'une clé cœur : picker recherchable + alerte si le
 // champ mappé n'existe plus côté Airtable + suggestion par nom. Partagée entre
 // le panneau ci-dessous et le tableau des champs de /champs/:table.
-export function CoreFieldPicker({ module, field, value, onChange, options, suggestion }) {
+export function CoreFieldPicker({ module, field, value, onChange, options, suggestion, onRefresh }) {
   const current = options.find(o => o.name === value)
+  const refresh = useRefreshFields(onRefresh)
   return (
     <>
       <SearchableSelect
@@ -288,7 +332,15 @@ export function CoreFieldPicker({ module, field, value, onChange, options, sugge
         emptyOption={field.required ? undefined : '— Non mappé —'}
         searchPlaceholder="Rechercher un champ…"
         testId={`coremap-${module}-${field.key}`}
+        footer={onRefresh ? (
+          <RefreshFieldsButton
+            onClick={refresh.run}
+            refreshing={refresh.refreshing}
+            testId={`coremap-${module}-${field.key}-refresh`}
+          />
+        ) : undefined}
       />
+      {refresh.error && <p className="text-[11px] text-red-600 mt-0.5">{refresh.error}</p>}
       {current?.missing && (
         <p className="text-[11px] text-red-600 mt-0.5 flex items-center gap-1">
           <AlertCircle size={11} /> Champ absent de la table Airtable — le sync ne remplira rien.
@@ -352,7 +404,7 @@ export function CoreMapSaveBar({ module, core }) {
 // Airtable au-dessus du tableau des champs).
 export function CoreMapPane({ module, onSaved, showSync = true }) {
   const core = useCoreMap(module, onSaved)
-  const { data, loadError, draft, setDraft, dirs, changeDirection, options, setSavedMsg } = core
+  const { data, loadError, draft, setDraft, dirs, changeDirection, options, setSavedMsg, refreshFields } = core
 
   // Détails de sync de la table ERP alimentée par ce module — affichés en
   // tête du panneau, y compris pendant le chargement et en cas d'erreur.
@@ -442,6 +494,7 @@ export function CoreMapPane({ module, onSaved, showSync = true }) {
                   onChange={v => { setDraft(d => ({ ...d, [f.key]: v })); setSavedMsg('') }}
                   options={options}
                   suggestion={data.suggested[f.key]}
+                  onRefresh={refreshFields}
                 />
               </div>
             </div>

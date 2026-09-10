@@ -14,6 +14,7 @@
 // services Airtable/QB/Gmail — donc la couverture est exhaustive par
 // construction.
 
+import { createHash } from 'crypto'
 import db from './database.js'
 import { isSnapshotKept } from './snapshotFields.js'
 
@@ -37,15 +38,14 @@ export const CACHED_TABLES = [
   { name: 'orders',                   idColumn: 'id', exclude: [] },
   { name: 'order_items',              idColumn: 'id', exclude: [] },
   { name: 'factures',                 idColumn: 'id', exclude: [] },
-  { name: 'tickets',                  idColumn: 'id', exclude: ['description', 'response'] },
+  { name: 'tickets',                  idColumn: 'id', exclude: [] },
   { name: 'tasks',                    idColumn: 'id', exclude: [] },
   { name: 'shipments',                idColumn: 'id', exclude: [] },
   { name: 'adresses',                 idColumn: 'id', exclude: [], client: false },
   { name: 'employees',                idColumn: 'id', exclude: [] },
   { name: 'vacations',                idColumn: 'id', exclude: [] },
-  { name: 'paies',                    idColumn: 'id', exclude: ['csv'] },
+  { name: 'paies',                    idColumn: 'id', exclude: [] },
   { name: 'timesheets',               idColumn: 'id', exclude: [] },
-  { name: 'hour_bank',                idColumn: 'id', exclude: [] },
   { name: 'serial_numbers',           idColumn: 'id', exclude: [] },
   { name: 'stock_movements',          idColumn: 'id', exclude: [], client: false },
   { name: 'returns',                  idColumn: 'id', exclude: [] },
@@ -187,8 +187,41 @@ export function droppedFieldColumns(tableName, idColumn = 'id') {
   return out
 }
 
+// Empreinte, par table, de la DÉFINITION de ses champs calculés (formule,
+// lookup, rollup, lien…). Elle entre dans la signature du snapshot (voir
+// routes/bootstrap.js) pour couvrir le seul cas que la liste des colonnes ne
+// voit pas : la définition change, le nom de la colonne non. Convertir un champ
+// de donnée en rollup, corriger une formule ou repointer un lookup recalcule
+// TOUTES les lignes sans en modifier aucune — le delta est vide et le cache du
+// navigateur gardait les anciennes valeurs (souvent vides) jusqu'au prochain
+// bootstrap complet, c'est-à-dire jamais.
+export function computedFieldSignatures() {
+  const parts = new Map()
+  try {
+    const rows = db.prepare(`
+      SELECT erp_table, column_name, kind, type, result_type, formula_expr,
+             lookup_fk, lookup_target_table, lookup_target_column,
+             rollup_target_table, rollup_target_fk, rollup_target_column, rollup_agg,
+             link_target_table, link_group_id, link_role, view_error
+        FROM custom_fields
+       WHERE deleted_at IS NULL AND kind IS NOT NULL AND kind <> 'data'
+       ORDER BY erp_table, column_name
+    `).all()
+    for (const { erp_table: table, ...def } of rows) {
+      if (!parts.has(table)) parts.set(table, [])
+      parts.get(table).push(JSON.stringify(def))
+    }
+  } catch { /* custom_fields absente (install neuve) */ }
+  const out = {}
+  for (const [table, defs] of parts) {
+    out[table] = createHash('sha1').update(defs.join('|')).digest('hex').slice(0, 12)
+  }
+  return out
+}
+
 function buildColumnsCache() {
   const cache = {}
+  const computed = computedFieldSignatures()
   for (const t of CACHED_TABLES) {
     // `client: false` : journalisée pour les watchers, jamais envoyée au navigateur.
     if (t.client === false) continue
@@ -206,6 +239,10 @@ function buildColumnsCache() {
       relation,
       columns: allowed,
       selectClause: allowed.map(c => `"${c}"`).join(', '),
+      // Empreinte des définitions calculées : entre dans la signature du
+      // snapshot pour forcer un re-bootstrap quand un rollup/une formule change
+      // sans que le nom de la colonne bouge.
+      computedSignature: computed[t.name] || '',
       // Le cache client représente l'état *vivant*. Les tables à soft-delete
       // (deleted_at) doivent donc exclure les records supprimés du snapshot et
       // les émettre comme tombstones (delete) dans le delta — voir bootstrap.js.

@@ -1,170 +1,71 @@
-import { useState, useEffect, useMemo } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { Plus, LifeBuoy, Star } from 'lucide-react'
+import { Plus, LifeBuoy } from 'lucide-react'
 import api from '../lib/api.js'
-import { useAuth } from '../lib/auth.jsx'
-import { useTable } from '../lib/dataStore.js'
 import { useListData } from '../lib/useListData.js'
-import { ListPage, FilterBanner } from '../components/ListPage.jsx'
-import { Badge, ticketStatusColor } from '../components/Badge.jsx'
+import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { RatingStars } from '../components/RatingStars.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { fmtDate } from '../lib/formatDate.js'
-import { contactsForCompany } from '../lib/contactCompanies'
 import TicketDetail from './TicketDetail.jsx'
 
-import { fmtDurationMinutes as fmtDuration } from '../lib/duration.js'
-
+// Titre, question, réponse, type, statut, durée, date, entreprise et contact ont
+// été droppés (migration 040) : les colonnes d'un billet viennent maintenant de
+// ses champs personnalisés, réglés depuis /champs/tickets.
 const RENDERS = {
-  title: row => <div className="font-medium text-slate-900">{row.title}</div>,
-  contact_name: row => {
-    if (!row.contact_name) return null
-    return row.contact_id
-      ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.contact_name}</Link>
-      : <span className="text-slate-400">{row.contact_name}</span>
-  },
-  status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
-  type: row => row.type ? <Badge color="gray">{row.type}</Badge> : null,
-  duration_minutes: row => <span className="text-slate-500">{fmtDuration(row.duration_minutes)}</span>,
-  created_at: row => row.created_at ? <span className="text-slate-500 text-sm">{fmtDate(row.created_at)}</span> : null,
   // Sondage envoyé mais sans réponse : un tiret plutôt que rien, pour
   // distinguer « en attente » de « jamais sollicité » (colonne vide).
   survey_rating: row => {
     if (!row.survey_rating) return row.survey_sent_at ? <span className="text-slate-300 text-sm">—</span> : null
-    return (
-      <span className="inline-flex items-center gap-1 text-sm" title={`${row.survey_rating}/5`}>
-        <Star size={13} className="text-amber-400" fill="currentColor" strokeWidth={1.5} />
-        <span className="text-slate-700 tabular-nums">{row.survey_rating}</span>
-      </span>
-    )
+    return <RatingStars value={row.survey_rating} />
   },
 }
 
 const COLUMNS = TABLE_COLUMN_META.tickets.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
 
-// Champs proposés par le formulaire « Nouveau billet » — liste calquée sur ce
-// que POST /api/tickets persiste (voir RecordForm.jsx pour la configuration).
-function ticketFormFields({ meta, companies, contacts, users, defaultAssignedTo }) {
-  return [
-    { field: 'title', label: 'Titre', span: 2 },
-    { field: 'type', label: 'Type', type: 'select', options: meta.types || [], searchable: true, testId: 'ticket-form-type' },
-    { field: 'status', label: 'Statut', type: 'select', options: meta.statuses || [], defaultValue: 'Waiting on us', searchable: true, testId: 'ticket-form-status' },
-    {
-      field: 'company_id', label: 'Entreprise',
-      input: ({ value, setValues }) => (
-        <LinkedRecordField
-          name="ticket_company_id"
-          value={value}
-          options={companies}
-          labelFn={c => c.name}
-          // Changer d'entreprise invalide le contact déjà choisi (il n'appartient
-          // plus forcément à la nouvelle entreprise).
-          onChange={v => setValues(f => ({ ...f, company_id: v, contact_id: '' }))}
-        />
-      ),
-    },
-    {
-      field: 'contact_id', label: 'Contact',
-      input: ({ value, onChange, values }) => (
-        <LinkedRecordField
-          name="ticket_contact_id"
-          value={value}
-          options={contactsForCompany(contacts, values.company_id)}
-          labelFn={c => `${c.first_name || ''} ${c.last_name || ''}`.trim()}
-          onChange={onChange}
-        />
-      ),
-    },
-    {
-      field: 'assigned_to', label: 'Assigné à', defaultValue: defaultAssignedTo,
-      input: ({ value, onChange }) => (
-        <LinkedRecordField
-          name="ticket_assigned_to"
-          value={value}
-          options={users}
-          labelFn={u => u.name}
-          onChange={onChange}
-        />
-      ),
-    },
-    { field: 'duration_minutes', label: 'Durée (minutes)', type: 'number', min: '0', defaultValue: 0 },
-    { field: 'description', label: 'Question', type: 'textarea', span: 2 },
-    // Masqué par défaut — disponible via « Modifier le formulaire ».
-    { field: 'response', label: 'Réponse', type: 'textarea', span: 2, visible: false },
-  ]
-}
+// Champs proposés par le formulaire « Nouveau billet ». Les champs de la table
+// arrivent du catalogue du registre via `includeAllFields`, et POST /api/tickets
+// sait les persister (voir RecordForm.jsx pour la configuration).
+//
+// « Assigné à » n'est plus déclaré ici : le champ codé en dur (`assigned_to`,
+// FK vers `users`) doublait celui de /champs/tickets et a été droppé (migration
+// 048). Le survivant vient du catalogue comme les autres — posable dans le
+// formulaire dès que son sens de sync cesse d'être « import » seul.
+//
+// L'entreprise et le contact du billet sont déclarés ici : ce sont des champs
+// lien du registre, posés visibles d'emblée (`catalog: true` = la page ne fait
+// que régler leur affichage, leur nature vient du registre). Ce sont les
+// colonnes que le write-back nomme déjà (WRITEBACK_MODULES.billets.linkColumns)
+// : un billet ouvert ici arrive ainsi dans Airtable rattaché à la fiche du
+// client. Supprimer l'un des deux le retire du formulaire, sans rien casser.
+const FORM_FIELDS = [
+  { field: 'cf_entreprise', catalog: true, visible: true },
+  { field: 'cf_contact', catalog: true, visible: true },
+]
 
 export default function Tickets() {
-  const { user } = useAuth()
-  const [meta, setMeta] = useState({ types: [], statuses: [] })
-  const [searchParams, setSearchParams] = useSearchParams()
-  // Filtre temporaire posé par un clic sur une barre du graphique « Billets de
-  // support » (vue globale du dashboard) : 'YYYY-MM'.
-  const createdMonth = searchParams.get('createdMonth')
-
-  const { rows: ticketsRaw, loading, reload } = useListData({ table: 'tickets' })
-  const companies = useTable('companies')
-  const contacts = useTable('contacts')
-  const users = useTable('users')
-
-  const tickets = useMemo(() => {
-    const cById = new Map(companies.map(c => [c.id, c.name]))
-    const ctById = new Map(contacts.map(c => [c.id, `${c.first_name || ''} ${c.last_name || ''}`.trim()]))
-    const uById = new Map(users.map(u => [u.id, u.name]))
-    return ticketsRaw.map(r => ({
-      ...r,
-      company_name: cById.get(r.company_id) || r.company_name,
-      contact_name: ctById.get(r.contact_id) || r.contact_name,
-      assigned_name: uById.get(r.assigned_to) || r.assigned_name,
-    }))
-  }, [ticketsRaw, companies, contacts, users])
-
-  // Même bucketing que le graphique du dashboard : mois UTC de `created_at`.
-  const displayedTickets = useMemo(() => {
-    if (!createdMonth) return tickets
-    return tickets.filter(t => String(t.created_at || '').slice(0, 7) === createdMonth)
-  }, [tickets, createdMonth])
-
-  useEffect(() => {
-    api.tickets.meta().then(setMeta).catch(() => {})
-  }, [])
+  const { rows: tickets, loading, reload } = useListData({ table: 'tickets' })
 
   async function handleCreate(form) { await api.tickets.create(form); await reload() }
-
-  const formFields = useMemo(
-    () => ticketFormFields({ meta, companies, contacts, users, defaultAssignedTo: user?.id || '' }),
-    [meta, companies, contacts, users, user?.id],
-  )
 
   return (
     <ListPage
       title="Billets"
-      create={{ label: 'Nouveau billet', table: 'tickets', fields: formFields, columns: 2, size: 'lg', onSubmit: handleCreate }}
-      banner={createdMonth && (
-        <FilterBanner onClear={() => setSearchParams({})} testId="tickets-created-month-filter">
-          Billets créés en {new Date(`${createdMonth}-15T12:00:00Z`).toLocaleDateString('fr-CA', { month: 'long', year: 'numeric', timeZone: 'UTC' })}
-          {' '}({displayedTickets.length})
-        </FilterBanner>
-      )}
+      create={{ label: 'Nouveau billet', table: 'tickets', fields: FORM_FIELDS, includeAllFields: true, columns: 2, size: 'lg', onSubmit: handleCreate }}
     >
       {({ openCreate }) => (
         <DataTable
           table="tickets"
           manageViews
           columns={COLUMNS}
-          data={displayedTickets}
+          data={tickets}
           loading={loading}
-          forceAllView={!!createdMonth}
           peek={{
-            title: row => row.title || 'Billet',
-            subtitle: row => row.company_name || row.contact_name || '',
+            title: () => 'Billet',
             to: row => `/tickets/${row.id}`,
             width: 720,
             render: (row, { close }) => <TicketDetail recordId={row.id} embedded onClose={close} />,
           }}
-          searchFields={['title', 'company_name', 'contact_name', 'assigned_name']}
-          emptyState={{ icon: LifeBuoy, title: 'Aucun ticket', description: "Aucune demande de support n'est ouverte. Crée un ticket pour suivre une demande client.", cta: { label: 'Nouveau ticket', icon: Plus, onClick: openCreate } }}
+          searchFields={['assigned_name']}
+          emptyState={{ icon: LifeBuoy, title: 'Aucun billet', description: "Aucune demande de support n'est ouverte. Crée un billet pour suivre une demande client.", cta: { label: 'Nouveau billet', icon: Plus, onClick: openCreate } }}
         />
       )}
     </ListPage>

@@ -23,13 +23,15 @@ export function normalizePhone(s) {
   return digits.slice(-10);
 }
 
-const COMPANY_COLS = 'id, name, email, phone, city, province, lifecycle_phase';
+// `companies.phone` a été droppée (migration 045) : une entreprise ne se
+// rapproche plus que par son nom et son courriel. Les contacts, eux, gardent
+// leur téléphone et leur cellulaire.
+const COMPANY_COLS = 'id, name, email, city, province, lifecycle_phase';
 
-export function findCompanyDuplicates(db, { name, email, phone, excludeId } = {}) {
+export function findCompanyDuplicates(db, { name, email, excludeId } = {}) {
   const nName = normalizeName(name);
   const nEmail = normalizeEmail(email);
-  const nPhone = normalizePhone(phone);
-  if (!nName && !nEmail && !nPhone) return [];
+  if (!nName && !nEmail) return [];
 
   const byId = new Map();
   const add = (row, reason) => {
@@ -51,15 +53,6 @@ export function findCompanyDuplicates(db, { name, email, phone, excludeId } = {}
        WHERE deleted_at IS NULL AND email IS NOT NULL AND lower(trim(email)) = ?`
     ).all(nEmail).forEach(r => add(r, 'email'));
   }
-  if (nPhone) {
-    // Le téléphone est stocké formaté (parenthèses, tirets, espaces) — on
-    // normalise en JS plutôt que dans SQL.
-    db.prepare(
-      `SELECT ${COMPANY_COLS} FROM companies
-       WHERE deleted_at IS NULL AND phone IS NOT NULL AND phone != ''`
-    ).all().forEach(r => { if (normalizePhone(r.phone) === nPhone) add(r, 'phone'); });
-  }
-
   return [...byId.values()].slice(0, 10);
 }
 

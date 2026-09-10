@@ -11,6 +11,7 @@ router.use(requireAuth)
 const UNDOABLE_TABLES = new Set([
   'companies', 'contacts', 'orders', 'products', 'shipments', 'returns',
   'projects', 'assemblages', 'tasks', 'interactions', 'serial_numbers',
+  'ops_issues',
 ])
 
 router.post('/:table/:id', (req, res) => {

@@ -64,7 +64,11 @@ export function InlineUrl({ value, saving, onSave, testId }) {
   )
 }
 
-export function InlineTextarea({ value, saving, onSave, testId }) {
+// Texte long : la zone est TOUJOURS un rectangle blanc encadré, même vide et
+// même quand le champ n'a jamais été rempli — c'est ce cadre qui dit à
+// l'utilisateur que le champ se modifie sur place. Elle grandit avec le
+// contenu, sans jamais descendre sous `minRows` lignes.
+export function InlineTextarea({ value, saving, onSave, testId, minRows = 2 }) {
   const [local, setLocal] = useState(value ?? '')
   const ref = useRef(null)
   useEffect(() => { setLocal(value ?? '') }, [value])
@@ -82,7 +86,11 @@ export function InlineTextarea({ value, saving, onSave, testId }) {
       onChange={e => setLocal(e.target.value)}
       onBlur={e => { if (e.target.value !== (value ?? '')) onSave(e.target.value) }}
       className="input text-sm w-full resize-none overflow-hidden"
-      rows={1}
+      // `min-height` l'emporte sur la hauteur calculée par l'auto-agrandissement :
+      // le cadre garde sa taille de rectangle quel que soit le contenu.
+      // (interligne text-sm 20 px + padding vertical de .input)
+      style={{ minHeight: `${18 + minRows * 20}px` }}
+      rows={minRows}
       disabled={saving}
       data-testid={testId}
     />

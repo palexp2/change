@@ -66,15 +66,19 @@ import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import Employees from './pages/Employees.jsx'
 import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
 import CodesActivite from './pages/CodesActivite.jsx'
-import BanqueHeures from './pages/BanqueHeures.jsx'
 import Paies from './pages/Paies.jsx'
 import Contacts from './pages/Contacts.jsx'
 import Companies from './pages/Companies.jsx'
+import ContactDetailPage from './pages/ContactDetailPage.jsx'
+import CompanyDetailPage from './pages/CompanyDetailPage.jsx'
+import OrderDetailPage from './pages/OrderDetailPage.jsx'
 import StripePayouts from './pages/StripePayouts.jsx'
 import CustomerPostPayment from './pages/CustomerPostPayment.jsx'
 import TicketSurvey from './pages/TicketSurvey.jsx'
 import DiscoveryForms from './pages/DiscoveryForms.jsx'
+import DiscoveryFormEditor from './pages/DiscoveryFormEditor.jsx'
 import PublicFiles from './pages/PublicFiles.jsx'
+import OpsIssues from './pages/OpsIssues.jsx'
 import Parametres, { AdminRedirect } from './pages/Parametres.jsx'
 import ActivityFeed from './pages/ActivityFeed.jsx'
 import Changelog from './pages/Changelog.jsx'
@@ -207,11 +211,16 @@ function AppRoutes() {
       <Route path="/airtable/fields/:module" element={<ProtectedRoute adminOnly><AirtableFieldsRedirect /></ProtectedRoute>} />
       <Route path="/champs/:table" element={<ProtectedRoute><FieldConfig /></ProtectedRoute>} />
       <Route path="/orders" element={<ProtectedRoute><Orders /></ProtectedRoute>} />
+      {/* Fiche commande : pleine page, comme contact et entreprise — pas de
+          panneau latéral (voir recordPeekRoutes.jsx). */}
+      <Route path="/orders/:id" element={<ProtectedRoute><OrderDetailPage /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
       <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
       <Route path="/qualification-call" element={<ProtectedRoute><QualificationCall /></ProtectedRoute>} />
       <Route path="/discovery-forms" element={<ProtectedRoute><DiscoveryForms /></ProtectedRoute>} />
+      {/* Hors /discovery-forms/:id — les fiches passent par recordPeekRoutes. */}
+      <Route path="/discovery-form-editor" element={<ProtectedRoute><DiscoveryFormEditor /></ProtectedRoute>} />
       <Route path="/tickets" element={<ProtectedRoute><Tickets /></ProtectedRoute>} />
       <Route path="/interactions" element={<ProtectedRoute><Interactions /></ProtectedRoute>} />
       <Route path="/connectors" element={<ProtectedRoute><Connectors /></ProtectedRoute>} />
@@ -262,15 +271,19 @@ function AppRoutes() {
       <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
       <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />
-      <Route path="/banque-heures" element={<ProtectedRoute><BanqueHeures /></ProtectedRoute>} />
       <Route path="/paies" element={<ProtectedRoute><Paies /></ProtectedRoute>} />
       <Route path="/contacts" element={<ProtectedRoute><Contacts /></ProtectedRoute>} />
+      {/* Fiches contact/entreprise : pleine page, pas de panneau latéral — seule
+          exception au registre recordPeekRoutes.jsx (voir son commentaire). */}
+      <Route path="/contacts/:id" element={<ProtectedRoute><ContactDetailPage /></ProtectedRoute>} />
       <Route path="/companies" element={<ProtectedRoute><Companies /></ProtectedRoute>} />
+      <Route path="/companies/:id" element={<ProtectedRoute><CompanyDetailPage /></ProtectedRoute>} />
       {/* L'admin est devenu la partie « Administration » des Paramètres. */}
       <Route path="/admin" element={<AdminRedirect />} />
       <Route path="/admin/:tab" element={<AdminRedirect />} />
 
       <Route path="/public-files" element={<ProtectedRoute><PublicFiles /></ProtectedRoute>} />
+      <Route path="/problemes-operations" element={<ProtectedRoute><OpsIssues /></ProtectedRoute>} />
       <Route path="/activity" element={<ProtectedRoute adminOnly><ActivityFeed /></ProtectedRoute>} />
       <Route path="/parametres" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />
       <Route path="/parametres/:section" element={<ProtectedRoute><Parametres /></ProtectedRoute>} />

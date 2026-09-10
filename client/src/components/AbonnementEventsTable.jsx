@@ -69,7 +69,7 @@ export function AbonnementEventsTable({
       ? <Badge color={CATEGORY_COLORS[row.category] || 'gray'}>{CATEGORY_LABELS[row.category] || row.category}</Badge>
       : <span className="text-slate-400">—</span>,
     company_name: row => row.company_id
-      ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name || '—'}</Link>
+      ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name || '—'}</Link>
       : <span className="text-slate-400">—</span>,
     subscription_link: row => row.subscription_id
       ? (
@@ -78,7 +78,7 @@ export function AbonnementEventsTable({
           data-testid={`abo-event-open-${row.id}`}
           onClick={e => { e.stopPropagation(); openAbo(row.subscription_id) }}
           disabled={loadingAboId === row.subscription_id}
-          className="text-brand-600 hover:underline font-mono text-xs disabled:opacity-50"
+          className="link-record font-mono text-xs disabled:opacity-50"
         >
           {row.stripe_subscription_id || row.subscription_id.slice(0, 8)}
         </button>

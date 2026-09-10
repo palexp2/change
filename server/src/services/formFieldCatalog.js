@@ -1,6 +1,7 @@
 import db from '../db/database.js'
 import { isColumnWritable } from './customFieldWritability.js'
 import { writebackModuleForTable } from './airtableWriteback.js'
+import { buildAirtableTableToErp } from './airtableTableMap.js'
 
 // ── Catalogue des champs proposables au formulaire de création ───────────────
 //
@@ -17,9 +18,12 @@ import { writebackModuleForTable } from './airtableWriteback.js'
 //   • champs auto — Autonumber, Record ID, date de création / de modification ;
 //   • pièces jointes (`options.format = 'attachment'`) : la colonne stocke des
 //     URL de fichiers, pas une valeur qu'on tape ;
-//   • champs lien : la colonne stocke des identifiants d'enregistrement, la
-//     saisie passe par un picker dédié (règle CLAUDE.md des champs référence),
-//     pas par une zone de texte ;
+//   • champs lien dont la table visée est INCONNUE : la colonne stocke des
+//     identifiants d'enregistrement, sans table cible aucun picker n'est
+//     possible et une zone de texte demanderait de taper un `recXXX` à la main.
+//     Ceux dont la cible est connue sont au contraire proposés, en type
+//     `record_link` : le formulaire les rend avec le même picker recherchable
+//     que la fiche (règle CLAUDE.md des champs référence) ;
 //   • champs virtuels de l'ERP (formule / lookup / rollup / bouton / liaison) —
 //     seul `kind='data'` est une vraie colonne saisissable.
 //
@@ -51,6 +55,11 @@ function controlType(row, defOptions) {
   if (t === 'checkbox') return 'checkbox'
   if (t === 'date') return 'date'
   if (t === 'number') return defOptions?.format === 'currency' ? 'currency' : 'number'
+  // Pourcentage : on saisit le nombre de pourcents, d'où un contrôle numérique
+  // ordinaire (le « % » et la barre sont des rendus de lecture).
+  if (t === 'percent') return 'number'
+  // Évaluation : une note se donne en étoiles, pas au clavier.
+  if (t === 'rating') return 'rating'
   if (t === 'url') return 'url'
   if (defOptions?.format === 'email') return 'email'
   if (defOptions?.format === 'url') return 'url'
@@ -69,6 +78,35 @@ function choicesOf(defOptions, cfOptions) {
   return fromCf
 }
 
+// ── Champs lien proposables : table visée + identité stockée ─────────────────
+//
+// Un champ « linked record » d'Airtable arrive en colonne texte portant des
+// identifiants. La table visée vient du mapping — `link_target_table` quand
+// l'utilisateur l'a désignée (la sync traduit alors en id Boréal), sinon la
+// table ERP qui miroite `linked_table_id` (la colonne garde des record ids
+// Airtable). Même résolution que GET /api/custom-fields/:table, pour que le
+// formulaire écrive la MÊME identité que les valeurs déjà en place.
+// `null` = pas de cible connue, donc pas de picker : le champ reste écarté.
+//
+// `mirrored` résout `linked_table_id` → table ERP. Il est mémoïsé par appel :
+// la map se rebâtit de quatre requêtes, et une table peut avoir plusieurs
+// champs lien.
+function recordLinkSpec(row, cfOptions, mirrored) {
+  if (!cfOptions?.airtable_link_hint) return null
+  const mopts = parseJson(row.mapping_options)
+  const mapped = mopts?.link_target_table || null
+  const target = mapped || mirrored(mopts?.linked_table_id)
+  if (!target) return null
+  return {
+    record_link_target: target,
+    record_link_identity: mapped ? 'erp' : 'airtable',
+    // La colonne stocke un TABLEAU JSON (c'est ce que la sync y écrit) ;
+    // `link_single` dit si un seul lien y est permis.
+    record_link_array: true,
+    record_link_single: row.link_single === 1,
+  }
+}
+
 export const AIRTABLE_IMPORT_ONLY_REASON =
   "Champ importé d'Airtable (sens import) — passez-le en bidirectionnel dans /champs pour pouvoir le saisir"
 
@@ -77,9 +115,9 @@ export const AIRTABLE_IMPORT_ONLY_REASON =
 // triés par libellé.
 export function formFieldCatalog(erpTable) {
   const rows = db.prepare(`
-    SELECT cf.column_name, cf.name, cf.type, cf.decimals, cf.source,
+    SELECT cf.column_name, cf.name, cf.type, cf.decimals, cf.source, cf.link_single,
            cf.options AS cf_options,
-           m.id AS mapping_id, m.import_disabled,
+           m.id AS mapping_id, m.import_disabled, m.options AS mapping_options,
            d.field_type, d.options AS def_options
     FROM custom_fields cf
     LEFT JOIN airtable_field_mappings m
@@ -91,6 +129,18 @@ export function formFieldCatalog(erpTable) {
   `).all(erpTable)
 
   const module = writebackModuleForTable(erpTable)
+  // Une config de sync illisible ne doit pas priver le formulaire de TOUS ses
+  // champs : sans cible résolue, les champs lien sont simplement écartés comme
+  // avant.
+  let tableMap = null
+  const mirrored = (tableId) => {
+    if (!tableId) return null
+    if (!tableMap) {
+      try { tableMap = buildAirtableTableToErp() } catch { tableMap = new Map() }
+    }
+    return tableMap.get(tableId) || null
+  }
+
   const out = []
   for (const row of rows) {
     if (AUTO_COLUMNS.has(row.column_name)) continue
@@ -98,15 +148,17 @@ export function formFieldCatalog(erpTable) {
     const cfOptions = parseJson(row.cf_options)
     if (defOptions?.source && COMPUTED_AIRTABLE_SOURCES.has(defOptions.source)) continue
     if (defOptions?.format === 'attachment') continue
-    if (row.field_type === 'link' || row.type === 'link' || cfOptions?.airtable_link_hint) continue
+    const link = recordLinkSpec(row, cfOptions, mirrored)
+    if (!link && (row.field_type === 'link' || row.type === 'link' || cfOptions?.airtable_link_hint)) continue
 
     const writable = isColumnWritable(erpTable, row, module)
-    const type = controlType(row, defOptions)
+    const type = link ? 'record_link' : controlType(row, defOptions)
     const choices = type === 'select' ? choicesOf(defOptions, cfOptions) : []
     out.push({
       field: row.column_name,
       label: row.name || row.column_name,
       type,
+      ...(link || {}),
       ...(choices.length ? { options: choices } : {}),
       ...(row.decimals != null ? { decimals: row.decimals } : {}),
       writable,

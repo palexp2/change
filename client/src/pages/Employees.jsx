@@ -12,12 +12,12 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import Spinner from '../components/Spinner.jsx'
 
-function bool(row, key) {
-  return row[key] ? <span className="text-green-600">✓</span> : <span className="text-slate-300">—</span>
-}
-
+// Tous les champs de la table sont des champs personnalisés : leur rendu vient
+// du renderer commun (renderCustomFieldValue). Seule la colonne « Nom » garde un
+// rendu maison — pastille d'initiales + prénom et nom, que ni un champ texte ni
+// une formule ne sait produire.
 const RENDERS = {
-  full_name: row => (
+  last_name: row => (
     <div className="flex items-center gap-2">
       <div className="w-7 h-7 rounded-full bg-brand-100 text-brand-600 flex items-center justify-center font-semibold text-xs flex-shrink-0">
         {(row.first_name?.[0] || '') + (row.last_name?.[0] || '')}
@@ -25,18 +25,6 @@ const RENDERS = {
       <span className="font-medium text-slate-900">{row.first_name} {row.last_name}</span>
     </div>
   ),
-  active: row => bool(row, 'active'),
-  is_salesperson: row => bool(row, 'is_salesperson'),
-  is_consultant: row => bool(row, 'is_consultant'),
-  group_insurance: row => bool(row, 'group_insurance'),
-  office_key: row => bool(row, 'office_key'),
-  address_verified: row => bool(row, 'address_verified'),
-  hire_date: row => <span className="text-slate-500">{fmtDate(row.hire_date)}</span>,
-  end_date: row => <span className="text-slate-500">{fmtDate(row.end_date)}</span>,
-  birth_date: row => <span className="text-slate-500">{fmtDate(row.birth_date)}</span>,
-  last_raise_date: row => <span className="text-slate-500">{fmtDate(row.last_raise_date)}</span>,
-  email_personal: row => <span className="text-slate-500">{row.email_personal || '—'}</span>,
-  phone_personal: row => <span className="text-slate-500">{row.phone_personal || '—'}</span>,
 }
 
 const COLUMNS = TABLE_COLUMN_META.employees.map(meta => ({ ...meta, render: RENDERS[meta.id] }))

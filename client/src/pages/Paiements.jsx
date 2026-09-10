@@ -36,19 +36,31 @@ const RENDERS = {
     : <Badge color="green"><ArrowDownCircle size={12} className="inline -mt-0.5 mr-1" />Encaissement</Badge>,
   method: row => <span className="text-slate-700">{METHOD_LABELS[row.method] || row.method || '—'}</span>,
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   document_number: row => row.facture_id && row.document_number
-    ? <Link to={`/factures/${row.facture_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline font-mono">{row.document_number}</Link>
+    ? <Link to={`/factures/${row.facture_id}`} onClick={e => e.stopPropagation()} className="link-record font-mono">{row.document_number}</Link>
     : <span className="text-slate-400">—</span>,
   amount: row => {
     const val = row.direction === 'out' ? -Math.abs(row.amount) : row.amount
     return <span className={`tabular-nums font-medium ${row.direction === 'out' ? 'text-purple-600' : 'text-slate-800'}`}>{fmtNum(val)}</span>
   },
   currency: row => <span className="font-mono text-xs text-slate-600">{row.currency || '—'}</span>,
-  amount_cad: row => row.amount_cad != null
-    ? <span className="tabular-nums text-slate-700">{fmtNum(row.direction === 'out' ? -Math.abs(row.amount_cad) : row.amount_cad)}</span>
-    : <span className="text-slate-300">—</span>,
+  // Valeur mémorisée à la publication QB quand elle existe, sinon conversion
+  // dérivée par le serveur (identité pour le CAD, taux du jour pour l'USD) —
+  // atténuée et infobullée pour rester distinguable d'un montant comptabilisé.
+  amount_cad: row => {
+    if (row.amount_cad == null) return <span className="text-slate-300">—</span>
+    const val = row.direction === 'out' ? -Math.abs(row.amount_cad) : row.amount_cad
+    return (
+      <span
+        className={`tabular-nums ${row.amount_cad_estimated ? 'text-slate-400' : 'text-slate-700'}`}
+        title={row.amount_cad_estimated ? `Converti au taux ${row.currency}→CAD du ${fmtDate(row.received_at)}` : undefined}
+      >
+        {fmtNum(val)}
+      </span>
+    )
+  },
   qb_status: row => {
     const s = qbStatus(row)
     const url = row.qb_deposit_url || row.qb_journal_entry_url || row.qb_payment_url
@@ -91,9 +103,9 @@ export default function Paiements() {
     }
   }, [addToast, setPayments])
 
-  // Total encaissé net (CAD) sur les lignes chargées, pour un repère rapide en
-  // en-tête. Encaissements comptés positifs, remboursements négatifs. On ignore
-  // les lignes sans amount_cad (encaissements Stripe convertis au payout).
+  // Total net (CAD) sur les lignes chargées, pour un repère rapide en en-tête.
+  // Encaissements comptés positifs, remboursements négatifs. Toutes les lignes
+  // converties comptent désormais, y compris les conversions dérivées.
   const netCad = useMemo(
     () => payments.reduce((sum, p) => {
       if (p.amount_cad == null) return sum
@@ -107,7 +119,7 @@ export default function Paiements() {
       title="Paiements"
       actions={
         <div className="text-sm text-slate-500" data-testid="paiements-net-cad">
-          Net saisi (CAD) : <span className="font-medium text-slate-800">{fmtCad(netCad)}</span>
+          Net (CAD) : <span className="font-medium text-slate-800">{fmtCad(netCad)}</span>
         </div>
       }
     >

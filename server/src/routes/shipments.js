@@ -10,7 +10,12 @@ import { requireAuth } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
-import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js'
+import { createInAirtable } from '../services/airtableWriteback.js'
+import {
+  SHIPMENT_ITEMS_COLUMN,
+  refreshShipmentItemsMirror,
+  pushShipmentToAirtable,
+} from '../services/shipmentAirtableLink.js'
 import { logSync } from '../services/syncLog.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { APP_URL } from '../config/appUrl.js'
@@ -249,6 +254,10 @@ router.patch('/:id', (req, res) => {
   if (order_id !== undefined) {
     db.prepare('UPDATE order_items SET shipment_id = NULL WHERE shipment_id = ? AND (? IS NULL OR order_id != ?)')
       .run(req.params.id, order_id || null, order_id || null)
+    // La liste des articles expédiés a changé : la colonne miroir de
+    // « items expédiés » doit suivre, y compris quand elle devient vide (les
+    // articles ne suivent pas l'envoi, Airtable ne doit plus les y montrer).
+    refreshShipmentItemsMirror(req.params.id, { allowEmpty: true })
   }
 
   // Freeze unit cost on items when shipment is marked as Envoyé
@@ -274,17 +283,14 @@ router.patch('/:id', (req, res) => {
   // (airtable_writeback_guard + consumeWritebackEcho dans syncEnvois) empêche le
   // webhook de retour de réécrire la valeur dans l'ERP. Les autres liens et le
   // lookup « pays » restent exclus côté WRITEBACK_MODULES.envois — pas besoin de
-  // les filtrer ici.
-  if (updated?.airtable_id) {
-    const changedColumns = ['order_id', 'tracking_number', 'carrier', 'status', 'shipped_at', 'notes', 'pays', 'address_id']
-      .filter(k => req.body[k] !== undefined)
-    traceAirtablePush(writeBackRecord('envois', req.params.id, changedColumns), 'erp-writeback', req.params.id)
-  } else {
-    // Envoi pas encore lié à Airtable (créé dans l'ERP avant le 2-way sync, ou
-    // dont la création initiale a échoué) : on le crée maintenant. Sert de chemin
-    // de récupération — éditer un vieil envoi le pousse enfin vers Airtable.
-    traceAirtablePush(createInAirtable('envois', req.params.id), 'erp-create', req.params.id)
-  }
+  // les filtrer ici. Envoi pas encore lié à Airtable (créé dans l'ERP avant le
+  // 2-way sync, ou dont la création initiale a échoué) : `pushShipmentToAirtable`
+  // le crée — éditer un vieil envoi le pousse enfin vers Airtable.
+  const changedColumns = ['order_id', 'tracking_number', 'carrier', 'status', 'shipped_at', 'notes', 'pays', 'address_id']
+    .filter(k => req.body[k] !== undefined)
+  // Changement de commande : les articles détachés ci-dessus partent aussi.
+  if (order_id !== undefined) changedColumns.push(SHIPMENT_ITEMS_COLUMN)
+  pushShipmentToAirtable(req.params.id, changedColumns)
 
   res.json({ ...updated, external_links: shipmentExternalLinks(updated) })
 })
@@ -442,11 +448,11 @@ router.get('/:id/tracking-email', (req, res) => {
 })
 
 // POST /api/shipments/:id/send-tracking
-// L'objet, le corps et le Cc peuvent être remplacés par ce que l'utilisateur a
-// édité dans la modale de composition (EmailComposerModal).
+// L'objet, le corps, le Cc et le Cci peuvent être remplacés par ce que
+// l'utilisateur a édité dans la modale de composition (EmailComposerModal).
 router.post('/:id/send-tracking', async (req, res) => {
   const started = Date.now()
-  const { to, cc, subject: subjectOverride, body_html } = req.body
+  const { to, cc, bcc, subject: subjectOverride, body_html } = req.body
   if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
 
   const ctx = loadTrackingEmailContext(req.params.id)
@@ -472,6 +478,7 @@ router.post('/:id/send-tracking', async (req, res) => {
       From: fromAddress,
       To: to,
       Cc: cc || undefined,
+      Bcc: bcc || undefined,
       Subject: subject,
       HtmlBody: html,
     })
@@ -487,9 +494,9 @@ router.post('/:id/send-tracking', async (req, res) => {
         VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
       `).run(interactionId, row.address_contact_id || null, row.company_id || null)
       db.prepare(`
-        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, automated)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-      `).run(emailId, interactionId, subject, html, fromAddress, to, cc || null)
+        INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, bcc, automated)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+      `).run(emailId, interactionId, subject, html, fromAddress, to, cc || null, bcc || null)
 
       db.prepare(`
         UPDATE shipments SET
@@ -508,6 +515,8 @@ router.post('/:id/send-tracking', async (req, res) => {
         `Email de suivi envoyé`,
         `  De : ${fromAddress}`,
         `  À : ${to}`,
+        ...(cc ? [`  Cc : ${cc}`] : []),
+        ...(bcc ? [`  Cci : ${bcc}`] : []),
         `  Sujet : ${subject}`,
         `  Langue : ${lang}`,
         `  Transporteur : ${row.carrier || 'N/A'} — ${row.tracking_number}`,

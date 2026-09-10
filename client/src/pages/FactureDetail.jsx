@@ -11,8 +11,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
 import { FieldGuard, FieldGuardProvider } from '../components/FieldGuard.jsx'
-import { Field } from '../components/Field.jsx'
-import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -90,18 +89,29 @@ function FactureNotesField({ value, onSave }) {
     }
   }
   return (
-    <Field table="factures" id="notes" label="Notes" saving={saving} className="p-5">
+    <>
       <textarea
         data-testid="facture-notes-input"
         value={local}
         onChange={e => setLocal(e.target.value)}
         onBlur={e => commit(e.target.value)}
         rows={3}
+        disabled={saving}
         className="input text-sm w-full resize-y"
       />
       {error && <p className="mt-1 text-xs text-red-600">{error}</p>}
-    </Field>
+    </>
   )
+}
+
+// Champs qui portent une règle de visibilité conditionnelle (<FieldGuard>).
+// La clé est le champ de la carte, la valeur l'identifiant de la règle DÉJÀ
+// enregistrée côté serveur : ne pas la renommer, une règle configurée s'y
+// rattache (ex. « Envoyée » sur les factures).
+const GUARD_IDS = {
+  order_number: 'order_field',
+  subscription_id: 'subscription_field',
+  is_sent: 'is_sent',
 }
 
 // `onClose` ferme le drawer (utilisé après suppression du record).
@@ -280,6 +290,13 @@ export default function FactureDetail({ recordId, onClose }) {
     }
   }
 
+  // Un champ n'est enveloppé que s'il porte une règle : les autres restent des
+  // blocs nus, exactement comme avant.
+  const wrapGuardedField = useCallback((f, node) => {
+    const guardId = GUARD_IDS[f.key]
+    return guardId ? <FieldGuard fieldId={guardId} label={f.label}>{node}</FieldGuard> : node
+  }, [])
+
   const pending = detailPending({ loading, loadError, onRetry: load, record: facture, notFound: 'Facture introuvable.' })
   if (pending) return pending
 
@@ -373,9 +390,19 @@ export default function FactureDetail({ recordId, onClose }) {
         }}
       >
         <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100">
-          {/* Entreprise */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
-            <Field table="factures" id="company_name" label="Entreprise">
+          {/* Carte de champs commune : une seule liste de champs, réordonnable
+              et masquable depuis la fiche (bouton « Personnaliser les champs »).
+              Les champs personnalisés de la table s'y posent seuls — d'où
+              `record`. `wrapField` garde les règles de visibilité
+              conditionnelle sur les champs qui en portent une. */}
+          <DetailFieldGrid
+            entityType="factures"
+            record={facture}
+            className="p-5"
+            testId="facture-fields"
+            wrapField={wrapGuardedField}
+          >
+            <DetailField id="company_name" label="Entreprise">
               <LinkedRecordField
                 name="company_id"
                 value={facture.company_id}
@@ -394,8 +421,9 @@ export default function FactureDetail({ recordId, onClose }) {
                   </a>
                 </p>
               )}
-            </Field>
-            <Field table="factures" id="project_name" label="Projet">
+            </DetailField>
+
+            <DetailField id="project_name" label="Projet">
               {facture.company_id ? (
                 <LinkedRecordField
                   name="project_id"
@@ -409,39 +437,66 @@ export default function FactureDetail({ recordId, onClose }) {
               ) : (
                 <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
               )}
-            </Field>
-          </div>
+            </DetailField>
 
-          {/* Commande / Abonnement */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 p-5">
-            <FieldGuard fieldId="order_field" label="Commande">
-              <Field table="factures" id="order_number" label="Commande" testId="order_field">
-                {facture.company_id ? (
-                  <LinkedRecordField
-                    name="order_id"
-                    value={facture.order_id}
-                    options={orders}
-                    labelFn={o => `#${o.order_number}`}
-                    getHref={o => `/orders/${o.id}`}
-                    saving={saving}
-                    onChange={handleOrderChange}
-                  />
-                ) : (
-                  <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
-                )}
-              </Field>
-            </FieldGuard>
-            <FieldGuard fieldId="subscription_field" label="Abonnement">
-              <div data-field-id="subscription_field">
-                <p className="label">Abonnement</p>
-                {facture.subscription_local_id
-                  ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="text-brand-600 hover:underline font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
-                  : facture.subscription_id
-                    ? <span className="text-slate-500 font-mono text-sm">{facture.subscription_id}</span>
-                    : <span className="text-slate-400 text-sm">—</span>}
-              </div>
-            </FieldGuard>
-          </div>
+            <DetailField id="order_number" label="Commande" testId="order_field">
+              {facture.company_id ? (
+                <LinkedRecordField
+                  name="order_id"
+                  value={facture.order_id}
+                  options={orders}
+                  labelFn={o => `#${o.order_number}`}
+                  getHref={o => `/orders/${o.id}`}
+                  saving={saving}
+                  onChange={handleOrderChange}
+                />
+              ) : (
+                <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
+              )}
+            </DetailField>
+
+            <DetailField id="subscription_id" label="Abonnement">
+              {facture.subscription_local_id
+                ? <button onClick={openSubscriptionModal} disabled={loadingSubscription} className="link-record font-medium disabled:opacity-50 font-mono text-sm">{facture.subscription_stripe_id || facture.subscription_id}</button>
+                : facture.subscription_id
+                  ? <span className="text-slate-500 font-mono text-sm">{facture.subscription_id}</span>
+                  : <span className="text-slate-400 text-sm">—</span>}
+            </DetailField>
+
+            <DetailField id="document_date" label="Date de facturation">
+              <p className="text-sm text-slate-700">{fmtDate(facture.document_date)}</p>
+            </DetailField>
+            <DetailField id="due_date" label="Date d'échéance">
+              <p className="text-sm text-slate-700">{fmtDate(facture.due_date)}</p>
+            </DetailField>
+            <DetailField id="currency" label="Devise">
+              <p className="text-sm font-mono text-slate-700">{facture.currency || '—'}</p>
+            </DetailField>
+
+            <DetailField id="is_sent" label="Envoyée" testId="is_sent">
+              {facture.is_sent ? (
+                <Badge color="green" size="sm">Envoyée</Badge>
+              ) : (
+                <span className="text-sm text-slate-400">—</span>
+              )}
+            </DetailField>
+
+            <DetailField id="balance_due" label="Solde dû">
+              <p className={`text-sm font-medium ${facture.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
+                {fmtMoney(facture.balance_due, facture.currency)}
+              </p>
+            </DetailField>
+
+            <DetailField id="notes" label="Notes" span2>
+              <FactureNotesField
+                value={facture.notes || ''}
+                onSave={async (val) => {
+                  const updated = await api.factures.update(id, { notes: val })
+                  setFacture(updated)
+                }}
+              />
+            </DetailField>
+          </DetailFieldGrid>
 
           {/* PDF manquant — re-télécharger depuis Stripe. Le download peut avoir
               échoué au webhook (airtable_pdf_path null) ; rien ne le retente
@@ -482,46 +537,6 @@ export default function FactureDetail({ recordId, onClose }) {
             </div>
           )}
 
-          {/* Dates */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 p-5">
-            <Field table="factures" id="document_date" label="Date de facturation">
-              <p className="text-sm text-slate-700">{fmtDate(facture.document_date)}</p>
-            </Field>
-            <Field table="factures" id="due_date" label="Date d'échéance">
-              <p className="text-sm text-slate-700">{fmtDate(facture.due_date)}</p>
-            </Field>
-            <Field table="factures" id="currency" label="Devise">
-              <p className="text-sm font-mono text-slate-700">{facture.currency || '—'}</p>
-            </Field>
-            <FieldGuard fieldId="is_sent" label="Envoyée">
-              <Field table="factures" id="is_sent" label="Envoyée" testId="is_sent">
-                {facture.is_sent ? (
-                  <Badge color="green" size="sm">Envoyée</Badge>
-                ) : (
-                  <span className="text-sm text-slate-400">—</span>
-                )}
-              </Field>
-            </FieldGuard>
-            <CustomDetailFields table="factures" record={facture} />
-          </div>
-
-
-          {/* Solde dû */}
-          <Field table="factures" id="balance_due" label="Solde dû" className="p-5">
-            <p className={`text-sm font-medium ${facture.balance_due > 0 ? 'text-red-600' : 'text-green-600'}`}>
-              {fmtMoney(facture.balance_due, facture.currency)}
-            </p>
-          </Field>
-
-          {/* Notes — éditable, autosave on blur */}
-          <FactureNotesField
-            value={facture.notes || ''}
-            onSave={async (val) => {
-              const updated = await api.factures.update(id, { notes: val })
-              setFacture(updated)
-            }}
-          />
-
         </div>
 
         {/* Lignes de la facture — 1 par produit (Stripe items ou pending items) + sommaires */}
@@ -547,7 +562,7 @@ export default function FactureDetail({ recordId, onClose }) {
                     <tr key={it.id || i} className="border-t border-slate-100">
                       <td className="py-2 text-slate-700">
                         {it.product_id
-                          ? <Link to={`/products/${it.product_id}`} className="text-brand-600 hover:underline">{it.product_name || it.product_sku || '—'}</Link>
+                          ? <Link to={`/products/${it.product_id}`} className="link-record">{it.product_name || it.product_sku || '—'}</Link>
                           : <span className="text-slate-400">—</span>}
                       </td>
                       <td className="py-2 text-slate-700">{it.description || <span className="text-slate-400">—</span>}</td>

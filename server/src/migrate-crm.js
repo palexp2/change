@@ -28,9 +28,11 @@ function run() {
   const crmCompanies = crm.prepare('SELECT * FROM companies').all()
   const companyIdMap = new Map() // crm id → erp id
 
+  // `phone` et `website` ont été droppées (migration 045) : le téléphone et le
+  // site web du vieux CRM n'ont plus de colonne d'accueil.
   const insertCompany = erp.prepare(`
-    INSERT OR IGNORE INTO companies (id, name, phone, website, address, notes, airtable_id, created_at, updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?)
+    INSERT OR IGNORE INTO companies (id, name, address, notes, airtable_id, created_at, updated_at)
+    VALUES (?,?,?,?,?,?,?)
   `)
 
   // Check which airtable_ids already exist to avoid duplicates
@@ -55,7 +57,7 @@ function run() {
       if (existing) { companyIdMap.set(co.id, existing); continue }
 
       const newId = uuid()
-      insertCompany.run(newId, co.name, co.phone || null, co.domain || null, co.address || null, co.notes || null, co.airtable_id || null, co.created_at, co.created_at)
+      insertCompany.run(newId, co.name, co.address || null, co.notes || null, co.airtable_id || null, co.created_at, co.created_at)
       companyIdMap.set(co.id, newId)
       companiesMigrated++
     }

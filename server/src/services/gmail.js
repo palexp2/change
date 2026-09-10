@@ -296,6 +296,180 @@ async function syncAccount(oauthRow, trigger = 'scheduled') {
   }
 }
 
+const emailAttachmentsDir = ensureUploadsDir('email-attachments')
+
+// Contrairement à collectAttachments (ci-dessus), qui ne garde que les pièces
+// « reçu-compatibles » (PDF/image, pour le pipeline factures fournisseurs),
+// ceci liste TOUTE pièce jointe nommée d'un message — c'est ce qu'affiche la
+// fiche contact. On réutilise looksLikeSignatureAsset pour ignorer les petits
+// logos de signature.
+function collectAllAttachments(payload) {
+  const found = []
+  const seen = new Set()
+  const walk = (part) => {
+    if (!part) return
+    const filename = part.filename || ''
+    const mime = part.mimeType || ''
+    const attachmentId = part.body?.attachmentId
+    if (filename && attachmentId && !looksLikeSignatureAsset(part, mime)) {
+      const key = `${filename}|${part.body?.size || 0}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        found.push({ filename, mimeType: mime, attachmentId, size: part.body?.size || 0 })
+      }
+    }
+    if (part.parts) part.parts.forEach(walk)
+  }
+  walk(payload)
+  return found
+}
+
+function oauthIdForMailboxOwner(userId) {
+  if (!userId) return null
+  const row = db.prepare(`
+    SELECT co.id FROM connector_oauth co
+    JOIN users u ON lower(u.email) = lower(co.account_email)
+    WHERE u.id = ? AND co.connector = 'google' AND co.refresh_token IS NOT NULL
+    LIMIT 1
+  `).get(userId)
+  return row?.id || null
+}
+
+/**
+ * Liste les pièces jointes des courriels liés à un contact (fiche contact,
+ * section gauche). Le sync emails/interactions n'importe que le corps — les
+ * métadonnées de pièces jointes sont listées ici, à la demande, au premier
+ * accès à la fiche (marquées via emails.attachments_listed_at pour ne pas
+ * rappeler Gmail à chaque chargement). Le contenu n'est téléchargé qu'au clic,
+ * voir downloadEmailAttachment.
+ */
+export async function listContactEmailAttachments(contactId) {
+  const pending = db.prepare(`
+    SELECT e.id as email_id, e.gmail_message_id, i.user_id
+    FROM emails e
+    JOIN interactions i ON i.id = e.interaction_id
+    WHERE i.contact_id = ? AND i.type = 'email'
+      AND e.gmail_message_id IS NOT NULL AND e.attachments_listed_at IS NULL
+  `).all(contactId)
+
+  await ensureAttachmentsListed(pending)
+
+  return db.prepare(`
+    SELECT ea.id, ea.file_name, ea.content_type, ea.file_size, ea.fetched_at,
+           e.subject as email_subject, e.from_address, i.timestamp
+    FROM email_attachments ea
+    JOIN emails e ON e.id = ea.email_id
+    JOIN interactions i ON i.id = e.interaction_id
+    WHERE i.contact_id = ? AND i.type = 'email'
+    ORDER BY i.timestamp DESC
+  `).all(contactId)
+}
+
+/**
+ * Même chose, mais pour UNE interaction (fiche interaction). Nécessaire en plus
+ * de la version par contact : un courriel rattaché à l'entreprise seule (sans
+ * contact) n'était jamais listé, donc ses pièces jointes restaient invisibles.
+ */
+export async function listInteractionEmailAttachments(interactionId) {
+  const pending = db.prepare(`
+    SELECT e.id as email_id, e.gmail_message_id, i.user_id
+    FROM emails e
+    JOIN interactions i ON i.id = e.interaction_id
+    WHERE i.id = ? AND i.type = 'email'
+      AND e.gmail_message_id IS NOT NULL AND e.attachments_listed_at IS NULL
+  `).all(interactionId)
+
+  await ensureAttachmentsListed(pending)
+
+  return db.prepare(`
+    SELECT ea.id, ea.file_name, ea.content_type, ea.file_size, ea.fetched_at,
+           e.subject as email_subject, e.from_address, i.timestamp
+    FROM email_attachments ea
+    JOIN emails e ON e.id = ea.email_id
+    JOIN interactions i ON i.id = e.interaction_id
+    WHERE i.id = ?
+    ORDER BY ea.file_name
+  `).all(interactionId)
+}
+
+// Interroge Gmail pour les courriels dont les pièces jointes n'ont jamais été
+// listées, et enregistre leurs métadonnées.
+async function ensureAttachmentsListed(pending) {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO email_attachments (id, email_id, gmail_attachment_id, file_name, content_type, file_size)
+    VALUES (?,?,?,?,?,?)
+  `)
+  const markListed = db.prepare(`UPDATE emails SET attachments_listed_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+
+  for (const row of pending) {
+    const oauthId = oauthIdForMailboxOwner(row.user_id)
+    if (!oauthId) { markListed.run(row.email_id); continue }
+    try {
+      const gmail = await getGmailClient(oauthId)
+      const msg = await gmail.users.messages.get({ userId: 'me', id: row.gmail_message_id, format: 'full' })
+      for (const att of collectAllAttachments(msg.data.payload)) {
+        insert.run(newRecordId(), row.email_id, att.attachmentId, att.filename, att.mimeType || null, att.size || null)
+      }
+      markListed.run(row.email_id)
+    } catch (e) {
+      console.error(`❌ Gmail email attachments list ${row.gmail_message_id}:`, e.message)
+      // Pas de markListed : on retentera au prochain accès à la fiche.
+    }
+  }
+}
+
+/**
+ * Télécharge (et met en cache localement) le contenu d'une pièce jointe déjà
+ * listée par listContactEmailAttachments. contactId est revérifié pour éviter
+ * qu'un id de pièce jointe d'un autre contact ne soit servi ici.
+ */
+export async function downloadEmailAttachment(contactId, attId) {
+  const row = db.prepare(`
+    SELECT ea.*, e.gmail_message_id, i.user_id
+    FROM email_attachments ea
+    JOIN emails e ON e.id = ea.email_id
+    JOIN interactions i ON i.id = e.interaction_id
+    WHERE ea.id = ? AND i.contact_id = ? AND i.type = 'email'
+  `).get(attId, contactId)
+  if (!row) throw new Error('Not found')
+  return fetchAttachmentContent(row)
+}
+
+/** Idem, scopé à une interaction (fiche interaction). */
+export async function downloadInteractionEmailAttachment(interactionId, attId) {
+  const row = db.prepare(`
+    SELECT ea.*, e.gmail_message_id, i.user_id
+    FROM email_attachments ea
+    JOIN emails e ON e.id = ea.email_id
+    JOIN interactions i ON i.id = e.interaction_id
+    WHERE ea.id = ? AND i.id = ?
+  `).get(attId, interactionId)
+  if (!row) throw new Error('Not found')
+  return fetchAttachmentContent(row)
+}
+
+async function fetchAttachmentContent(row) {
+  if (row.file_path) {
+    return { absPath: join(emailAttachmentsDir, row.file_path), fileName: row.file_name, contentType: row.content_type }
+  }
+
+  const oauthId = oauthIdForMailboxOwner(row.user_id)
+  if (!oauthId) throw new Error('Boîte Gmail introuvable pour ce courriel')
+  const gmail = await getGmailClient(oauthId)
+  const r = await gmail.users.messages.attachments.get({
+    userId: 'me', messageId: row.gmail_message_id, id: row.gmail_attachment_id,
+  })
+  if (!r.data.data) throw new Error('Pièce jointe vide')
+  const buffer = Buffer.from(r.data.data, 'base64url')
+
+  const safeName = `${row.id}_${row.file_name || 'fichier'}`.replace(/[/\\?%*:|"<>]/g, '_').slice(0, 200)
+  const absPath = join(emailAttachmentsDir, safeName)
+  writeFileSync(absPath, buffer)
+  db.prepare(`UPDATE email_attachments SET file_path=?, file_size=? WHERE id=?`).run(safeName, buffer.length, row.id)
+
+  return { absPath, fileName: row.file_name, contentType: row.content_type }
+}
+
 /**
  * Envoie un courriel via Gmail OAuth.
  * Sélection du compte expéditeur, par ordre de priorité :

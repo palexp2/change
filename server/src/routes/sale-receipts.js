@@ -9,12 +9,14 @@ import { pushSaleReceiptToQB } from '../services/quickbooks.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
+import { checkReceiptAmount } from '../services/saleReceiptAmountCheck.js'
+import { bankTxnForDocument } from '../services/bankReconciliation.js'
 import { syncReceiptAnomalies, receiptObsolescence } from '../services/transactionAnomalies.js'
 import { normalizeUploadName } from '../utils/uploadFileName.js'
 import { listTransactionTypes } from '../services/fiscalStatus.js'
 import { resolveFiscalDetection } from '../services/fiscalDetection.js'
 import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
-import { matchReceiptItems, completeLiaDescription, LIA_AUTO_THRESHOLD, LIA_SUGGEST_THRESHOLD } from '../services/purchaseLiaMatch.js'
+import { matchReceiptItems, completeLiaDescription } from '../services/purchaseLiaMatch.js'
 import { detectPrepaidStatement, attachStatementToMonthQb, monthLabel } from '../services/prepaidStatementAttach.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { ensureUploadsDir } from '../config/uploads.js'
@@ -88,11 +90,19 @@ function serializeRow(row) {
   let prepaid_statement = null
   try { prepaid_statement = detectPrepaidStatement(row) }
   catch (e) { console.error(`detectPrepaidStatement failed for id=${row.id}: ${e.message}`) }
+  // Sortie d'argent au relevé qui porte cette facture (lien posé par le
+  // rapprochement bancaire, dans un sens ou dans l'autre). Répond depuis la
+  // fiche à « est-ce que c'est payé, et de quel compte ? » — jusqu'ici il
+  // fallait aller le chercher sur /rapprochement.
+  let bank_txn = null
+  try { bank_txn = bankTxnForDocument('receipt', row.id) }
+  catch (e) { console.error(`bankTxnForDocument failed for id=${row.id}: ${e.message}`) }
   return {
     ...row,
     items,
     pages,
     prepaid_statement,
+    bank_txn,
     page_count: pages.length,
     fiscal_detection,
     suggested_transaction_type: fiscal_detection?.transaction_type || null,
@@ -265,13 +275,13 @@ router.patch('/:id', (req, res) => {
               // + frais de transport), d'où l'exception par ligne.
               expense_account_id: it.expense_account_id == null || it.expense_account_id === '' ? null : String(it.expense_account_id),
               // Achat LIA rattaché à la ligne (purchases.id) et son code (purchases.at_id,
-              // dupliqué pour l'affichage). Posé par l'appariement automatique ou choisi
-              // à la main dans la fiche — cf. purchaseLiaMatch.js.
+              // dupliqué pour l'affichage). Choisi à la main dans la fiche — cf.
+              // purchaseLiaMatch.js.
               purchase_id: it.purchase_id == null || it.purchase_id === '' ? null : String(it.purchase_id),
               lia_ref: it.lia_ref == null || it.lia_ref === '' ? null : String(it.lia_ref),
               // Libellé imprimé par le fournisseur, mémorisé quand la description est
-              // remplacée par le code LIA : il n'est pas publié, mais il apprend le
-              // vocabulaire du fournisseur (purchaseLiaMatch.learnLineAliases).
+              // remplacée par le code LIA : il n'est pas publié, mais il reste
+              // consultable dans la fiche.
               source_description: it.source_description == null || it.source_description === '' ? null : String(it.source_description),
             })
           } catch (e) {
@@ -383,6 +393,25 @@ router.post('/:id/re-extract', (req, res) => {
   runExtractionAndUpdate({ saleReceiptId: req.params.id, pages, userId: req.user?.id, trigger: 'manual' })
 })
 
+// Vérifie qu'un montant est bien celui IMPRIMÉ sur le document (relecture du texte du
+// PDF, aucun appel IA). ?amount=… : le montant à vérifier (défaut : le total stocké) —
+// la fiche envoie le total qu'elle affiche, qui est dérivé des lignes.
+router.get('/:id/amount-check', (req, res) => {
+  const row = db.prepare('SELECT id, filename, file_type, extra_pages, total FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
+    .get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+
+  let extra = []
+  try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
+  const pages = [{ filename: row.filename, file_type: row.file_type }, ...extra]
+    .filter(p => p && p.filename)
+    .map(p => ({ filePath: join(uploadsDir, p.filename), fileExt: p.file_type }))
+
+  const raw = req.query.amount
+  const amount = raw != null && raw !== '' && Number.isFinite(Number(raw)) ? Number(raw) : Number(row.total) || 0
+  res.json(checkReceiptAmount(pages, amount))
+})
+
 // Sert la page demandée d'un document. ?page=0 (défaut) = page 1 (filename) ;
 // ?page=N (1-based dans extra_pages) = page N+1. Compat : sans ?page → page 1.
 router.get('/:id/file', (req, res) => {
@@ -458,12 +487,11 @@ router.get('/:id/vendor-history', (req, res) => {
   res.json({ data: rows.map(serializeRow) })
 })
 
-// Achats LIA rapprochables de ce reçu. Pour chaque ligne : la suggestion retenue
-// (si elle dépasse le seuil) et la liste des achats candidats du même fournisseur,
-// classés par pertinence — c'est cette liste qui alimente le sélecteur de la fiche.
-// Rien n'est écrit ici : la route est en lecture seule, l'opérateur confirme via PATCH.
+// Codes LIA rattachables à ce reçu : la liste des achats du même fournisseur, avec la
+// suggestion par ligne calculée par le moteur de score (purchaseLiaMatch.js). Route en
+// lecture seule : l'opérateur confirme la suggestion (ou choisit un autre code) via PATCH.
 router.get('/:id/lia-matches', (req, res) => {
-  const rec = db.prepare('SELECT id, company, receipt_date, vendor_profile_id, items FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  const rec = db.prepare('SELECT id, company, receipt_date, order_date, vendor_profile_id, items FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!rec) return res.status(404).json({ error: 'Not found' })
   let items = []
   try { items = JSON.parse(rec.items || '[]') } catch {}
@@ -472,12 +500,12 @@ router.get('/:id/lia-matches', (req, res) => {
     company: rec.company,
     vendorProfileId: rec.vendor_profile_id,
     receiptDate: rec.receipt_date,
+    orderDate: rec.order_date,
     excludeReceiptId: rec.id,
   })
   res.json({
-    lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match, blocked_by: l.blocked_by || null })),
+    lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null })),
     candidates,
-    thresholds: { auto: LIA_AUTO_THRESHOLD, suggest: LIA_SUGGEST_THRESHOLD },
   })
 })
 

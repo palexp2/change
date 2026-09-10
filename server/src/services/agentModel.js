@@ -24,6 +24,7 @@
 // quelques secondes, et une mauvaise attribution s'auto-corrige au passage suivant.
 
 import { getClaudeUsage } from './claudeUsage.js'
+import { getCodexUsage } from './codexUsage.js'
 
 /** Modèle préféré par défaut — tout ce qui n'est pas explicitement bridé passe par lui. */
 export const AGENT_MODEL = 'fable'
@@ -32,7 +33,8 @@ export const AGENT_MODEL = 'fable'
 export const MODEL_FALLBACK = Object.freeze({ fable: 'opus' })
 
 /** Modèles que l'agent sait utiliser (un plafond de COMPTE les bloque tous). */
-export const KNOWN_MODELS = Object.freeze(['fable', 'opus', 'sonnet', 'haiku'])
+export const CLAUDE_MODELS = Object.freeze(['fable', 'opus', 'sonnet', 'haiku'])
+export const KNOWN_MODELS = Object.freeze([...CLAUDE_MODELS, 'codex'])
 
 // ─── Modèle préféré courant — choisi par l'utilisateur depuis le bandeau quotas ─
 // Persisté dans agent-settings.json (clé `preferredModel`) ; taskRunner le recharge
@@ -212,16 +214,25 @@ export function scopedLimitFromUsage(usage, now = Date.now()) {
  * resterait sur son repli pendant des heures sans raison.
  */
 export async function syncScopedModelLimit() {
+  const codex = await getCodexUsage()
+  let codexChanged = false
+  if (codex.available) {
+    const blocked = codex.windows.filter(w => w.utilizationPct >= 100 && Date.parse(w.resetsAt) > Date.now())
+    if (blocked.length) codexChanged = noteModelLimit('codex', {
+      resetAt: Math.max(...blocked.map(w => Date.parse(w.resetsAt))), source: 'usage',
+    })
+    else codexChanged = clearModelLimit('codex')
+  }
   let usage
-  try { usage = await getClaudeUsage({ allowStale: false }) } catch { return false }
+  try { usage = await getClaudeUsage({ allowStale: false }) } catch { return codexChanged }
   const verdict = scopedLimitFromUsage(usage)
-  if (!verdict) return purgeExpiredLimits()
+  if (!verdict) return purgeExpiredLimits() || codexChanged
   if (verdict.limited) {
     return noteModelLimit([verdict.model], {
       resetAt: verdict.resetAt, label: verdict.label, source: 'usage',
-    })
+    }) || codexChanged
   }
   const accountBlocked = attributeLimitScope(usage) === 'account'
-  if (!accountBlocked && _limits.has(verdict.model)) return clearModelLimit(verdict.model)
-  return purgeExpiredLimits()
+  if (!accountBlocked && _limits.has(verdict.model)) return clearModelLimit(verdict.model) || codexChanged
+  return purgeExpiredLimits() || codexChanged
 }

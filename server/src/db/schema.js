@@ -28,14 +28,15 @@ export function initSchema() {
     );
 
     -- Companies
+    -- « Type », « Phone number » et « URL » (colonnes type, phone, website)
+    -- droppées par la migration 045 : ces champs Airtable ne sont plus gérés en
+    -- code, ils se remappent depuis /champs/companies. Une base neuve ne doit
+    -- pas les recréer — schema.js tourne AVANT les migrations.
     CREATE TABLE IF NOT EXISTS companies (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      type TEXT,
       lifecycle_phase TEXT,
-      phone TEXT,
       email TEXT,
-      website TEXT,
       address TEXT,
       city TEXT,
       province TEXT,
@@ -156,23 +157,27 @@ export function initSchema() {
     );
 
     -- Returns
+    -- company_id, problem_status et notes retirés : champs Airtable gérés en
+    -- code, droppés par la migration 037. status retiré par la 041 (constante
+    -- « Ouvert », jamais alimentée par Airtable). Une base neuve les recréerait
+    -- avant les migrations (initSchema tourne AVANT). L'entreprise d'un retour
+    -- se lit désormais par ses articles (services/returnCompany.js).
     CREATE TABLE IF NOT EXISTS returns (
       id TEXT PRIMARY KEY,
-      company_id TEXT REFERENCES companies(id),
       order_id TEXT REFERENCES orders(id),
-      status TEXT DEFAULT 'Ouvert' CHECK(status IN ('Ouvert','Reçu','Analysé','Fermé')),
-      problem_status TEXT CHECK(problem_status IN ('À régler','Règlé')),
-      notes TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
 
     -- Return Items
+    -- La quantité ("Qté") a été droppée sur demande (migration 046) : elle
+    -- valait 1 sur les 767 lignes, un article de retour = une unité. Elle sort
+    -- du CREATE TABLE parce qu'initSchema tourne AVANT les migrations : une
+    -- base neuve la recréerait (piège de la 026).
     CREATE TABLE IF NOT EXISTS return_items (
       id TEXT PRIMARY KEY,
       return_id TEXT NOT NULL REFERENCES returns(id) ON DELETE CASCADE,
       product_id TEXT REFERENCES products(id),
-      qty INTEGER DEFAULT 1,
       reason TEXT,
       problem_category TEXT,
       analysis_notes TEXT,
@@ -180,18 +185,14 @@ export function initSchema() {
     );
 
     -- Support Tickets
+    -- Titre, question, réponse, type, statut, durée, date de création,
+    -- entreprise et contact ont été droppés sur demande (migration 040) : tout
+    -- ce qui décrit un billet vit dans les champs personnalisés de la table,
+    -- réglés depuis /champs/tickets. Une base neuve les recréerait ici avant
+    -- que la migration ne tourne, d'où leur retrait du CREATE TABLE.
     CREATE TABLE IF NOT EXISTS tickets (
       id TEXT PRIMARY KEY,
-      company_id TEXT REFERENCES companies(id),
-      contact_id TEXT REFERENCES contacts(id),
-      assigned_to TEXT REFERENCES users(id),
-      title TEXT,
-      description TEXT,
-      type TEXT,
-      status TEXT DEFAULT 'Waiting on us',
-      duration_minutes INTEGER DEFAULT 0,
       airtable_id TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
 
@@ -404,18 +405,15 @@ export function initSchema() {
     CREATE TABLE IF NOT EXISTS purchases (
       id TEXT PRIMARY KEY,
       airtable_id TEXT UNIQUE,
-      product_id TEXT REFERENCES products(id),
-      supplier TEXT,
-      reference TEXT,
-      order_date TEXT,
-      -- expected_date (« Date prévue ») retirée : champ supprimé sur demande,
-      -- colonne droppée par la migration 029. Rien ne la remplace.
-      received_date TEXT,
-      qty_ordered INTEGER DEFAULT 0,
-      qty_received INTEGER DEFAULT 0,
-      unit_cost REAL DEFAULT 0,
-      status TEXT DEFAULT 'Commandé' CHECK(status IN ('Commandé','Reçu partiellement','Reçu','Annulé')),
-      notes TEXT,
+      -- Les 7 dernières colonnes « cœur » du miroir achats (product_id,
+      -- reference, order_date, received_date, qty_ordered, unit_cost, notes) ont
+      -- été droppées par la migration 035 : l'utilisateur a demandé la
+      -- suppression définitive de TOUS les champs Airtable gérés en code de
+      -- cette table. Ce qui décrit un achat vit désormais dans les champs
+      -- personnalisés pilotés depuis /champs/purchases.
+      -- Antérieurement : supplier + status (032), expected_date (029), et
+      -- "Qté reçue" (qty_received) droppée à son tour par la migration 036 : il
+      -- ne reste plus AUCUNE colonne native descriptive sur un achat.
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
@@ -598,7 +596,6 @@ export function initSchema() {
       number INTEGER,
       period_end TEXT,
       status TEXT,
-      csv TEXT,
       nb_holiday_days INTEGER,
       total_with_charges_and_reimb REAL,
       timesheets_deadline TEXT,
@@ -771,8 +768,8 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_projects_deleted_updated ON projects(deleted_at, updated_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)',
     'CREATE INDEX IF NOT EXISTS idx_shipments_order ON shipments(order_id)',
-    'CREATE INDEX IF NOT EXISTS idx_tickets_status ON tickets(status)',
-    'CREATE INDEX IF NOT EXISTS idx_tickets_company ON tickets(company_id)',
+    // idx_tickets_status / idx_tickets_company : retirés avec leurs colonnes
+    // (migration 040). SQLite refuse DROP COLUMN sur une colonne indexée.
     'CREATE INDEX IF NOT EXISTS idx_connector_oauth_connector ON connector_oauth(connector)',
     'CREATE INDEX IF NOT EXISTS idx_interactions_contact ON interactions(contact_id)',
     'CREATE INDEX IF NOT EXISTS idx_interactions_company ON interactions(company_id)',
@@ -780,7 +777,6 @@ export function initSchema() {
     'CREATE INDEX IF NOT EXISTS idx_calls_interaction ON calls(interaction_id)',
     'CREATE INDEX IF NOT EXISTS idx_emails_gmail ON emails(gmail_message_id)',
     'CREATE INDEX IF NOT EXISTS idx_emails_interaction ON emails(interaction_id)',
-    'CREATE INDEX IF NOT EXISTS idx_purchases_product ON purchases(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_serials_product ON serial_numbers(product_id)',
     'CREATE INDEX IF NOT EXISTS idx_serials_company ON serial_numbers(company_id)',
     'CREATE INDEX IF NOT EXISTS idx_view_configs_table ON table_view_configs(table_name)',
@@ -805,7 +801,7 @@ export function initSchema() {
     'ALTER TABLE contacts ADD COLUMN airtable_id TEXT',
     'ALTER TABLE order_items ADD COLUMN airtable_id TEXT',
     'ALTER TABLE tickets ADD COLUMN airtable_id TEXT',
-    'ALTER TABLE tickets ADD COLUMN response TEXT',
+    // 'ALTER TABLE tickets ADD COLUMN response TEXT' : colonne droppée (040).
     'ALTER TABLE serial_numbers ADD COLUMN order_item_id TEXT REFERENCES order_items(id)',
     'ALTER TABLE shipments ADD COLUMN airtable_id TEXT',
     'ALTER TABLE serial_numbers ADD COLUMN address TEXT',
@@ -831,7 +827,8 @@ export function initSchema() {
     // « Suivi » et « Statut de traitement » ont été détruits (migration
     // 028-drop-returns-tracking-and-processing-status). Même raison que
     // ci-dessus : les laisser ici les recréerait à chaque démarrage.
-    'ALTER TABLE returns ADD COLUMN billed_at TEXT',
+    // Colonne billed_at retirée pour la même raison : « Facturé le » a été
+    // détruit avec les 5 autres champs codés en dur (migration 037).
     // return label automation (étiquette de retour générée depuis l'ERP) —
     // return_label_tracking_number porte le suivi de l'étiquette ACHETÉE depuis
     // l'ERP ; c'est aujourd'hui le seul numéro de suivi d'un retour.
@@ -886,7 +883,9 @@ export function initSchema() {
     'ALTER TABLE return_items ADD COLUMN received_at TEXT',
     'ALTER TABLE return_items ADD COLUMN received_by TEXT',
     'ALTER TABLE return_items ADD COLUMN analyzed_by TEXT',
-    'ALTER TABLE return_items ADD COLUMN product_send_id TEXT REFERENCES products(id)',
+    // product_send_id (« Produit à envoyer ») droppée par la migration 046 :
+    // la recréer ici la ferait renaître à chaque démarrage sur une base neuve,
+    // initSchema tournant AVANT les migrations.
     // subscriptions enhancements
     'ALTER TABLE subscriptions ADD COLUMN airtable_id TEXT',
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_subscriptions_airtable ON subscriptions(airtable_id) WHERE airtable_id IS NOT NULL',
@@ -1066,6 +1065,17 @@ export function initSchema() {
     'ALTER TABLE adresses ADD COLUMN check_status TEXT',
     'ALTER TABLE adresses ADD COLUMN check_issues TEXT',
     'ALTER TABLE adresses ADD COLUMN checked_at TEXT',
+
+    // Confirmation auprès de l'API d'adresses (services/addressConfirm.js) —
+    // adresses de livraison et de ferme. confirm_status = 'confirmed' |
+    // 'corrected' | 'not_found' | 'incomplete' | 'unavailable',
+    // confirm_suggestion = adresse normalisée proposée (JSON),
+    // confirm_signature = empreinte de la saisie confirmée (anti-rappel).
+    'ALTER TABLE adresses ADD COLUMN confirm_status TEXT',
+    'ALTER TABLE adresses ADD COLUMN confirm_formatted TEXT',
+    'ALTER TABLE adresses ADD COLUMN confirm_suggestion TEXT',
+    'ALTER TABLE adresses ADD COLUMN confirm_signature TEXT',
+    'ALTER TABLE adresses ADD COLUMN confirmed_at TEXT',
 
     'DROP TABLE IF EXISTS webhooks',
     'ALTER TABLE notifications ADD COLUMN read_at TEXT',
@@ -1283,7 +1293,7 @@ export function initSchema() {
     `CREATE TABLE IF NOT EXISTS sync_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       module TEXT NOT NULL,
-      trigger TEXT NOT NULL CHECK(trigger IN ('webhook','manual','scheduled')),
+      trigger TEXT NOT NULL CHECK(trigger IN ('webhook','manual','scheduled','erp-writeback','erp-create')),
       status TEXT NOT NULL CHECK(status IN ('success','error')),
       records_modified INTEGER DEFAULT 0,
       records_destroyed INTEGER DEFAULT 0,
@@ -1541,6 +1551,9 @@ export function initSchema() {
       UNIQUE(entity_type)
     );
   `)
+  // Suppression permise sur cette fiche (mode de personnalisation). NULL = non
+  // réglé : la fiche garde le comportement d'origine, et rien n'est bloqué.
+  try { db.exec(`ALTER TABLE detail_field_configs ADD COLUMN allow_delete INTEGER`) } catch { /* déjà là */ }
 
   // ── Airtable dynamic field definitions ─────────────────────────────────────
   db.exec(`
@@ -1956,6 +1969,11 @@ export function initSchema() {
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_installation_en_local TEXT') } catch {}
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_fr_local TEXT') } catch {}
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_en_local TEXT') } catch {}
+  // Codes-barres additionnels d'une pièce (UPC/EAN/ASIN du fournisseur,
+  // étiquette du fabricant…), séparés par des virgules. Le scan d'une commande
+  // les accepte au même titre que le SKU : beaucoup d'articles n'ont que
+  // l'étiquette du fournisseur collée dessus. Cf. utils/scanCodes.js.
+  try { db.exec('ALTER TABLE products ADD COLUMN scan_codes TEXT') } catch {}
   // Étape 5 « Priorité d'assemblage » — champs produits finis synchronisés depuis Airtable (one-way Airtable → ERP)
   try { db.exec('ALTER TABLE products ADD COLUMN assembly_status REAL') } catch {}            // « Status d'assemblage » (%)
   try { db.exec('ALTER TABLE products ADD COLUMN finished_min_stock INTEGER') } catch {}      // « Seuil min. produits fini »
@@ -1964,18 +1982,20 @@ export function initSchema() {
   // Étape 4 « Priorité d'assemblage »
   try { db.exec('ALTER TABLE products ADD COLUMN supplier_link TEXT') } catch {}              // « Lien fournisseur » (sync Airtable, bouton externe)
   try { db.exec('ALTER TABLE products ADD COLUMN purchase_snooze_until TEXT') } catch {}      // report étape 4 (ISO UTC Z, nullable)
-  // Lien purchases.supplier (texte libre hérité d'Airtable) → companies
+  // Fournisseur d'un achat, choisi dans companies (a remplacé le texte libre
+  // hérité d'Airtable, colonne droppée par la migration 032)
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_company_id TEXT REFERENCES companies(id)') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_company ON purchases(supplier_company_id)') } catch {}
   // Fournisseur d'un achat, résolu depuis le champ LIÉ « Fournisseur » d'Airtable
   // (table Fournisseurs) — et non depuis le single-select « Fournisseur - LEGACY »
-  // gelé auquel purchases.supplier est mappé. Le nom de la table Fournisseurs est le
+  // gelé, qui n'a plus de colonne ERP. Le nom de la table Fournisseurs est le
   // nom EXACT du fournisseur QuickBooks (variantes « … USD » incluses), ce qui permet
   // de rapprocher un achat LIA d'une facture fournisseur sans appariement flou.
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_vendor_name TEXT') } catch {}
   try { db.exec('ALTER TABLE purchases ADD COLUMN supplier_qb_vendor_id TEXT') } catch {}
-  // Verdict du vérificateur de prix d'achats (services/purchasePriceCheck.js).
-  // Colonnes ERP-natives : le sync Airtable fait un upsert sélectif, elles survivent.
+  // Verdict du vérificateur de prix d'achats. Le vérificateur lui-même a été
+  // retiré avec les colonnes qu'il lisait (prix unitaire, pièce — migration
+  // 035) ; les trois colonnes restent, personne ne les écrit plus.
   try { db.exec('ALTER TABLE purchases ADD COLUMN price_check_status TEXT') } catch {}
   try { db.exec('ALTER TABLE purchases ADD COLUMN price_check_issues TEXT') } catch {}
   try { db.exec('ALTER TABLE purchases ADD COLUMN price_checked_at TEXT') } catch {}
@@ -2807,26 +2827,9 @@ export function initSchema() {
   // à partir de la paie précédente (period_end + 1 jour) ou via un fallback (period_end - 13j).
   try { db.exec('ALTER TABLE paies ADD COLUMN period_start TEXT') } catch {}
 
-  // Banque d'heures — excédent/déficit entre heures régulières contractuelles et heures
-  // réellement travaillées (sommées depuis les feuilles de temps). Une entrée positive signifie
-  // que l'employé a fait plus d'heures que prévu sur la période ; négative = déficit.
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS hour_bank_entries (
-      id TEXT PRIMARY KEY,
-      employee_id TEXT NOT NULL REFERENCES employees(id),
-      paie_id TEXT REFERENCES paies(id),
-      paie_item_id TEXT REFERENCES paie_items(id),
-      date TEXT NOT NULL,
-      hours REAL NOT NULL,
-      source TEXT,
-      notes TEXT,
-      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
-      deleted_at TEXT
-    )
-  `)
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_hour_bank_employee ON hour_bank_entries(employee_id) WHERE deleted_at IS NULL') } catch {}
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_hour_bank_paie ON hour_bank_entries(paie_id) WHERE deleted_at IS NULL') } catch {}
+  // Banque d'heures — retirée le 2026-09-06 (table hour_bank_entries supprimée par la
+  // migration 042). Le CREATE TABLE a été retiré d'ici pour qu'elle ne renaisse pas au
+  // démarrage ; la migration reste le seul point de vérité de sa disparition.
 
   // Codes d'activité — liste RH indépendante des projets clients, utilisée sur les feuilles de temps
   // (ex: Formation, Administration, Vacances, R&D général).
@@ -3279,7 +3282,23 @@ export function initSchema() {
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN qualification_call_id TEXT') } catch {}
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN stripe_subscription_id TEXT') } catch {}
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN public_token TEXT') } catch {}
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN custom_answers_json TEXT') } catch {}
+  // Brouillon créé par le vérificateur + avancement de sa checklist. Le public
+  // reste lisible, mais une réponse liée à une commande ne peut plus être
+  // resoumise ni produire une seconde commande.
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN generated_order_id TEXT REFERENCES orders(id)') } catch {}
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN verification_json TEXT') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_onboarding_qual_call ON customer_onboarding_responses(qualification_call_id)') } catch {}
+  // Calque de surcharges du formulaire (titres, questions, choix, questions
+  // personnalisées) édité depuis /discovery-form-editor. Singleton id='default'.
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS discovery_form_schema (
+      id TEXT PRIMARY KEY,
+      schema_json TEXT NOT NULL,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_by TEXT
+    )`)
+  } catch {}
   try { db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_onboarding_public_token ON customer_onboarding_responses(public_token) WHERE public_token IS NOT NULL') } catch {}
   // stripe_session_id existant est NOT NULL UNIQUE — incompatible avec entrées issues de qualification (pas de session).
   // On rend la colonne nullable en recréant la table si elle est encore en NOT NULL.
@@ -3335,6 +3354,9 @@ export function initSchema() {
     console.warn('⚠️  Migration customer_onboarding_responses nullable stripe_session_id:', e.message)
   }
 
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN form_options_json TEXT') } catch {}
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN within_central_controller_range INTEGER') } catch {}
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS slow_page_loads (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3351,7 +3373,7 @@ export function initSchema() {
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at DESC)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_shipments_created ON shipments(created_at DESC)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_adresses_company_date ON adresses(company_id, created_at)`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_tickets_created ON tickets(created_at)`) } catch {}
+  // idx_tickets_created : retiré avec tickets.created_at (migration 040).
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_serial_state_changes_date ON serial_state_changes(changed_at)`) } catch {}
 
   // Pièces jointes polymorphes — un PDF/photo/doc attaché à n'importe quel
@@ -4463,6 +4485,18 @@ export function initSchema() {
   // relue ne se perde jamais dans la liste. Une relance (follow_up / reprise) le remet à
   // NULL : la nouvelle réponse de l'agent redevient « à lire ».
   try { db.exec(`ALTER TABLE work_prompts ADD COLUMN seen_at TEXT`) } catch {}
+  // Modèle Claude choisi POUR CET ITEM (fable/opus/sonnet/haiku), au moment du dépôt
+  // — c'est le sélecteur de la fenêtre « Modifier le système ». Il ne remplace que le
+  // modèle du préréglage : l'effort reste celui du préréglage, et le repli quota
+  // s'applique comme d'habitude. NULL = pas de choix, on suit le préréglage (donc le
+  // modèle préféré de l'agent).
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN model TEXT`) } catch {}
+  // Départ différé : instant (ISO UTC) avant lequel l'ordonnanceur ne prend PAS cet
+  // item, même s'il est en tête de file — c'est le choix « ce soir, 19 h » de la
+  // fenêtre « Modifier le système ». L'item reste 'queued' (il occupe la file, la
+  // carte le dit), les autres passent devant en attendant l'heure. NULL = départ dès
+  // qu'un poste est libre, comportement d'origine.
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN start_at TEXT`) } catch {}
 
   // Fil de discussion d'un item de la file : chaque tâche a SA conversation, qui
   // survit aux exécutions successives (une relance crée une nouvelle tâche agent,
@@ -4647,6 +4681,9 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rt_completion_period ON recurring_task_completions(task_id, period_key)`) } catch {}
+  // Qui a coché : 'auto' quand c'est l'ERP qui l'a constaté (ex. le message
+  // hebdomadaire du budget marketing parti à Émilie), NULL quand c'est un humain.
+  try { db.exec(`ALTER TABLE recurring_task_completions ADD COLUMN source TEXT`) } catch {}
 
   // ── Budget marketing (Émilie) ──────────────────────────────────────────────
   // Remplace la procédure manuelle « Suivi - Budget marketing (Émilie) » :
@@ -5066,9 +5103,10 @@ export function initSchema() {
 
   // Date de la commande IMPRIMÉE sur la facture (« Date de la commande / Order Date »),
   // distincte de receipt_date (date de LA FACTURE). Fournisseurs qui la subdivisent en
-  // plusieurs livraisons partielles (Digikey…) : cette date se compare directement à
-  // purchases.order_date pour départager deux commandes de la même pièce — signal bien
-  // plus net que la proximité approximative avec la date de facture (cf. purchaseLiaMatch.js).
+  // plusieurs livraisons partielles (Digikey…). Elle servait à départager deux
+  // commandes de la même pièce en la comparant à purchases.order_date — colonne
+  // droppée depuis (migration 035), le signal n'existe plus côté achats. La date
+  // reste extraite et affichée sur le reçu.
   try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN order_date TEXT`) } catch {}
 
   // Une ligne = « cette transaction bancaire attend sa facture ». Sert à trois
@@ -5250,6 +5288,33 @@ export function initSchema() {
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_surveys_ticket ON ticket_surveys(ticket_id) WHERE deleted_at IS NULL`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_ticket_surveys_msgid ON ticket_surveys(telnyx_message_id)`) } catch {}
 
+  // Épingler une interaction (note, courriel, appel…) en haut du fil d'un
+  // contact/entreprise, indépendamment de sa date — voir InteractionTimeline.jsx.
+  try { db.exec(`ALTER TABLE interactions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`) } catch {}
+  try { db.exec(`ALTER TABLE interactions ADD COLUMN pinned_at TEXT`) } catch {}
+
+  // Pièces jointes des courriels Gmail liés à un contact (voir ContactDetail).
+  // Le sync emails/interactions n'importe que le corps — les métadonnées de
+  // pièces jointes sont listées à la demande (au premier chargement de la
+  // fiche contact) via Gmail, le contenu téléchargé seulement au clic.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS email_attachments (
+      id TEXT PRIMARY KEY,
+      email_id TEXT NOT NULL REFERENCES emails(id) ON DELETE CASCADE,
+      gmail_attachment_id TEXT NOT NULL,
+      file_name TEXT,
+      content_type TEXT,
+      file_size INTEGER,
+      file_path TEXT,
+      fetched_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(email_id, gmail_attachment_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_attachments_email ON email_attachments(email_id);
+  `)
+  try { db.exec(`ALTER TABLE emails ADD COLUMN attachments_listed_at TEXT`) } catch {}
+  // Cci d'un courriel sortant (champ Cci de la modale de composition)
+  try { db.exec(`ALTER TABLE emails ADD COLUMN bcc TEXT`) } catch {}
+
   console.log('Database schema initialized');
 }
 
@@ -5309,4 +5374,3 @@ export function seedSellableProducts() {
   run()
   console.log(`✅ Sellable products seeded`)
 }
-

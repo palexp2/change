@@ -22,6 +22,10 @@ import { dynamicFieldDirection, writebackModuleForTable } from './airtableWriteb
 // neufs (client/src/components/CustomFieldModal.jsx) — un choix venu d'Airtable
 // est coloré comme s'il avait été ajouté à la main.
 const SELECT_COLORS = ['gray', 'slate', 'blue', 'indigo', 'green', 'yellow', 'orange', 'red', 'purple', 'pink', 'teal']
+// Champ réglé « sans couleur » (tous ses choix portent la sentinelle) : un choix
+// neuf naît sans couleur lui aussi, sinon le sync repeuplerait des pastilles.
+const NO_COLOR = 'none'
+const isColorless = choices => choices.length > 0 && choices.every(c => c?.color === NO_COLOR)
 
 function choiceId() {
   return `opt_${uuid().slice(0, 8)}`
@@ -35,12 +39,14 @@ export function mergeChoices(optionsJson, names) {
   if (optionsJson) { try { opts = JSON.parse(optionsJson) || {} } catch { opts = {} } }
   const choices = Array.isArray(opts.choices) ? opts.choices.slice() : []
   const seen = new Set(choices.map(c => String(c?.label ?? '').trim()).filter(Boolean))
+  const colorless = isColorless(choices)
   let added = 0
   for (const raw of names || []) {
     const label = String(raw ?? '').trim()
     if (!label || seen.has(label)) continue
     seen.add(label)
-    choices.push({ id: choiceId(), label, color: SELECT_COLORS[(choices.length) % SELECT_COLORS.length] })
+    const color = colorless ? NO_COLOR : SELECT_COLORS[(choices.length) % SELECT_COLORS.length]
+    choices.push({ id: choiceId(), label, color })
     added++
   }
   if (!added) return null
@@ -69,12 +75,13 @@ export function mergeNativeChoices(optionsJson, names) {
   const choices = Array.isArray(opts.choices) ? opts.choices.slice() : []
   if (choices.length === 0) return null // pas de config → la liste vit dans le code
   const seen = new Set(choices.map(c => String(c?.value ?? c?.label ?? '').trim()).filter(Boolean))
+  const colorless = isColorless(choices)
   let added = 0
   for (const raw of names || []) {
     const value = String(raw ?? '').trim()
     if (!value || seen.has(value)) continue
     seen.add(value)
-    choices.push({ value, label: value, color: null })
+    choices.push({ value, label: value, color: colorless ? NO_COLOR : null })
     added++
   }
   if (!added) return null

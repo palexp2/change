@@ -314,7 +314,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
               </Link>
               {p.bill_qb_url
                 ? <a href={p.bill_qb_url} target="_blank" rel="noreferrer"
-                  className="min-w-0 inline-flex items-center gap-1 text-brand-600 hover:underline"
+                  className="min-w-0 inline-flex items-center gap-1 link-record"
                   data-testid={`payment-bill-qb-${p.id}`}
                   title="Ouvrir la facture dans QuickBooks">
                   <span className="truncate">{p.invoice_number || p.achat_vendor || 'facture liée'}</span>
@@ -418,7 +418,7 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
               c'est la pièce justificative du cochage automatique. */}
           {p.qb_url && (
             <a href={p.qb_url} target="_blank" rel="noreferrer"
-              className="mt-2 inline-block text-xs text-brand-600 hover:underline"
+              className="mt-2 inline-block text-xs link-record"
               data-testid={`payment-qb-link-${p.id}`}
               title="Écriture QuickBooks appariée au compte bancaire — la preuve du passage">
               Voir l'écriture QuickBooks
@@ -549,7 +549,7 @@ function QbClearPanel({ candidates, lastRun, busy, onSync, onApply }) {
                   </span>
                   {c.qb?.url && (
                     <a href={c.qb.url} target="_blank" rel="noreferrer"
-                      className="text-xs text-brand-600 hover:underline">Voir dans QuickBooks</a>
+                      className="text-xs link-record">Voir dans QuickBooks</a>
                   )}
                   {c.twin && (
                     <span className="text-xs text-amber-700">
@@ -1417,7 +1417,7 @@ export default function PaiementsEmis() {
             <PageTitle>Paiements et virements émis</PageTitle>
             <p className="text-sm text-slate-500 mt-0.5">
               Tant qu'un paiement n'est pas passé à la banque, il pèse sur la{' '}
-              <Link to="/comptabilite" className="text-brand-600 hover:underline">projection du solde</Link>.
+              <Link to="/comptabilite" className="link-record">projection du solde</Link>.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">

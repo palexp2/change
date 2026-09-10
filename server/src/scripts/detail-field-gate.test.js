@@ -37,7 +37,9 @@ const DETAIL_PAGES = new Map([
   ['DirectDepositDetail.jsx', null], // dépôt direct d'une paie : pas de table dans tableDefs
   ['EmployeeDetail.jsx',      'employees'],
   ['EnvoisDetail.jsx',        'shipments'],
+  ['InteractionDetail.jsx',   'interactions'],
   ['FactureDetail.jsx',       'factures'],
+  ['OpsIssueDetail.jsx',      'ops_issues'],
   ['OrderDetail.jsx',         'orders'],
   ['ProductDetail.jsx',       'products'],
   ['ProjectDetail.jsx',       'projects'],

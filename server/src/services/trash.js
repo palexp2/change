@@ -51,7 +51,7 @@ export const TRASH_TABLES = [
   },
   {
     key: 'returns', table: 'returns', label: 'Retours', autoPurge: true,
-    sql: `SELECT id, COALESCE(n_de_retour, id) as label, deleted_at FROM returns WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
+    sql: `SELECT id, id as label, deleted_at FROM returns WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
   },
   {
     key: 'projects', table: 'projects', label: 'Projets', autoPurge: true,
@@ -72,6 +72,10 @@ export const TRASH_TABLES = [
   {
     key: 'serial_numbers', table: 'serial_numbers', label: 'Numéros de série', autoPurge: true,
     sql: `SELECT id, serial as label, deleted_at FROM serial_numbers WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
+  },
+  {
+    key: 'ops_issues', table: 'ops_issues', label: "Problèmes d'opérations", autoPurge: true,
+    sql: `SELECT id, title as label, deleted_at FROM ops_issues WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC`,
   },
 ]
 

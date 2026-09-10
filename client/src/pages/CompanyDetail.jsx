@@ -1,26 +1,27 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, LifeBuoy, ShoppingCart, Undo2, Users, MapPin, Phone, ClipboardList } from 'lucide-react'
+import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import { CreateSubscriptionModal } from '../components/CreateSubscriptionModal.jsx'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
-import { Badge, phaseBadgeColor, orderStatusColor, ticketStatusColor } from '../components/Badge.jsx'
+import { Badge, phaseBadgeColor, orderStatusColor, FACTURE_STATUS_COLORS } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import { Section } from '../components/SectionNav.jsx'
-import { useSectionNav } from '../lib/useSectionNav.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
+import { CrmDetailLayout, CrmCard, CrmRow, CrmAdd, CrmCenterTabs, scrollCrmToTop } from '../components/CrmDetailLayout.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import ContactDetail from './ContactDetail.jsx'
+import ProjectDetail from './ProjectDetail.jsx'
 import OrderDetail from './OrderDetail.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import RetourDetail from './RetourDetail.jsx'
-import TicketDetail from './TicketDetail.jsx'
 import SerialDetail from './SerialDetail.jsx'
 import FactureDetail from './FactureDetail.jsx'
+import { AchatModal } from './AchatsFournisseurs.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
@@ -36,17 +37,15 @@ import { fmtDate } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
-import { AddressCheckBadge, AddressCheckIssues, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
+import { AddressCheckBadge, AddressCheckIssues, AddressConfirmBadge, AddressRecheckButton, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
 import { AdresseModalContent } from '../components/AdresseModal.jsx'
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
-const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre']
 
 
 import { fmtMoney } from '../utils/formatters.js'
 import { fmtPhone, fmtAddress as fmtAddressBase } from '../utils/formatters.js'
-import { useDetailFields } from '../lib/useDetailFields.jsx'
-import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { shipmentTitle, shipmentSubtitle } from '../lib/shipmentLabel.js'
 
 const fmtCad = (n) => fmtMoney(n, 'CAD', { fallback: '$0', zeroIsEmpty: true, maximumFractionDigits: 0 })
@@ -63,7 +62,7 @@ function fieldTypeInput(type) {
 const SERIAL_RENDERS = {
   serial: row => <span className="font-mono font-medium text-slate-900">{row.serial}</span>,
   product_name: row => row.product_id
-    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 text-brand-600 hover:underline">
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-2 link-record">
         {row.product_image
           ? <TableThumb src={row.product_image} className="border border-slate-200 shrink-0" />
           : <div className="h-7 w-7 rounded border border-slate-200 bg-slate-100 shrink-0" />}
@@ -78,6 +77,8 @@ const SERIAL_COLUMNS = TABLE_COLUMN_META.serial_numbers
   .filter(m => m.id !== 'company_name')
   .map(meta => ({ ...meta, render: SERIAL_RENDERS[meta.id] }))
 
+// Éditeur seul : le libellé, la place et la présence du champ sont rendus par
+// la carte de champs commune (<DetailFieldGrid>).
 function InlineField({ field, value, saving, onSave }) {
   const [local, setLocal] = useState(String(value ?? ''))
   useEffect(() => { setLocal(String(value ?? '')) }, [value])
@@ -94,24 +95,18 @@ function InlineField({ field, value, saving, onSave }) {
   if (field.type === 'boolean') {
     const checked = value === 1 || value === true || value === '1'
     return (
-      <div className={field.span2 ? 'col-span-2' : ''}>
-        <label className="inline-flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={checked}
-            onChange={e => onSave(e.target.checked ? 1 : 0)}
-            disabled={saving}
-            className="rounded"
-          />
-          <span className="text-sm text-slate-700">{field.label}</span>
-        </label>
-      </div>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={e => onSave(e.target.checked ? 1 : 0)}
+        disabled={saving}
+        className="rounded"
+      />
     )
   }
 
   return (
-    <div className={field.span2 ? 'col-span-2' : ''}>
-      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</div>
+    <>
       {field.type === 'select' ? (
         // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
         (field.options || []).length > 10 ? (
@@ -146,17 +141,17 @@ function InlineField({ field, value, saving, onSave }) {
           className={inputCls}
         />
       )}
-    </div>
+    </>
   )
 }
 
+// « Type », « Téléphone » et « Site web » ont été retirés le 2026-09-07 :
+// colonnes droppées (migration 045).
+// « Langue » retirée de la fiche le 2026-09-09 (fiche entreprise seulement) :
+// la colonne reste en base et sur les contacts.
 const COMPANY_FIELDS = [
-  { key: 'type',            label: 'Type',      type: 'select', options: TYPES },
-  { key: 'lifecycle_phase', label: 'Phase',     type: 'select', options: PHASES },
-  { key: 'phone',           label: 'Téléphone', type: 'phone' },
-  { key: 'website',         label: 'Site web',  type: 'url', span2: true },
+  { key: 'lifecycle_phase', label: 'Phase',     type: 'select', options: PHASES, span2: true },
   { key: 'currency',        label: 'Devise',    type: 'select', options: ['CAD','USD','EUR'] },
-  { key: 'language',        label: 'Langue',    type: 'select', options: ['French','English'] },
   { key: 'is_vendeur_orisha', label: 'Vendeur Orisha', type: 'boolean', span2: true },
   { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
 ]
@@ -584,31 +579,23 @@ function QualificationCallsPanel({ calls }) {
   )
 }
 
-const SECTION_LABELS = {
-  info: 'Informations',
-  contacts: 'Contacts',
-  interactions: 'Interactions',
-  projets: 'Projets',
-  commandes: 'Commandes',
-  envois: 'Envois',
-  retours: 'Retours (RMA)',
-  support: 'Billets',
-  'numéros de série': 'N° de série',
-  factures: 'Factures',
-  abonnements: 'Abonnements',
-  tâches: 'Tâches',
-  achats: 'Achats fourn.',
-  onboarding: 'Onboarding',
-  qualification: 'Qualification call',
-}
-
-// Les sous-tableaux étant désormais empilés, chacun est borné en hauteur selon
-// son nombre de lignes (32 px/ligne + l'en-tête collant) pour éviter les grands
-// vides sous une table de deux lignes.
+// Hauteur du tableau ouvert au centre : bornée par son nombre de lignes
+// (32 px/ligne + l'en-tête collant) pour éviter un grand vide sous deux lignes.
 function stackedTableHeight(rows) {
   if (!rows) return '190px'
-  return `${Math.min(520, Math.max(160, 44 + rows * 32))}px`
+  return `${Math.min(560, Math.max(160, 44 + rows * 32))}px`
 }
+
+// Nombre de lignes montrées dans une carte de la colonne de droite ; le reste
+// s'atteint par « Tout voir », qui ouvre le tableau complet au centre.
+const RAIL_ROWS = 5
+
+const ABO_STATUS = { active: 'Actif', canceled: 'Annulé', past_due: 'En retard', trialing: 'Essai' }
+
+// Titre du panneau d'un achat fournisseur (carte de droite et tableau central).
+const achatTitle = (row) => (row.type === 'bill'
+  ? (row.bill_number || row.vendor_invoice_number || 'Facture fournisseur')
+  : (row.description || row.reference || 'Dépense'))
 
 // `recordId` + `embedded` permettent de monter cette fiche dans le side-peek
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
@@ -656,6 +643,7 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [envois, setEnvois] = useState([])
   const [achats, setAchats] = useState([])
   const [achatsTotal, setAchatsTotal] = useState(0)
+  const [selectedAchat, setSelectedAchat] = useState(null)
   const [retours, setRetours] = useState([])
   const [adresses, setAdresses] = useState([])
   const [showAdresseModal, setShowAdresseModal] = useState(false)
@@ -663,6 +651,9 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
   const [onboardingResponses, setOnboardingResponses] = useState([])
   const [qualificationCalls, setQualificationCalls] = useState([])
+  // Colonne du centre : le fil des événements, ou le tableau complet d'un
+  // groupe de records liés ouvert depuis la colonne de droite.
+  const [centerView, setCenterView] = useState('fil')
   const { record: company, setRecord: setCompany, loading, loadError, reload: load } =
     useDetailRecord(() => api.companies.get(id), [id])
 
@@ -680,6 +671,14 @@ export default function CompanyDetail({ recordId, onClose }) {
     }
   })
 
+  // Verdict du vérificateur d'adresses : il est recalculé à chaque écriture, y
+  // compris hors de cette page (fiche adresse, import, formulaire du client).
+  // Sans cet abonnement, le message « à corriger » restait affiché ici.
+  useRealtimeChannel('adresse:list', (msg) => {
+    if (msg.type !== 'adresse:updated') return
+    setAdresses(prev => prev.map(a => (a.id === msg.payload.id ? { ...a, ...msg.payload } : a)))
+  })
+
   useEffect(() => {
     api.adresses.list({ company_id: id, limit: 'all' }).then(r => setAdresses(r.data || [])).catch(() => {})
     api.companies.onboardingResponses(id).then(r => setOnboardingResponses(r.data || [])).catch(() => {})
@@ -687,26 +686,9 @@ export default function CompanyDetail({ recordId, onClose }) {
   }, [id])
 
 
-  // Portier des champs supprimés : un champ retiré dans /champs/companies sort
-  // de la fiche comme il sort du tableau, et un renommage s'y voit aussi.
-  const baseFields = useMemo(() => COMPANY_FIELDS.filter(f => f.defaultVisible !== false), [])
-  const { fields: visibleFields } = useDetailFields('companies', baseFields)
-
-  // ── Sections empilées + scroll-spy ──────────────────────────────────────────
-  // Le sélecteur latéral n'affiche plus/ne masque plus les sections : tout est
-  // rendu à la suite et l'entrée surlignée suit le défilement.
-  // `interactions` ferme la liste : le fil de discussion est long et à hauteur
-  // variable, il repoussait tous les sous-tableaux hors de vue.
-  const sections = useMemo(() => [
-    'info', 'contacts', 'projets', 'commandes', 'envois', 'retours', 'support',
-    'numéros de série', 'factures', 'abonnements', 'tâches',
-    ...(company?.quickbooks_vendor_id ? ['achats'] : []),
-    ...(onboardingResponses.length > 0 ? ['onboarding'] : []),
-    ...(qualificationCalls.length > 0 ? ['qualification'] : []),
-    'interactions',
-  ], [company?.quickbooks_vendor_id, onboardingResponses.length, qualificationCalls.length])
-
-  const { activeSection, goToSection, registerSection } = useSectionNav(sections, { ready: !loading && !!company })
+  // Portier des champs supprimés, libellés et champs personnalisés : appliqués
+  // par la carte de champs commune (<DetailFieldGrid>), qui règle aussi leur
+  // ordre et leur présence.
 
   // ── Colonnes DataTable des sous-tableaux liés ────────────────────────────
   // Dérivées des metas company_* de tableDefs.js, enrichies ici des render()
@@ -731,6 +713,23 @@ export default function CompanyDetail({ recordId, onClose }) {
     return TABLE_COLUMN_META.company_contacts.map(m => ({ ...m, render: RENDERS[m.id] }))
   }, [])
 
+  const projectColumns = useMemo(() => {
+    const RENDERS = {
+      name: row => <span className="font-medium text-slate-900">{row.name}</span>,
+      type: row => row.type || <span className="text-slate-400">—</span>,
+      probability: row => {
+        if (row.probability == null) return <span className="text-slate-400">—</span>
+        const color = row.probability >= 75 ? 'text-green-600' : row.probability >= 40 ? 'text-amber-500' : 'text-red-500'
+        return <span className={`font-semibold ${color}`}>{row.probability}%</span>
+      },
+      nb_greenhouses: row => row.nb_greenhouses > 0
+        ? <span className="text-slate-600">{row.nb_greenhouses}</span>
+        : <span className="text-slate-400">—</span>,
+      close_date: row => <span className="text-slate-500">{fmtDate(row.close_date) || '—'}</span>,
+    }
+    return TABLE_COLUMN_META.company_projects.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
+
   const orderColumns = useMemo(() => {
     const RENDERS = {
       order_number: row => <span className="font-medium">#{row.order_number}</span>,
@@ -741,20 +740,15 @@ export default function CompanyDetail({ recordId, onClose }) {
     return TABLE_COLUMN_META.company_orders.map(m => ({ ...m, render: RENDERS[m.id] }))
   }, [])
 
-  const ticketColumns = useMemo(() => {
-    const RENDERS = {
-      title: row => <span className="font-medium">{row.title}</span>,
-      type: row => row.type ? <Badge color="blue">{row.type}</Badge> : <span className="text-slate-400">—</span>,
-      status: row => <Badge color={ticketStatusColor(row.status)}>{row.status}</Badge>,
-      created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
-    }
-    return TABLE_COLUMN_META.company_tickets.map(m => ({ ...m, render: RENDERS[m.id] }))
-  }, [])
+  // L'onglet « Billets » a disparu avec `tickets.company_id` (migration 040) :
+  // un billet ne cite plus aucune entreprise.
 
   const factureColumns = useMemo(() => {
     const RENDERS = {
       document_number: row => <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>,
-      status: row => <span className="text-slate-600">{row.status || '—'}</span>,
+      status: row => row.status
+        ? <Badge color={FACTURE_STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
+        : <span className="text-slate-400">—</span>,
       document_date: row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
       amount_before_tax_cad: row => <span className="font-medium text-slate-700">{fmtMoney(row.amount_before_tax_cad, row.currency)}</span>,
       currency: row => <span className="font-mono text-xs text-slate-600">{(row.currency || 'CAD').toUpperCase()}</span>,
@@ -765,7 +759,7 @@ export default function CompanyDetail({ recordId, onClose }) {
   const abonnementColumns = useMemo(() => {
     const RENDERS = {
       product_name: row => row.product_id
-        ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.product_name || '—'}</Link>
+        ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.product_name || '—'}</Link>
         : <span className="text-slate-900">{row.product_name || '—'}</span>,
       type: row => <span className="text-slate-600">{row.type || '—'}</span>,
       status: row => (
@@ -809,6 +803,21 @@ export default function CompanyDetail({ recordId, onClose }) {
   }, [])
 
   const achatColumns = useMemo(() => {
+    // Mêmes couleurs que la page « Achats fournisseurs » (STATUS_COLORS),
+    // pour que le statut se lise pareil partout où il apparaît.
+    const ACHAT_STATUS_COLORS = {
+      'Brouillon': 'gray',
+      'Soumis': 'blue',
+      'Approuvé': 'green',
+      'Refusé': 'red',
+      'Remboursé': 'purple',
+      'Reçue': 'blue',
+      'Approuvée': 'indigo',
+      'Payée partiellement': 'yellow',
+      'Payée': 'green',
+      'En retard': 'red',
+      'Annulée': 'gray',
+    }
     const RENDERS = {
       type: row => (
         <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${row.type === 'bill' ? 'bg-brand-100 text-brand-700' : 'bg-slate-100 text-slate-600'}`}>
@@ -819,7 +828,9 @@ export default function CompanyDetail({ recordId, onClose }) {
         const ref = row.bill_number || row.vendor_invoice_number || row.reference || row.description || '—'
         return <span className="font-mono text-slate-900 truncate">{ref}</span>
       },
-      status: row => <span className="text-slate-500">{row.status}</span>,
+      status: row => row.status
+        ? <Badge color={ACHAT_STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
+        : <span className="text-slate-400">—</span>,
       date_achat: row => <span className="text-slate-500">{fmtDate(row.date_achat)}</span>,
       due_date: row => {
         if (!row.due_date) return <span className="text-slate-400">—</span>
@@ -837,12 +848,8 @@ export default function CompanyDetail({ recordId, onClose }) {
   }, [])
 
   const retourColumns = useMemo(() => {
+    // « Statut » retiré : colonne droppée (migration serveur 041).
     const RENDERS = {
-      n_de_retour: row => <span className="font-mono font-medium text-slate-900">{row.n_de_retour || '—'}</span>,
-      status: row => (
-        <span className={`inline-flex text-xs font-medium px-2 py-0.5 rounded-full ${row.status === 'Fermé' ? 'bg-slate-100 text-slate-500' : row.status === 'Ouvert' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>{row.status || '—'}</span>
-      ),
-      contact_name: row => <span className="text-slate-500">{row.contact_first_name ? `${row.contact_first_name} ${row.contact_last_name || ''}`.trim() : '—'}</span>,
       order_number: row => <span className="text-slate-500">{row.order_number ? `#${row.order_number}` : '—'}</span>,
       items_count: row => <span className="text-slate-700">{row.items_count ?? 0}</span>,
       created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
@@ -883,10 +890,13 @@ export default function CompanyDetail({ recordId, onClose }) {
 
   // Achats fournisseurs : seulement si l'entreprise est aussi un fournisseur QB.
   const isVendor = !!company?.quickbooks_vendor_id
+  const reloadAchats = useCallback(() => {
+    api.achatsFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setAchats(r.data || []); setAchatsTotal(r.total || r.data?.length || 0) }).catch(() => {})
+  }, [id])
   useEffect(() => {
     if (!isVendor) { setAchats([]); setAchatsTotal(0); return }
-    api.achatsFournisseurs.list({ vendor_id: id, limit: 'all' }).then(r => { setAchats(r.data || []); setAchatsTotal(r.total || r.data?.length || 0) }).catch(() => {})
-  }, [id, isVendor])
+    reloadAchats()
+  }, [isVendor, reloadAchats])
 
   async function loadMoreInteractions() {
     setLoadingMoreInteractions(true)
@@ -896,6 +906,16 @@ export default function CompanyDetail({ recordId, onClose }) {
       setInteractionsOffset(o => o + INTER_LIMIT)
     } finally {
       setLoadingMoreInteractions(false)
+    }
+  }
+
+  async function togglePinInteraction(item) {
+    try {
+      const updated = await api.interactions.pin(item.id, !item.pinned)
+      setInteractions(prev => [...prev].map(x => x.id === item.id ? { ...x, ...updated } : x)
+        .sort((a, b) => (b.pinned - a.pinned) || (b.timestamp || '').localeCompare(a.timestamp || '')))
+    } catch {
+      addToast({ message: "Échec de l'épinglage", type: 'error' })
     }
   }
 
@@ -947,25 +967,305 @@ export default function CompanyDetail({ recordId, onClose }) {
     return () => clearTimeout(tid)
   }, [linkQuery, contactMode, id])
 
-  const sectionCounts = {
-    contacts: company?.contacts?.length,
-    projets: company?.projects?.length,
-    interactions: interactionsTotal || undefined,
-    commandes: company?.orders?.length,
-    envois: envoisTotal || undefined,
-    support: company?.tickets?.length,
-    'numéros de série': company?.serials?.length,
-    factures: facturesTotal || undefined,
-    abonnements: abonnementsTotal || undefined,
-    tâches: tasks.length || undefined,
-    achats: achatsTotal || undefined,
-    retours: retours.length || company?.returns_count || undefined,
-    onboarding: onboardingResponses.length || undefined,
-    qualification: qualificationCalls.length || undefined,
+  function openNewTask() {
+    setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' })
+    setEditingTask(null)
+    setShowTaskModal(true)
+  }
+
+  function openTask(row) {
+    setEditingTask(row)
+    setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', contact_id: row.contact_id || '', assigned_to: row.assigned_to || '', notes: row.notes || '' })
+    setShowTaskModal(true)
   }
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: company, notFound: 'Entreprise introuvable.' })
   if (pending) return pending
+
+  // ── Records liés (colonne de droite) ────────────────────────────────────────
+  // Une entrée par groupe : les 5 premières lignes en carte compacte, et le
+  // tableau complet — recherche, colonnes, actions groupées — au centre dès
+  // qu'on l'ouvre.
+  const related = [
+    {
+      key: 'contacts', label: 'Contacts', rows: company.contacts || [],
+      add: () => setShowContactModal(true),
+      row: r => ({
+        to: `/contacts/${r.id}`,
+        primary: `${r.first_name || ''} ${r.last_name || ''}`.trim() || '—',
+        secondary: r.email || fmtPhone(r.phone || r.mobile) || null,
+      }),
+      table: () => (
+        <DataTable
+          table="company_contacts"
+          columns={contactColumns}
+          data={company.contacts || []}
+          searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile']}
+          peek={{
+            title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || `Contact #${row.id}`,
+            subtitle: () => company.name,
+            to: row => `/contacts/${row.id}`,
+            width: 1120,
+            minWidth: 1100,
+            render: (row, { close }) => <ContactDetail recordId={row.id} embedded onClose={() => { close(); load() }} />,
+          }}
+          height={stackedTableHeight(company.contacts?.length)}
+          emptyState={{ icon: Users, title: 'Aucun contact', description: "Aucune personne n'est encore rattachée à cette entreprise.", cta: { label: 'Ajouter', icon: Plus, onClick: () => setShowContactModal(true) } }}
+        />
+      ),
+    },
+    {
+      key: 'projets', label: 'Projets', rows: company.projects || [],
+      addTo: `/pipeline?company_id=${id}`,
+      row: r => ({
+        to: `/projects/${r.id}`,
+        primary: r.name || 'Projet',
+        secondary: r.type || null,
+        meta: r.probability != null ? `${r.probability}%` : null,
+      }),
+      table: () => (
+        <DataTable
+          table="company_projects"
+          columns={projectColumns}
+          data={company.projects || []}
+          searchFields={['name', 'type', 'vendeur_label']}
+          peek={{
+            title: row => row.name || 'Projet',
+            subtitle: row => [company.name, row.type].filter(Boolean).join(' · '),
+            to: row => `/projects/${row.id}`,
+            width: 720,
+            render: (row, { close }) => <ProjectDetail recordId={row.id} onClose={close} />,
+          }}
+          height={stackedTableHeight(company.projects?.length)}
+          emptyState={{ icon: FolderKanban, title: 'Aucun projet', description: "Cette entreprise n'a encore aucun projet au pipeline.", cta: { label: 'Nouveau projet', icon: Plus, to: `/pipeline?company_id=${id}` } }}
+        />
+      ),
+    },
+    {
+      key: 'commandes', label: 'Commandes', rows: company.orders || [],
+      row: r => ({
+        to: `/orders/${r.id}`,
+        primary: `#${r.order_number}`,
+        secondary: fmtDate(r.created_at),
+        meta: r.status,
+      }),
+      table: () => (
+        <DataTable
+          table="company_orders"
+          columns={orderColumns}
+          data={company.orders || []}
+          searchFields={['order_number', 'status']}
+          peek={{
+            title: row => `Commande #${row.order_number}`,
+            subtitle: () => company.name,
+            to: row => `/orders/${row.id}`,
+            width: 900,
+            render: (row, { close }) => <OrderDetail recordId={row.id} embedded onClose={close} />,
+          }}
+          height={stackedTableHeight(company.orders?.length)}
+          emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'est encore associée à cette entreprise." }}
+        />
+      ),
+    },
+    {
+      key: 'envois', label: 'Envois', rows: envois, count: envoisTotal || envois.length,
+      row: r => ({
+        to: `/envois/${r.id}`,
+        primary: r.tracking_number || shipmentTitle(r),
+        secondary: [r.carrier, r.order_number ? `#${r.order_number}` : null].filter(Boolean).join(' · ') || null,
+        meta: fmtDate(r.shipped_at),
+      }),
+      table: () => (
+        <DataTable
+          table="company_envois"
+          columns={envoiColumns}
+          data={envois}
+          searchFields={['tracking_number', 'carrier', 'order_number', 'status']}
+          peek={{
+            title: shipmentTitle,
+            subtitle: row => shipmentSubtitle({ ...row, company_name: row.company_name || company.name }),
+            to: row => `/envois/${row.id}`,
+            width: 860,
+            render: (row, { close }) => <EnvoisDetail recordId={row.id} embedded onClose={close} />,
+          }}
+          height={stackedTableHeight(envois.length)}
+          emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée pour cette entreprise." }}
+        />
+      ),
+    },
+    {
+      key: 'factures', label: 'Factures', rows: factures, count: facturesTotal || factures.length,
+      row: r => ({
+        to: `/factures/${r.id}`,
+        primary: r.document_number || `Facture #${r.id}`,
+        secondary: fmtDate(r.document_date),
+        meta: fmtMoney(r.amount_before_tax_cad, r.currency),
+      }),
+      table: () => (
+        <DataTable
+          table="company_factures"
+          columns={factureColumns}
+          data={factures}
+          searchFields={['document_number', 'status', 'currency']}
+          peek={{
+            title: row => row.document_number || `Facture #${row.id}`,
+            subtitle: () => company.name,
+            to: row => `/factures/${row.id}`,
+            width: 780,
+            render: (row, { close }) => <FactureDetail recordId={row.id} embedded onClose={close} />,
+          }}
+          height={stackedTableHeight(factures.length)}
+          emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise pour cette entreprise." }}
+        />
+      ),
+    },
+    {
+      key: 'abonnements', label: 'Abonnements', rows: abonnements, count: abonnementsTotal || abonnements.length,
+      add: () => setSubscriptionModalOpen(true),
+      row: r => ({
+        onClick: () => setSelectedAbonnement(r),
+        primary: r.product_name || '—',
+        secondary: ABO_STATUS[r.status] || r.status || null,
+        meta: fmtCad(r.amount_cad),
+      }),
+      table: () => (
+        <DataTable
+          table="company_abonnements"
+          columns={abonnementColumns}
+          data={abonnements}
+          searchFields={['product_name', 'type', 'status']}
+          onRowClick={row => setSelectedAbonnement(row)}
+          height={stackedTableHeight(abonnements.length)}
+          emptyState={{
+            icon: RefreshCw,
+            title: 'Aucun abonnement',
+            description: "Cette entreprise n'a aucun abonnement Stripe actif ou passé.",
+            cta: { label: 'Créer un abonnement', icon: Plus, onClick: () => setSubscriptionModalOpen(true) },
+          }}
+        />
+      ),
+    },
+    {
+      key: 'retours', label: 'Retours (RMA)', rows: retours, count: retours.length || company.returns_count,
+      row: r => ({
+        to: `/retours/${r.id}`,
+        primary: r.order_number ? `#${r.order_number}` : 'Retour',
+        secondary: fmtDate(r.created_at),
+        meta: r.items_count != null ? `${r.items_count} art.` : null,
+      }),
+      table: () => (
+        <DataTable
+          table="company_retours"
+          columns={retourColumns}
+          data={retours}
+          searchFields={['order_number']}
+          peek={{
+            title: () => 'Retour',
+            subtitle: () => company.name,
+            to: row => `/retours/${row.id}`,
+            width: 760,
+            render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
+          }}
+          height={stackedTableHeight(retours.length)}
+          emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée pour cette entreprise." }}
+        />
+      ),
+    },
+    {
+      key: 'serials', label: 'N° de série', rows: company.serials || [],
+      row: r => ({
+        to: `/serials/${r.id}`,
+        primary: r.serial || `#${r.id}`,
+        secondary: r.product_name || r.sku || null,
+      }),
+      table: () => (
+        <DataTable
+          table="company_serials"
+          columns={SERIAL_COLUMNS}
+          data={company.serials || []}
+          searchFields={['serial', 'product_name', 'status']}
+          peek={{
+            title: row => row.serial || `Numéro de série #${row.id}`,
+            subtitle: () => company.name,
+            to: row => `/serials/${row.id}`,
+            width: 680,
+            render: row => <SerialDetail recordId={row.id} embedded />,
+          }}
+          height={stackedTableHeight(company.serials?.length)}
+          bulkActions={[{
+            key: 'return-serials',
+            label: 'Retourner tous les numéros de série',
+            icon: Undo2,
+            show: rows => rows.length > 0,
+            onClick: (ids) => { setBulkReturnSerialIds(ids); setBulkReturnReason('') },
+          }]}
+        />
+      ),
+    },
+    {
+      key: 'tâches', label: 'Tâches', rows: tasks,
+      add: openNewTask,
+      row: r => ({
+        onClick: () => openTask(r),
+        primary: r.title,
+        secondary: r.status,
+        meta: fmtDate(r.due_date),
+      }),
+      table: () => (
+        <DataTable
+          table="company_tasks"
+          columns={taskColumns}
+          data={tasks}
+          searchFields={['title', 'status', 'priority']}
+          onRowClick={openTask}
+          height={stackedTableHeight(tasks.length)}
+          emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à cette entreprise pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: openNewTask } }}
+        />
+      ),
+    },
+    ...(company.quickbooks_vendor_id ? [{
+      key: 'achats', label: 'Achats fourn.', rows: achats, count: achatsTotal || achats.length,
+      row: r => ({
+        onClick: () => setSelectedAchat(r),
+        primary: r.bill_number || r.vendor_invoice_number || r.reference || r.description || '—',
+        secondary: fmtDate(r.date_achat),
+        meta: fmtCad(r.total_cad),
+      }),
+      table: () => (
+        <DataTable
+          table="company_achats"
+          columns={achatColumns}
+          data={achats}
+          searchFields={['reference', 'bill_number', 'vendor_invoice_number', 'description', 'status']}
+          peek={{
+            title: achatTitle,
+            subtitle: () => company.name,
+            width: 640,
+            key: 'achats',
+            render: (row, { close }) => (
+              <div className="px-5 py-4">
+                <AchatModal
+                  achat={row}
+                  onClose={close}
+                  onSaved={() => { reloadAchats(); close() }}
+                />
+              </div>
+            ),
+          }}
+          height={stackedTableHeight(achats.length)}
+          emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ou dépense fournisseur n'est rattachée à cette entreprise." }}
+        />
+      ),
+    }] : []),
+  ]
+
+  const openRelated = related.find(r => r.key === centerView)
+  const centerTabs = [
+    { key: 'fil', label: 'Fil', count: interactionsTotal },
+    ...(qualificationCalls.length ? [{ key: 'qualification', label: 'Qualification call', count: qualificationCalls.length }] : []),
+    ...(onboardingResponses.length ? [{ key: 'onboarding', label: 'Onboarding', count: onboardingResponses.length }] : []),
+    ...(openRelated ? [{ key: openRelated.key, label: openRelated.label, count: openRelated.count ?? openRelated.rows.length }] : []),
+  ]
 
   return (
     <DetailShell
@@ -976,8 +1276,7 @@ export default function CompanyDetail({ recordId, onClose }) {
         status: <SaveStatus status={saveState} />,
         meta: (
           <>
-          {company?.type && <span>{company?.type}</span>}
-          {company?.phone && <span>· {fmtPhone(company?.phone)}</span>}
+          {company?.city && <span>{company.city}</span>}
           {company?.central_controllers?.length > 0 && (
             <span className="flex items-center gap-3 flex-wrap">
               {company?.central_controllers.map(cc => (
@@ -987,7 +1286,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                   target="_blank"
                   rel="noopener noreferrer"
                   title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
-                  className="inline-flex items-center gap-1 text-brand-600 hover:underline"
+                  className="inline-flex items-center gap-1 link-record"
                 >
                   <ExternalLink size={12} />
                   {company?.central_controllers.length === 1 ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
@@ -1062,7 +1361,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                 <div key={cc.address} className="border-l-2 border-brand-100 pl-3">
                   <div className="text-sm font-medium text-slate-700 mb-1.5">
                     {cc.serial ? (
-                      <Link to={`/serials/${cc.id}`} className="text-brand-600 hover:underline font-mono">{cc.serial}</Link>
+                      <Link to={`/serials/${cc.id}`} className="link-record font-mono">{cc.serial}</Link>
                     ) : <span className="font-mono">—</span>}
                     <span className="ml-2 text-xs text-slate-400">adresse {cc.address}</span>
                   </div>
@@ -1074,341 +1373,169 @@ export default function CompanyDetail({ recordId, onClose }) {
       )}
         </>
       )}
-      nav={{ sections, labels: SECTION_LABELS, counts: sectionCounts, active: activeSection, onSelect: goToSection, testId: 'company-section-nav' }}
     >
-        {/* Sections */}
-        <div className="min-w-0">
-
-        {/* Section Informations (fiche + adresses + pièces jointes) */}
-        <Section id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
-          <div className="card p-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {visibleFields.map(field => {
-                if (field.key === 'name') return null
-                const value = company[field.key] ?? ''
-                const isSaving = fieldSaving === field.key
-                return (
+      {/* Layout CRM : informations à gauche, fil des événements au centre,
+          records liés à droite (cf. components/CrmDetailLayout.jsx). */}
+      <CrmDetailLayout
+        left={(
+          <>
+            {/* Carte de champs commune : l'ordre des champs, ceux qu'on garde
+                et ceux qu'on ajoute se règlent dans la fiche elle-même (bouton
+                « Personnaliser les champs » au survol de la carte). Le nom de
+                l'entreprise reste hors carte — il est déjà le titre. */}
+            <DetailFieldGrid entityType="companies" record={company} className="card p-4" onDeleted={onClose}>
+              {COMPANY_FIELDS.filter(f => f.key !== 'name').map(field => (
+                <DetailField
+                  key={field.key}
+                  id={field.key}
+                  label={field.label}
+                  span2={field.span2}
+                  saving={fieldSaving === field.key}
+                  defaultHidden={field.defaultVisible === false}
+                >
                   <InlineField
-                    key={field.key}
                     field={field}
-                    value={value}
-                    saving={isSaving}
+                    value={company[field.key] ?? ''}
+                    saving={fieldSaving === field.key}
                     onSave={val => saveField(field.key, val)}
                   />
-                )
-              })}
-              <CustomDetailFields table="companies" record={company} />
-            </div>
-          </div>
-
-          <div className="card p-6 mt-4">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-sm font-semibold text-slate-700">Adresses</h3>
-              <button onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) }} className="btn-secondary btn-sm"><Plus size={13} /> Ajouter</button>
-            </div>
-            {adresses.length === 0 ? (
-              <EmptyState
-                compact
-                icon={MapPin}
-                title="Aucune adresse"
-                description="Ajoutez une adresse de ferme, de facturation ou de livraison."
-                cta={{ label: 'Ajouter', icon: Plus, onClick: () => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) } }}
-              />
-            ) : (
-              <div className="divide-y divide-slate-100">
-                {adresses.map(a => (
-                  <div key={a.id} className="flex items-start justify-between py-3 gap-4" data-testid={`adresse-row-${a.id}`}>
-                    <div>
-                      <div className="flex items-center gap-1.5 mb-1">
-                        <span className="inline-block text-xs font-medium px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{a.address_type || '—'}</span>
-                        {/* Verdict du vérificateur d'adresses (services/addressCheck.js). */}
-                        <AddressCheckBadge status={a.check_status} />
-                      </div>
-                      <div className="text-sm text-slate-800">{a.line1}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">
-                        {[a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')}
-                      </div>
-                      <AddressCheckIssues issues={parseCheckIssues(a.check_issues)} className="mt-1" />
-                      {a.contact_name?.trim() && (
-                        <Link to={`/contacts/${a.contact_id}`} className="text-xs text-brand-500 hover:underline mt-0.5 block">{a.contact_name.trim()}</Link>
-                      )}
-                      {a.language && <div className="text-xs text-slate-400 mt-0.5">{a.language}</div>}
-                    </div>
-                    <div className="flex gap-1 flex-shrink-0">
-                      <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1"><Edit2 size={13} /></button>
-                      <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1"><Trash2 size={13} /></button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="mt-4">
-            <Attachments entityType="companies" entityId={company.id} />
-          </div>
-        </Section>
-
-        <Section
-          id="contacts"
-          label={SECTION_LABELS.contacts}
-          count={sectionCounts.contacts}
-          registerRef={registerSection('contacts')}
-          action={<button onClick={() => setShowContactModal(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>}
-        >
-          <DataTable
-            table="company_contacts"
-            columns={contactColumns}
-            data={company.contacts || []}
-            searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile']}
-            peek={{
-              title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || `Contact #${row.id}`,
-              subtitle: () => company.name,
-              to: row => `/contacts/${row.id}`,
-              width: 760,
-              render: (row, { close }) => <ContactDetail recordId={row.id} embedded onClose={() => { close(); load() }} />,
-            }}
-            height={stackedTableHeight(company.contacts?.length)}
-            emptyState={{ icon: Users, title: 'Aucun contact', description: "Aucune personne n'est encore rattachée à cette entreprise.", cta: { label: 'Ajouter', icon: Plus, onClick: () => setShowContactModal(true) } }}
-          />
-        </Section>
-
-        {/* Projects Tab */}
-        <Section
-          id="projets"
-          label={SECTION_LABELS.projets}
-          count={sectionCounts.projets}
-          registerRef={registerSection('projets')}
-          action={<Link to={`/pipeline?company_id=${id}`} className="btn-secondary btn-sm"><Plus size={14} /> Nouveau projet</Link>}
-        >
-            <div className="space-y-3">
-              {!company.projects?.length ? (
-                <div className="card">
-                  <EmptyState
-                    compact
-                    icon={FolderKanban}
-                    title="Aucun projet"
-                    description="Cette entreprise n'a encore aucun projet au pipeline."
-                    cta={{ label: 'Nouveau projet', icon: Plus, to: `/pipeline?company_id=${id}` }}
-                  />
-                </div>
-              ) : company.projects.map(p => (
-                <div key={p.id} className="card p-4">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <div className="font-medium text-slate-900">{p.name}</div>
-                      <div className="text-xs text-slate-500 mt-0.5">{p.type || '—'}</div>
-                    </div>
-                  </div>
-                  <div className="flex gap-4 mt-3 text-sm">
-                    <div><span className="text-slate-400">Valeur: </span><span className="font-medium">{fmtCad(p.value_cad)}</span></div>
-                    <div><span className="text-slate-400">Probabilité: </span><span className="font-medium">{p.probability}%</span></div>
-                    {p.nb_greenhouses > 0 && <div><span className="text-slate-400">Serres: </span><span className="font-medium">{p.nb_greenhouses}</span></div>}
-                  </div>
-                </div>
+                </DetailField>
               ))}
-            </div>
-        </Section>
+            </DetailFieldGrid>
 
-        <Section id="commandes" label={SECTION_LABELS.commandes} count={sectionCounts.commandes} registerRef={registerSection('commandes')}>
-          <DataTable
-            table="company_orders"
-            columns={orderColumns}
-            data={company.orders || []}
-            searchFields={['order_number', 'status']}
-            peek={{
-              title: row => `Commande #${row.order_number}`,
-              subtitle: () => company.name,
-              to: row => `/orders/${row.id}`,
-              width: 900,
-              render: (row, { close }) => <OrderDetail recordId={row.id} embedded onClose={close} />,
-            }}
-            height={stackedTableHeight(company.orders?.length)}
-            emptyState={{ icon: Package, title: 'Aucune commande', description: "Aucune commande n'est encore associée à cette entreprise." }}
-          />
-        </Section>
+            <CrmCard
+              title="Adresses"
+              count={adresses.length}
+              defaultOpen={adresses.length > 0}
+              testId="crm-card-adresses"
+              action={<CrmAdd
+                label="Ajouter une adresse"
+                onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) }}
+              />}
+            >
+              {adresses.length === 0 ? (
+                <div className="px-2 pb-1 text-sm text-slate-400">Aucune</div>
+              ) : (
+                <div className="divide-y divide-slate-100">
+                  {adresses.map(a => (
+                    <div key={a.id} className="flex items-start gap-2 px-2 py-2 group" data-testid={`adresse-row-${a.id}`}>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{a.address_type || '—'}</span>
+                          {/* Verdict du vérificateur d'adresses (services/addressCheck.js). */}
+                          <AddressCheckBadge status={a.check_status} />
+                          {/* Confirmation auprès de l'API (livraison / ferme). */}
+                          <AddressConfirmBadge status={a.confirm_status} />
+                          {(a.check_status === 'error' || a.check_status === 'warning') && (
+                            <AddressRecheckButton
+                              adresseId={a.id}
+                              onChecked={updated => setAdresses(prev => prev.map(x => x.id === updated.id ? { ...x, ...updated } : x))}
+                              className="opacity-0 group-hover:opacity-100 transition"
+                            />
+                          )}
+                        </div>
+                        <div className="text-sm text-slate-800 truncate">{a.line1}</div>
+                        <div className="text-xs text-slate-500">
+                          {[a.city, a.province, a.postal_code, a.country].filter(Boolean).join(', ')}
+                        </div>
+                        <AddressCheckIssues issues={parseCheckIssues(a.check_issues)} className="mt-1" />
+                        {a.contact_name?.trim() && (
+                          <Link to={`/contacts/${a.contact_id}`} className="text-xs link-record block">{a.contact_name.trim()}</Link>
+                        )}
+                      </div>
+                      <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition">
+                        <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1" title="Modifier"><Edit2 size={13} /></button>
+                        <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer"><Trash2 size={13} /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CrmCard>
 
-        <Section id="envois" label={SECTION_LABELS.envois} count={sectionCounts.envois} registerRef={registerSection('envois')}>
-          <DataTable
-            table="company_envois"
-            columns={envoiColumns}
-            data={envois}
-            searchFields={['tracking_number', 'carrier', 'order_number', 'status']}
-            peek={{
-              title: shipmentTitle,
-              subtitle: row => shipmentSubtitle({ ...row, company_name: row.company_name || company.name }),
-              to: row => `/envois/${row.id}`,
-              width: 860,
-              render: (row, { close }) => <EnvoisDetail recordId={row.id} embedded onClose={close} />,
-            }}
-            height={stackedTableHeight(envois.length)}
-            emptyState={{ icon: Truck, title: 'Aucun envoi', description: "Aucune expédition n'a encore été créée pour cette entreprise." }}
-          />
-        </Section>
+            <Attachments entityType="companies" entityId={company.id} />
+          </>
+        )}
+        center={(
+          <>
+            <CrmCenterTabs tabs={centerTabs} active={centerView} onSelect={setCenterView} />
+            {openRelated ? openRelated.table()
+              : centerView === 'qualification' ? <QualificationCallsPanel calls={qualificationCalls} />
+              : centerView === 'onboarding' ? <OnboardingResponsesPanel responses={onboardingResponses} />
+              : (
+                <InteractionTimeline
+                  interactions={interactions}
+                  loading={loadingInteractions}
+                  total={interactionsTotal}
+                  onLoadMore={loadMoreInteractions}
+                  loadingMore={loadingMoreInteractions}
+                  onTogglePin={togglePinInteraction}
+                />
+              )}
+          </>
+        )}
+        right={related.map(group => {
+          const count = group.count ?? group.rows.length
+          const shown = group.rows.slice(0, RAIL_ROWS)
+          return (
+            <CrmCard
+              key={group.key}
+              title={group.label}
+              count={count}
+              defaultOpen={group.rows.length > 0}
+              testId={`crm-card-${group.key}`}
+              onOpen={() => setCenterView(group.key)}
+              action={(group.add || group.addTo)
+                ? <CrmAdd onClick={group.add} to={group.addTo} label={`Ajouter · ${group.label}`} />
+                : null}
+              footer={group.rows.length > RAIL_ROWS ? (
+                <button
+                  type="button"
+                  onClick={e => { setCenterView(group.key); scrollCrmToTop(e.currentTarget) }}
+                  data-testid={`crm-open-${group.key}`}
+                  className="mt-1 w-full px-2 py-1 rounded-lg text-left text-xs font-medium text-brand-600 hover:bg-brand-50"
+                >
+                  Tout voir ({count})
+                </button>
+              ) : null}
+            >
+              {shown.length === 0 ? (
+                <div className="px-2 pb-1 text-sm text-slate-400">Aucun</div>
+              ) : shown.map((row, i) => <CrmRow key={row.id ?? i} {...group.row(row)} />)}
+            </CrmCard>
+          )
+        })}
+      />
 
-        <Section id="retours" label={SECTION_LABELS.retours} count={sectionCounts.retours} registerRef={registerSection('retours')}>
-          <DataTable
-            table="company_retours"
-            columns={retourColumns}
-            data={retours}
-            searchFields={['n_de_retour', 'status', 'contact_first_name', 'contact_last_name', 'order_number']}
-            peek={{
-              title: row => row.n_de_retour || `Retour #${row.id}`,
-              subtitle: () => company.name,
-              to: row => `/retours/${row.id}`,
-              width: 760,
-              render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
-            }}
-            height={stackedTableHeight(retours.length)}
-            emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée pour cette entreprise." }}
-          />
-        </Section>
+      {/* Une ligne d'abonnement (carte de droite ou tableau au centre) ouvre
+          cette modale : elle est montée hors des deux. */}
+      <AbonnementDetailModal
+        abonnement={selectedAbonnement}
+        onClose={() => setSelectedAbonnement(null)}
+        onChange={reloadAbonnements}
+      />
 
-        <Section id="support" label={SECTION_LABELS.support} count={sectionCounts.support} registerRef={registerSection('support')}>
-          <DataTable
-            table="company_tickets"
-            columns={ticketColumns}
-            data={company.tickets || []}
-            searchFields={['title', 'type', 'status']}
-            peek={{
-              title: row => row.title || `Ticket #${row.id}`,
-              subtitle: () => company.name,
-              to: row => `/tickets/${row.id}`,
-              width: 860,
-              render: (row, { close }) => <TicketDetail recordId={row.id} embedded onClose={close} />,
-            }}
-            height={stackedTableHeight(company.tickets?.length)}
-            emptyState={{ icon: LifeBuoy, title: 'Aucun billet', description: "Aucun billet n'a été ouvert pour cette entreprise." }}
-          />
-        </Section>
-
-        <Section id="numéros de série" label={SECTION_LABELS['numéros de série']} count={sectionCounts['numéros de série']} registerRef={registerSection('numéros de série')}>
-          <DataTable
-            table="company_serials"
-            columns={SERIAL_COLUMNS}
-            data={company.serials || []}
-            searchFields={['serial', 'product_name', 'status']}
-            peek={{
-              title: row => row.serial || `Numéro de série #${row.id}`,
-              subtitle: () => company.name,
-              to: row => `/serials/${row.id}`,
-              width: 680,
-              render: row => <SerialDetail recordId={row.id} embedded />,
-            }}
-            height={stackedTableHeight(company.serials?.length)}
-            bulkActions={[{
-              key: 'return-serials',
-              label: 'Retourner tous les numéros de série',
-              icon: Undo2,
-              show: rows => rows.length > 0,
-              onClick: (ids) => { setBulkReturnSerialIds(ids); setBulkReturnReason('') },
-            }]}
-          />
-        </Section>
-
-        <Section id="factures" label={SECTION_LABELS.factures} count={sectionCounts.factures} registerRef={registerSection('factures')}>
-          <DataTable
-            table="company_factures"
-            columns={factureColumns}
-            data={factures}
-            searchFields={['document_number', 'status', 'currency']}
-            peek={{
-              title: row => row.document_number || `Facture #${row.id}`,
-              subtitle: () => company.name,
-              to: row => `/factures/${row.id}`,
-              width: 780,
-              render: (row, { close }) => <FactureDetail recordId={row.id} embedded onClose={close} />,
-            }}
-            height={stackedTableHeight(factures.length)}
-            emptyState={{ icon: FileText, title: 'Aucune facture', description: "Aucune facture n'a encore été émise pour cette entreprise." }}
-          />
-        </Section>
-
-        <Section
-          id="abonnements"
-          label={SECTION_LABELS.abonnements}
-          count={sectionCounts.abonnements}
-          registerRef={registerSection('abonnements')}
-          action={<button onClick={() => setSubscriptionModalOpen(true)} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>}
-        >
-          <DataTable
-            table="company_abonnements"
-            columns={abonnementColumns}
-            data={abonnements}
-            searchFields={['product_name', 'type', 'status']}
-            onRowClick={row => setSelectedAbonnement(row)}
-            height={stackedTableHeight(abonnements.length)}
-            emptyState={{
-              icon: RefreshCw,
-              title: 'Aucun abonnement',
-              description: "Cette entreprise n'a aucun abonnement Stripe actif ou passé.",
-              cta: { label: 'Créer un abonnement', icon: Plus, onClick: () => setSubscriptionModalOpen(true) },
-            }}
-          />
-
-          <AbonnementDetailModal
-            abonnement={selectedAbonnement}
-            onClose={() => setSelectedAbonnement(null)}
-            onChange={reloadAbonnements}
-          />
-        </Section>
-
-        <Section
-          id="tâches"
-          label={SECTION_LABELS.tâches}
-          count={sectionCounts.tâches}
-          registerRef={registerSection('tâches')}
-          action={<button onClick={() => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) }} className="btn-primary btn-sm"><Plus size={14} /> Ajouter</button>}
-        >
-          <DataTable
-            table="company_tasks"
-            columns={taskColumns}
-            data={tasks}
-            searchFields={['title', 'status', 'priority']}
-            onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', contact_id: row.contact_id || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
-            height={stackedTableHeight(tasks.length)}
-            emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à cette entreprise pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', contact_id: '', assigned_to: '', notes: '' }); setEditingTask(null); setShowTaskModal(true) } } }}
-          />
-        </Section>
-
-        {company.quickbooks_vendor_id && (
-          <Section id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}>
-            <DataTable
-              table="company_achats"
-              columns={achatColumns}
-              data={achats}
-              searchFields={['reference', 'bill_number', 'vendor_invoice_number', 'description', 'status']}
-              height={stackedTableHeight(achats.length)}
-              emptyState={{ icon: ShoppingCart, title: 'Aucun achat fournisseur', description: "Aucune facture ou dépense fournisseur n'est rattachée à cette entreprise." }}
+      {/* Une ligne d'achat fournisseur de la carte de droite ouvre la même
+          fiche que le tableau central : le panneau latéral (clé `achats`,
+          la largeur est donc partagée avec lui). */}
+      <RecordPeekDrawer
+        open={!!selectedAchat}
+        onClose={() => setSelectedAchat(null)}
+        title={selectedAchat ? achatTitle(selectedAchat) : ''}
+        subtitle={company.name}
+        width={640}
+        peekKey="achats"
+      >
+        {selectedAchat && (
+          <div className="px-5 py-4">
+            <AchatModal
+              achat={selectedAchat}
+              onClose={() => setSelectedAchat(null)}
+              onSaved={() => { reloadAchats(); setSelectedAchat(null) }}
             />
-          </Section>
+          </div>
         )}
-
-        {onboardingResponses.length > 0 && (
-          <Section id="onboarding" label={SECTION_LABELS.onboarding} count={sectionCounts.onboarding} registerRef={registerSection('onboarding')}>
-            <OnboardingResponsesPanel responses={onboardingResponses} />
-          </Section>
-        )}
-
-        {qualificationCalls.length > 0 && (
-          <Section id="qualification" label={SECTION_LABELS.qualification} count={sectionCounts.qualification} registerRef={registerSection('qualification')}>
-            <QualificationCallsPanel calls={qualificationCalls} />
-          </Section>
-        )}
-
-        {/* Dernière section : le fil est de hauteur imprévisible (courriels
-            complets), il ne doit pas s'intercaler entre deux sous-tableaux. */}
-        <Section id="interactions" label={SECTION_LABELS.interactions} count={sectionCounts.interactions} registerRef={registerSection('interactions')}>
-          <InteractionTimeline
-            interactions={interactions}
-            loading={loadingInteractions}
-            total={interactionsTotal}
-            onLoadMore={loadMoreInteractions}
-            loadingMore={loadingMoreInteractions}
-          />
-        </Section>
-
-        </div>{/* end sections */}
+      </RecordPeekDrawer>
 
       {/* Task Modal */}
       {showTaskModal && (

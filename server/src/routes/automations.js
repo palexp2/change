@@ -225,6 +225,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     },
   },
   sys_bank_debit_link: { actionKeys: new Set() },
+  sys_receipt_bank_match: { actionKeys: new Set() },
   // Même cas : déclarées configurables sans spec, leur interrupteur répondait
   // 400 « lecture seule » — impossible de les mettre en pause depuis la page.
   // Rien à configurer côté action, mais l'entrée doit exister.
@@ -237,19 +238,17 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   sys_work_suggestions: { actionKeys: new Set() },
   sys_month_end_provisions: { actionKeys: new Set() },
   sys_address_check: { actionKeys: new Set() },
-  sys_return_label: { actionKeys: new Set() },
-  // Vérificateur de prix d'achats : bornes de détection et notification.
-  sys_purchase_price_check: {
-    actionKeys: new Set(['ratio_min', 'ratio_max', 'min_abs_diff', 'fallback_roles', 'notify']),
+  // Confirmation d'adresse auprès de l'API : seuls les types d'adresse
+  // concernés se règlent ici (« Livraison,Ferme » par défaut).
+  sys_address_confirm: {
+    actionKeys: new Set(['types']),
     validateKey(key, v) {
-      if (!v) return
-      if (['ratio_min', 'ratio_max', 'min_abs_diff'].includes(key) && !/^\d{1,6}([.,]\d{1,4})?$/.test(v)) {
-        throw new Error(`${key} doit être un nombre positif`)
+      if (key === 'types' && v && !/^[\p{L} -]+(\s*,\s*[\p{L} -]+)*$/u.test(v)) {
+        throw new Error("types : types d'adresse séparés par des virgules (Livraison, Ferme…)")
       }
-      if (key === 'notify' && !/^[01]$/.test(v)) throw new Error('notify doit être 0 ou 1')
-      if (key === 'fallback_roles' && v.length > 200) throw new Error('fallback_roles : 200 caractères maximum')
     },
   },
+  sys_return_label: { actionKeys: new Set() },
   // Corbeille : durée de rétention avant suppression définitive. Le compte à
   // rebours affiché sur chaque élément de /admin/corbeille suit ce réglage.
   sys_trash_auto_cleanup: {

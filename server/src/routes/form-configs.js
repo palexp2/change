@@ -39,7 +39,7 @@ router.get('/:table', requireAuth, (req, res) => {
 // GET /api/form-configs/:table/fields → catalogue des champs du registre
 // proposables au formulaire d'ajout (en plus de ceux déclarés par la page).
 // Voir services/formFieldCatalog.js pour les exclusions (calculés, lookups,
-// liens, pièces jointes…) et le drapeau `writable`.
+// liens sans table cible, pièces jointes…) et le drapeau `writable`.
 router.get('/:table/fields', requireAuth, (req, res) => {
   if (!validateTable(req, res)) return
   const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(req.params.table)

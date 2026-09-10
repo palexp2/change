@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import { Printer, Package, Mail, FileText, Trash2, RefreshCw, AlertTriangle, Truck, ExternalLink } from 'lucide-react'
 import api from '../lib/api.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
@@ -13,6 +13,7 @@ import { Badge } from '../components/Badge.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { InlineTextarea } from '../components/InlineFields.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
 import NovoxpressPickupDetails from '../components/NovoxpressPickupDetails.jsx'
@@ -20,6 +21,7 @@ import AttachmentPreview from '../components/AttachmentPreview.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
+import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { fmtAddress as fmtAdresse } from '../utils/formatters.js'
 import { trackingUrl } from '../lib/trackingUrl.js'
 
@@ -39,7 +41,7 @@ const ITEM_RENDERS = {
   // Colonne « Produit » : le champ est `product_id` (comme sur la fiche commande),
   // affiché par le nom du produit, cliquable vers sa fiche.
   product_id: item => (item.product_id
-    ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="font-medium text-brand-600 hover:underline">{item.product_name || 'Produit'}</Link>
+    ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="font-medium link-record">{item.product_name || 'Produit'}</Link>
     : <span className="font-medium text-slate-900">{item.product_name || '—'}</span>),
   sku: item => item.sku
     ? <span className="font-mono text-xs text-slate-500">{item.sku}</span>
@@ -74,33 +76,11 @@ function InlineText({ value, saving, onSave, className = '', testId }) {
   )
 }
 
-function InlineTextarea({ value, saving, onSave, testId }) {
-  const [local, setLocal] = useState(value ?? '')
-  const ref = useRef(null)
-  useEffect(() => { setLocal(value ?? '') }, [value])
-  useEffect(() => {
-    const el = ref.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [local])
-  return (
-    <textarea
-      ref={ref}
-      value={local}
-      onChange={e => setLocal(e.target.value)}
-      onBlur={e => { if (e.target.value !== (value ?? '')) onSave(e.target.value) }}
-      className="input text-sm w-full resize-none overflow-hidden"
-      rows={2}
-      disabled={saving}
-      data-testid={testId}
-    />
-  )
-}
-
 // `onClose` ferme le panneau après suppression du record.
 export default function EnvoisDetail({ recordId, onClose }) {
   const id = recordId
+  // « Suppression permise » : case du mode de personnalisation de la fiche.
+  const canDelete = useRecordDeleteAllowed('shipments')
   const { record: envoi, setRecord: setEnvoi, loading, loadError, reload: load } =
     useDetailRecord(() => api.shipments.get(id), [id], { clearOnError: true })
   const [adresses, setAdresses] = useState([])
@@ -119,10 +99,60 @@ export default function EnvoisDetail({ recordId, onClose }) {
   // serveur (vieux envois importés) : la vignette nous le dit, on retombe alors
   // sur le même parcours que « PDF jamais téléchargé ».
   const [labelFileMissing, setLabelFileMissing] = useState(false)
+  // Parcours guidé d'expédition (`?flow=expedition`, posé par « Créer un envoi »
+  // sur la fiche commande) : étiquette → impression → ramassage, sans que
+  // l'opérateur ait à rouvrir quoi que ce soit.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [guided, setGuided] = useState(false)
+  const guidedStarted = useRef(false)
+  const [printUrl, setPrintUrl] = useState(null)
+  const printFrame = useRef(null)
   const confirm = useConfirm()
   const { addToast } = useToast()
 
   useEffect(() => { setLabelFileMissing(false) }, [id])
+
+  // Démarrage du parcours, une seule fois, quand l'envoi et l'état Novoxpress
+  // sont connus. L'étape de départ dépend de ce qui existe déjà : pas
+  // d'étiquette → achat ; étiquette déjà là (rechargement) → impression.
+  useEffect(() => {
+    if (guidedStarted.current) return
+    if (searchParams.get('flow') !== 'expedition') return
+    if (!envoi || !novoxConfigured) return
+    guidedStarted.current = true
+    // L'URL redevient celle de la fiche : un rechargement ne relance pas le
+    // parcours (et ne rouvre donc jamais un achat d'étiquette).
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      next.delete('flow')
+      return next
+    }, { replace: true })
+    if (!envoi.address_id) return
+    setGuided(true)
+    if (envoi.label_pdf_path) setPrintUrl(`/erp/api/novoxpress/labels/${envoi.label_pdf_path}`)
+    else setShowLabel(true)
+  }, [envoi, novoxConfigured, searchParams, setSearchParams])
+
+  // Fin du parcours guidé (impression passée, ramassage commandé ou abandonné).
+  function endGuided() {
+    setGuided(false)
+    setPrintUrl(null)
+  }
+
+  // « Imprimer » lance l'impression du PDF affiché puis ouvre le ramassage
+  // par-dessus. L'étiquette reste montée dessous : retirer l'iframe pendant que
+  // la boîte d'impression du navigateur est ouverte l'annulerait.
+  function handlePrintLabel() {
+    const win = printFrame.current?.contentWindow
+    try {
+      if (win) { win.focus(); win.print() }
+      else window.open(printUrl, '_blank', 'noopener')
+    } catch {
+      window.open(printUrl, '_blank', 'noopener')
+    }
+    if (guided && !envoi?.novoxpress_pickup_id && !envoi?.novoxpress_pickup_details) setShowPickup(true)
+    else setGuided(false)
+  }
 
   useEffect(() => {
     api.adresses.lookup().then(setAdresses).catch(() => {})
@@ -213,6 +243,10 @@ export default function EnvoisDetail({ recordId, onClose }) {
 
   // Étiquette achetée chez Novoxpress mais PDF pas récupéré (403 du CDN) ou
   // fichier disparu du serveur : dans les deux cas, il est re-téléchargeable.
+  // Novoxpress ne renvoie pas toujours un identifiant de ramassage : la preuve
+  // qu'il a été commandé, c'est ce qu'on a mémorisé au moment de l'appel.
+  const hasPickup = !!(envoi.novoxpress_pickup_id || envoi.novoxpress_pickup_details)
+
   const missingLabelPdf = !envoi.label_pdf_path || labelFileMissing
   const pendingPdfLabel = missingLabelPdf && novoxConfigured && envoi.novoxpress_shipment_id
 
@@ -281,9 +315,9 @@ export default function EnvoisDetail({ recordId, onClose }) {
                 <Printer size={14} /> Créer étiquette
               </button>
             )}
-            {novoxConfigured && envoi.novoxpress_shipment_id && !envoi.novoxpress_pickup_id && (
+            {novoxConfigured && envoi.novoxpress_shipment_id && !hasPickup && (
               <button onClick={() => setShowPickup(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
-                <Package size={14} /> Commander un ramassage
+                <Package size={14} /> Demander un ramassage
               </button>
             )}
             {envoi.tracking_number && (
@@ -297,15 +331,17 @@ export default function EnvoisDetail({ recordId, onClose }) {
             {/* Plus de bouton « Modifier » : les champs de la fiche s'éditent
                 directement en ligne. Reste la suppression, qui n'est pas une
                 édition de champ. */}
-            <button
-              onClick={handleDelete}
-              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-              title="Supprimer l'envoi"
-              aria-label="Supprimer l'envoi"
-              data-testid="envoi-delete"
-            >
-              <Trash2 size={16} />
-            </button>
+            {canDelete && (
+              <button
+                onClick={handleDelete}
+                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                title="Supprimer l'envoi"
+                aria-label="Supprimer l'envoi"
+                data-testid="envoi-delete"
+              >
+                <Trash2 size={16} />
+              </button>
+            )}
             </>
           ),
         }}
@@ -497,7 +533,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
               </button>
             )}
           </DetailField>
-          {envoi.novoxpress_pickup_id && (
+          {hasPickup && (
             <DetailField id="novoxpress_pickup_id" label="Ramassage" span2>
               <div className="flex items-center gap-2">
                 {/* La pastille ouvre les détails du ramassage (date, fenêtre,
@@ -510,7 +546,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
                   title="Voir les détails du ramassage"
                   data-testid="envoi-pickup-pill"
                 >
-                  <Package size={13} /> Planifié · {envoi.novoxpress_pickup_id}
+                  <Package size={13} /> Planifié{envoi.novoxpress_pickup_id ? ` · ${envoi.novoxpress_pickup_id}` : ''}
                 </button>
               </div>
             </DetailField>
@@ -546,7 +582,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
         </div>
       </DetailShell>
 
-      <Modal isOpen={showLabel} onClose={() => setShowLabel(false)} title="Créer une étiquette postale">
+      <Modal isOpen={showLabel} onClose={() => { setShowLabel(false); endGuided() }} title="Créer une étiquette postale">
         <NovoxpressLabelModal
           envoi={envoi}
           orderItemsTotalWeight={
@@ -554,12 +590,38 @@ export default function EnvoisDetail({ recordId, onClose }) {
               .filter(item => item.shipment_id === envoi.id)
               .reduce((sum, item) => sum + (item.weight_lbs || 0) * (item.qty || 0), 0)
           }
-          onClose={() => { setShowLabel(false); load() }}
-          onDone={() => { load() }}
+          onClose={() => { setShowLabel(false); load(); endGuided() }}
+          /* En parcours guidé, l'achat réussi enchaîne directement sur
+             l'étiquette à imprimer. PDF non récupéré : on reste dans la modale,
+             qui propose la reprise du téléchargement. */
+          onDone={res => {
+            // Pas de `load()` tant que la modale reste ouverte : le rechargement
+            // remonte l'écran d'attente de la fiche, ce qui démonte la modale et
+            // efface son message de succès (ou d'erreur). La fiche se rafraîchit
+            // à la fermeture.
+            if (guided && res?.label_url) { setShowLabel(false); load(); setPrintUrl(res.label_url) }
+          }}
         />
       </Modal>
 
-      <Modal isOpen={showPickup} onClose={() => setShowPickup(false)} title="Commander un ramassage">
+      <Modal isOpen={!!printUrl} onClose={endGuided} title="Étiquette à imprimer" size="xl">
+        <div className="space-y-3">
+          <iframe
+            ref={printFrame}
+            src={printUrl || ''}
+            title="Étiquette d'expédition"
+            className="w-full h-[58vh] rounded-lg border border-slate-200"
+            data-testid="envoi-label-print-frame"
+          />
+          <div className="flex justify-end">
+            <button onClick={handlePrintLabel} className="btn-primary flex items-center gap-1.5" data-testid="envoi-label-print">
+              <Printer size={14} /> Imprimer
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={showPickup} onClose={() => { setShowPickup(false); endGuided() }} title="Demander un ramassage">
         <NovoxpressPickupModal
           envoi={envoi}
           defaultWeight={
@@ -567,8 +629,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
               .filter(item => item.shipment_id === envoi.id)
               .reduce((sum, item) => sum + (item.weight_lbs || 0) * (item.qty || 0), 0)
           }
-          onClose={() => { setShowPickup(false); load() }}
-          onDone={() => { load() }}
+          onClose={() => { setShowPickup(false); load(); endGuided() }}
         />
       </Modal>
 
@@ -581,13 +642,14 @@ export default function EnvoisDetail({ recordId, onClose }) {
         />
       </Modal>
 
-      {/* « Envoyer » ouvre la composition (destinataire, Cc, objet, corps
+      {/* « Envoyer » ouvre la composition (destinataire, Cc, Cci, objet, corps
           modifiables) ; l'envoi part avec la fenêtre d'annulation de 3 s. */}
       <EmailComposerModal
         isOpen={showSendTracking}
         onClose={() => setShowSendTracking(false)}
         title="Courriel de suivi"
         size="xl"
+        allowBcc
         load={async () => {
           const p = await api.shipments.trackingEmailPreview(envoi.id)
           return {
@@ -597,7 +659,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
               : null,
           }
         }}
-        onSend={({ to, cc, subject, bodyHtml }) => api.shipments.sendTracking(envoi.id, { to, cc, subject, body_html: bodyHtml })}
+        onSend={({ to, cc, bcc, subject, bodyHtml }) => api.shipments.sendTracking(envoi.id, { to, cc, bcc, subject, body_html: bodyHtml })}
         onSent={load}
       />
 

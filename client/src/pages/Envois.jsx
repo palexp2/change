@@ -17,10 +17,10 @@ import { shipmentTitle, shipmentSubtitle } from '../lib/shipmentLabel.js'
 
 const RENDERS = {
   order_number: row => row.order_id
-    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline font-medium">#{row.order_number}</Link>
+    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="link-record font-medium">#{row.order_number}</Link>
     : <span className="text-slate-400">—</span>,
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   // Champs lien : la colonne porte un id. Libellé pris sur la ligne quand la
   // requête le joint (# de commande, adresse) ; sinon résolu par
@@ -28,7 +28,7 @@ const RENDERS = {
   order_id: row => {
     if (!row.order_id) return <span className="text-slate-400">—</span>
     return row.order_number
-      ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline font-medium">#{row.order_number}</Link>
+      ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="link-record font-medium">#{row.order_number}</Link>
       : <LinkedRecordsValue field={{ record_link_target: 'orders' }} value={row.order_id} />
   },
   address_id: row => {
@@ -38,7 +38,7 @@ const RENDERS = {
       postal_code: row.address_postal_code, country: row.address_country,
     })
     return label
-      ? <Link to={`/adresses/${row.address_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{label}</Link>
+      ? <Link to={`/adresses/${row.address_id}`} onClick={e => e.stopPropagation()} className="link-record">{label}</Link>
       : <LinkedRecordsValue field={{ record_link_target: 'adresses' }} value={row.address_id} />
   },
   tracking_number: row => <span className="font-mono text-xs text-slate-700">{row.tracking_number || '—'}</span>,

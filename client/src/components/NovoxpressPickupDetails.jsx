@@ -30,7 +30,10 @@ export default function NovoxpressPickupDetails({ envoi, onCancel, cancelling, o
     <div className="space-y-4" data-testid="pickup-details">
       <div className="flex items-center gap-2 text-sm text-brand-700 bg-brand-50 border border-brand-200 rounded-lg px-3 py-2">
         <Package size={14} />
-        <span>Ramassage planifié · <span className="font-mono">{envoi.novoxpress_pickup_id}</span></span>
+        <span>
+          Ramassage planifié
+          {envoi.novoxpress_pickup_id && <> · <span className="font-mono">{envoi.novoxpress_pickup_id}</span></>}
+        </span>
       </div>
 
       {details ? (
@@ -68,15 +71,26 @@ export default function NovoxpressPickupDetails({ envoi, onCancel, cancelling, o
         </div>
       )}
 
+      {/* Sans identifiant renvoyé par Novoxpress, l'annulation est impossible
+          depuis l'ERP : on le dit plutôt que d'offrir un bouton qui échouera. */}
+      {!envoi.novoxpress_pickup_id && (
+        <div className="flex items-start gap-2 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+          <AlertTriangle size={15} className="text-amber-600 mt-0.5 shrink-0" />
+          <span>Novoxpress n'a pas renvoyé de référence : annulation seulement sur app.novoxpress.ca.</span>
+        </div>
+      )}
+
       <div className="flex justify-between gap-3 pt-1">
-        <button
-          onClick={onCancel}
-          disabled={cancelling}
-          className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 hover:underline disabled:opacity-50"
-          data-testid="pickup-details-cancel"
-        >
-          <XCircle size={14} /> {cancelling ? 'Annulation…' : 'Annuler le ramassage'}
-        </button>
+        {envoi.novoxpress_pickup_id ? (
+          <button
+            onClick={onCancel}
+            disabled={cancelling}
+            className="inline-flex items-center gap-1.5 text-sm text-red-600 hover:text-red-700 hover:underline disabled:opacity-50"
+            data-testid="pickup-details-cancel"
+          >
+            <XCircle size={14} /> {cancelling ? 'Annulation…' : 'Annuler le ramassage'}
+          </button>
+        ) : <span />}
         <button onClick={onClose} className="btn-secondary">Fermer</button>
       </div>
     </div>

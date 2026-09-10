@@ -13,8 +13,7 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 
 import { fmtMoney } from '../utils/formatters.js'
-import { Field } from '../components/Field.jsx'
-import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 
 const fmtPrice = (n, currency = 'CAD') => fmtMoney(n, currency, { locale: currency === 'USD' ? 'en-US' : 'fr-CA' })
 
@@ -346,14 +345,22 @@ export default function SoumissionDetail({ recordId, onClose }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-4 mt-5 pt-4 border-t text-sm">
-            <Field table="soumissions" id="created_at" label="Créée le" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5">
-              <p className="text-slate-700">{fmtDate(soumission.created_at)}</p>
-            </Field>
-            <Field table="soumissions" id="expiration_date" label="Expiration" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5">
-              <p className="text-slate-700">{fmtDate(soumission.expiration_date)}</p>
-            </Field>
-            <Field table="soumissions" id="project_name" label="Projet" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5">
+          {/* Carte de champs commune : une seule liste, réordonnable et
+              masquable depuis la fiche (bouton « Personnaliser les champs »).
+              Les champs personnalisés de la table s'y posent seuls. */}
+          <DetailFieldGrid
+            entityType="soumissions"
+            record={soumission}
+            className="mt-5 pt-4 border-t"
+            testId="soumission-fields"
+          >
+            <DetailField id="created_at" label="Créée le">
+              <p className="text-sm text-slate-700">{fmtDate(soumission.created_at)}</p>
+            </DetailField>
+            <DetailField id="expiration_date" label="Expiration">
+              <p className="text-sm text-slate-700">{fmtDate(soumission.expiration_date)}</p>
+            </DetailField>
+            <DetailField id="project_name" label="Projet">
               {soumission.project_id
                 ? <LinkedRecordField
                   name="project_id"
@@ -363,21 +370,17 @@ export default function SoumissionDetail({ recordId, onClose }) {
                   disabled
                   allowClear={false}
                 />
-                : <p className="text-slate-700">{soumission.project_name || '—'}</p>}
-            </Field>
-            <CustomDetailFields table="soumissions" record={soumission} labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-0.5" />
-          </div>
-
-          {(editing || soumission.notes) && (
-            <Field table="soumissions" id="notes" label="Notes" className="mt-4 pt-4 border-t" labelClassName="text-xs text-slate-400 uppercase tracking-wider mb-1">
+                : <p className="text-sm text-slate-700">{soumission.project_name || '—'}</p>}
+            </DetailField>
+            <DetailField id="notes" label="Notes" span2>
               {editing ? (
                 <textarea className="input" rows={3}
                   value={form.notes} onChange={e => set('notes', e.target.value)} />
               ) : (
-                <p className="text-sm text-slate-600 whitespace-pre-wrap">{soumission.notes}</p>
+                <p className="text-sm text-slate-600 whitespace-pre-wrap">{soumission.notes || '—'}</p>
               )}
-            </Field>
-          )}
+            </DetailField>
+          </DetailFieldGrid>
         </div>
 
         {/* Items */}
@@ -520,7 +523,7 @@ export default function SoumissionDetail({ recordId, onClose }) {
                         <td className="px-4 py-2.5">
                           {it.catalog_product_id ? (
                             <Link to={`/products/${it.catalog_product_id}`} target="_blank"
-                              className="text-slate-800 hover:text-brand-600 hover:underline inline-flex items-center gap-1">
+                              className="text-slate-800 hover:text-brand-700 hover:underline inline-flex items-center gap-1">
                               {isFr ? (it.name_fr || it.description_fr) : (it.name_en || it.name_fr || it.description_en)}
                               <ExternalLink size={11} className="opacity-40" />
                             </Link>

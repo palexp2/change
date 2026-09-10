@@ -35,6 +35,12 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   const [upsLoading, setUpsLoading] = useState(false)
   const [upsError, setUpsError] = useState('')
 
+  // Le transporteur imprime « NA » à la place du nom quand aucune personne n'est
+  // rattachée à l'adresse : on bloque l'achat plutôt que de sortir une étiquette
+  // anonyme (le serveur refuse aussi, cf. buildRecipient).
+  const recipientName = [envoi.address_contact_first_name, envoi.address_contact_last_name]
+    .filter(Boolean).join(' ').trim()
+
   const isEnvelope = BOX_PRESETS[preset]?.packagingType === 'envelope'
   const effectiveQty = isEnvelope ? 1 : qty
   const effectiveWeight = isEnvelope ? '1' : totalWeight  // Novoxpress exige un poids ≥ 1 même pour enveloppe
@@ -139,7 +145,9 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
       const res = await api.novoxpress.createLabel(envoi.id, sentPayload)
       setResult(res)
       setStep('done')
-      onDone?.()
+      // Le résultat part à l'appelant : la fiche envoi enchaîne sur l'impression
+      // de l'étiquette quand elle pilote le parcours d'expédition.
+      onDone?.(res)
     } catch (e) {
       setError(e.message)
       setErrorDetails({
@@ -160,7 +168,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     try {
       const res = await api.novoxpress.retryLabelPdf(envoi.id)
       setResult(r => ({ ...r, label_url: res.label_url, label_error: null, tracking_id: r?.tracking_id || res.tracking_id }))
-      onDone?.()
+      onDone?.(res)
     } catch (e) {
       setRetryError(e.message)
     } finally {
@@ -289,10 +297,15 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         </>
       )}
 
+      {!recipientName && (
+        <ErrorBanner>
+          Aucune personne rattachée à l'adresse — l'étiquette porterait « NA ». Ajoutez un contact à l'adresse de livraison.
+        </ErrorBanner>
+      )}
       {error && <p className="text-sm text-red-600">{error}</p>}
       <div className="flex justify-end gap-3 pt-2">
         <button onClick={onClose} className="btn-secondary">Annuler</button>
-        <button onClick={handleGetRates} className="btn-primary flex items-center gap-1.5">
+        <button onClick={handleGetRates} disabled={!recipientName} className="btn-primary flex items-center gap-1.5">
           Obtenir les tarifs <ChevronRight size={14} />
         </button>
       </div>
@@ -378,7 +391,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
             <span>{totalWeight} lbs</span>
           </>}
           <span className="text-slate-400">Destinataire</span>
-          <span>{envoi.company_name || '—'}</span>
+          <span>{[recipientName, envoi.company_name].filter(Boolean).join(' · ') || '—'}</span>
         </div>
       </div>
       {(() => {
@@ -453,7 +466,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
               href={result.tracking_url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-xs text-brand-600 hover:underline"
+              className="text-xs link-record"
               data-testid="direct-carrier-tracking-link"
             >
               Suivre le colis sur Novoxpress

@@ -143,6 +143,10 @@
   .btn-danger {
     @apply btn bg-red-600 text-white hover:bg-red-500 focus:ring-red-500;
   }
+  /* Bouton discret, sans surface : actions secondaires posées dans le contenu. */
+  .btn-ghost {
+    @apply btn text-slate-600 hover:bg-slate-100 hover:text-slate-900 focus:ring-brand-500;
+  }
   .btn-sm {
     @apply px-3 py-1.5 text-xs;
   }
@@ -177,6 +181,23 @@
   }
   .table-row-hover {
     @apply hover:bg-slate-50/80 cursor-pointer transition-colors;
+  }
+  /* Lien vers une fiche (entreprise, commande, contact…) — en cellule de
+     tableau comme en fiche. Le vert de marque en 600 ne tient pas le contraste
+     sur le fond crème (~2,8:1) : illisible à 12-14 px, ce que les tableaux
+     affichent. 700 + graisse moyenne remonte à ~4,2:1 sans changer la couleur
+     d'identité. Classe unique : un seul endroit à régler pour toute l'app. */
+  .link-record {
+    @apply text-brand-700 font-medium underline-offset-2 hover:text-brand-800 hover:underline;
+  }
+  /* Pastille d'un enregistrement lié dans une cellule : la même en lecture
+     (neutre) et en lien (teintée), pour que le lien se voie sans dépendre de la
+     seule couleur du texte. */
+  .chip-record {
+    @apply inline-block max-w-full shrink-0 truncate rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-700 whitespace-nowrap;
+  }
+  a.chip-record, button.chip-record {
+    @apply bg-brand-50 text-brand-800 hover:bg-brand-100 hover:text-brand-900;
   }
 }
 
@@ -325,3 +346,96 @@
 .peek-panel .card:has(.uppercase.tracking-wide) {
   @apply border-0 shadow-none bg-transparent;
 }
+
+/* ── Colonnes latérales du layout CRM (fiches Entreprise et Contact) ────────
+   Les règles ci-dessus posent le libellé À GAUCHE du champ : ça marche dans un
+   panneau d'un seul tenant, pas dans une colonne de 300 px. Sous `.crm-side`
+   le libellé revient AU-DESSUS, sur une seule colonne, et la carte reprend son
+   cadre (elle délimite un bloc parmi d'autres, ici). */
+.crm-side .grid:has(> div > .uppercase.tracking-wide) {
+  grid-template-columns: minmax(0, 1fr) !important;
+  column-gap: 0;
+  row-gap: 0.875rem;
+}
+.crm-side div:has(> .uppercase.tracking-wide:not(h1, h2, h3, h4, h5, h6)) {
+  display: block;
+}
+.crm-side div:has(> .uppercase.tracking-wide:not(h1, h2, h3, h4, h5, h6)) > .uppercase.tracking-wide:not(h1, h2, h3, h4, h5, h6) {
+  @apply text-slate-400 font-medium;
+  margin-bottom: 0.25rem;
+  padding-top: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.025em;
+  font-size: 0.6875rem;
+  line-height: 1rem;
+}
+.crm-side .card:has(.uppercase.tracking-wide) {
+  @apply bg-white border border-slate-200 shadow-none;
+}
+
+/* System builder: adapt to the detail panel, including its narrow peek view. */
+.system-builder-detail { container-type: inline-size; }
+.system-greenhouse-grid, .system-site-grid { display: grid; gap: 1.25rem; }
+.system-greenhouse-equipment { border-top: 1px solid rgb(var(--c-slate-200)); padding-top: 1rem; }
+@container (min-width: 720px) {
+  .system-greenhouse-grid { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 1.5rem; }
+  .system-greenhouse-equipment { border-top: 0; padding-top: 0; border-left: 1px solid rgb(var(--c-slate-200)); padding-left: 1.5rem; }
+  .system-site-grid { grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); }
+}
+@container (max-width: 480px) {
+  .system-builder-detail > :first-child { flex-wrap: wrap; gap: .75rem; }
+  .system-builder-detail > :first-child > :last-child { width: 100%; }
+}
+.system-response-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr)); gap: 1rem; }
+
+/* Form editor: controls follow the space available in each question block. */
+.form-editor { container-type: inline-size; }
+.form-editor-fields { grid-template-columns: 9rem minmax(0, 1fr); }
+.form-editor-question-actions { grid-column: 1 / -1; }
+.form-editor-condition { grid-template-columns: 1.5rem minmax(0, 1fr) 6rem minmax(0, 1fr) 1.75rem; }
+.form-editor-condition > :first-child { width: auto; }
+.form-editor button:focus-visible { outline: 2px solid rgb(var(--c-brand-600)); outline-offset: 2px; }
+@container (max-width: 680px) {
+  .form-editor-fields { grid-template-columns: minmax(0, 1fr); }
+  .form-editor-block, .form-editor-question { flex-wrap: wrap; }
+  .form-editor-block > :first-child, .form-editor-question > :first-child { flex-basis: 100%; }
+  .form-editor-condition { grid-template-columns: 1.5rem minmax(0, 1fr) 1.75rem; }
+  .form-editor-condition > select, .form-editor-condition > input { grid-column: 2; }
+  .form-editor-condition > button { grid-column: 3; grid-row: 1; }
+}
+
+.form-editor-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr); gap: 2.5rem; align-items: start; }
+.form-editor-header { position: sticky; top: 0; z-index: 20; background: rgb(var(--c-slate-50)); }
+.form-editor-sidebar { position: sticky; top: 7rem; max-height: calc(100dvh - 9rem); overflow-y: auto; }
+.form-editor-block { padding: 1.5rem; }
+.form-editor-question { background: transparent; }
+@media (max-width: 900px) {
+  .form-editor-workspace { grid-template-columns: 185px minmax(0, 1fr); gap: 1.5rem; }
+}
+@media (max-width: 640px) {
+  .form-editor-workspace { grid-template-columns: minmax(0, 1fr); }
+  .form-editor-sidebar { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+  .form-editor-sidebar > * { margin-top: 0; }
+}
+
+/* ── Prélèvement — carte géante, lisible à 6 m (20 pi) ──────────────────────
+   L'opérateur lit l'écran de l'autre bout de l'atelier : nom, quantité, image
+   et emplacement sont dimensionnés en `cqw` (largeur du conteneur) et non en
+   `vw`, parce que la fiche vit dans un panneau redimensionnable — plein écran
+   sur la télé de l'atelier, plus étroit sur un portable. Les bornes hautes
+   sont volontairement énormes : à 1920 px de large, le nom monte à ~11 rem,
+   soit ~7 cm de hauteur de capitale sur un écran de 55" (le seuil de lisibilité
+   à 20 pi est d'environ 5 cm). */
+.pick-hero { container-type: inline-size; }
+.pick-hero-name { font-size: clamp(2rem, 8.5cqw, 11rem); line-height: 1.02; letter-spacing: -0.02em; }
+.pick-hero-qty { font-size: clamp(2.25rem, 11cqw, 13rem); line-height: 0.9; }
+.pick-hero-sub { font-size: clamp(1rem, 3.2cqw, 4rem); line-height: 1.15; }
+.pick-hero-meta { font-size: clamp(0.85rem, 2.4cqw, 3rem); line-height: 1.15; }
+/* L'image suit la largeur, mais ne pousse jamais l'étagère hors de l'écran :
+   au-delà, elle se contente de la hauteur disponible. */
+.pick-hero-img { width: clamp(140px, 34cqw, 40rem); max-height: 46vh; }
+.pick-hero-icon { width: clamp(1rem, 3.6cqw, 4.5rem); height: clamp(1rem, 3.6cqw, 4.5rem); }
+/* Case à cocher des articles sans numéro de série : cible de doigt, un peu
+   plus grande que l'icône qu'elle contient. */
+.pick-hero-check { width: clamp(2.75rem, 6cqw, 7rem); height: clamp(2.75rem, 6cqw, 7rem); }
+.pick-hero-icon-sm { width: clamp(0.9rem, 2.6cqw, 3rem); height: clamp(0.9rem, 2.6cqw, 3rem); }

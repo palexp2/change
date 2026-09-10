@@ -51,7 +51,13 @@ import {
   currencyFromCountry, downloadImage,
 } from './airtable.js'
 import { resolveLegacyConfig, parseFieldMap, MIRROR_SEED } from './airtableMirrorRegistry.js'
-import { fieldMapFromUi, ORDERS_FIELD_MAP_PLAN } from './airtableUiFieldMap.js'
+import {
+  fieldMapFromUi, ORDERS_FIELD_MAP_PLAN, ASSEMBLAGES_FIELD_MAP_PLAN, PIECES_FIELD_MAP_PLAN,
+  EMPLOYEES_FIELD_MAP_PLAN, PAIES_FIELD_MAP_PLAN, PAIES_UNMAPPED_AIRTABLE_FIELDS,
+  CONTACTS_FIELD_MAP_PLAN, COMPANIES_FIELD_MAP_PLAN, COMPANY_PHASES,
+  PROJETS_FIELD_MAP_PLAN, RETOUR_ITEMS_FIELD_MAP_PLAN, SERIALS_FIELD_MAP_PLAN,
+  BOM_FIELD_MAP_PLAN,
+} from './airtableUiFieldMap.js'
 import { uploadsPath } from '../config/uploads.js'
 
 // ── Transformations nommées ─────────────────────────────────────────────────
@@ -311,20 +317,17 @@ function cleanNumber(raw) {
 // modules. Mieux vaut une échappatoire nommée, visible, et testable.
 // ── Achats : ce que le mapping champ-à-champ ne dit pas ─────────────────────
 //
-// Trois particularités de `syncAchats`, reprises telles quelles :
-//  • le STATUT n'existe pas dans Airtable — il se déduit de la date de
-//    réception complète (une date ⇒ « Reçu », sinon « Commandé ») ;
-//  • la QUANTITÉ REÇUE non plus — à défaut de colonne mappée, un achat reçu
-//    l'est pour la totalité de la quantité commandée ;
-//  • le FOURNISSEUR vient d'un record lié d'une autre table Airtable
-//    (« Fournisseurs »), dont le nom est la raison sociale QuickBooks exacte.
-//    Le single-select « Fournisseur - LEGACY » ne sert plus que de repli.
-const ACHATS_STATUS_MAP = {
-  'commandé': 'Commandé', 'ordered': 'Commandé', 'commande': 'Commandé',
-  'reçu partiellement': 'Reçu partiellement', 'partial': 'Reçu partiellement', 'partiel': 'Reçu partiellement',
-  'reçu': 'Reçu', 'received': 'Reçu', 'livré': 'Reçu', 'livre': 'Reçu',
-  'annulé': 'Annulé', 'cancelled': 'Annulé', 'canceled': 'Annulé', 'annule': 'Annulé',
-}
+// Il n'en reste qu'une particularité : le FOURNISSEUR vient d'un record lié
+// d'une autre table Airtable (« Fournisseurs »), dont le nom est la raison
+// sociale QuickBooks exacte. Deux colonnes ERP en sortent (nom + id QB) à partir
+// d'un seul champ : aucun mapping champ-à-champ ne sait l'exprimer.
+//
+// Ce que le `derive` ne fait PLUS :
+//  • le STATUT (`purchases.status`) et la colonne texte `supplier` : droppés sur
+//    demande, migration 032 ;
+//  • la QUANTITÉ REÇUE : `received_date` / `qty_ordered` d'abord (035, il n'y
+//    avait plus rien à en déduire), puis `purchases.qty_received` elle-même,
+//    droppée sur demande (migration 036).
 
 // Le cache rec id → { name, qb_vendor_id } est en base (`airtable_vendor_links`).
 // On ne le rafraîchit que si c'est utile : sync complet, ou sync incrémental
@@ -345,68 +348,25 @@ async function achatsPrepareVendors({ records, cfg, token, changes, dryRun }) {
   return { vendors }
 }
 
-function achatsDerive(fields, rec, fieldMap, { values = {}, ctx = {} } = {}) {
-  const rawStatus = (getVal(fields, fieldMap?.status) || '').trim()
-  const receivedDate = getVal(fields, fieldMap?.received_date)
-  const status = ACHATS_STATUS_MAP[rawStatus.toLowerCase()] || (receivedDate ? 'Reçu' : 'Commandé')
-
-  const qtyOrdered = values.qty_ordered ?? 0
-  const mappedQtyReceived = fieldMap?.qty_received ? cleanNumber(fields[fieldMap.qty_received]) : null
-  const qtyReceived = mappedQtyReceived === null
-    ? (status === 'Reçu' ? qtyOrdered : 0)
-    : Math.round(mappedQtyReceived)
-
+function achatsDerive(fields, rec, fieldMap, { ctx = {} } = {}) {
   const rawVendorLink = fields?.[ACHATS_VENDOR_LINK_FIELD]
   const linkedVendorId = Array.isArray(rawVendorLink) ? rawVendorLink[0] : null
   const vendor = linkedVendorId ? ctx.vendors?.get(linkedVendorId) : null
-  const legacySupplier = getVal(fields, fieldMap?.supplier)
 
+  // Deux colonnes, un seul champ lié : c'est tout ce que le `derive` des achats
+  // a encore à faire. La quantité reçue est partie avec sa colonne (036).
   return {
-    status,
-    qty_received: qtyReceived,
-    supplier: legacySupplier || vendor?.name || null,
     supplier_vendor_name: vendor?.name || null,
     supplier_qb_vendor_id: vendor?.qb_vendor_id || null,
   }
 }
 
-// ── Billets : statut, type et date de création ──────────────────────────────
+// ── Billets ─────────────────────────────────────────────────────────────────
 //
-// Le statut Airtable est du texte libre historique, nettoyé en trois passes :
-// le `status_map` du field_map d'abord (c'est une clé de configuration, pas un
-// champ Airtable), puis une table de correspondance de repli, puis la valeur
-// brute. Un statut VIDE vaut « Closed » : les billets d'avant la colonne Statut
-// sont tous réglés.
-const BILLETS_STATUS_FALLBACK = {
-  'waiting on us': 'Waiting on us', 'en attente nous': 'Waiting on us', 'en cours': 'Waiting on us', 'ouvert': 'Waiting on us', 'open': 'Waiting on us',
-  'waiting on them': 'Waiting on them', 'en attente client': 'Waiting on them', 'waiting client': 'Waiting on them',
-  'closed': 'Closed', 'fermé': 'Closed', 'ferme': 'Closed', 'résolu': 'Closed', 'resolu': 'Closed',
-}
-const BILLETS_TYPE_MAP = {
-  'aide software': 'Aide software', 'defect software': 'Defect software',
-  'aide hardware': 'Aide hardware', 'defect hardware': 'Defect hardware',
-  'erreur de commande': 'Erreur de commande', 'formation': 'Formation', 'installation': 'Installation',
-}
-
-function billetsDerive(fields, rec, fieldMap) {
-  const rawStatus = (getVal(fields, fieldMap?.status) || '').trim()
-  let status
-  if (!rawStatus) status = 'Closed'
-  else if (fieldMap?.status_map?.[rawStatus]) status = fieldMap.status_map[rawStatus]
-  else status = BILLETS_STATUS_FALLBACK[rawStatus.toLowerCase()] || rawStatus
-
-  const rawType = (getVal(fields, fieldMap?.type) || '').trim()
-
-  // À défaut de date mappée, la date de création du record Airtable — et
-  // toujours normalisée en ISO, l'ERP trie et filtre là-dessus.
-  const rawCreatedAt = getVal(fields, fieldMap?.created_at) || rec.createdTime || null
-
-  return {
-    status,
-    type: BILLETS_TYPE_MAP[rawType.toLowerCase()] || rawType || null,
-    created_at: rawCreatedAt ? new Date(rawCreatedAt).toISOString() : null,
-  }
-}
+// Plus de `derive` : il nettoyait le statut (texte libre historique), le type et
+// la date de création, trois colonnes droppées sur demande (migration 040). La
+// table de correspondance des statuts (`status_map` du field_map) est partie
+// avec elles.
 
 // ── Soumissions : devise du projet, et valeur des projets à recalculer ──────
 //
@@ -446,29 +406,33 @@ function instagramDerive(fields, rec, fieldMap) {
   return existing?.contacted_at ? { contacted: 1 } : { contacted: 1, contacted_at: new Date().toISOString() }
 }
 
-// ── Paies : total attendu et début de période ───────────────────────────────
+// ── Paies : total attendu ────────────────────────────────────────────────────
 //
-// Deux colonnes qu'aucun champ Airtable ne donne directement.
+// `period_start` n'est plus dérivée ici (migration 051 — champ « Période de
+// paie » démappé de /champs/paies, la colonne reste alimentée par
+// `paieTimesheetImport.computePeriod`, indépendant du sync Airtable).
 function paiesDerive(fields, rec, fieldMap) {
   const num = TRANSFORMS.empNum
+  // Depuis le retrait du field_map cœur, chaque clé est démappable dans
+  // /champs/paies : une colonne dérivée d'une clé démappée n'est PAS calculée,
+  // sinon démapper « Total de la paie » remettrait toutes les paies à vide.
+  // Les deux champs d'appoint n'ont aucune colonne ERP, donc aucune ligne dans
+  // l'interface : ils gardent leur nom Airtable (cf. airtableUiFieldMap.js).
+  const totalExcl = num(fields, PAIES_UNMAPPED_AIRTABLE_FIELDS.total_excl_reimb)
+  const reimbTotal = num(fields, PAIES_UNMAPPED_AIRTABLE_FIELDS.expense_reimb_total)
+  const out = {}
   const totalIncl = num(fields, fieldMap?.total_with_charges_and_reimb)
-  const totalExcl = num(fields, fieldMap?.total_excl_reimb)
-  const reimbTotal = num(fields, fieldMap?.expense_reimb_total)
   // Le champ « incluant les remboursements » n'est rempli qu'au write-back de
   // la comptabilisation. Avant ça, le total attendu se reconstitue depuis la
   // formule « excluant » + le rollup des remboursements — mais seulement si la
   // paie est complète côté Airtable : une formule ≤ 0 veut dire que les remises
   // aux organismes ne sont pas encore saisies.
   const totalFallback = totalExcl != null ? Math.round((totalExcl + (reimbTotal || 0)) * 100) / 100 : null
-
-  // « Période de paie » arrive sous la forme « YYYY-MM-DD au YYYY-MM-DD ».
-  const periodRange = String(getVal(fields, fieldMap?.period_range) || '')
-  const periodStart = periodRange.match(/^(\d{4}-\d{2}-\d{2})\s+au\b/)
-
-  return {
-    period_start: periodStart ? periodStart[1] : null,
-    total_with_charges_and_reimb: totalIncl != null ? totalIncl : (totalFallback > 0 ? totalFallback : null),
+  if (fieldMap?.total_with_charges_and_reimb) {
+    out.total_with_charges_and_reimb = totalIncl != null ? totalIncl : (totalFallback > 0 ? totalFallback : null)
   }
+
+  return out
 }
 
 // ── Pièces : images et type d'approvisionnement ─────────────────────────────
@@ -611,13 +575,17 @@ function projetsDerive(fields, rec, fieldMap) {
 // les colonnes passent par un COALESCE dans la fonction historique. Un champ
 // vidé côté Airtable ne vide donc pas la fiche Boréal — c'est un choix ancien,
 // reproduit ici par `keepIfNull`.
+// `phone`, `website` et `type` ont été droppées (migration 045).
 const COMPANY_SOFT_COLUMNS = [
-  'phone', 'email', 'website', 'address', 'city', 'province', 'country',
-  'type', 'lifecycle_phase', 'notes',
+  'email', 'address', 'city', 'province', 'country',
+  'lifecycle_phase', 'notes',
 ]
 
 export const CORE_PLANS = {
   assemblages: {
+    // Plus de field_map « cœur » : le mapping des trois clés se règle dans
+    // /champs/assemblages (cf. retireAssemblagesCoreFieldMap).
+    uiFieldMapPlan: ASSEMBLAGES_FIELD_MAP_PLAN,
     fields: {
       product:         ['product_id', 'link_product'],
       qty_produced:    ['qty_produced', 'int0'],
@@ -639,6 +607,9 @@ export const CORE_PLANS = {
     },
   },
   bom: {
+    // Plus de field_map « cœur » : le mapping des quatre clés se règle dans
+    // /champs/bom_items (cf. retireBomCoreFieldMap).
+    uiFieldMapPlan: BOM_FIELD_MAP_PLAN,
     fields: {
       product:      ['product_id', 'link_product'],
       component:    ['component_id', 'link_product'],
@@ -687,35 +658,31 @@ export const CORE_PLANS = {
     },
   },
   retours: {
-    fields: {
-      company:           ['company_id', 'company'],
-      // « Contact » et « # de retour » alimentent désormais la colonne de leur
-      // champ personnalisé — les natifs contact_id et return_number ont été
-      // droppés (027 et 026). La transformation, elle, reste ici : c'est elle
-      // qui résout le record ID Airtable en id de contact ERP.
-      contact:           ['contact', 'link_contact'],
-      return_number:     ['n_de_retour', 'text'],
-      problem_status:    ['problem_status', 'text'],
-      // « Status » et « Numéro de repérage fourni par le client » ne sont plus
-      // importés : les champs « Statut de traitement » et « Suivi » ont été
-      // détruits (migration 028). Les deux champs Airtable restent en
-      // `excluded` dans le registre du miroir.
-      notes:             ['notes', 'text'],
-      billed_at:         ['billed_at', 'text'],
-    },
-    // `status` est un cas limite instructif : la clé n'est PAS dans le
-    // field_map (Airtable n'a pas de colonne « Statut » sur les retours), donc
-    // la fonction historique écrit son défaut — « Ouvert » — sur les 474
-    // lignes, à chaque sync. Le passer par `fields` ne marcherait pas : une clé
-    // non mappée est sautée. C'est donc une constante, et il faut la nommer
-    // comme telle plutôt que de croire qu'elle vient d'Airtable.
-    derive: (fields, rec, fieldMap) => ({ status: getVal(fields, fieldMap.status) || 'Ouvert' }),
+    // Plan cœur VIDE : les 6 dernières colonnes alimentées en code du miroir
+    // retours (company_id, contact, n_de_retour, problem_status, notes,
+    // billed_at) ont été droppées (migration 037, « supprime tous les champs
+    // Airtable codés en dur »). Le mapping champ-à-champ du module vit
+    // maintenant ENTIÈREMENT dans /champs/retours (defs dynamiques). Le plan
+    // reste déclaré pour que `usesMirrorEngine('retours')` continue de répondre
+    // vrai — le moteur unique garde la main sur le module, avec son `derive`.
+    fields: {},
+    // Plus de `derive` non plus : il ne produisait que `status`, une CONSTANTE
+    // (« Ouvert ») réécrite sur les 476 lignes à chaque sync — la clé n'était
+    // pas dans le field_map, Airtable n'a pas de colonne « Statut » sur les
+    // retours. La colonne a été droppée par la migration 041. Le plan n'écrit
+    // donc plus rien : une ligne neuve se crée avec son seul `airtable_id`.
   },
   retour_items: {
+    // Plus de field_map « cœur » : les 12 clés se règlent dans
+    // /champs/return_items (cf. retireRetourItemsCoreFieldMap ; elles étaient 13
+    // avant le drop de « Produit à envoyer », migration 046). Une clé démappée
+    // n'est plus écrite du tout (la boucle ci-dessous saute les clés absentes du
+    // field_map) — démapper « Retour » arrête donc l'import des NOUVEAUX
+    // articles, `return_id` étant la garde d'insertion.
+    uiFieldMapPlan: RETOUR_ITEMS_FIELD_MAP_PLAN,
     fields: {
       return:              ['return_id', 'link_return'],
       product_to_receive:  ['product_id', 'link_product'],
-      product_to_send:     ['product_send_id', 'link_product'],
       serial:              ['serial_id', 'link_serial'],
       company:             ['company_id', 'company'],
       problem_category:    ['problem_category', 'text'],
@@ -732,6 +699,11 @@ export const CORE_PLANS = {
     require: ['return_id'],
   },
   serials: {
+    // Plus de field_map « cœur » en base : chaque clé se branche sur son champ
+    // Airtable dans /champs/serial_numbers (cf. retireSerialsCoreFieldMap). Les
+    // clés, les transformations et la garde `require` ne changent pas — seule la
+    // provenance des NOMS de champs Airtable change.
+    uiFieldMapPlan: SERIALS_FIELD_MAP_PLAN,
     fields: {
       serial:               ['serial', 'text'],
       product:              ['product_id', 'link_product_or_text'],
@@ -748,17 +720,17 @@ export const CORE_PLANS = {
     require: ['serial'],
   },
   billets: {
-    fields: {
-      title:            ['title', 'text'],
-      description:      ['description', 'text'],
-      response:         ['response', 'text'],
-      company:          ['company_id', 'company'],
-      contact:          ['contact_id', 'link_contact_or_text'],
-      duration_minutes: ['duration_minutes', 'intClean0'],
-    },
-    // Un record sans titre n'est pas un billet — le legacy le saute.
-    require: ['title'],
-    derive: billetsDerive,
+    // Plan cœur VIDE : les 9 colonnes alimentées en code du miroir billets
+    // (title, description, response, type, status, company_id, contact_id,
+    // duration_minutes, created_at) ont été droppées (migration 040, « supprime
+    // tous les champs codés en dur »). Le mapping champ-à-champ du module vit
+    // maintenant ENTIÈREMENT dans /champs/tickets (defs dynamiques). Le plan
+    // reste déclaré pour que `usesMirrorEngine('billets')` continue de répondre
+    // vrai — le moteur unique garde la main sur le module.
+    //
+    // `require` tombe avec lui : il exigeait un titre, qui n'existe plus. Tout
+    // record de la table Airtable a donc désormais sa ligne côté ERP.
+    fields: {},
   },
   soumissions: {
     fields: {
@@ -816,7 +788,6 @@ export const CORE_PLANS = {
       number:                     ['number', 'empNum'],
       period_end:                 ['period_end', 'text'],
       status:                     ['status', 'text'],
-      csv:                        ['csv', 'text'],
       nb_holiday_days:            ['nb_holiday_days', 'empNum'],
       timesheets_deadline:        ['timesheets_deadline', 'text'],
       includes_hourly:            ['includes_hourly', 'empBool'],
@@ -827,10 +798,10 @@ export const CORE_PLANS = {
       includes_sales_commissions: ['includes_sales_commissions', 'empBool'],
       timesheets_sent:            ['timesheets_sent', 'empBool'],
     },
+    // Plus de field_map « cœur » en base : chaque clé se branche sur son champ
+    // Airtable dans /champs/paies (cf. retirePaiesCoreFieldMap).
+    uiFieldMapPlan: PAIES_FIELD_MAP_PLAN,
     derive: paiesDerive,
-    // Le début de période ne se déduit pas de tous les records : ne jamais
-    // l'effacer avec un vide (c'est le COALESCE de la fonction historique).
-    keepIfNull: ['period_start'],
     // La paie n'a pas de champs dynamiques : ses colonnes sont toutes connues,
     // et la fonction historique n'en importe aucun.
     noDynamicFields: true,
@@ -864,6 +835,10 @@ export const CORE_PLANS = {
     noFieldRules: true,
   },
   employees: {
+    // Plus de field_map « cœur » : le mapping des employés se règle dans
+    // /champs/employees, où chacun de ces champs est maintenant un champ
+    // personnalisé (cf. nativeFieldConversions.js).
+    uiFieldMapPlan: EMPLOYEES_FIELD_MAP_PLAN,
     fields: {
       first_name:            ['first_name', 'text'],
       last_name:             ['last_name', 'text'],
@@ -902,6 +877,10 @@ export const CORE_PLANS = {
     // exemple — doivent s'importer comme partout ailleurs.
   },
   pieces: {
+    // Plus de field_map « cœur » : les 17 clés se règlent dans /champs/products
+    // (cf. retirePiecesCoreFieldMap). Les clés, les transformations et `derive`
+    // sont inchangés — seule la provenance des NOMS de champs Airtable change.
+    uiFieldMapPlan: PIECES_FIELD_MAP_PLAN,
     fields: {
       name_fr:                 ['name_fr', 'text'],
       name_en:                 ['name_en', 'text'],
@@ -1043,6 +1022,11 @@ export const CORE_PLANS = {
     },
   },
   projets: {
+    // Plus de field_map « cœur » : les 2 champs qui restaient annoncés « gérés
+    // en code » au bas de /champs/projects (« ID » → le numéro de projet,
+    // « Client final » → l'entreprise liée) s'y règlent maintenant champ par
+    // champ (cf. retireProjetsCoreFieldMap).
+    uiFieldMapPlan: PROJETS_FIELD_MAP_PLAN,
     fields: {
       name:           ['name', 'text'],
       company:        ['company_id', 'company'],
@@ -1062,11 +1046,17 @@ export const CORE_PLANS = {
     derive: projetsDerive,
   },
   companies: {
+    // Plus de field_map « cœur » : les 2 champs qui restaient annoncés « gérés
+    // en code » au bas de /champs/companies (« Entreprise » → le nom,
+    // « Phase du cycle de vie ») s'y règlent maintenant champ par champ
+    // (cf. retireCompaniesCoreFieldMap).
+    uiFieldMapPlan: COMPANIES_FIELD_MAP_PLAN,
+    // `phone` (« Phone number ») et `website` (« URL ») sont sortis du plan :
+    // colonnes droppées (migration 045), les deux champs Airtable se remappent
+    // depuis /champs/companies.
     fields: {
       name:     ['name', 'text'],
-      phone:    ['phone', 'text'],
       email:    ['email', 'text'],
-      website:  ['website', 'text'],
       address:  ['address', 'text'],
       city:     ['city', 'text'],
       province: ['province', 'text'],
@@ -1076,22 +1066,30 @@ export const CORE_PLANS = {
     // Un record sans nom n'est pas une entreprise.
     require: ['name'],
     keepIfNull: COMPANY_SOFT_COLUMNS,
-    // Type et phase du cycle de vie passent par les listes de correspondance
-    // réglées par l'utilisateur (`type_choices`, `phase_choices`) ; à défaut, la
-    // valeur d'Airtable telle quelle.
+    // La phase du cycle de vie n'a plus de table de correspondance en base
+    // (`phase_choices` est partie avec le field_map cœur) : on garde
+    // l'orthographe canonique de l'ERP à la casse près — la seule traduction
+    // que faisait cette table — et toute valeur inconnue passe telle quelle.
+    // Écrite ici plutôt que dans `fields` car la colonne n'est renseignée que
+    // si le champ est mappé (un `null` effacerait la phase saisie dans Boréal).
+    // (« Type » a suivi sa colonne dans la migration 045.)
     derive: (fields, rec, fieldMap) => {
-      const typeRaw = getVal(fields, fieldMap?.type)
-      const phaseRaw = getVal(fields, fieldMap?.lifecycle_phase)
-      return {
-        type: typeRaw ? (fieldMap?.type_choices?.[typeRaw] || typeRaw) : null,
-        lifecycle_phase: phaseRaw ? (fieldMap?.phase_choices?.[phaseRaw] || phaseRaw) : null,
-      }
+      if (!fieldMap?.lifecycle_phase) return {}
+      const raw = getVal(fields, fieldMap.lifecycle_phase)
+      if (!raw) return { lifecycle_phase: null }
+      const canon = COMPANY_PHASES.find(p => p.toLowerCase() === String(raw).trim().toLowerCase())
+      return { lifecycle_phase: canon || raw }
     },
     // Les champs dynamiques du CRM sont rangés sous 'airtable_companies' depuis
     // toujours : changer la clé recréerait tous les mappings à côté.
     dynamicFieldsKey: 'airtable_companies',
   },
   contacts: {
+    // Plus de field_map « cœur » : les 6 champs qui étaient annoncés « gérés en
+    // code » au bas de /champs/contacts (Prénom, Nom, Email, Phone number,
+    // Entreprise, Langue) s'y règlent maintenant champ par champ
+    // (cf. retireContactsCoreFieldMap).
+    uiFieldMapPlan: CONTACTS_FIELD_MAP_PLAN,
     fields: {
       first_name: ['first_name', 'text'],
       email:      ['email', 'text'],
@@ -1103,33 +1101,55 @@ export const CORE_PLANS = {
     // Mobile et notes se complètent, ne s'effacent pas (COALESCE historique).
     // `company_id`, lui, suit Airtable : délier là-bas délie ici.
     keepIfNull: ['mobile', 'notes'],
-    defaults: { first_name: '' },
-    derive: (fields, rec, fieldMap) => {
+    // Chaque colonne dérivée n'est calculée QUE si sa clé est mappée — depuis
+    // que le mapping est démappable dans l'interface, un calcul inconditionnel
+    // écraserait les 3 800 fiches au premier sync suivant (le `defaults`
+    // `first_name: ''` de la version précédente les aurait toutes vidées, et
+    // « Nom » démappé les aurait toutes renommées « Inconnu » — même piège que
+    // le `derive` des commandes).
+    derive: (fields, rec, fieldMap, { values }) => {
+      const out = {}
+      // `first_name` est NOT NULL côté ERP : un champ Airtable vide donne null,
+      // qu'on ramène à la chaîne vide — comportement du `defaults` historique.
+      if (fieldMap?.first_name && values.first_name == null) out.first_name = ''
       // Le nom de famille est obligatoire côté ERP : à défaut, le prénom, et en
       // dernier recours « Inconnu » — mieux qu'une fiche sans nom du tout.
-      const last = getVal(fields, fieldMap?.last_name) || getVal(fields, fieldMap?.first_name) || 'Inconnu'
-      const rawLang = (getVal(fields, fieldMap?.language) || '').trim()
-      const language = rawLang === 'French' || rawLang === 'Français' || rawLang === 'francais' ? 'French'
-        : rawLang === 'English' || rawLang === 'Anglais' || rawLang === 'anglais' ? 'English'
-        : null
-      return { last_name: last, language }
+      if (fieldMap?.last_name || fieldMap?.first_name) {
+        out.last_name = getVal(fields, fieldMap?.last_name) || getVal(fields, fieldMap?.first_name) || 'Inconnu'
+      }
+      if (fieldMap?.language) {
+        const rawLang = (getVal(fields, fieldMap.language) || '').trim()
+        out.language = rawLang === 'French' || rawLang === 'Français' || rawLang === 'francais' ? 'French'
+          : rawLang === 'English' || rawLang === 'Anglais' || rawLang === 'anglais' ? 'English'
+          : null
+      }
+      return out
+    },
+    // Prénom et Nom sont NOT NULL : un contact CRÉÉ par le sync alors que ces
+    // champs ne sont plus mappés ferait échouer l'INSERT, et l'exception
+    // emporterait tout le sync. Repli posé à la création SEULEMENT — les fiches
+    // existantes ne sont jamais réécrites par ce chemin. Les colonnes déjà
+    // calculées par le plan ne sont pas répétées (l'INSERT les listerait deux
+    // fois).
+    insertExtras: (rec, fieldMap) => {
+      const out = {}
+      if (!fieldMap?.first_name) out.first_name = ''
+      if (!fieldMap?.last_name && !fieldMap?.first_name) out.last_name = 'Inconnu'
+      return out
     },
     dynamicFieldsKey: 'airtable_contacts',
   },
   achats: {
-    fields: {
-      product:       ['product_id', 'link_product_or_text'],
-      reference:     ['reference', 'text'],
-      order_date:    ['order_date', 'text'],
-      // `expected_date` retirée du plan cœur : champ « Date prévue » supprimé
-      // côté ERP (migration 029) — l'importer écrirait dans une colonne absente.
-      received_date: ['received_date', 'text'],
-      qty_ordered:   ['qty_ordered', 'intClean0'],
-      unit_cost:     ['unit_cost', 'floatClean0'],
-      notes:         ['notes', 'text'],
-    },
-    // `status`, `qty_received` et les trois colonnes de fournisseur ne se
-    // déduisent pas d'un champ unique — voir achatsDerive.
+    // Plan cœur VIDE : les 7 dernières colonnes natives du miroir achats ont été
+    // droppées (migration 035, « supprime tous les champs Airtable gérés en code
+    // définitivement »). Le mapping champ-à-champ du module vit maintenant
+    // ENTIÈREMENT dans /champs/purchases (defs dynamiques). Le plan reste
+    // déclaré pour que `usesMirrorEngine('achats')` continue de répondre vrai —
+    // le moteur unique garde la main sur le module, avec son `prepare`/`derive`.
+    fields: {},
+    // Les deux colonnes de fournisseur ne se déduisent pas d'un champ unique :
+    // elles viennent d'un record lié d'une AUTRE table Airtable — voir
+    // achatsDerive.
     prepare: achatsPrepareVendors,
     derive: achatsDerive,
   },

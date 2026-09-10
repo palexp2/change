@@ -98,7 +98,7 @@ const RENDERS = {
     ? fmtDate(row.call_date)
     : (row.airtable_created_at ? fmtDate(row.airtable_created_at) : <span className="text-slate-400">—</span>),
   company_name: (row) => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.company_name || row.company_name_raw || '—'}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.company_name || row.company_name_raw || '—'}</Link>
     : <span className="text-slate-700 text-sm">{row.company_name_raw || '—'}</span>,
   status: (row) => row.status
     ? <Badge color={statusColor(row.status)} size="sm">{row.status}</Badge>
@@ -288,11 +288,12 @@ function CallFrame({ company, callRecord, editableFarm, onBack }) {
           })
       } else if (msg.type === 'create-discovery-form' && typeof msg.id === 'number' && msg.body) {
         // Raccourci depuis l'écran « Payment confirmed » : crée un formulaire
-        // de découverte technique pré-rempli (1 carte serre par Helper/Chief vendu)
+        // de découverte technique pré-rempli (1 carte serre par Helper/Chef de culture vendu)
         // et renvoie l'URL publique à afficher (avec copier/ouvrir).
         api.discoveryForms.create({
           company_id: company.id,
           qualification_call_id: callRecord.id,
+          form_options: msg.body.form_options,
           helper_count: Number(msg.body.helper_count) || 0,
           chief_count: Number(msg.body.chief_count) || 0,
         })

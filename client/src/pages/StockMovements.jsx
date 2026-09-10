@@ -28,7 +28,7 @@ const RENDERS = {
   created_at:     row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
   product_sku:    row => <span className="font-mono text-slate-700">{row.product_sku || '—'}</span>,
   product_name:   row => row.product_id
-    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.product_name || '—'}</Link>
+    ? <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.product_name || '—'}</Link>
     : <span className="text-slate-400">{row.product_name || '—'}</span>,
   type:           row => row.type
     ? <Badge color={TYPE_COLORS[row.type] || 'gray'}>{TYPE_LABELS[row.type] || row.type}</Badge>

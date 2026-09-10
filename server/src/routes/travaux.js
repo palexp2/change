@@ -20,6 +20,7 @@ import {
 import {
   listIdeas, createIdea, updateIdea, deleteIdea, reorderIdeas, promoteIdea,
 } from '../services/workIdeas.js'
+import { KNOWN_MODELS } from '../services/agentModel.js'
 import {
   getSettings, isRunnerBusy, findAgentTask,
   getRunningQuestionCount, getMaxParallelQuestions, stopRunningTask,
@@ -106,7 +107,10 @@ function withResult(p) {
 function withWaitRank(rows) {
   const counters = {}
   const waiting = rows
-    .filter(p => p.run_state === 'waiting' || p.status === 'queued')
+    // Un item à départ différé (start_at à venir) ne dispute aucun poste avant son
+    // heure : lui donner un rang ferait mentir « 2e à partir » sur les autres.
+    .filter(p => (p.run_state === 'waiting' || p.status === 'queued')
+      && !(p.start_at && Date.parse(p.start_at) > Date.now()))
     .sort((a, b) => {
       const ai = a.run_state === 'waiting' ? 0 : 1
       const bi = b.run_state === 'waiting' ? 0 : 1
@@ -121,10 +125,16 @@ function withWaitRank(rows) {
   return rows.map(p => ({ ...p, wait_rank: ranks.get(p.id) || null }))
 }
 
-/** Item « vivant » : il occupe la file ou attend une décision de l'utilisateur. */
+/**
+ * Item « vivant » : il occupe la file ou attend une décision de l'utilisateur.
+ * Lisible sur la ligne BRUTE (pending_question encore en JSON) comme sur la ligne
+ * hydratée — c'est ce qui permet de trier avant d'hydrater.
+ */
 function isActivePrompt(p) {
-  return ['running', 'queued', 'paused'].includes(p.status)
-    || (!!p.pending_question?.question && ['done', 'blocked'].includes(p.status))
+  if (['running', 'queued', 'paused'].includes(p.status)) return true
+  if (!['done', 'blocked'].includes(p.status)) return false
+  const q = typeof p.pending_question === 'string' ? parseQuestion(p.pending_question) : p.pending_question
+  return !!q?.question
 }
 
 router.get('/prompts', (req, res) => {
@@ -137,9 +147,13 @@ router.get('/prompts', (req, res) => {
   // Les rangs d'attente se calculent sur TOUTES les files (l'exécuteur est partagé :
   // « 2e à partir » doit compter les items de l'autre file aussi), puis on ne rend
   // que la file demandée. Sans `space`, tout (rétro-compatible).
-  const prompts = withWaitRank(listPrompts().map(withResult))
+  // Le tri « vivant » se fait AVANT l'hydratation : elle coûte une lecture de
+  // tâche agent et un fil de messages par item, et l'historique en compte des
+  // centaines dont ce point d'entrée ne rendra rien. Les rangs d'attente ne
+  // portent que sur des items vivants (running/queued), ils sont donc identiques.
+  const rows = activeOnly ? listPrompts().filter(isActivePrompt) : listPrompts()
+  const prompts = withWaitRank(rows.map(withResult))
     .filter(p => !space || p.space === space)
-    .filter(p => !activeOnly || isActivePrompt(p))
   const pause = getQueuePauseState()
   res.json({
     prompts,
@@ -162,18 +176,27 @@ router.get('/prompts', (req, res) => {
 })
 
 router.post('/prompts', (req, res) => {
-  const { title, prompt, mode, preset, status, priority, space } = req.body || {}
+  const { title, prompt, mode, preset, status, priority, space, model, start_at } = req.body || {}
   if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'prompt requis' })
   if (mode && !['implement', 'question'].includes(mode)) return res.status(400).json({ error: 'mode invalide' })
   // 'auto' = calibre jugé par le modèle à partir de la demande (voir promptPreset.js).
   if (preset && !['auto', 'fast', 'standard', 'deep'].includes(preset)) return res.status(400).json({ error: 'preset invalide' })
   if (status && !['queued', 'paused'].includes(status)) return res.status(400).json({ error: 'status invalide' })
   if (space && !PROMPT_SPACES.includes(space)) return res.status(400).json({ error: 'space invalide' })
+  // Modèle choisi pour CETTE demande (sélecteur de la fenêtre « Modifier le système »).
+  // Absent = on suit le modèle du préréglage, donc le modèle préféré de l'agent.
+  if (model && !KNOWN_MODELS.includes(String(model).toLowerCase())) {
+    return res.status(400).json({ error: `modèle invalide — choix possibles : ${KNOWN_MODELS.join(', ')}` })
+  }
+  // Départ différé (« ce soir, 19 h ») : instant ISO envoyé par le client, qui seul
+  // connaît l'heure locale de l'utilisateur. Une heure déjà passée est ignorée par
+  // createPrompt — l'item part alors normalement.
+  if (start_at && Number.isNaN(Date.parse(start_at))) return res.status(400).json({ error: 'start_at invalide' })
   // Reprendre le contexte du précédent était un choix manuel — retiré : un item
   // créé de zéro part toujours avec un contexte neuf. La vraie continuité (réponse,
   // relance fauchée) passe par `follow_up`, décidé automatiquement, pas ici.
   const created = createPrompt({
-    title, prompt, mode, preset, status, space,
+    title, prompt, mode, preset, status, space, model, start_at,
     // Coché à la création : l'item passe devant la file (même effet que le bouton
     // « Passer en premier », sans avoir à le cliquer après coup).
     priority: !!priority,

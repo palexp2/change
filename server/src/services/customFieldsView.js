@@ -32,6 +32,7 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { invalidateColumnsCache } from '../db/changeLog.js'
 import { FORMULA_FUNCTIONS } from './formulaEngine.js'
+import { erpTableForAirtableTableId } from './airtableTableMap.js'
 
 // Whitelist des tables qu'on autorise comme cible de lookup. Exclut
 // `oauth_tokens`, `automation_secrets`, etc. `users` est autorisée : ses
@@ -47,6 +48,16 @@ export const LOOKUP_TARGET_WHITELIST = new Set([
   // unification des champs) : assigned_name/user_name → users,
   // ticket_title → tickets, lignes de commande/paie → rollups parents.
   'users', 'tickets', 'purchases', 'paies', 'order_items', 'ticket_surveys',
+  // Lignes de paie : source des trois rollups de la table Paies (# items,
+  // heures régulières, montant des heures régulières).
+  'paie_items',
+  // Lignes de retour (return_items.return_id → returns) : sans elles, la table
+  // Retour n'offrait AUCUN rollup utile — seules les lignes de commande de
+  // remplacement (order_items.return_id, créées par returnItemCreatedWatcher)
+  // apparaissaient dans le choix « Table liée », ce qui laissait croire à un
+  // lien parasite. Les articles du retour sont la source évidente (# d'items,
+  // valeur totale, liste des produits…).
+  'return_items',
 ])
 
 // Tables autorisées comme CIBLE d'un champ link bidirectionnel. Doit rester
@@ -67,7 +78,10 @@ const SENSITIVE_COLUMN_PATTERNS = [
   /password/i, /secret/i, /token/i, /api_key/i, /encrypted/i, /_hash$/i,
 ]
 
-function isSafeLookupColumn(name) {
+// Exporté sous un nom générique : la même blocklist vaut pour toute liste de
+// colonnes proposée à l'utilisateur (lookup, rollup, filtre d'un champ lien —
+// cf. services/linkFilter.js).
+export function isSafeColumn(name) {
   return !SENSITIVE_COLUMN_PATTERNS.some(re => re.test(name))
 }
 
@@ -111,6 +125,7 @@ export const ACTIVITY_ENTITY_MAP = {
   achats_fournisseurs: 'achat_fournisseur',
   interactions: 'interaction',
   vendor_subscriptions: 'vendor_subscription',
+  ops_issues: 'ops_issue',
 }
 
 // Kinds de champs auto-remplis : lecture seule, calculés à la lecture via la VUE.
@@ -124,6 +139,19 @@ export const AUTO_KINDS = new Set(['created_time', 'last_modified_time', 'create
 // ARRAY / ARRAYUNIQUE concatènent les valeurs liées (toutes / distinctes) en une
 // liste texte séparée par « , » — utile pour lister des id, noms, etc.
 export const ROLLUP_AGGS = new Set(['SUM', 'COUNT', 'AVG', 'MIN', 'MAX', 'ARRAY', 'ARRAYUNIQUE'])
+
+// Colonnes d'une table, colonnes GÉNÉRÉES comprises. `PRAGMA table_info` les
+// ignore silencieusement — un rollup sur `paie_items.regular_amount` (heures ×
+// taux, cf. migration 038) était donc refusé « colonne introuvable ». Seul
+// `table_xinfo` les liste ; `hidden=1` (colonnes cachées d'une table virtuelle)
+// est écarté, `2`/`3` = généré VIRTUAL / STORED, agrégeables comme les autres.
+function childColumnRows(table) {
+  return db.pragma(`table_xinfo(${table})`).filter(c => c.hidden !== 1).map(c => ({ name: c.name, type: c.type }))
+}
+
+function childColumns(table) {
+  return childColumnRows(table).map(c => c.name)
+}
 
 // Candidats de "singulier" pour dériver le nom de colonne FK inverse probable
 // d'une table source (projects → project, factures → facture, companies → company).
@@ -183,6 +211,61 @@ export function recordLinkTargetOf(erpTable, column) {
   return null
 }
 
+// ── Format d'un lookup : celui du champ récupéré ─────────────────────────────
+//
+// Un lookup ne choisit pas son format d'affichage : il RECOPIE la valeur d'un
+// champ de la table liée, donc il se présente comme lui (une devise reste un
+// nombre, une date reste une date). La modale de champ ne demande donc plus de
+// format pour ce kind — c'est ici qu'il se déduit, à la création comme à chaque
+// changement de colonne récupérée.
+const RESULT_TYPE_BY_FIELD_TYPE = {
+  number: 'number', currency: 'number', duration: 'number', rating: 'number',
+  percent: 'percent', date: 'date', url: 'url',
+}
+const LOOKUP_RESULT_TYPES = new Set(['text', 'number', 'date', 'url', 'percent'])
+
+// Colonne NATIVE (aucune ligne dans custom_fields : son type ne vit que dans
+// tableDefs.js, côté client) : on lit le type déclaré SQLite, et le nom de
+// colonne sert de dernier indice — SQLite range les dates en TEXT, donc
+// `date_*` / `*_date` / `*_at` valent mieux que « texte ».
+function resultTypeFromColumnShape(column, declaredType) {
+  if (/^(created_at|updated_at)$/.test(column) || /(^|_)dates?(_|$)/.test(column) || /_at$/.test(column)) return 'date'
+  if (/INT|REAL|FLOA|DOUB|NUM|DEC/.test(String(declaredType || '').toUpperCase())) return 'number'
+  if (/(^|_)urls?(_|$)/.test(column)) return 'url'
+  return 'text'
+}
+
+// Format d'une colonne de la table liée. `field` = sa ligne custom_fields (champ
+// perso ERP, colonne adoptée d'Airtable, ou personnalisation d'un champ natif)
+// quand elle existe ; `declaredType` = son type SQLite.
+export function resultTypeForTargetColumn(column, { field = null, declaredType = null } = {}) {
+  if (field) {
+    if (field.kind && !['data', 'native'].includes(field.kind)) {
+      return LOOKUP_RESULT_TYPES.has(field.result_type) ? field.result_type : 'text'
+    }
+    if (field.type) return RESULT_TYPE_BY_FIELD_TYPE[field.type] || 'text'
+  }
+  return resultTypeFromColumnShape(column, declaredType)
+}
+
+// Format déduit pour un couple (table liée, colonne récupérée). Une requête +
+// un pragma : appelé au coup par coup (création / modification d'un lookup),
+// pas dans une boucle — getLookupMeta, lui, groupe ses lectures.
+export function inferLookupResultType(table, column) {
+  if (!table || !column) return 'text'
+  if (!SAFE_IDENT.test(table) || !SAFE_IDENT.test(column)) return 'text'
+  const rows = db.prepare(
+    `SELECT type, kind, result_type FROM custom_fields
+     WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
+  ).all(table, column)
+  // Une personnalisation de champ natif (kind='native') ne dit le type QUE si
+  // l'utilisateur a re-typé le champ (type='' sinon, cf. schema.js).
+  const field = rows.find(r => r.kind !== 'native') || rows.find(r => r.type) || null
+  let declaredType = null
+  try { declaredType = childColumnRows(table).find(c => c.name === column)?.type || null } catch { /* table inconnue */ }
+  return resultTypeForTargetColumn(column, { field, declaredType })
+}
+
 // Métadonnées exposées au client pour construire l'UI de création de lookup.
 // Retourne pour la table source : les colonnes FK détectées (via PRAGMA
 // foreign_key_list) avec leur table cible probable, plus la whitelist de
@@ -206,26 +289,70 @@ export function getLookupMeta(erpTable) {
       if (target) fkColumns.push({ column: col, target_table: target, inferred: true })
     }
   }
+  // Aussi : les champs "lien" importés d'Airtable en texte (colonne TEXT,
+  // custom_fields.options.airtable_link_hint) — ni FK, ni forcément un nom en
+  // `_id` (cf. `recordLinkTargetOf` ci-dessus). Sans cet ajout ils restent
+  // invisibles ici alors qu'ils s'affichent comme « Lien » partout ailleurs.
+  for (const f of db.prepare(
+    `SELECT cf.column_name, cf.options, m.options AS mapping_options
+     FROM custom_fields cf
+     LEFT JOIN airtable_field_mappings m
+       ON m.erp_table = cf.erp_table AND m.column_name = cf.column_name
+     WHERE cf.erp_table=? AND cf.deleted_at IS NULL`
+  ).all(erpTable)) {
+    if (fkColumns.find(fc => fc.column === f.column_name)) continue
+    let opts = null
+    try { opts = JSON.parse(f.options || 'null') } catch { opts = null }
+    if (!opts?.airtable_link_hint) continue
+    let mo = null
+    try { mo = JSON.parse(f.mapping_options || 'null') } catch { mo = null }
+    const target = mo?.link_target_table || erpTableForAirtableTableId(mo?.linked_table_id)
+    if (target && LOOKUP_TARGET_WHITELIST.has(target)) {
+      fkColumns.push({ column: f.column_name, target_table: target, inferred: true })
+    }
+  }
 
   // Libellés UI des colonnes cibles (custom_fields.name, fusion avec l'ex-
   // airtable_field_defs.airtable_field_name) — la modale affiche les noms de
   // champs tels qu'ils apparaissent dans l'app plutôt que les noms techniques
   // snake_case. Une requête, groupée par table.
+  // La même requête sert au FORMAT publié plus bas : le type du champ récupéré
+  // décide de celui du lookup (cf. resultTypeForTargetColumn), la modale ne le
+  // demande plus.
   const labelsByTable = new Map()
+  const fieldsByTable = new Map()
   for (const r of db.prepare(
-    `SELECT erp_table, column_name, name FROM custom_fields
-     WHERE deleted_at IS NULL AND kind='data' AND name IS NOT NULL AND name != ''`
+    `SELECT erp_table, column_name, name, type, kind, result_type FROM custom_fields
+     WHERE deleted_at IS NULL`
   ).all()) {
-    if (!labelsByTable.has(r.erp_table)) labelsByTable.set(r.erp_table, new Map())
-    labelsByTable.get(r.erp_table).set(r.column_name, r.name)
+    if (r.kind === 'data' && r.name) {
+      if (!labelsByTable.has(r.erp_table)) labelsByTable.set(r.erp_table, new Map())
+      labelsByTable.get(r.erp_table).set(r.column_name, r.name)
+    }
+    if (!fieldsByTable.has(r.erp_table)) fieldsByTable.set(r.erp_table, new Map())
+    const byColumn = fieldsByTable.get(r.erp_table)
+    // Même règle de préséance qu'inferLookupResultType : la ligne 'native' ne
+    // compte que si elle porte un re-typage.
+    const seen = byColumn.get(r.column_name)
+    if (!seen || (seen.kind === 'native' && (r.kind !== 'native' || (!seen.type && r.type)))) {
+      byColumn.set(r.column_name, r)
+    }
   }
 
   const targetColumns = {}
   for (const t of LOOKUP_TARGET_WHITELIST) {
     try {
       const labels = labelsByTable.get(t)
-      const cols = db.pragma(`table_info(${t})`).map(c => c.name).filter(isSafeLookupColumn)
-        .map(c => ({ column: c, label: labels?.get(c) || null }))
+      const fields = fieldsByTable.get(t)
+      const cols = childColumnRows(t).filter(c => isSafeColumn(c.name))
+        .map(c => ({
+          column: c.name,
+          label: labels?.get(c.name) || null,
+          result_type: resultTypeForTargetColumn(c.name, {
+            field: fields?.get(c.name) || null,
+            declaredType: c.type,
+          }),
+        }))
       if (cols.length > 0) targetColumns[t] = cols
     } catch {}
   }
@@ -258,6 +385,16 @@ export function getLookupMeta(erpTable) {
       }
     }
   }
+  // Ordre du choix « Table liée » : les lignes PROPRES à la fiche d'abord
+  // (return_items pour returns, order_items pour orders, paie_items pour paies),
+  // puis le reste par ordre alphabétique. Sans ça l'ordre suivait celui de la
+  // whitelist : sur la table Retour, « Articles de commande » (les lignes de
+  // remplacement) sortait avant « Articles de retour », l'évidence en second.
+  const ownLinePrefixes = singulars.map(s => `${s}_`)
+  rollupSources.sort((a, b) => {
+    const rank = s => (ownLinePrefixes.some(p => s.table.startsWith(p)) ? 0 : 1)
+    return rank(a) - rank(b) || a.table.localeCompare(b.table) || a.fk_column.localeCompare(b.fk_column)
+  })
 
   // Champs auto-remplis réellement disponibles pour cette table : created_time
   // nécessite une colonne created_at ; last_modified_time une colonne updated_at ;
@@ -298,7 +435,7 @@ export function getLookupMeta(erpTable) {
      WHERE erp_table=? AND deleted_at IS NULL
        AND kind IN ('formula','lookup','rollup','link','created_time','last_modified_time','created_by','last_modified_by')`
   ).all(erpTable).map(r => r.column_name)
-  const sourceColumns = [...new Set([...allCols.filter(isSafeLookupColumn), ...virtualColumns])]
+  const sourceColumns = [...new Set([...allCols.filter(isSafeColumn), ...virtualColumns])]
     .map(c => ({ column: c, label: sourceLabels.get(c) || null }))
 
   return {
@@ -493,7 +630,7 @@ function buildVirtualColumn(cf, erpTable, alias) {
     validateRollup(cf, erpTable)
     const agg = String(cf.rollup_agg).toUpperCase()
     const ralias = `_r${++alias.n}`
-    const childCols = db.pragma(`table_info(${cf.rollup_target_table})`).map(c => c.name)
+    const childCols = childColumns(cf.rollup_target_table)
     const softFilter = childCols.includes('deleted_at') ? ` AND ${ralias}.deleted_at IS NULL` : ''
     // ARRAY / ARRAYUNIQUE : liste texte des valeurs liées (« , » comme séparateur).
     // SQLite n'accepte pas group_concat(DISTINCT x, sep) → on passe par une
@@ -611,7 +748,7 @@ export function validateRollup({ rollup_target_table, rollup_target_fk, rollup_t
     throw new Error(`Table ${erpTable} sans colonne id — rollup non supporté`)
   }
   // La colonne FK inverse doit exister sur la table enfant
-  const childCols = db.pragma(`table_info(${rollup_target_table})`).map(c => c.name)
+  const childCols = childColumns(rollup_target_table)
   if (!childCols.includes(rollup_target_fk)) {
     throw new Error(`Colonne "${rollup_target_fk}" introuvable sur ${rollup_target_table}`)
   }
@@ -621,7 +758,7 @@ export function validateRollup({ rollup_target_table, rollup_target_fk, rollup_t
     if (!childCols.includes(rollup_target_column)) {
       throw new Error(`Colonne "${rollup_target_column}" introuvable sur ${rollup_target_table}`)
     }
-    if (!isSafeLookupColumn(rollup_target_column)) {
+    if (!isSafeColumn(rollup_target_column)) {
       throw new Error(`Colonne "${rollup_target_column}" non exposable (sensible)`)
     }
   }

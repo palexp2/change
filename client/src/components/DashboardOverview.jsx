@@ -858,10 +858,8 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const closing12 = closingSeries.reduce((acc, m) => ({ won: acc.won + m.won, total: acc.total + m.total }), { won: 0, total: 0 })
   const closingRate12 = closing12.total ? (closing12.won / closing12.total) * 100 : 0
 
-  const ticketsSeries = useMemo(() => {
-    const by = new Map((data?.ticketsByMonth || []).map(r => [r.month, r.count]))
-    return lastMonthKeys(12).map(m => ({ ...m, value: by.get(m.key) || 0 }))
-  }, [data])
+  // La tuile « Billets ouverts » et le graphique « Billets de support » sont
+  // partis avec le statut et la date d'un billet (migration 040).
 
   const shipmentsSeries = useMemo(() => {
     const by = new Map((data?.weeklyShipments || []).map(r => [r.week_start, r.count]))
@@ -1050,14 +1048,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           to="/dashboard/couts-expedition"
         />
         <Tile
-          id="tickets"
-          label="Billets ouverts"
-          value={fmtInt(data?.support?.openTickets)}
-          tone="violet"
-          sub={`${fmtInt(ticketsSeries[ticketsSeries.length - 1]?.value)} billets créés ce mois`}
-          to="/tickets"
-        />
-        <Tile
           id="lowstock"
           label="Produits sous le seuil"
           value={fmtInt(data?.inventory?.lowStockCount)}
@@ -1137,18 +1127,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
             points={shipmentsSeries} tone="sky" format={fmtInt} labelEvery={4}
             chartId="shipments"
             linkFor={p => p.value ? `/envois?week=${p.key}` : null}
-          />
-        </ChartCard>
-
-        <ChartCard
-          id="tickets" title="Billets de support" subtitle="Créés par mois · 12 mois"
-          to="/dashboard/billets-par-mois"
-          points={ticketsSeries} format={fmtInt} valueLabel="Billets" periodLabel="Mois"
-        >
-          <MiniColumns
-            points={ticketsSeries} tone="violet" format={fmtInt}
-            chartId="tickets"
-            linkFor={p => p.value ? `/tickets?createdMonth=${p.key}` : null}
           />
         </ChartCard>
 

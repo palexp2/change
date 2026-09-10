@@ -1,11 +1,23 @@
-import { Children, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
-import { GripVertical, ChevronUp, ChevronDown, X, SlidersHorizontal, Plus, Check } from 'lucide-react'
+import { Children, Fragment, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { GripVertical, ChevronUp, ChevronDown, X, SlidersHorizontal, Plus, Check, Edit2, Trash2 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
-import { useDetailFieldLayout, usePeekFieldEdit } from '../lib/detailFieldLayout.jsx'
+import { useDetailFieldLayout, usePeekFieldEdit, useRecordDeletePolicy } from '../lib/detailFieldLayout.jsx'
+import { recordDeleteSpec, deleteAllowedByDefault } from '../lib/recordDelete.js'
+import { useUndoableDelete } from '../lib/undoableDelete.js'
+import { sync as syncStore } from '../lib/dataSync.js'
+import { useConfirm } from './ConfirmProvider.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { useExtraCustomFields } from '../lib/useDetailFields.jsx'
+import { useFieldOverrides } from '../lib/fieldOverrides.jsx'
+import { refreshCustomFields } from '../lib/useCustomFields.js'
+import { fieldKeyForView, sqlTableForView } from '../lib/customFieldDisplay.jsx'
+import { TABLE_COLUMN_META, LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import { CustomFieldEditor, isEditableCustomField } from './CustomDetailFields.jsx'
+import { CustomFieldModal } from './CustomFieldModal.jsx'
+import { FieldAirtableMapping } from './FieldAirtableMapping.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { FieldPulse } from './FieldPulse.jsx'
 
@@ -38,6 +50,24 @@ import { FieldPulse } from './FieldPulse.jsx'
 // `onSaveCustom(colonne, valeur)` + `savingKeys` : rendent ces champs
 // personnalisés MODIFIABLES en place (autosave), comme <CustomDetailFields>. À
 // ne fournir que si la route PUT de la table accepte les colonnes cf_.
+//
+// `selectPills` : variante d'affichage — les champs personnalisés de type
+// Sélection montrent la pastille de couleur du choix (valeur et menu) au lieu du
+// texte nu. Par défaut non, les fiches gardent leur rendu texte.
+//
+// `taken` : colonnes que la fiche rend AILLEURS que dans la carte (en-tête du
+// panneau, bloc maison) ou seulement dans certains cas — elles ne doivent pas
+// revenir en double par la liste des champs personnalisés. Doit être une
+// référence stable (constante de module ou useMemo).
+//
+// Le mode édition porte aussi la case « Suppression permise » : elle dit si un
+// utilisateur peut supprimer CETTE fiche (réglage partagé, cf.
+// lib/detailFieldLayout.jsx et lib/recordDelete.js). Cochée sur une fiche qui
+// n'offrait pas la suppression, la carte pose l'action elle-même ; décochée,
+// l'action disparaît partout et le serveur refuse le DELETE.
+//
+// `onDeleted` : quoi faire après cette suppression (fermer le panneau…). À
+// défaut, on retourne à la liste d'origine de la ressource.
 
 export function DetailField() {
   // Composant marqueur : c'est DetailFieldGrid qui rend le bloc (il doit
@@ -58,6 +88,7 @@ function FieldLabel({ label, saving, field, recordId }) {
 }
 
 const NO_SAVING = {}
+const NO_TAKEN = []
 
 export function DetailFieldGrid({
   entityType,
@@ -67,6 +98,15 @@ export function DetailFieldGrid({
   testId,
   onSaveCustom = null,
   savingKeys = NO_SAVING,
+  taken = NO_TAKEN,
+  selectPills = false,
+  onDeleted = null,
+  // Enveloppe optionnelle autour de CHAQUE bloc de champ : (field, node) => node.
+  // La fiche Facture s'en sert pour garder ses règles de visibilité
+  // conditionnelle (<FieldGuard>) sur les champs qu'elles concernent — la carte
+  // règle la présence choisie par l'utilisateur, la règle règle celle qui dépend
+  // du record.
+  wrapField = null,
 }) {
   const { user } = useAuth()
   const peek = usePeekFieldEdit()
@@ -100,11 +140,18 @@ export function DetailFieldGrid({
       .map(n => ({
         key: n.props.id,
         label: gate.labelFor(n.props.id, n.props.label),
+        // Libellé D'ORIGINE (celui du code) : la modale « Modifier le champ »
+        // doit montrer le nom d'avant renommage pour pouvoir le réinitialiser.
+        origLabel: n.props.label,
         // `testId` : une fiche peut garder son marqueur historique sur le bloc
         // (les tests E2E existants s'y accrochent).
         testId: n.props.testId || `detail-field-${n.props.id}`,
         span2: n.props.span2,
         saving: n.props.saving,
+        // Champ codé qui attend dans « Ajouter un champ » au lieu de se poser
+        // d'office : les fiches qui déclarent TOUS leurs champs (même les
+        // secondaires) s'en servent pour garder leur carte lisible au départ.
+        defaultHidden: n.props.defaultHidden,
         children: n.props.children,
       })),
     [fieldNodes, gate],
@@ -117,7 +164,7 @@ export function DetailFieldGrid({
   // (`defaultHidden`) : elles attendent dans « Ajouter un champ ». Sinon un
   // champ existant mais jamais affiché — « Raison de la mise en attente » sur
   // une commande — restait introuvable, sans aucun moyen de le poser sur la fiche.
-  const takenKeys = useMemo(() => codeFields.map(f => f.key), [codeFields])
+  const takenKeys = useMemo(() => [...codeFields.map(f => f.key), ...taken], [codeFields, taken])
   const extraFields = useExtraCustomFields(entityType, takenKeys, true)
 
   const declared = useMemo(
@@ -125,8 +172,12 @@ export function DetailFieldGrid({
       ...codeFields,
       ...(record && gate.ready ? extraFields.map(f => {
         const saving = !!savingKeys[f.key]
-        const editor = onSaveCustom && isEditableCustomField(f)
-          ? <CustomFieldEditor field={f} value={record[f.key]} saving={saving} onSave={onSaveCustom} />
+        // Un attachement écrit sa propre cellule (voir AttachmentField) : il est
+        // utilisable même sans route PUT acceptant les colonnes cf_, donc sans
+        // `onSaveCustom`. Même règle que <CustomDetailFields>.
+        const editable = f.type === 'attachment' || (isEditableCustomField(f) && onSaveCustom)
+        const editor = editable
+          ? <CustomFieldEditor field={f} value={record[f.key]} saving={saving} onSave={onSaveCustom} recordId={record.id} selectPills={selectPills} />
           : null
         return {
           key: f.key,
@@ -134,11 +185,14 @@ export function DetailFieldGrid({
           testId: `detail-cf-${f.key}`,
           saving,
           defaultHidden: f.defaultHidden,
+          // Ligne custom_fields brute : de quoi ouvrir la modale de champ sur
+          // le bon champ (clic droit en mode édition).
+          cf: f.field,
           children: editor || <div className="text-sm text-slate-700">{f.render(record[f.key])}</div>,
         }
       }) : []),
     ],
-    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys],
+    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills],
   )
 
   const { fields, hiddenFields, applyOrder, hide, show } = useDetailFieldLayout(entityType, declared)
@@ -159,13 +213,116 @@ export function DetailFieldGrid({
   const siblingsOf = useCallback(() => visibleKeys, [visibleKeys])
   const dnd = useReorderDnd({ siblingsOf, applyOrder })
 
+  // ── Modifier le champ lui-même (clic droit en mode édition) ────────────────
+  // Le mode édition ne réglait que la disposition ; le nom, le type, le format
+  // ou la description d'un champ demandaient d'aller dans /champs/:table. C'est
+  // la MÊME modale que le clic droit sur un en-tête de tableau — un champ ne se
+  // modifie qu'à un seul endroit, quel que soit l'endroit d'où on l'ouvre.
+  const fieldTable = entityType ? fieldKeyForView(entityType) : null
+  const cfTable = fieldTable ? sqlTableForView(fieldTable) : null
+  // Chargé seulement en mode édition : une fiche en lecture n'a rien à faire
+  // des personnalisations détaillées (le portier lui suffit pour les libellés).
+  const { overrides: fieldOverrides, reload: reloadFieldOverrides } = useFieldOverrides(editing ? fieldTable : null)
+  const [fieldMenu, setFieldMenu] = useState(null)   // { x, y, field } | null
+  const [fieldModal, setFieldModal] = useState(null) // { cf } | { col } | null
+
+  const openFieldEditor = useCallback((f) => {
+    if (f.cf) { setFieldModal({ cf: f.cf }); return }
+    // Champ natif : la modale attend la définition D'ORIGINE de la colonne
+    // (pré-override). Les fiches nomment parfois la FK (`company_id`) là où le
+    // tableau nomme le libellé joint (`company_name`) — on accepte les deux.
+    const cols = TABLE_COLUMN_META[fieldTable] || []
+    const meta = cols.find(c => (c.id ?? c.field) === f.key) || cols.find(c => (c.field ?? c.id) === f.key)
+    const base = meta || { id: f.key, field: f.key, label: f.origLabel || f.label }
+    const renderTypeLabel = LINKED_RECORD_TYPE_LABELS[base.id]
+    setFieldModal({ col: renderTypeLabel ? { ...base, renderTypeLabel } : base })
+  }, [fieldTable])
+
+  const closeFieldModal = useCallback(() => setFieldModal(null), [])
+  const onFieldSaved = useCallback(() => {
+    reloadFieldOverrides()
+    if (cfTable) refreshCustomFields(cfTable)
+  }, [reloadFieldOverrides, cfTable])
+
+  // Sortir du mode édition referme ce qu'il avait ouvert.
+  useEffect(() => {
+    if (!editing) { setFieldMenu(null); setFieldModal(null) }
+  }, [editing])
+
+  // Le menu se ferme aussi à Échap : il est posé au curseur, sans ancre visible.
+  // En phase de CAPTURE + stopPropagation : sinon la touche refermait aussi le
+  // panneau latéral qui porte la fiche.
+  useEffect(() => {
+    if (!fieldMenu) return
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      setFieldMenu(null)
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [fieldMenu])
+
+  // ── Suppression de la fiche ────────────────────────────────────────────────
+  // La case vit dans le mode édition, l'action dans la carte. Les fiches qui
+  // ont leur propre bouton Supprimer (contact, produit, projet…) n'ont pas de
+  // `run` au registre : elles se contentent de lire la case.
+  const deleteSpec = recordDeleteSpec(entityType)
+  const { allowed: deleteAllowed, setAllowed: setDeleteAllowed } =
+    useRecordDeletePolicy(entityType, deleteAllowedByDefault(entityType))
+  const undoableDelete = useUndoableDelete()
+  const confirm = useConfirm()
+  const { addToast } = useToast()
+  const navigate = useNavigate()
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = useCallback(async () => {
+    if (!record?.id || !deleteSpec?.run || deleting) return
+    // Suppression réversible (toast « Annuler » 8 s) : rien à confirmer avant.
+    if (deleteSpec.confirm && !(await confirm({ message: deleteSpec.confirm, confirmLabel: 'Supprimer' }))) return
+    setDeleting(true)
+    try {
+      if (deleteSpec.undoTable) {
+        await undoableDelete({
+          table: deleteSpec.undoTable,
+          id: record.id,
+          deleteFn: () => deleteSpec.run(record.id),
+          label: deleteSpec.toast,
+          onChange: () => { syncStore().catch(() => {}) },
+        })
+      } else {
+        await deleteSpec.run(record.id)
+        syncStore().catch(() => {})
+        addToast({ message: deleteSpec.toast || 'Supprimé', type: 'success' })
+      }
+      if (onDeleted) onDeleted()
+      else if (deleteSpec.list) navigate(deleteSpec.list)
+    } catch (e) {
+      addToast({ message: e.message || 'Suppression échouée', type: 'error' })
+    } finally {
+      setDeleting(false)
+    }
+  }, [record?.id, deleteSpec, deleting, confirm, undoableDelete, addToast, onDeleted, navigate])
+
+  const onFieldContextMenu = useCallback((e, f) => {
+    e.preventDefault()
+    e.stopPropagation()
+    setFieldMenu({ x: e.clientX, y: e.clientY, field: f })
+  }, [])
+
+  const wrap = useCallback(
+    (f, node) => (wrapField ? <Fragment key={f.key}>{wrapField(f, node)}</Fragment> : node),
+    [wrapField],
+  )
+
   const body = editing ? (
     <div className="space-y-2" data-testid="detail-fields-editing">
-      {fields.map(f => (
+      {fields.map(f => wrap(f, (
         <div
           key={f.key}
           data-testid={f.testId}
           data-field-key={f.key}
+          onContextMenu={e => onFieldContextMenu(e, f)}
           onDragOver={e => dnd.dragOver(e, f.key)}
           onDrop={e => dnd.drop(e, f.key)}
           className={`relative flex items-start gap-2 rounded-lg border border-dashed px-2 py-1.5 transition-colors ${
@@ -212,11 +369,11 @@ export function DetailFieldGrid({
             className="shrink-0 p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50"
           ><X size={14} /></button>
         </div>
-      ))}
+      )))}
     </div>
   ) : (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-      {fields.map(f => (
+      {fields.map(f => wrap(f, (
         <div
           key={f.key}
           data-testid={f.testId}
@@ -226,7 +383,7 @@ export function DetailFieldGrid({
           <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />
           {f.children}
         </div>
-      ))}
+      )))}
     </div>
   )
 
@@ -252,7 +409,7 @@ export function DetailFieldGrid({
       {editing && (
         <div className="mb-3 text-xs text-slate-500 flex items-center gap-1.5">
           <SlidersHorizontal size={13} className="text-brand-500" />
-          Glisse les champs pour les réordonner, retire ceux qui ne servent pas.
+          Glisse pour réordonner, clic droit pour modifier le champ.
         </div>
       )}
 
@@ -289,10 +446,96 @@ export function DetailFieldGrid({
         </div>
       )}
 
+      {/* Un utilisateur peut-il supprimer cette fiche ? Réglage partagé, comme
+          la disposition des champs. */}
+      {editing && deleteSpec && (
+        <label className="mt-2 flex items-center gap-2 text-xs text-slate-500 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={deleteAllowed}
+            onChange={e => setDeleteAllowed(e.target.checked)}
+            data-testid="detail-allow-delete"
+            className="h-3.5 w-3.5 rounded border-slate-300 text-brand-600 focus:ring-brand-500"
+          />
+          Suppression permise
+        </label>
+      )}
+
+      {!editing && deleteAllowed && deleteSpec?.run && record?.id && (
+        <div className="mt-4 pt-3 border-t border-slate-100">
+          <button
+            type="button"
+            onClick={handleDelete}
+            disabled={deleting}
+            data-testid="detail-record-delete"
+            className="inline-flex items-center gap-1.5 text-xs text-slate-400 hover:text-red-600 disabled:opacity-50"
+          >
+            <Trash2 size={13} /> {deleting ? 'Suppression…' : deleteSpec.label}
+          </button>
+        </div>
+      )}
+
       {extras.length > 0 && (
         <div className={editing ? 'mt-4' : 'mt-4 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm'}>
           {extras}
         </div>
+      )}
+
+      {fieldMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            onClick={() => setFieldMenu(null)}
+            onContextMenu={e => { e.preventDefault(); setFieldMenu(null) }}
+          />
+          <div
+            className="fixed z-50 bg-white border border-slate-200 rounded-lg shadow-lg py-1 min-w-[180px]"
+            style={{ top: fieldMenu.y, left: fieldMenu.x }}
+            data-testid="detail-field-menu"
+          >
+            <button
+              type="button"
+              onClick={() => { const f = fieldMenu.field; setFieldMenu(null); openFieldEditor(f) }}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left"
+              data-testid="detail-field-menu-edit"
+            >
+              <Edit2 size={13} /> Modifier le champ
+            </button>
+            <button
+              type="button"
+              onClick={() => { const f = fieldMenu.field; setFieldMenu(null); hide(f.key) }}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50 text-left"
+              data-testid="detail-field-menu-hide"
+            >
+              <X size={13} /> Retirer de la fiche
+            </button>
+          </div>
+        </>
+      )}
+
+      {/* Modale UNIQUE de modification de champ — la même que le clic droit sur
+          un en-tête de tableau. Champ perso → édition du champ ; champ natif →
+          personnalisation (nom, type d'affichage, description) sans toucher à la
+          colonne SQL ni aux syncs. */}
+      {fieldModal && (
+        <CustomFieldModal
+          isOpen
+          onClose={closeFieldModal}
+          erpTable={fieldModal.col ? fieldTable : cfTable}
+          editing={fieldModal.cf || null}
+          native={fieldModal.col
+            ? { column: fieldModal.col, override: fieldOverrides.get(fieldModal.col.id) || fieldOverrides.get(fieldModal.col.field) || null }
+            : null}
+          mappingSlot={(() => {
+            const column = fieldModal.col
+              ? (fieldModal.col.field || fieldModal.col.id)
+              : fieldModal.cf?.column_name
+            if (!column || !fieldTable) return null
+            return <FieldAirtableMapping table={fieldTable} column={column} cfKind={fieldModal.cf?.kind || null} />
+          })()}
+          onSaved={onFieldSaved}
+          onDeleted={() => { onFieldSaved(); closeFieldModal() }}
+        />
       )}
     </div>
   )

@@ -4,9 +4,10 @@ import { fmtDate } from './formatDate.js'
 import { fmtNumber } from '../utils/formatters.js'
 import {
   formatCurrency, UrlValue, PhoneValue, isCheckboxTruthy, parseAttachments, LinkedRecordsValue,
+  PercentValue, percentDisplayOf, ChoiceBadge,
 } from './customFieldDisplay.jsx'
 import { TABLE_LABELS, TABLE_RECORD_LABELS } from './tableDefs.js'
-import { Badge } from '../components/Badge.jsx'
+import { RatingStars } from '../components/RatingStars.jsx'
 import { seedFieldGate } from './fieldGate.js'
 
 // Personnalisation d'affichage des champs NATIFS d'une table (renommage /
@@ -24,6 +25,11 @@ export const OVERRIDE_TYPES = [
   { value: 'text',     label: 'Texte' },
   { value: 'number',   label: 'Nombre' },
   { value: 'currency', label: 'Devise (CAD)' },
+  // Pourcentage : la colonne porte le nombre de pourcents (45 = 45 %), rendu
+  // en « 45 % » ou en barre de progression (cf. options.display).
+  { value: 'percent',  label: 'Pourcentage' },
+  // Évaluation : la colonne porte un nombre de 0 à 5, rendu en étoiles.
+  { value: 'rating',   label: 'Évaluation' },
   { value: 'date',     label: 'Date' },
   // 'checkbox' est le vocabulaire unifié (celui des champs perso) ; 'boolean'
   // reste accepté en lecture pour les personnalisations écrites avant la fusion.
@@ -166,6 +172,8 @@ const OVERRIDE_TO_COLUMN_TYPE = {
   text: 'text',
   number: 'number',
   currency: 'number',
+  percent: 'number',
+  rating: 'rating',
   date: 'date',
   checkbox: 'boolean',
   boolean: 'boolean',
@@ -210,6 +218,16 @@ export function renderOverriddenValue(ov, value) {
     const formatted = formatCurrency(value, ov.decimals ?? 2)
     return <span className="tabular-nums text-slate-700">{formatted != null ? formatted : String(value)}</span>
   }
+  if (ov.type === 'percent') {
+    return (
+      <PercentValue
+        value={value}
+        display={percentDisplayOf(ov)}
+        decimals={Number.isInteger(ov.decimals) ? ov.decimals : 0}
+      />
+    )
+  }
+  if (ov.type === 'rating') return <RatingStars value={value} />
   if (ov.type === 'date') return <span className="text-slate-500">{fmtDate(value)}</span>
   if (ov.type === 'url') return <UrlValue value={value} />
   if (ov.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodePref(ov)} />
@@ -264,9 +282,9 @@ function renderNativeSelectValue(choices, value, origRender, row, multi) {
       {values.map((v, i) => {
         const c = byValue.get(v)
         return (
-          <Badge key={i} color={c?.color || 'gray'} className="shrink-0 whitespace-nowrap">
+          <ChoiceBadge key={i} color={c?.color || 'gray'} className="shrink-0 whitespace-nowrap">
             {c?.label || v}
-          </Badge>
+          </ChoiceBadge>
         )
       })}
     </div>
@@ -294,6 +312,19 @@ export function applyFieldOverrides(columns, overrides) {
     // tableDefs.js (infobulle « ? » de l'en-tête de colonne).
     if (ov.description) next.description = ov.description
     const origType = col.type || 'text'
+    // Colonne qui rend DÉJÀ un lien standard vers la table demandée (`linkTarget`
+    // en dur dans tableDefs.js) : la passer en « Lien vers … » ne change rien à
+    // son affichage. Son render de page part de l'IDENTIFIANT de la fiche (le
+    // nom du composant d'une nomenclature vient de `component_id`), là où le
+    // rendu générique ne dispose que du libellé et doit le rechercher — plus
+    // fragile (homonymes, majuscules accentuées) et rendu en pastille plutôt
+    // qu'en lien. On garde donc le lien de la page, et on note quand même le
+    // type choisi pour l'icône et la fiche du champ.
+    if (col.render && col.linkTarget && linkTargetOfType(ov.type) === col.linkTarget) {
+      next.fieldType = ov.type
+      next.renderTypeLabel = typeLabel(ov.type)
+      return next
+    }
     if (ov.type && ov.type !== origType) {
       next.type = OVERRIDE_TO_COLUMN_TYPE[ov.type] || 'text'
       // Type choisi par l'utilisateur, conservé pour l'affichage (icône de type

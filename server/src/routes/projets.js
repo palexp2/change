@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { postRevenueRecognitionJE, reconcileFactureRevenueRecognition, factureHasPendingStripeDeposit, auditFactureReconciliation } from '../services/quickbooks.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { readRelation } from '../services/customFieldsView.js'
+import { RETURN_COMPANY_SQL } from '../services/returnCompany.js'
 import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
@@ -17,11 +18,28 @@ import { emitEntity } from '../services/realtimeEmitters.js'
 import { getCurrentItemsSnapshot, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../services/addressCheck.js'
+// La confirmation d'une adresse ENREGISTRÉE part de checkAddress() (tâche de
+// fond) : ces imports ne servent qu'aux deux routes explicites ci-dessous.
+import { confirmAddressInput, confirmAddressRecord, needsConfirmation } from '../services/addressConfirm.js'
 import { getStripeKey } from '../services/stripe.js'
 import { APP_URL } from '../config/appUrl.js'
 import { uploadsPath } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
+import { writeBackRecord } from '../services/airtableWriteback.js'
+
+// Filet pour un write-back ERP → Airtable lancé en fire-and-forget : writeBackRecord
+// trace déjà ses échecs internes dans sync_log, ce wrapper garantit qu'une rejection
+// résiduelle ne disparaisse pas en silence (aligné sur traceAirtablePush de
+// routes/shipments.js). Le module exact (retours / retour_items) est déduit du
+// contexte d'appel, seul le recordId est utile à la trace.
+function traceRetourPush(promise, recordId) {
+  return promise.catch(e => {
+    console.error(`erp-writeback retours ${recordId} (async):`, e.message)
+    logSync('retours', 'erp-writeback', { status: 'error', error: `${recordId}: ${e.message}` })
+  })
+}
 
 // Calcule les taxes d'une facture (tableau {name, percentage, amount}).
 // Stratégie :
@@ -160,6 +178,38 @@ router.post('/adresses/check', (req, res) => {
   const out = runAddressCheck({ trigger: 'manuel', apply: !dry, log: !dry })
   if (dry) return res.json({ dryRun: true, summary: out.summary, counts: out.counts, problems: out.problems })
   res.json({ summary: out.summary, ...getAddressCheckSummary() })
+})
+
+// Revérifie UNE adresse à la demande (bouton « Revérifier » du bandeau). Le
+// verdict est déjà recalculé à chaque écriture ; ce bouton sert quand l'adresse
+// a bougé par un autre chemin que la fiche (import, formulaire client).
+// ── Confirmation auprès de l'API d'adresses (services/addressConfirm.js) ─────
+
+// Confirme une adresse SAISIE, avant qu'elle n'existe en base : c'est ce qui
+// permet au formulaire de création de proposer l'écriture officielle de Google
+// avant d'enregistrer. Ne persiste rien.
+router.post('/adresses/confirm', async (req, res) => {
+  const addr = req.body || {}
+  if (addr.address_type && !needsConfirmation(addr.address_type)) {
+    return res.json({ status: 'skipped', formatted: '', suggestion: null, diff: [], message: '' })
+  }
+  res.json(await confirmAddressInput(addr))
+})
+
+// Reconfirme UNE adresse existante (bouton « Reconfirmer ») et renvoie la
+// ligne à jour. `force` : ignore l'empreinte, on redemande à l'API.
+router.post('/adresses/:id/confirm', async (req, res) => {
+  const verdict = await confirmAddressRecord(req.params.id, { force: true })
+  if (!verdict) return res.status(404).json({ error: 'Not found' })
+  const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id)
+  res.json(adr)
+})
+
+router.post('/adresses/:id/check', (req, res) => {
+  const verdict = checkAddress(req.params.id, { actorUserId: req.user?.id, notify: false })
+  if (!verdict) return res.status(404).json({ error: 'Not found' })
+  const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id)
+  res.json(adr)
 })
 
 router.get('/adresses', (req, res) => {
@@ -335,6 +385,29 @@ router.get('/assemblages/:id', (req, res) => {
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+// Log manuel d'un assemblage (le module n'est sinon alimenté que par le
+// mirroir Airtable en import seul — cf. airtableUiFieldMap.js). Sans
+// airtable_id, la ligne échappe à purgeOrphans (airtable.js) : un sync
+// Airtable ne l'efface pas.
+router.post('/assemblages', (req, res) => {
+  const { product_id, qty_produced, assembled_at } = req.body || {}
+  if (!product_id) return res.status(400).json({ error: 'Produit requis' })
+  const qty = parseInt(qty_produced, 10)
+  if (!qty || qty <= 0) return res.status(400).json({ error: 'Quantité requise' })
+
+  const id = newRecordId()
+  db.prepare('INSERT INTO assemblages (id, product_id, qty_produced, assembled_at) VALUES (?, ?, ?, ?)')
+    .run(id, product_id, qty, assembled_at || new Date().toISOString().slice(0, 10))
+  const row = db.prepare(`
+    SELECT a.*, p.name_fr as product_name, p.sku
+    FROM ${readRelation('assemblages')} a
+    LEFT JOIN products p ON a.product_id = p.id
+    WHERE a.id = ?
+  `).get(id)
+  emitEntity('assemblage', 'created', id, row, req.user?.id)
+  res.status(201).json(row)
 })
 
 // ── Factures ─────────────────────────────────────────────────────────────────
@@ -922,13 +995,14 @@ router.get('/retours', (req, res) => {
   const { page, limit, limitVal, offset } = parsePage(req.query, 50)
   let where = 'WHERE 1=1'
   const params = []
-  if (company_id) { where += ' AND r.company_id = ?'; params.push(company_id) }
+  // L'entreprise d'un retour vient de ses articles depuis la migration 037
+  // (colonne `returns.company_id` droppée).
+  if (company_id) { where += ` AND ${RETURN_COMPANY_SQL('r.id')} = ?`; params.push(company_id) }
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM returns r ${where}`).get(...params).c
-  // `company_name` n'est plus joint ici : c'est un champ perso (lookup sur
-  // company_id, cf. services/nativeFieldConversions.js) porté par la vue. On
-  // sélectionne donc `r.*` sans jamais nommer la colonne — supprimer le champ
-  // la retire de la vue, et la route continue de répondre.
+  // `SELECT r.*` sans nommer de colonne : tout ce que porte la table vient de
+  // la vue et peut être supprimé depuis /champs/retours, la route continue de
+  // répondre.
   const rows = db.prepare(`
     SELECT r.*
     FROM ${readRelation('returns')} r
@@ -952,13 +1026,11 @@ router.get('/retours/:id', (req, res) => {
     SELECT ri.*, sn.serial as serial_number,
            COALESCE(pr.name_fr, psn.name_fr) as product_name,
            COALESCE(pr.sku, psn.sku) as sku,
-           pr.name_fr as product_to_receive,
-           ps.name_fr as product_to_send
+           pr.name_fr as product_to_receive
     FROM return_items ri
     LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
     LEFT JOIN products psn ON sn.product_id = psn.id
     LEFT JOIN products pr ON ri.product_id = pr.id
-    LEFT JOIN products ps ON ri.product_send_id = ps.id
     WHERE ri.return_id = ?
     ORDER BY ri.created_at
   `).all(req.params.id)
@@ -988,6 +1060,59 @@ router.get('/retours/:id', (req, res) => {
   }
 
   res.json({ ...row, items })
+})
+
+// PATCH /projets/retours/items/:itemId — édition d'un ARTICLE de retour.
+// Déclaré avant `/retours/:id` : même méthode, chemins distincts, mais l'ordre
+// garde la lecture évidente.
+//
+// Whitelist : les colonnes custom ÉDITABLES seulement (règle unique —
+// services/customFieldWritability.js). Un champ dont le sens est resté
+// « Airtable → Boréal » est refusé en 400 : l'écriture serait écrasée au sync
+// suivant. Le passer en « Bidirectionnel » dans /champs/return_items le rend
+// éditable ici ET le renvoie vers Airtable.
+router.patch('/retours/items/:itemId', (req, res) => {
+  const existing = db.prepare('SELECT id, return_id FROM return_items WHERE id = ?').get(req.params.itemId)
+  if (!existing) return res.status(404).json({ error: 'Article de retour introuvable' })
+
+  if (refusedAirtablePullKeys('return_items', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+  }
+  const customCols = getWritableCustomColumns('return_items').map(c => c.column_name)
+  const { setClause, values, error } = buildPartialUpdate(req.body, { allowed: customCols })
+  if (error) return res.status(400).json({ error })
+  // `return_items` n'a pas de colonne updated_at (table importée d'Airtable).
+  if (setClause) {
+    db.prepare(`UPDATE return_items SET ${setClause} WHERE id = ?`).run(...values, req.params.itemId)
+    traceRetourPush(writeBackRecord('retour_items', req.params.itemId, Object.keys(req.body)), req.params.itemId)
+  }
+
+  const updated = db.prepare(`SELECT * FROM ${readRelation('return_items')} WHERE id = ?`).get(req.params.itemId)
+  emitEntity('return_item', 'updated', req.params.itemId, updated, req.user?.id)
+  res.json(updated)
+})
+
+// PATCH /projets/retours/:id — édition d'un retour (autosave de la fiche).
+// Mêmes règles que les articles ci-dessus.
+router.patch('/retours/:id', (req, res) => {
+  const existing = db.prepare('SELECT id FROM returns WHERE id = ?').get(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Retour introuvable' })
+
+  if (refusedAirtablePullKeys('returns', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+  }
+  const customCols = getWritableCustomColumns('returns').map(c => c.column_name)
+  const { setClause, values, error } = buildPartialUpdate(req.body, { allowed: customCols })
+  if (error) return res.status(400).json({ error })
+  if (setClause) {
+    db.prepare(`UPDATE returns SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(...values, req.params.id)
+    traceRetourPush(writeBackRecord('retours', req.params.id, Object.keys(req.body)), req.params.id)
+  }
+
+  const updated = db.prepare(`SELECT * FROM ${readRelation('returns')} WHERE id = ?`).get(req.params.id)
+  emitEntity('return', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 // ── Abonnements ──────────────────────────────────────────────────────────────

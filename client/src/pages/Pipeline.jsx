@@ -173,7 +173,7 @@ export default function Pipeline() {
         <div className="font-medium text-slate-900">{row.name}</div>
       ) :
       meta.id === 'company_name' ? row => row.company_id
-        ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+        ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
         : <span className="text-slate-400">—</span> :
       meta.id === 'probability' ? row => {
         if (row.probability == null) return <span className="text-slate-400">—</span>
@@ -192,7 +192,7 @@ export default function Pipeline() {
           <div className="flex flex-wrap gap-1" onClick={e => e.stopPropagation()}>
             {row.orders.map(o => (
               <Link key={o.id} to={`/orders/${o.id}`}
-                className="font-mono text-xs text-brand-600 hover:underline bg-brand-50 px-1.5 py-0.5 rounded">
+                className="font-mono text-xs link-record bg-brand-50 px-1.5 py-0.5 rounded">
                 #{o.order_number}
               </Link>
             ))}
@@ -213,12 +213,24 @@ export default function Pipeline() {
     }
   }, [addToast])
 
-  // Colonnes finales = colonnes hardcodées + champs custom (mapping partagé,
+  // Colonnes finales = colonnes de la page + champs custom (mapping partagé,
   // voir customFieldToColumn — éditable pour kind='data' via le mode tableur).
-  const COLUMNS_WITH_CUSTOM = useMemo(
-    () => [...COLUMNS, ...customFields.map(customFieldToColumn)],
-    [COLUMNS, customFields]
-  )
+  // Une colonne de la page ADOSSÉE à un champ — « Projet », dont la colonne
+  // `name` est un champ depuis le retrait du mapping cœur — n'est pas doublée :
+  // elle garde son rendu et prend le LIBELLÉ du champ (c'est lui que le
+  // renommage d'en-tête met à jour). Même règle que DataTable pour les tables
+  // dont il gère les champs lui-même (columnsWithOwnCf).
+  const COLUMNS_WITH_CUSTOM = useMemo(() => {
+    const pageIds = new Set(COLUMNS.map(c => c.id ?? c.field))
+    const relabeled = COLUMNS.map(c => {
+      const f = customFieldsByColumn.get(c.id ?? c.field)
+      return f?.name && f.name !== c.label ? { ...c, label: f.name } : c
+    })
+    return [
+      ...relabeled,
+      ...customFields.filter(f => !pageIds.has(f.column_name)).map(customFieldToColumn),
+    ]
+  }, [COLUMNS, customFields, customFieldsByColumn])
 
   async function handleCreate(form) { await api.projects.create(form); load() }
 

@@ -4,6 +4,10 @@ import db from '../db/database.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { requireAuth } from '../middleware/auth.js'
 import { parsePage } from '../utils/pagination.js'
+import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { NOW_SQL } from '../utils/crudRouter.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+import { writeBackRecord } from '../services/airtableWriteback.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -259,16 +263,50 @@ router.get('/', (req, res) => {
   res.json({ data: serials, total, page: parseInt(page), limit: parseInt(limit) })
 })
 
-router.get('/:id', (req, res) => {
+function getSerial(id) {
   const serial = db.prepare(`
     SELECT sn.*, pr.name_fr as product_name, pr.sku, co.name as company_name
     FROM serial_numbers sn
     LEFT JOIN products pr ON sn.product_id = pr.id
     LEFT JOIN companies co ON sn.company_id = co.id
     WHERE sn.id = ?
-  `).get(req.params.id)
+  `).get(id)
+  return parsePermissions(serial)
+}
+
+router.get('/:id', (req, res) => {
+  const serial = getSerial(req.params.id)
   if (!serial) return res.status(404).json({ error: 'Not found' })
-  res.json(parsePermissions(serial))
+  res.json(serial)
+})
+
+// PATCH /api/serials/:id — le produit d'un numéro de série se lie et se délie
+// depuis la fiche. Seule colonne ouverte à l'écriture. « Produit » est un champ
+// mappé sur Airtable : l'association posée ici ne tient au prochain sync que si
+// son sens est « Bidirectionnel » dans /champs/serial_numbers — d'où le
+// write-back ci-dessous, qui renvoie le lien à Airtable. Les autres colonnes
+// viennent du miroir et se modifient là-bas.
+router.patch('/:id', (req, res) => {
+  const id = req.params.id
+  if (!db.prepare('SELECT id FROM serial_numbers WHERE id = ?').get(id)) {
+    return res.status(404).json({ error: 'Not found' })
+  }
+  const { setClause, values, cols, error } = buildPartialUpdate(req.body, { allowed: ['product_id'] })
+  if (error) return res.status(400).json({ error })
+  if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
+  const productId = values[cols.indexOf('product_id')]
+  if (productId && !db.prepare('SELECT id FROM products WHERE id = ?').get(productId)) {
+    return res.status(400).json({ error: 'Produit introuvable' })
+  }
+  db.prepare(`UPDATE serial_numbers SET ${setClause}, updated_at = ${NOW_SQL} WHERE id = ?`).run(...values, id)
+  const serial = getSerial(id)
+  emitEntity('serial_number', 'updated', id, serial, req.user?.id)
+  // Best-effort, et no-op tant que le sens du champ reste « Airtable → Boréal » :
+  // buildColumnMap n'inclut la colonne que si l'utilisateur l'a passée en
+  // push/both dans /champs/serial_numbers.
+  writeBackRecord('serials', id, cols)
+    .catch(e => console.error('write-back serials:', e.message))
+  res.json(serial)
 })
 
 router.get('/:id/history', (req, res) => {

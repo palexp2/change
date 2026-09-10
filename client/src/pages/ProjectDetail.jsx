@@ -18,6 +18,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import FactureDetail from './FactureDetail.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
+import { OrderCreateModal } from '../components/OrderCreateModal.jsx'
 import { Section } from '../components/SectionNav.jsx'
 import { useSectionNav } from '../lib/useSectionNav.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -25,8 +26,10 @@ import { InlineText, InlineTextarea, InlineNumber, InlineDate } from '../compone
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
+import { useCustomFields } from '../lib/useCustomFields.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
+import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
@@ -285,6 +288,90 @@ function CreateSoumissionModal({ project, onClose, onCreated }) {
   )
 }
 
+// Ajout d'une commission : bénéficiaire (« vendeur ») + taux. Les deux seuls
+// champs saisissables — Airtable calcule le montant à partir des factures
+// payées du projet. La liste des bénéficiaires vient d'Airtable (table hors
+// miroir), d'où le chargement à l'ouverture.
+function AddCommissionModal({ project, onClose, onCreated }) {
+  const { addToast } = useToast()
+  const [beneficiaries, setBeneficiaries] = useState([])
+  const [loadingOptions, setLoadingOptions] = useState(true)
+  const [beneficiaryId, setBeneficiaryId] = useState('')
+  const [ratePercent, setRatePercent] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    api.projects.commissionBeneficiaries()
+      .then(r => setBeneficiaries(r.data || []))
+      .catch(e => addToast({ message: e.message, type: 'error' }))
+      .finally(() => setLoadingOptions(false))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const rate = parseFloat(String(ratePercent).replace(',', '.'))
+  const valid = beneficiaryId && Number.isFinite(rate) && rate >= 0 && rate <= 100
+
+  const save = async () => {
+    if (!valid) return
+    setSaving(true)
+    try {
+      const r = await api.projects.addCommission(project.id, {
+        beneficiary_id: beneficiaryId,
+        rate_percent: rate,
+      })
+      onCreated(r.data || [])
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal isOpen onClose={onClose} title="Ajouter une commission" size="sm">
+      <div className="space-y-4">
+        <div>
+          <label className="block text-xs font-medium text-slate-500 mb-1">Vendeur</label>
+          <SearchableSelect
+            value={beneficiaryId}
+            options={beneficiaries}
+            getOptionValue={b => b.id}
+            getOptionLabel={b => b.label}
+            onChange={setBeneficiaryId}
+            className="input text-sm w-full"
+            size="sm"
+            disabled={loadingOptions || saving}
+            testId="commission-beneficiary"
+          />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-slate-500 mb-1">Taux</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min="0"
+              max="100"
+              step="0.25"
+              value={ratePercent}
+              onChange={e => setRatePercent(e.target.value)}
+              disabled={saving}
+              className="input text-sm w-28 text-right"
+              data-testid="commission-rate"
+            />
+            <span className="text-sm text-slate-500">%</span>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="btn-secondary btn-sm" disabled={saving}>Annuler</button>
+          <button onClick={save} className="btn-primary btn-sm" disabled={!valid || saving}
+            data-testid="commission-submit">
+            {saving ? 'Ajout…' : 'Ajouter'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 
 const SECTION_LABELS = {
@@ -313,6 +400,8 @@ function stackedTableHeight(rows) {
 // (utilisé quand le projet est supprimé pendant que le drawer est ouvert).
 export default function ProjectDetail({ recordId, onClose }) {
   const id = recordId
+  // « Suppression permise » : case du mode de personnalisation de la fiche.
+  const canDelete = useRecordDeleteAllowed('projects')
   const navigate = useNavigate()
   const location = useLocation()
   const { addToast } = useToast()
@@ -325,7 +414,10 @@ export default function ProjectDetail({ recordId, onClose }) {
   // d'erreur, affiché à la place du tableau.
   const [commissions, setCommissions] = useState([])
   const [commissionsError, setCommissionsError] = useState(null)
+  const [showAddCommission, setShowAddCommission] = useState(false)
   const [showCreate, setShowCreate] = useState(false)
+  const [showOrderCreate, setShowOrderCreate] = useState(false)
+  const [linkingOrder, setLinkingOrder] = useState(false)
   const [showPdf, setShowPdf] = useState(null) // { id, title }
   const [vendeurOptions, setVendeurOptions] = useState([])
   const [companies, setCompanies] = useState([])
@@ -336,6 +428,16 @@ export default function ProjectDetail({ recordId, onClose }) {
 
   const { record: project, setRecord: setProject, loading, loadError, reload: load } =
     useDetailRecord(() => api.projects.get(id), [id], { clearOnError: true })
+
+  // Éditabilité du numéro de projet : elle vient du registre (règle unique du
+  // serveur — un champ importé d'Airtable en sens « import » n'est pas
+  // écrivable ici). Tant que la liste n'est pas chargée, on garde le champ
+  // saisissable : c'est l'état le plus courant sur les autres tables.
+  const { fields: projectFields } = useCustomFields('projects')
+  const nameWritable = useMemo(
+    () => projectFields.find(f => f.column_name === 'name')?.writable !== false,
+    [projectFields],
+  )
 
   // Suppression du projet : soft delete côté serveur (deleted_at), donc le
   // record sort des listes sans perdre l'historique. Le drawer se ferme (ou on
@@ -431,6 +533,30 @@ export default function ProjectDetail({ recordId, onClose }) {
     }
   }
 
+  // Lien projet ↔ commande : le lien est porté par la commande (orders.project_id),
+  // donc lier revient à poser le projet sur la commande choisie. La pastille
+  // apparaît sans recharger la fiche.
+  async function attachOrder(order) {
+    if (!order?.id) return
+    setProject(p => (p
+      ? { ...p, orders: [...(p.orders || []).filter(o => o.id !== order.id),
+          { id: order.id, order_number: order.order_number, status: order.status }] }
+      : p))
+  }
+
+  async function linkOrder(orderId) {
+    if (!orderId) return
+    setLinkingOrder(true)
+    try {
+      const updated = await api.orders.update(orderId, { project_id: id })
+      await attachOrder(updated || { id: orderId })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setLinkingOrder(false)
+    }
+  }
+
   const loadSoumissions = () => {
     api.documents.soumissions.list({ project_id: id, limit: 'all' })
       .then(r => setSoumissions(r.data || []))
@@ -474,20 +600,20 @@ export default function ProjectDetail({ recordId, onClose }) {
           {row.generated_pdf_path && (
             <button
               onClick={() => setShowPdf({ id: row.id, title: row.title })}
-              className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
+              className="inline-flex items-center gap-1 text-xs link-record px-2 py-1 bg-brand-50 rounded">
               <FileText size={11} /> PDF
             </button>
           )}
           {row.quote_url && (
             <a href={row.quote_url} target="_blank" rel="noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
+              className="inline-flex items-center gap-1 text-xs link-record px-2 py-1 bg-brand-50 rounded">
               <ExternalLink size={11} /> Soumission
             </a>
           )}
           {row.pdf_url && (
             <button
               onClick={() => setShowPdf({ url: row.pdf_url, title: row.title, external: true })}
-              className="inline-flex items-center gap-1 text-xs text-brand-600 hover:underline px-2 py-1 bg-brand-50 rounded">
+              className="inline-flex items-center gap-1 text-xs link-record px-2 py-1 bg-brand-50 rounded">
               <FileText size={11} /> PDF Airtable
             </button>
           )}
@@ -525,7 +651,7 @@ export default function ProjectDetail({ recordId, onClose }) {
       // l'enregistrement existe dans Boréal (règle des champs référence).
       beneficiary_label: row => row.beneficiary_label
         ? (row.beneficiary_href
-          ? <Link to={row.beneficiary_href} className="text-brand-600 hover:underline">{row.beneficiary_label}</Link>
+          ? <Link to={row.beneficiary_href} className="link-record">{row.beneficiary_label}</Link>
           : <span className="text-slate-700">{row.beneficiary_label}</span>)
         : <span className="text-slate-300">—</span>,
       rate: row => <span className="text-slate-600">{fmtPct(row.rate)}</span>,
@@ -622,14 +748,24 @@ export default function ProjectDetail({ recordId, onClose }) {
             className="card p-6"
             testId="project-fields"
           >
+            {/* Le numéro de projet vient du champ Airtable « ID » (une formule) :
+                tant que l'import est branché, le serveur refuse l'écriture — la
+                valeur serait réécrite au sync suivant. On l'affiche donc en
+                lecture seule plutôt que d'offrir une saisie vouée à l'échec. Le
+                registre fait foi : démapper « ID » dans /champs/projects rend le
+                champ éditable. */}
             <DetailField id="name" label="Nom du projet" span2 saving={!!fieldSaving.name}>
-              <InlineText
-                value={project.name}
-                required
-                saving={!!fieldSaving.name}
-                onSave={v => saveField('name', v.trim())}
-                testId="project-field-name"
-              />
+              {nameWritable ? (
+                <InlineText
+                  value={project.name}
+                  required
+                  saving={!!fieldSaving.name}
+                  onSave={v => saveField('name', v.trim())}
+                  testId="project-field-name"
+                />
+              ) : (
+                <div className="text-sm text-slate-700" data-testid="project-field-name">{project.name || '—'}</div>
+              )}
             </DetailField>
             {/* Entreprise : champ référence à part entière (picker recherchable
                 + lien vers la fiche), et non plus seulement un sous-titre —
@@ -678,19 +814,31 @@ export default function ProjectDetail({ recordId, onClose }) {
                 testId="project-field-close-date"
               />
             </DetailField>
-            {project.orders?.length > 0 && (
-              <DetailField id="orders" label="Commandes" span2>
-                <div className="flex flex-wrap gap-2">
-                  {project.orders.map(o => (
-                    <Link key={o.id} to={`/orders/${o.id}`}
-                      className="inline-flex items-center gap-1 font-mono text-xs text-brand-600 hover:underline bg-brand-50 px-2 py-1 rounded">
-                      #{o.order_number}
-                      {o.status && <span className="text-slate-500 font-sans">· {o.status}</span>}
-                    </Link>
-                  ))}
-                </div>
-              </DetailField>
-            )}
+            {/* Commandes : liens vers les fiches liées, plus une poignée pour en
+                lier une existante (liste recherchable côté serveur) ou en créer
+                une — le formulaire est celui de la page Commandes. Le champ
+                s'affiche même sans commande : sinon il n'y avait aucun endroit
+                pour faire ce lien depuis le projet. */}
+            <DetailField id="orders" label="Commandes" span2 saving={linkingOrder}>
+              <div className="flex flex-wrap items-center gap-2">
+                {project.orders?.map(o => (
+                  <Link key={o.id} to={`/orders/${o.id}`}
+                    className="inline-flex items-center gap-1 font-mono text-xs link-record bg-brand-50 px-2 py-1 rounded">
+                    #{o.order_number}
+                    {o.status && <span className="text-slate-500 font-sans">· {o.status}</span>}
+                  </Link>
+                ))}
+                <LinkedRecordField
+                  name="project_orders"
+                  value={null}
+                  searchTarget="orders"
+                  saving={linkingOrder}
+                  onChange={linkOrder}
+                  onCreate={() => setShowOrderCreate(true)}
+                  createLabel="Nouvelle commande"
+                />
+              </div>
+            </DetailField>
             <DetailField id="vendeur_label" label="Vendeur" saving={!!fieldSaving.vendeur_ref}>
               <VendeurPicker
                 value={project.vendeur_ref || ''}
@@ -780,9 +928,17 @@ export default function ProjectDetail({ recordId, onClose }) {
           label={SECTION_LABELS.commissions}
           count={sectionCounts.commissions}
           registerRef={registerSection('commissions')}
-          action={commissions.length > 0
-            ? <span className="text-sm font-semibold text-slate-700">{fmtMoney(commissionsTotal)}</span>
-            : null}
+          action={
+            <div className="flex items-center gap-3">
+              {commissions.length > 0 && (
+                <span className="text-sm font-semibold text-slate-700">{fmtMoney(commissionsTotal)}</span>
+              )}
+              <button onClick={() => setShowAddCommission(true)} className="btn-primary btn-sm"
+                data-testid="project-add-commission">
+                <Plus size={14} /> Commission
+              </button>
+            </div>
+          }
         >
           {commissionsError ? (
             <div className="card p-4 text-sm text-slate-500 flex items-center justify-between gap-3">
@@ -800,19 +956,34 @@ export default function ProjectDetail({ recordId, onClose }) {
           )}
         </Section>
 
-        <div className="flex justify-start mt-5">
-          <button
-            onClick={handleDelete}
-            disabled={deleting}
-            className="flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700 hover:underline disabled:opacity-50"
-            data-testid="project-delete"
-          >
-            <Trash2 size={14} />
-            {deleting ? 'Suppression…' : 'Supprimer ce projet'}
-          </button>
-        </div>
+        {canDelete && (
+          <div className="flex justify-start mt-5">
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="flex items-center gap-1.5 text-sm text-red-500 hover:text-red-700 hover:underline disabled:opacity-50"
+              data-testid="project-delete"
+            >
+              <Trash2 size={14} />
+              {deleting ? 'Suppression…' : 'Supprimer ce projet'}
+            </button>
+          </div>
+        )}
 
         </div>
+
+      {showAddCommission && (
+        <AddCommissionModal
+          project={project}
+          onClose={() => setShowAddCommission(false)}
+          onCreated={(rows) => {
+            setShowAddCommission(false)
+            setCommissionsError(null)
+            setCommissions(rows)
+            addToast({ message: 'Commission ajoutée', type: 'success' })
+          }}
+        />
+      )}
 
       {showCreate && (
         <CreateSoumissionModal
@@ -821,6 +992,20 @@ export default function ProjectDetail({ recordId, onClose }) {
           onCreated={() => { setShowCreate(false); loadSoumissions() }}
         />
       )}
+
+      {/* Création d'une commande depuis le projet : formulaire standard de la
+          page Commandes, projet et entreprise préremplis. La nouvelle commande
+          naît vide — on ouvre sa fiche pour y poser les articles. */}
+      <OrderCreateModal
+        isOpen={showOrderCreate}
+        onClose={() => setShowOrderCreate(false)}
+        initial={{ project_id: id, ...(project.company_id ? { company_id: project.company_id } : {}) }}
+        onCreated={async (order) => {
+          setShowOrderCreate(false)
+          await attachOrder(order)
+          navigate(`/orders/${order.id}`)
+        }}
+      />
 
       {showPdf && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">

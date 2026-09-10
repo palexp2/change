@@ -11,7 +11,9 @@
 // Formes de stockage (rappel, cf. FIELD_KINDS.data) :
 //   text / long_text / url / phone : TEXT
 //   number / currency / duration   : REAL   (durée en SECONDES)
+//   percent                        : REAL   (nombre de POURCENTS : 45 = 45 %)
 //   checkbox                       : INTEGER 0/1
+//   rating                         : INTEGER 0..5 (note en étoiles)
 //   date                           : TEXT ISO
 //   single_select                  : TEXT   = LIBELLÉ du choix
 //   multi_select                   : TEXT   = tableau JSON de libellés
@@ -21,6 +23,8 @@ import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { regenerateView } from './customFieldsView.js'
 import { parseDurationToSeconds, formatDurationSeconds, normalizeDurationFormat } from './duration.js'
+import { formatPercent } from './percent.js'
+import { RATING_MAX, clampRating } from './rating.js'
 
 const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 
@@ -29,8 +33,9 @@ const SAFE_IDENT = /^[a-zA-Z_][a-zA-Z0-9_]*$/
 // de type exige de reconstruire la colonne (sinon un nombre irait s'écrire en
 // texte dans une colonne TEXT, et `ORDER BY` trierait « 10 » avant « 9 »).
 export function sqlAffinityFor(type) {
-  if (type === 'number' || type === 'currency' || type === 'duration') return 'REAL'
-  if (type === 'checkbox') return 'INTEGER'
+  if (type === 'number' || type === 'currency' || type === 'duration' || type === 'percent') return 'REAL'
+  // checkbox (0/1) et rating (0..5) : des entiers.
+  if (type === 'checkbox' || type === 'rating') return 'INTEGER'
   return 'TEXT'
 }
 
@@ -68,6 +73,16 @@ export function valueToText(raw, type, options) {
       return (raw === 0 || raw === '0' || raw === false) ? 'Non' : 'Oui'
     case 'duration':
       return formatDurationSeconds(Number(raw), normalizeDurationFormat(opts.format))
+    case 'percent':
+      // Pivot = ce que l'utilisateur voit, sans arrondi : « 45,5 % ».
+      // textToNumber retire le signe, donc pourcentage → nombre garde 45,5.
+      return formatPercent(raw, null) ?? String(raw)
+    case 'rating': {
+      // Pivot = le nombre d'étoiles. « 4 » se relit en note, en nombre, en
+      // texte — la conversion reste réversible dans les deux sens.
+      const n = clampRating(raw)
+      return n == null ? String(raw) : String(n)
+    }
     case 'number':
     case 'currency': {
       const n = Number(raw)
@@ -162,13 +177,22 @@ function textToValue(text, type, options, { choices } = {}) {
     case 'phone':
       return { ok: true, value: text }
     case 'number':
-    case 'currency': {
+    case 'currency':
+    case 'percent': {
       const n = textToNumber(text)
       return n === null ? { ok: false } : { ok: true, value: n }
     }
     case 'duration': {
       const s = parseDurationToSeconds(text)
       return s === null ? { ok: false } : { ok: true, value: s }
+    }
+    case 'rating': {
+      // Une valeur hors échelle n'est PAS convertie en silence : « 8 » sur une
+      // note de 5 est laissé à l'utilisateur (avertissement), comme un texte
+      // illisible en nombre.
+      const n = textToNumber(text)
+      if (n === null || n < 0 || n > RATING_MAX) return { ok: false }
+      return { ok: true, value: Math.round(n) }
     }
     case 'date': {
       const d = textToDate(text)

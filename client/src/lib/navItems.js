@@ -2,10 +2,10 @@ import {
   LayoutDashboard,
   TrendingUp, ShoppingCart, Package, LifeBuoy,
   ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
-  Barcode, MessageSquare, CheckSquare,
+  Barcode, MessageSquare, CheckSquare, Hammer,
   ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
-  ArrowLeftRight, Clock, Tag, Wallet, Mail, PhoneCall,
-  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram
+  ArrowLeftRight, Clock, Tag, Mail, PhoneCall,
+  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle
 } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
@@ -31,6 +31,7 @@ export function navKey(item) {
 // Les préférences sont relues à travers cette table au chargement.
 const RENAMED_NAV_KEYS = {
   'group:Envois': 'group:Transport',
+  'group:Inventaire': 'group:Atelier',
 }
 
 const canonicalKey = (key) => RENAMED_NAV_KEYS[key] || key
@@ -88,11 +89,11 @@ export const defaultNavItems = [
   ]},
   { group: 'Comptabilité', icon: Landmark, accent: 'compta', items: [
     // Espace finance, en tête du groupe : hub du suivi comptable quotidien.
-    // `flyoutGroups` en fait une entrée qui déploie ses sections dans un
-    // panneau flottant au survol (NavFlyoutItem) au lieu de mener à une page —
-    // les liens vont droit aux pages, en pleine largeur. Sections définies dans
+    // `flyoutGroups` lui fait déployer ses sections dans un panneau flottant au
+    // survol (NavFlyoutItem) ; le clic, lui, mène au dashboard comptabilité —
+    // qui n'a donc plus de ligne à part dans le panneau. Sections définies dans
     // lib/financeSections.js.
-    { to: '/finance',               icon: Landmark,   label: 'Espace finance', flyoutGroups: FINANCE_GROUPS },
+    { to: '/comptabilite',          icon: Landmark,   label: 'Espace finance', flyoutGroups: FINANCE_GROUPS },
     { to: '/factures',              icon: FileText,   label: 'Factures clients' },
     { to: '/paiements',             icon: Banknote,   label: 'Paiements' },
     { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
@@ -105,7 +106,7 @@ export const defaultNavItems = [
     { to: '/comptabilite/regles-serials', icon: BookOpen, label: 'Mouvements numéros de série' },
     { to: '/stock-movement',        icon: ArrowLeftRight, label: "Mouvements d'inventaire" },
   ]},
-  { group: 'Inventaire', icon: Package, accent: 'inventaire', items: [
+  { group: 'Atelier', icon: Hammer, accent: 'inventaire', items: [
     { to: '/purchases',    icon: ShoppingBag, label: 'Achats' },
     { to: '/assemblages',  icon: Wrench,      label: 'Assemblages' },
     { to: '/products',     icon: Package,     label: 'Pièces/Produits' },
@@ -116,7 +117,6 @@ export const defaultNavItems = [
     { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
     { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité",      hrOnly: true },
     { to: '/paies',            icon: Banknote, label: 'Paies' },
-    { to: '/banque-heures',    icon: Wallet,   label: "Banque d'heures" },
   ]},
   { group: 'Autres outils', icon: Wrench, accent: 'outils', items: [
     { to: '/priorite-assemblage', icon: ListChecks, label: "Priorité d'assemblage" },
@@ -127,6 +127,7 @@ export const defaultNavItems = [
     // plat, comme la route (ProtectedRoute sans adminOnly) et l'API (requireAuth).
     { to: '/connectors',   icon: Plug,            label: 'Connecteurs' },
     { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
+    { to: '/problemes-operations', icon: AlertTriangle, label: "Problèmes d'opérations" },
     { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },
   ]},
 ]

@@ -18,9 +18,7 @@ import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWat
 import { startReturnItemCreatedWatcher } from './services/returnItemCreatedWatcher.js'
 import { startShippedCostWatcher } from './services/shippedCostWatcher.js'
 import { startReturnItemReceivedWatcher } from './services/returnItemReceivedWatcher.js'
-import { sendReturnExchangeReminders } from './services/returnExchangeReminder.js'
 import { startAddressCheckWatcher } from './services/addressCheck.js'
-import { startPurchasePriceCheckWatcher } from './services/purchasePriceCheck.js'
 import { syncAllPrepaidAccountsFromQB } from './services/prepaid.js'
 import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, touchSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
@@ -48,6 +46,7 @@ import hubspotRouter from './routes/hubspot.js'
 import purchasesRouter from './routes/purchases.js'
 import serialsRouter from './routes/serials.js'
 import viewsRouter from './routes/views.js'
+import { recordDeleteGuard } from './middleware/recordDeleteGuard.js'
 import projetsRouter from './routes/projets.js'
 import retoursRouter from './routes/retours.js'
 import paymentsRouter from './routes/payments.js'
@@ -84,7 +83,7 @@ import weatherRouter from './routes/weather.js'
 import paiesRouter from './routes/paies.js'
 import timesheetsRouter from './routes/timesheets.js'
 import activityCodesRouter from './routes/activity-codes.js'
-import hourBankRouter from './routes/hour-bank.js'
+import opsIssuesRouter from './routes/ops-issues.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
 import anomaliesRouter from './routes/anomalies.js'
 import changelogRouter from './routes/changelog.js'
@@ -100,6 +99,7 @@ import stripeSubscriptionsRouter from './routes/stripe-subscriptions.js'
 import customerPayRouter from './routes/customer-pay.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
 import discoveryFormsRouter from './routes/discovery-forms.js'
+import discoveryFormSchemaRouter from './routes/discovery-form-schema.js'
 import emailTrackingRouter from './routes/email-tracking.js'
 import stripeQueueRouter from './routes/stripe-queue.js'
 import stripePayoutsRouter from './routes/stripe-payouts.js'
@@ -248,7 +248,12 @@ app.use('/api/attachments', express.static(uploadsPath('attachments')))
 import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
 import { regenerateAllViews } from './services/customFieldsView.js'
 import { seedNativeFieldConversions } from './services/nativeFieldConversions.js'
-import { retireEnvoisCoreFieldMap, retireOrdersCoreFieldMap } from './services/airtableUiFieldMap.js'
+import {
+  retireEnvoisCoreFieldMap, retireOrdersCoreFieldMap, retireAssemblagesCoreFieldMap,
+  retirePiecesCoreFieldMap, retirePaiesCoreFieldMap, retireContactsCoreFieldMap,
+  retireCompaniesCoreFieldMap, retireProjetsCoreFieldMap,
+  retireRetourItemsCoreFieldMap, retireSerialsCoreFieldMap, retireBomCoreFieldMap,
+} from './services/airtableUiFieldMap.js'
 import { seedBankAccounts } from './services/bankReconciliation.js'
 import { seedMonthEndProvisions } from './services/monthEndSeed.js'
 import { seedRecurringWork } from './services/recurringWork.js'
@@ -293,22 +298,57 @@ retireEnvoisCoreFieldMap()
 // Commandes : même bascule (7 clés cœur reprises dans /champs/orders, doublon
 // « Abonnement » mis à la corbeille). Idempotente elle aussi.
 retireOrdersCoreFieldMap()
+// Assemblages : « Produit », « Quantités fabriqués » et « Date » quittent le
+// code pour /champs/assemblages. Idempotente elle aussi.
+retireAssemblagesCoreFieldMap()
+// Produits : les 17 clés cœur du module « pieces » (nom, SKU, coût, image,
+// champs de la priorité d'assemblage…) quittent le code pour /champs/products.
+// Idempotente elle aussi.
+retirePiecesCoreFieldMap()
+// Paies : les 15 clés cœur (numéro, période, statut, totaux, « Inclut … »)
+// quittent le code pour /champs/paies, avec les sens de write-back semés en
+// 'both' pour les colonnes que l'ERP modifie. Idempotente elle aussi.
+retirePaiesCoreFieldMap()
+// Contacts : les 6 clés cœur du CRM (Prénom, Nom, Email, Phone number,
+// Entreprise, Langue) quittent le code pour /champs/contacts. Idempotente elle
+// aussi — le field_map vit dans airtable_sync_config, pas dans
+// airtable_module_config.
+retireContactsCoreFieldMap()
+// Entreprises : les 2 clés cœur qui restaient (« Entreprise » → le nom,
+// « Phase du cycle de vie ») quittent le code pour /champs/companies — les
+// trois autres ont été droppées avec leurs colonnes (migration 045).
+// Idempotente elle aussi, même singleton que les contacts.
+retireCompaniesCoreFieldMap()
+// Projets : les 2 dernières clés cœur (« ID » → le numéro de projet,
+// « Client final » → l'entreprise liée) quittent le code pour /champs/projects.
+// Idempotente elle aussi, dans le singleton airtable_projets_config.
+retireProjetsCoreFieldMap()
+// Articles de retour : les 13 clés cœur (retour, n° de série, entreprise, les
+// deux produits, raison, précision, catégorie, action, réception, analyse)
+// quittent le code pour /champs/return_items. Idempotente elle aussi.
+retireRetourItemsCoreFieldMap()
+// Numéros de série : les 10 clés cœur (n° de série, produit, entreprise, item de
+// commande, adresse, dates, valeur de fabrication, statut, notes) quittent le
+// code pour /champs/serial_numbers, avec les sens de write-back semés en 'both'
+// pour les colonnes que l'ERP modifie. Idempotente elle aussi.
+retireSerialsCoreFieldMap()
+// Nomenclature (BOM) : les 3 clés cœur (« Produit », « Pièces »,
+// « QTY nécessaires ») quittent le code pour /champs/bom_items, où la table
+// gagne du même coup sa colonne « Champ Airtable ». Idempotente elle aussi.
+retireBomCoreFieldMap()
 regenerateAllViews()
 
 // Register native fields in airtable_field_mappings so they appear in the
 // field-rule template whitelist alongside dynamic Airtable fields
 ensureNativeFieldDefs([
-  { module: 'pieces', erp_table: 'products', column_name: 'name_fr',    label: 'Nom',                      field_type: 'text',   sort_order: -1000 },
-  { module: 'pieces', erp_table: 'products', column_name: 'name_en',    label: 'Nom (EN)',                  field_type: 'text',   sort_order: -999 },
-  { module: 'pieces', erp_table: 'products', column_name: 'sku',        label: 'SKU',                       field_type: 'text',   sort_order: -998 },
-  { module: 'pieces', erp_table: 'products', column_name: 'type',       label: 'Type',                      field_type: 'single_select', sort_order: -997 },
-  { module: 'pieces', erp_table: 'products', column_name: 'unit_cost',  label: 'Coût unitaire',             field_type: 'number', sort_order: -996 },
-  { module: 'pieces', erp_table: 'products', column_name: 'price_cad',  label: 'Prix (CAD)',                field_type: 'number', sort_order: -995 },
-  { module: 'pieces', erp_table: 'products', column_name: 'stock_qty',  label: 'Quantité en inventaire',    field_type: 'number', sort_order: -994 },
-  { module: 'pieces', erp_table: 'products', column_name: 'min_stock',  label: 'Stock minimum',             field_type: 'number', sort_order: -993 },
-  { module: 'pieces', erp_table: 'products', column_name: 'order_qty',  label: 'Quantité à commander',      field_type: 'number', sort_order: -992 },
-  { module: 'pieces', erp_table: 'products', column_name: 'supplier',   label: 'Fournisseur',               field_type: 'text',   sort_order: -991 },
-  { module: 'pieces', erp_table: 'products', column_name: 'image_url',  label: 'Image',                     field_type: 'text',   sort_order: -990, options: { format: 'url' } },
+  // Produits : les colonnes natives ne sont plus déclarées ici. Elles sont
+  // ADOPTÉES en champs (custom_fields, cf. nativeFieldConversions.js), qui porte
+  // désormais leur libellé et leur type — les répéter en dur les aurait figés
+  // dans le dos de l'utilisateur, alors qu'il peut maintenant les renommer et
+  // les re-typer. Leur ligne de mapping existe déjà (reprise du field_map cœur
+  // par retirePiecesCoreFieldMap), donc la whitelist des règles de champ ne perd
+  // rien. Seule « Emplacement » reste : sa colonne n'est ni dans le tableau, ni
+  // dans le mapping cœur — sans cette def, elle n'aurait aucun type déclaré.
   { module: 'pieces', erp_table: 'products', column_name: 'location',   label: 'Emplacement',               field_type: 'text',   sort_order: -989 },
 
   // Projects natives — enregistrés pour que le mapping Airtable→ERP puisse
@@ -330,6 +370,9 @@ ensureNativeFieldDefs([
 ])
 
 // API Routes
+// « Suppression permise » décochée sur une fiche ⇒ son DELETE est refusé, quel
+// que soit l'appelant (voir middleware/recordDeleteGuard.js).
+app.use('/api', recordDeleteGuard)
 app.use('/api/auth', authRouter)
 app.use('/api/bootstrap', bootstrapRouter)
 app.use('/api/companies', companiesRouter)
@@ -403,6 +446,7 @@ app.use('/api/stripe-invoice-items', stripeInvoiceItemsRouter)
 app.use('/api/email-tracking', emailTrackingRouter)
 app.use('/api/customer/post-payment', customerPostPaymentRouter)
 app.use('/api/discovery-forms', discoveryFormsRouter)
+app.use('/api/discovery-form-schema', discoveryFormSchemaRouter)
 // Permanent customer-facing payment link — must be registered before the SPA
 // fallback below so /erp/pay/:id is handled by the redirect, not the React app.
 app.use('/erp/pay', customerPayRouter)
@@ -415,7 +459,7 @@ app.use('/api/weather', weatherRouter)
 app.use('/api/paies', paiesRouter)
 app.use('/api/timesheets', timesheetsRouter)
 app.use('/api/activity-codes', activityCodesRouter)
-app.use('/api/hour-bank', hourBankRouter)
+app.use('/api/ops-issues', opsIssuesRouter)
 // API de mutation générique (phase 1) — pilotée par db/recordRegistry.js
 app.use('/api/records', recordsRouter)
 app.use('/api/activity', activityRouter)
@@ -452,6 +496,11 @@ const clientBuild = path.join(__dirname, '../../client/dist')
 // index.html, lui, doit rester non caché : c'est lui qui pointe vers les
 // nouveaux noms de fichiers après un déploiement.
 const IMMUTABLE = 'public, max-age=31536000, immutable'
+// Métadonnées lisibles sans JavaScript par les aperçus SMS.
+app.get('/erp/s/:token', (req, res) => {
+  res.setHeader('Cache-Control', 'no-cache')
+  res.sendFile(path.join(clientBuild, 'survey.html'))
+})
 app.use('/erp', express.static(clientBuild, {
   setHeaders(res, filePath) {
     res.setHeader('Cache-Control', /[/\\]assets[/\\]/.test(filePath) ? IMMUTABLE : 'no-cache')
@@ -479,8 +528,8 @@ const server = app.listen(PORT, () => {
   // File de travaux : réconcilie un item fauché par le redémarrage et relance la
   // file. Après initTaskRunner, qui a déjà repris ou clos l'exécution en cours.
   initPromptQueue()
-  // Garde-fou de quota : sous 25 % de marge, toute la file s'arrête d'elle-même et
-  // repart quand le quota remonte (quotaGuard.js).
+  // Garde-fou de quota : sous le seuil réglé dans le bandeau (30 % par défaut), toute
+  // la file s'arrête d'elle-même et repart quand le quota remonte (quotaGuard.js).
   startQuotaGuard()
   initScheduler()
 
@@ -507,10 +556,6 @@ const server = app.listen(PORT, () => {
   // chaque adresse écrite, quelle qu'en soit l'origine (UI, appel de
   // qualification, formulaire client, sync Airtable), et notifie les fautives.
   startAddressCheckWatcher()
-
-  // Vérificateur de prix d'achats — tail change_log(purchases) : signale un
-  // prix unitaire aberrant (lien de dépense Airtable erroné → prix calculé faux).
-  startPurchasePriceCheckWatcher()
 
   // Import des automatisations Airtable « Retours » (Phase 2) — voir
   // services/returnItemCreatedWatcher.js et returnItemReceivedWatcher.js.
@@ -836,42 +881,9 @@ const server = app.listen(PORT, () => {
   }
   scheduleInstallationFollowup()
 
-  // Rappel retours avec échange immédiat (import Airtable #4) — quotidien à
-  // 09:00 local, tant que le retour n'est pas facturé (PAS one-shot, fidèle à
-  // l'original). Désactivé par défaut (default_active: 0).
-  async function runReturnExchangeReminder() {
-    if (!isSystemAutomationActive('sys_return_exchange_reminder')) {
-      logSystemRun('sys_return_exchange_reminder', { status: 'skipped', result: 'Automatisation désactivée — aucun envoi.', duration_ms: 0 })
-      return
-    }
-    const t0 = Date.now()
-    try {
-      const out = await sendReturnExchangeReminders(db, { fromAddress: getAutomationFrom('sys_return_exchange_reminder') })
-      logSystemRun('sys_return_exchange_reminder', {
-        status: out.errors > 0 ? 'partial' : 'success',
-        result: `${out.sent} envoyé(s) · ${out.errors} erreur(s) · ${out.skipped} skip · ${out.total} éligible(s).\n` +
-          out.details.map(d => `${d.action.toUpperCase()} — retour ${d.return_id} → ${d.to || '—'}${d.error ? ` · ${d.error}` : ''}`).join('\n'),
-        duration_ms: Date.now() - t0,
-        triggerData: { total: out.total, sent: out.sent, errors: out.errors },
-      })
-    } catch (e) {
-      console.error('Return exchange reminder error:', e.message)
-      logSystemRun('sys_return_exchange_reminder', { status: 'error', error: e.message, duration_ms: Date.now() - t0 })
-    }
-  }
-
-  function scheduleReturnExchangeReminder() {
-    const now = new Date()
-    const next = new Date(now)
-    next.setHours(9, 5, 0, 0) // décalé de 5 min pour ne pas coïncider avec le followup d'installation
-    if (next <= now) next.setDate(next.getDate() + 1)
-    const delay = next.getTime() - now.getTime()
-    setTimeout(() => {
-      runReturnExchangeReminder()
-      setInterval(runReturnExchangeReminder, 24 * 60 * 60 * 1000)
-    }, delay)
-  }
-  scheduleReturnExchangeReminder()
+  // Rappel « retours avec échange immédiat » RETIRÉ : son éligibilité reposait
+  // sur `returns.billed_at` et sur le contact du retour, colonnes détruites par
+  // la migration 037 (« supprime tous les champs Airtable codés en dur »).
 
   // Comptabilisation QB des Stripe payouts — deux passages par jour (12h et 22h UTC
   // = 8h et 18h à Montréal) : le passage du matin ramasse les payouts réglés la

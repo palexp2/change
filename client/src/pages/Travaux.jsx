@@ -34,7 +34,7 @@ import { useAuth } from '../lib/auth.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { ClaudeUsageStrip, ClaudeModelControl } from '../components/ClaudeUsage.jsx'
+import { ClaudeUsageStrip, ClaudeModelControl, modelLabel } from '../components/ClaudeUsage.jsx'
 import { PageLink } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Spinner from '../components/Spinner.jsx'
@@ -56,6 +56,7 @@ const PRESETS = [
   { value: 'deep', label: 'Approfondi' },
 ]
 const presetLabel = v => PRESETS.find(o => o.value === v)?.label || v
+const PROMPT_MODELS = ['opus', 'fable', 'sonnet', 'haiku', 'codex']
 
 /**
  * Sélecteur de calibre d'un item existant. La valeur affichée reste « Auto » tant
@@ -276,6 +277,7 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
   const executing = state === 'running'
   const waiting = state === 'waiting'
   const [stopping, setStopping] = useState(false)
+  const [savingModel, setSavingModel] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   // Item interrompu (arrêté ou bloqué) qui a déjà touché des fichiers : la
   // suppression doit pouvoir proposer un nettoyage plutôt que de juste faire
@@ -426,6 +428,17 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
             )}
             {p.mode === 'question' && (
               <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-sky-50 text-sky-700" title="Lecture seule — tourne en parallèle">Q</span>
+            )}
+            {/* Modèle demandé : visible sans déplier. Rien sur un item laissé en
+                « Auto » (le cas courant), et rien de plus que le nom du modèle —
+                le choix lui-même reste dans la carte ouverte. */}
+            {!!p.model && (
+              <span
+                data-testid="travaux-model-badge"
+                data-model={p.model}
+                className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-slate-100 text-slate-600"
+                title={`Modèle demandé — ${modelLabel(p.model)}`}
+              >{modelLabel(p.model)}</span>
             )}
             {/* Conversation venue de l'AUTRE file : elle est listée ici pour ne jamais
                 disparaître, mais on dit d'où elle vient. */}
@@ -585,6 +598,25 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
 
           {editable && (
             <div className="flex items-center gap-3 flex-wrap">
+              <label className="inline-flex items-center gap-2 text-xs text-slate-500">
+                Modèle demandé
+                <select
+                  className={inputCls}
+                  data-testid="travaux-model"
+                  value={p.model || ''}
+                  disabled={savingModel}
+                  onChange={async e => {
+                    const model = e.target.value || null
+                    setSavingModel(true)
+                    try { await onPatch(p.id, { model }) }
+                    finally { setSavingModel(false) }
+                  }}
+                >
+                  <option value="">Auto (selon le calibre)</option>
+                  {PROMPT_MODELS.map(m => <option key={m} value={m}>{modelLabel(m)}</option>)}
+                </select>
+                {savingModel && <Loader2 size={13} className="animate-spin" aria-label="Enregistrement" />}
+              </label>
               <PresetSelect p={p} onPatch={onPatch} />
               <select className={inputCls} value={p.mode} onChange={e => onPatch(p.id, { mode: e.target.value })}>
                 <option value="implement">Implémenter</option>
@@ -2313,6 +2345,13 @@ function RecurringRow({ t, onToggle, onPatch, onDelete, fading = false }) {
         />
         {t.done && t.done_by_name && (
           <div className="text-xs text-emerald-700 mt-1">Fait par {t.done_by_name}</div>
+        )}
+        {/* Coché par l'ERP lui-même (ex. le message hebdo parti à Émilie) : sans
+            cette mention, la case semblerait cochée par un collègue. */}
+        {t.done && t.done_source === 'auto' && (
+          <div className="text-xs text-emerald-700 mt-1" data-testid="recurring-done-auto">
+            Auto · {t.done_note || 'détecté par l’ERP'}
+          </div>
         )}
       </div>
       {/* Réglages de la ligne : un seul bouton, dont la place est réservée en

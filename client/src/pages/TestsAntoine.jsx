@@ -40,7 +40,7 @@ const COLUMNS = [
     id: 'match_company_name', field: 'match_company_name', label: 'Correspondance ERP', width: 240,
     // Règle « champs référence » : le record apparié est un lien vers sa fiche.
     render: row => (row.match_company_id
-      ? <Link to={`/companies/${row.match_company_id}`} className="text-brand-600 hover:underline"
+      ? <Link to={`/companies/${row.match_company_id}`} className="link-record"
           onClick={e => e.stopPropagation()}>{row.match_company_name}</Link>
       : <span className="text-slate-400">—</span>),
   },

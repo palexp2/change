@@ -34,7 +34,7 @@ const ENTITY_LABELS = {
   interaction: 'Interaction', soumission: 'Soumission', call: 'Appel',
   purchase: 'Achat', facture: 'Facture', sale_receipt: 'Reçu de vente',
   timesheet: 'Feuille de temps', employee: 'Employé', paie: 'Paie',
-  hour_bank_entry: "Banque d'heures", activity_code: "Code d'activité",
+  activity_code: "Code d'activité",
   shipment: 'Envoi', adresse: 'Adresse', vacation: 'Congé',
   achat_fournisseur: 'Achat fournisseur',
 }
@@ -63,7 +63,7 @@ const RENDERS = {
         <Link
           to={routeFn(row.entity_id)}
           onClick={e => e.stopPropagation()}
-          className="text-brand-600 hover:text-brand-700 hover:underline font-medium"
+          className="link-record font-medium"
         >
           {text}
         </Link>

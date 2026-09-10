@@ -397,7 +397,7 @@ export default function SerialAccountingRules() {
     const RENDERS = {
       changed_at:      m => <span className="text-slate-500 text-xs">{fmtDate(m.changed_at)}</span>,
       serial:          m => m.serial_id
-        ? <Link to={`/serials/${m.serial_id}`} className="text-brand-600 hover:underline">{m.serial || m.serial_id}</Link>
+        ? <Link to={`/serials/${m.serial_id}`} className="link-record">{m.serial || m.serial_id}</Link>
         : <span className="text-slate-300">—</span>,
       product_name:    m => <span className="text-slate-500 text-xs">{m.product_name || '—'}</span>,
       company_name:    m => <span className="text-slate-500 text-xs">{m.company_name || '—'}</span>,
@@ -416,7 +416,7 @@ export default function SerialAccountingRules() {
       date:   m => <span className="text-slate-500 text-xs">{fmtDate(m.changed_at)}</span>,
       serial: m => (
         <span>
-          <a href={`/erp/serials/${m.serial_id}`} className="text-brand-600 hover:underline">{m.serial}</a>
+          <a href={`/erp/serials/${m.serial_id}`} className="link-record">{m.serial}</a>
           {m.serial_airtable_id && (
             <a
               href={`https://airtable.com/appB4Fehk9jYd4s4B/tblJKSmWxtwBQjdmB/viw6ZdCpuYAQ6KWT2/${m.serial_airtable_id}?blocks=hide`}

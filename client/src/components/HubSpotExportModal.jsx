@@ -114,7 +114,7 @@ export function HubSpotExportModal({ isOpen, onClose, filteredContacts }) {
                 href={result.listUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-1 mt-3 text-sm text-brand-600 hover:underline"
+                className="inline-flex items-center gap-1 mt-3 text-sm link-record"
               >
                 <ExternalLink size={14} /> Ouvrir la liste dans HubSpot
               </a>

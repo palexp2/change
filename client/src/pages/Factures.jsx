@@ -30,11 +30,11 @@ const RENDERS = {
   // company_name : render surchargé dans COLUMNS_WITH_CUSTOM (ouvre le
   // side-peek entreprise au lieu de naviguer) — fallback lien simple ici.
   company_name:    row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   project_name:    row => <span className="text-slate-600">{row.project_name || '—'}</span>,
   order_number:    row => row.order_id && row.order_number
-    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">#{row.order_number}</Link>
+    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="link-record">#{row.order_number}</Link>
     : <span className="text-slate-400">—</span>,
   status:          row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>
@@ -179,7 +179,7 @@ function SubscriptionCell({ row, onOpen }) {
       onClick={handleClick}
       disabled={loading}
       title="Ouvrir l'abonnement"
-      className="text-brand-600 hover:underline font-mono text-xs disabled:opacity-50 truncate"
+      className="link-record font-mono text-xs disabled:opacity-50 truncate"
     >
       {row.subscription_id}
     </button>
@@ -289,7 +289,7 @@ export default function Factures() {
                 data-testid="facture-company-link"
                 onClick={e => { e.stopPropagation(); setCompanyPeek({ id: row.company_id, name: row.company_name }) }}
                 title="Aperçu de l'entreprise"
-                className="text-brand-600 hover:underline text-left"
+                className="link-record text-left"
               >{row.company_name}</button>
             )
             : <span className="text-slate-400">—</span>,
@@ -395,7 +395,8 @@ export default function Factures() {
         onClose={() => setCompanyPeek(null)}
         title={companyPeek?.name || 'Entreprise'}
         to={companyPeek ? `/companies/${companyPeek.id}` : undefined}
-        width={860}
+        width={1280}
+        minWidth={1120}
       >
         {companyPeek && (
           <CompanyDetail recordId={companyPeek.id} embedded onClose={() => setCompanyPeek(null)} />

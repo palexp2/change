@@ -635,7 +635,7 @@ export default function DouanesCarmPanel() {
                           {allocationOf(t) && <span className="text-xs text-slate-400">{allocationOf(t)}</span>}
                           {t.sale_receipt_id && (
                             <Link to={`/sale-receipts/${t.sale_receipt_id}`} title={t.receipt_filename || 'Ouvrir le reçu'}
-                              className="text-xs text-brand-600 hover:underline whitespace-nowrap">reçu</Link>
+                              className="text-xs link-record whitespace-nowrap">reçu</Link>
                           )}
                         </span>
                       )

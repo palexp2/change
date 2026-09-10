@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFollowUpPrompt, buildRecapMessage, resolveReply } from './promptQueue.js'
+import { buildFollowUpPrompt, buildRecapMessage, resolveReply, futureStart, briefFor, REQUESTER_MARKER, pickLane, SCHEDULED_LANE } from './promptQueue.js'
 import { detectSessionLimit, detectRateLimitEvent, extractPendingQuestion, QUESTION_MARKER } from './taskRunner.js'
 
 // ── Continuité d'un fil ───────────────────────────────────────────────────────
@@ -38,6 +38,33 @@ test('la relance demande de répondre au dernier message, pas de tout refaire', 
 test('fil vide : la relance reste valide', () => {
   const p = buildFollowUpPrompt(row, [])
   assert.match(p, /DEMANDE INITIALE/)
+})
+
+// ── Demandeur remonté jusqu'au journal des nouveautés ─────────────────────────
+// Le nom de qui a demandé le changement doit voyager de la file jusqu'au brief :
+// c'est la seule façon dont il peut atterrir dans la colonne « Demandé par »
+// de /changelog. Pas de demandeur (travail lancé par l'agent) = pas de ligne.
+
+test('le brief nomme le demandeur et dit où le reporter', () => {
+  const b = briefFor({ ...row, created_by_name: 'Guillaume Pelletier' })
+  assert.match(b, /Importe les tâches du fichier X du Drive\./)
+  assert.ok(b.includes(REQUESTER_MARKER))
+  assert.match(b, /Guillaume Pelletier/)
+  assert.match(b, /requester/)
+  assert.match(b, /changelog\.json/)
+})
+
+test('sans demandeur, le brief est le prompt nu', () => {
+  assert.equal(briefFor(row), row.prompt)
+  assert.equal(briefFor({ ...row, created_by_name: '   ' }), row.prompt)
+})
+
+test('relance : le demandeur suit le fil', () => {
+  const b = briefFor({ ...row, created_by_name: 'Émilie' }, { followUp: true, messages })
+  assert.match(b, /DEMANDE INITIALE/)
+  assert.match(b, /L'onglet « AL »\./)
+  assert.ok(b.includes(REQUESTER_MARKER))
+  assert.match(b, /Émilie/)
 })
 
 // ── Recap Slack ───────────────────────────────────────────────────────────────
@@ -196,4 +223,41 @@ test('recap Slack : une question en attente change le titre et l\'appel à l\'ac
   assert.doesNotMatch(msg, /Date ou montant/)
   // Sans question, le recap annonce simplement la fin de la tâche.
   assert.match(buildRecapMessage(prompt, { user_summary: 'Fait.' }), /Tâche terminée/)
+})
+
+// ── Départ différé (« ce soir, 19 h ») ────────────────────────────────────────
+// Seule une heure à VENIR diffère le départ : une heure passée, vide ou illisible
+// laisse l'item partir normalement — jamais de tâche coincée à cause de ça.
+
+test('heure à venir : retenue, normalisée en ISO UTC', () => {
+  const at = new Date(Date.now() + 3600_000)
+  assert.equal(futureStart(at.toISOString()), at.toISOString())
+  assert.equal(futureStart(at.toString()), new Date(at.toString()).toISOString())
+})
+
+test('heure passée, vide ou illisible : aucun report', () => {
+  assert.equal(futureStart(new Date(Date.now() - 1000).toISOString()), null)
+  assert.equal(futureStart(null), null)
+  assert.equal(futureStart(''), null)
+  assert.equal(futureStart('ce soir'), null)
+})
+
+// ── Répartition dans les files d'exécution ────────────────────────────────────
+// Ce qui est demandé « maintenant » doit partir en même temps que les autres
+// demandes du moment (une file libre chacun) ; ce qui est programmé le soir doit
+// s'enchaîner dans UNE seule file.
+
+test('départ immédiat : la file la moins chargée, donc des départs simultanés', () => {
+  assert.equal(pickLane({ loads: [0, 0, 0, 0] }), 0)
+  assert.equal(pickLane({ loads: [1, 0, 0, 0] }), 1)
+  assert.equal(pickLane({ loads: [1, 1, 0, 0] }), 2)
+  assert.equal(pickLane({ loads: [1, 1, 1, 0] }), 3)
+  // Toutes occupées : on repart sur la moins chargée, pas sur une file au hasard.
+  assert.equal(pickLane({ loads: [2, 2, 1, 2] }), 2)
+})
+
+test('départ programmé : toujours la même file, quelle que soit la charge', () => {
+  const at = '2030-01-01T23:00:00.000Z'
+  assert.equal(pickLane({ startAt: at, loads: [0, 0, 0, 0] }), SCHEDULED_LANE)
+  assert.equal(pickLane({ startAt: at, loads: [5, 0, 0, 0] }), SCHEDULED_LANE)
 })

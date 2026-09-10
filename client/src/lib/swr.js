@@ -42,6 +42,28 @@ export function writeStale(key, data) {
   }
 }
 
+// Ne garde que les `keep` entrées les plus récentes sous `prefix`, et jette les
+// autres. Pour les caches indexés par table/module (une entrée par table
+// configurée) : sans ce ménage, visiter la configuration des champs de vingt
+// tables empilerait vingt payloads de ~80 ko et finirait par saturer le quota
+// localStorage — ce qui ferait silencieusement échouer TOUS les writeStale.
+export function pruneStale(prefix, keep) {
+  try {
+    const full = PREFIX + prefix
+    const entries = []
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i)
+      if (!k || !k.startsWith(full)) continue
+      let at = 0
+      try { at = JSON.parse(localStorage.getItem(k))?.at || 0 } catch {}
+      entries.push({ k, at })
+    }
+    if (entries.length <= keep) return
+    entries.sort((a, b) => b.at - a.at)
+    for (const e of entries.slice(keep)) localStorage.removeItem(e.k)
+  } catch {}
+}
+
 export function invalidateStale(prefix) {
   try {
     const full = PREFIX + prefix

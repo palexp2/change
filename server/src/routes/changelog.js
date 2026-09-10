@@ -6,14 +6,8 @@
 import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
 import { getChangelogStatus } from '../services/changelogGuard.js'
-import { getChangelogRequesters } from '../services/changelogRequesters.js'
 
 const router = Router()
-
-// « Demandé par » de la page /changelog : { "<date>|<titre>": { name, source } }.
-router.get('/requesters', requireAuth, (req, res) => {
-  res.json(getChangelogRequesters())
-})
 
 router.get('/status', requireAuth, (req, res) => {
   const st = getChangelogStatus()

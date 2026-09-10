@@ -104,6 +104,26 @@ test('durée ↔ texte fait l’aller-retour', () => {
   assert.equal(read(col, ids[0]), 5400)
 })
 
+test('pourcentage ↔ nombre : la valeur ne bouge pas, seul le rendu change', () => {
+  // La colonne porte le nombre de POURCENTS : passer un nombre en pourcentage
+  // (et l'inverse) ne doit rien multiplier ni rien perdre en décimales.
+  const { field, col, ids } = fieldWith('number', [45, 45.5])
+  const toPercent = planTypeConversion(field, 'percent', null)
+  assert.equal(toPercent.unconvertible, 0)
+  assert.equal(toPercent.rebuild, false, 'nombre et pourcentage ont la même affinité REAL')
+  db.transaction(() => applyTypeConversion(field, toPercent))()
+  assert.equal(read(col, ids[0]), 45)
+  assert.equal(read(col, ids[1]), 45.5)
+
+  const asPercent = db.prepare('SELECT * FROM custom_fields WHERE id=?').get(field.id)
+  asPercent.type = 'percent'
+  assert.equal(valueToText(45.5, 'percent', null), '45,5\u00a0%')
+  const back = planTypeConversion(asPercent, 'number', null)
+  assert.equal(back.unconvertible, 0)
+  db.transaction(() => applyTypeConversion(asPercent, back))()
+  assert.equal(read(col, ids[1]), 45.5)
+})
+
 test('case à cocher ↔ texte : Oui/Non, et l’ambigu est refusé', () => {
   const { field, col, ids } = fieldWith('checkbox', [1, 0])
   const plan = planTypeConversion(field, 'text', null)
@@ -135,4 +155,20 @@ test('date : ISO et JJ/MM/AAAA passent, le mois d’abord est refusé', () => {
   assert.equal(convertSingleValue('2026-04-03', 'text', null, 'date', null).value, '2026-04-03')
   assert.equal(convertSingleValue('03/04/2026', 'text', null, 'date', null).value, '2026-04-03')
   assert.equal(convertSingleValue('4 avril 2026', 'text', null, 'date', null).ok, false)
+})
+
+test('nombre → évaluation : la note passe, hors échelle est signalé', () => {
+  const { field, col, ids } = fieldWith('number', [4, 8])
+  const plan = planTypeConversion(field, 'rating', null)
+  assert.equal(plan.converted, 1)
+  assert.equal(plan.unconvertible, 1, 'une note de 8 sur 5 est rendue à l’utilisateur')
+  assert.equal(plan.rebuild, true, 'REAL → INTEGER : la colonne est refaite')
+  db.transaction(() => applyTypeConversion(field, plan))()
+  assert.equal(read(col, ids[0]), 4)
+  assert.equal(read(col, ids[1]), null)
+})
+
+test('évaluation → texte garde le nombre d’étoiles', () => {
+  assert.equal(valueToText(3, 'rating', null), '3')
+  assert.equal(convertSingleValue('3', 'text', null, 'rating', null).value, 3)
 })

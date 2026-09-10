@@ -9,6 +9,7 @@ import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermission
 import { findContactDuplicates } from '../utils/duplicateMatch.js';
 import { readRelation } from '../services/customFieldsView.js'
 import { parsePage } from '../utils/pagination.js'
+import { listContactEmailAttachments, downloadEmailAttachment } from '../services/gmail.js'
 
 const router = Router();
 router.use(requireAuth);
@@ -110,6 +111,27 @@ router.get('/:id', (req, res) => {
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
   contact.companies = loadCompanies(req.params.id);
   res.json(contact);
+});
+
+// GET /api/contacts/:id/email-attachments — pièces jointes des courriels liés au contact
+router.get('/:id/email-attachments', async (req, res) => {
+  const contact = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
+  if (!contact) return res.status(404).json({ error: 'Contact not found' });
+  try {
+    res.json(await listContactEmailAttachments(req.params.id));
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/:id/email-attachments/:attId/download', async (req, res) => {
+  try {
+    const { absPath, fileName, contentType } = await downloadEmailAttachment(req.params.id, req.params.attId);
+    if (contentType) res.type(contentType);
+    res.download(absPath, fileName || 'piece-jointe');
+  } catch (e) {
+    res.status(e.message === 'Not found' ? 404 : 400).json({ error: e.message });
+  }
 });
 
 // GET /api/contacts/:id/companies

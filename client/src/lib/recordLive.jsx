@@ -64,7 +64,6 @@ export const ENTITY_TABLES = {
   paie: 'paies',
   paie_item: 'paie_items',
   timesheet: 'timesheets',
-  hour_bank_entry: 'hour_bank',
   serial_number: 'serial_numbers',
   serial_state_change: 'serial_state_changes',
   purchase: 'purchases',
@@ -82,6 +81,7 @@ export const ENTITY_TABLES = {
   instagram_prospect: 'instagram_prospects',
   subscription: 'subscriptions',
   activity_code: 'activity_codes',
+  ops_issue: 'ops_issues',
 }
 
 // ── Mémoire courte des pastilles ────────────────────────────────────────────

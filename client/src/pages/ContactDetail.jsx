@@ -1,7 +1,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import EmailAttachments from '../components/EmailAttachments.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
+import { CrmDetailLayout, CrmCard, CrmRow, CrmAdd, CrmCenterTabs, scrollCrmToTop } from '../components/CrmDetailLayout.jsx'
 import api from '../lib/api.js'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -17,6 +19,7 @@ import { sync as syncStore } from '../lib/dataSync.js'
 import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
+import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -91,13 +94,12 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
     }
   }
 
+  // Rendu sans libellé : le composant vit dans une carte « Entreprises » de la
+  // colonne des records liés, qui porte déjà le titre.
   return (
-    <div className="sm:col-span-2" data-testid="contact-companies">
-      <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1">
-        Entreprises
-        {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
-      </div>
+    <div data-testid="contact-companies" className="px-1">
       <div className="space-y-1.5">
+        {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
         {linked.length === 0 ? (
           <div className="text-sm text-slate-400 italic">Aucune entreprise liée</div>
         ) : linked.map(link => (
@@ -133,15 +135,15 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
               type="button"
               onClick={() => remove(link)}
               disabled={saving}
-              className="ml-auto text-slate-300 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 transition"
-              title="Retirer"
+              className="ml-auto text-slate-300 hover:text-red-500 p-1"
+              title="Délier cette entreprise"
               data-testid="remove-company"
             >
               <X size={13} />
             </button>
           </div>
         ))}
-        <div className="pt-1">
+        <div className="pt-1 flex items-center gap-1.5">
           <LinkedRecordField
             name="add_company"
             value={null}
@@ -151,6 +153,7 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
             onChange={add}
             allowClear={false}
           />
+          <span className="text-xs text-slate-400">Lier une entreprise</span>
         </div>
       </div>
     </div>
@@ -158,9 +161,15 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
 }
 
 function InlineField({ field, value, saving, onSave }) {
-  const [local, setLocal] = useState(String(value ?? ''))
-  useEffect(() => { setLocal(String(value ?? '')) }, [value])
-  function commit(val) { if (val === String(value ?? '')) return; onSave(val) }
+  // Un téléphone s'affiche « (418) 555-1234 » dès la lecture : la valeur
+  // stockée est souvent brute (« +14508883901 »). Le formatage au blur ne
+  // suffisait pas — sans édition, le brut restait à l'écran.
+  const shown = field.type === 'phone' ? fmtPhone(value) : String(value ?? '')
+  const [local, setLocal] = useState(shown)
+  useEffect(() => { setLocal(shown) }, [shown])
+  // Comparaison sur la valeur AFFICHÉE : un blur sans modification ne doit pas
+  // déclencher d'enregistrement juste parce que le numéro est reformaté.
+  function commit(val) { if (val === shown) return; onSave(val) }
 
   if (field.type === 'select') {
     // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
@@ -368,8 +377,115 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
   )
 }
 
+// ─── Log manuel d'une interaction ────────────────────────────────────────────
+// Ce qui n'est pas passé par l'ERP (appel sur le cellulaire, discussion à un
+// salon, SMS) n'a aucune trace dans le fil. Cette modale la crée à la main.
+const LOG_TYPES = [
+  { value: 'call',    label: 'Appel',   directional: true },
+  { value: 'sms',     label: 'SMS',     directional: true },
+  { value: 'meeting', label: 'Réunion' },
+  { value: 'note',    label: 'Note' },
+]
+
+function nowLocalInput() {
+  const d = new Date()
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function LogInteractionModal({ contactId, companyId, onClose, onSaved }) {
+  const { addToast } = useToast()
+  const [form, setForm] = useState({ type: 'call', direction: 'out', at: nowLocalInput(), notes: '' })
+  const [saving, setSaving] = useState(false)
+  const directional = LOG_TYPES.find(t => t.value === form.type)?.directional
+
+  async function submit(e) {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      await api.interactions.create({
+        contact_id: contactId,
+        company_id: companyId || null,
+        type: form.type,
+        direction: directional ? form.direction : null,
+        // datetime-local est en heure du navigateur : converti en ISO UTC,
+        // la convention de stockage.
+        timestamp: form.at ? new Date(form.at).toISOString() : null,
+        notes: form.notes.trim() || null,
+      })
+      await onSaved()
+      onClose()
+    } catch (err) {
+      addToast({ message: err.message || 'Erreur', type: 'error' })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal isOpen={true} onClose={onClose} title="Consigner une interaction" size="sm">
+      <form onSubmit={submit} className="space-y-4">
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="label">Type</label>
+            <select
+              value={form.type}
+              onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+              className="select"
+              data-testid="log-interaction-type"
+            >
+              {LOG_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+          {directional && (
+            <div>
+              <label className="label">Sens</label>
+              <select
+                value={form.direction}
+                onChange={e => setForm(f => ({ ...f, direction: e.target.value }))}
+                className="select"
+              >
+                <option value="out">Sortant</option>
+                <option value="in">Entrant</option>
+              </select>
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="label">Quand</label>
+          <input
+            type="datetime-local"
+            value={form.at}
+            onChange={e => setForm(f => ({ ...f, at: e.target.value }))}
+            className="input"
+          />
+        </div>
+        <div>
+          <label className="label">Notes</label>
+          <textarea
+            value={form.notes}
+            onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
+            className="input"
+            rows={4}
+            autoFocus
+            data-testid="log-interaction-notes"
+          />
+        </div>
+        <div className="flex justify-end gap-3 pt-1">
+          <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Annuler</button>
+          <button type="submit" disabled={saving} className="btn-primary" data-testid="log-interaction-save">
+            <Save size={14} /> {saving ? 'Enregistrement...' : 'Enregistrer'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  )
+}
+
 export default function ContactDetail({ recordId, onClose }) {
   const id = recordId
+  // « Suppression permise » : case du mode de personnalisation de la fiche.
+  const canDelete = useRecordDeleteAllowed('contacts')
   const { user: _user } = useAuth()
   const confirm = useConfirm()
   const { addToast } = useToast()
@@ -387,6 +503,10 @@ export default function ContactDetail({ recordId, onClose }) {
   const [editingTask, setEditingTask] = useState(null)
   const [taskForm, setTaskForm] = useState({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' })
   const [savingTask, setSavingTask] = useState(false)
+  const [showLogModal, setShowLogModal] = useState(false)
+  // Colonne du centre : le fil des événements, ou le tableau des tâches ouvert
+  // depuis la carte de droite.
+  const [centerView, setCenterView] = useState('fil')
   const LIMIT = 30
 
   // Le record principal (contact) passe par le hook ; interactions et lookup
@@ -439,6 +559,25 @@ export default function ContactDetail({ recordId, onClose }) {
     }
   }
 
+  async function togglePinInteraction(item) {
+    try {
+      const updated = await api.interactions.pin(item.id, !item.pinned)
+      setInteractions(prev => [...prev].map(x => x.id === item.id ? { ...x, ...updated } : x)
+        .sort((a, b) => (b.pinned - a.pinned) || (b.timestamp || '').localeCompare(a.timestamp || '')))
+    } catch {
+      addToast({ message: "Échec de l'épinglage", type: 'error' })
+    }
+  }
+
+  // Recharge la première page du fil (après un log manuel) : l'entrée neuve est
+  // la plus récente, donc en tête.
+  async function reloadInteractions() {
+    const res = await api.interactions.list({ contact_id: id, limit: LIMIT, offset: 0, include: 'heavy' })
+    setInteractions(res.interactions || [])
+    setTotal(res.total || 0)
+    setOffset(LIMIT)
+  }
+
   useEffect(() => {
     api.tasks.list({ contact_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
     api.auth.users().then(setUsers).catch(() => {})
@@ -483,6 +622,18 @@ export default function ContactDetail({ recordId, onClose }) {
     }
   }
 
+  function openNewTask() {
+    setEditingTask(null)
+    setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' })
+    setShowTaskModal(true)
+  }
+
+  function openTask(row) {
+    setEditingTask(row)
+    setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', assigned_to: row.assigned_to || '', notes: row.notes || '' })
+    setShowTaskModal(true)
+  }
+
   const pending = detailPending({ loading, loadError, onRetry: load, record: contact, notFound: 'Contact introuvable.' })
   if (pending) return pending
 
@@ -490,23 +641,8 @@ export default function ContactDetail({ recordId, onClose }) {
     <>
       <DetailShell
         header={{
-          badge: contact.language && (
-            <Badge color={contact.language === 'French' ? 'blue' : 'green'}>
-              {contact.language === 'French' ? 'FR' : 'EN'}
-            </Badge>
-          ),
           status: <SaveStatus status={saveState} />,
-          meta: contact.company_id && (
-            <LinkedRecordField
-              name="company_id"
-              value={contact.company_id}
-              options={[{ id: contact.company_id, name: contact.company_name || 'Entreprise' }]}
-              getHref={c => `/companies/${c.id}`}
-              disabled
-              allowClear={false}
-            />
-          ),
-          actions: (
+          actions: canDelete && (
             <button
               onClick={handleDelete}
               className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
@@ -519,67 +655,133 @@ export default function ContactDetail({ recordId, onClose }) {
           ),
         }}
       >
-        {/* Info card — l'ordre des champs et ceux qu'on garde se règlent dans la
-            fiche elle-même (bouton « Personnaliser les champs » du panneau
-            latéral, ou au survol de la carte ici). */}
-        <DetailFieldGrid entityType="contacts" record={contact}>
-          {visibleFields.map(field => (
-            <DetailField
-              key={field.key}
-              id={field.key}
-              label={field.label}
-              span2={field.span2 || field.type === 'textarea'}
-              saving={!!fieldSaving[field.key]}
-            >
-              <InlineField
-                field={field}
-                value={contact[field.key] ?? ''}
-                saving={!!fieldSaving[field.key]}
-                onSave={val => saveField(field.key, val)}
-              />
-            </DetailField>
-          ))}
-          <CompanyLinks
-            contactId={id}
-            companies={contact.companies || []}
-            allCompanies={companies}
-            onChange={updated => setContact(c => ({ ...c, ...updated }))}
-          />
-        </DetailFieldGrid>
+        {/* Layout CRM : informations à gauche, fil des événements au centre,
+            records liés à droite (cf. components/CrmDetailLayout.jsx). */}
+        <CrmDetailLayout
+          left={(
+            <>
+              {/* L'ordre des champs et ceux qu'on garde se règlent dans la fiche
+                 elle-même (bouton « Personnaliser les champs » du panneau
+                 latéral, ou au survol de la carte ici). */}
+              <DetailFieldGrid entityType="contacts" record={contact} className="card p-4">
+                {visibleFields.map(field => (
+                  <DetailField
+                    key={field.key}
+                    id={field.key}
+                    label={field.label}
+                    span2={field.span2 || field.type === 'textarea'}
+                    saving={!!fieldSaving[field.key]}
+                  >
+                    <InlineField
+                      field={field}
+                      value={contact[field.key] ?? ''}
+                      saving={!!fieldSaving[field.key]}
+                      onSave={val => saveField(field.key, val)}
+                    />
+                  </DetailField>
+                ))}
+              </DetailFieldGrid>
+              <EmailAttachments contactId={id} />
+            </>
+          )}
+          center={(
+            <>
+              <div className="flex items-center justify-between gap-2">
+                <CrmCenterTabs
+                  tabs={[
+                    { key: 'fil', label: 'Fil', count: total },
+                    ...(centerView === 'tâches' ? [{ key: 'tâches', label: 'Tâches', count: tasks.length }] : []),
+                  ]}
+                  active={centerView}
+                  onSelect={setCenterView}
+                />
+                {centerView === 'fil' && (
+                  <button onClick={() => setShowLogModal(true)} className="btn-secondary btn-sm" data-testid="log-interaction">
+                    <Plus size={14} /> Consigner
+                  </button>
+                )}
+              </div>
+              {centerView === 'tâches' ? (
+                <DataTable
+                  table="contact_tasks"
+                  columns={taskColumns}
+                  data={tasks}
+                  searchFields={['title', 'status']}
+                  onRowClick={openTask}
+                  height="320px"
+                  emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à ce contact pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: openNewTask } }}
+                />
+              ) : (
+                <InteractionTimeline
+                  interactions={interactions}
+                  total={total}
+                  onLoadMore={loadMore}
+                  loadingMore={loadingMore}
+                  showContact={false}
+                  onLog={() => setShowLogModal(true)}
+                  onTogglePin={togglePinInteraction}
+                />
+              )}
+            </>
+          )}
+          right={(
+            <>
+              <CrmCard
+                title="Entreprises"
+                count={(contact.companies || []).length}
+                testId="crm-card-entreprises"
+              >
+                <CompanyLinks
+                  contactId={id}
+                  companies={contact.companies || []}
+                  allCompanies={companies}
+                  onChange={updated => setContact(c => ({ ...c, ...updated }))}
+                />
+              </CrmCard>
 
-        {/* Tasks section */}
-        <div className="mb-6">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-base font-semibold text-slate-900">Tâches ({tasks.length})</h2>
-            <button onClick={() => { setEditingTask(null); setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' }); setShowTaskModal(true) }} className="btn-secondary btn-sm">
-              <Plus size={14} /> Ajouter
-            </button>
-          </div>
-          <DataTable
-            table="contact_tasks"
-            columns={taskColumns}
-            data={tasks}
-            searchFields={['title', 'status']}
-            onRowClick={row => { setEditingTask(row); setTaskForm({ title: row.title, status: row.status, priority: row.priority, due_date: row.due_date || '', assigned_to: row.assigned_to || '', notes: row.notes || '' }); setShowTaskModal(true) }}
-            height="260px"
-            emptyState={{ icon: CheckSquare, title: 'Aucune tâche', description: "Aucune tâche n'est associée à ce contact pour l'instant.", cta: { label: 'Ajouter', icon: Plus, onClick: () => { setEditingTask(null); setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' }); setShowTaskModal(true) } } }}
-          />
-        </div>
-
-        {/* Conversation history */}
-        <div>
-          <h2 className="text-base font-semibold text-slate-900 mb-3">
-            Historique ({total})
-          </h2>
-          <InteractionTimeline
-            interactions={interactions}
-            total={total}
-            onLoadMore={loadMore}
-            loadingMore={loadingMore}
-            showContact={false}
-          />
-        </div>
+              <CrmCard
+                title="Tâches"
+                count={tasks.length}
+                defaultOpen={tasks.length > 0}
+                testId="crm-card-tâches"
+                onOpen={() => setCenterView('tâches')}
+                action={<CrmAdd onClick={openNewTask} label="Ajouter une tâche" />}
+                footer={tasks.length > 5 ? (
+                  <button
+                    type="button"
+                    onClick={e => { setCenterView('tâches'); scrollCrmToTop(e.currentTarget) }}
+                    data-testid="crm-open-tâches"
+                    className="mt-1 w-full px-2 py-1 rounded-lg text-left text-xs font-medium text-brand-600 hover:bg-brand-50"
+                  >
+                    Tout voir ({tasks.length})
+                  </button>
+                ) : null}
+              >
+                {tasks.length === 0 ? (
+                  <div className="px-2 pb-1 text-sm text-slate-400">Aucune</div>
+                ) : tasks.slice(0, 5).map(t => (
+                  <CrmRow
+                    key={t.id}
+                    onClick={() => openTask(t)}
+                    primary={t.title}
+                    secondary={t.status}
+                    meta={t.due_date ? fmtDateTime(t.due_date) : null}
+                  />
+                ))}
+              </CrmCard>
+            </>
+          )}
+        />
       </DetailShell>
+
+      {showLogModal && (
+        <LogInteractionModal
+          contactId={id}
+          companyId={(contact.companies || []).find(c => c.is_primary)?.company_id || (contact.companies || [])[0]?.company_id}
+          onClose={() => setShowLogModal(false)}
+          onSaved={reloadInteractions}
+        />
+      )}
 
       {showTaskModal && (
         <TaskModalContent

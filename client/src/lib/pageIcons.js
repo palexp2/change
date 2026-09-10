@@ -39,6 +39,7 @@ import { DownloadCloud,
   Megaphone,
   HardDrive,
   Instagram,
+  AlertTriangle,
 } from 'lucide-react'
 
 // Order matters: most specific patterns first.
@@ -88,10 +89,10 @@ const ROUTES = [
   [/^\/feuille-de-temps/, Clock],
   [/^\/codes-activite/, Tag],
   [/^\/paies/, Banknote],
-  [/^\/banque-heures/, Wallet],
   [/^\/contacts/, Contact],
   [/^\/companies/, Building2],
   [/^\/connectors/, Plug],
+  [/^\/problemes-operations/, AlertTriangle],
   [/^\/automations/, Zap],
   [/^\/agent/, Bot],
   [/^\/parametres/, Settings],

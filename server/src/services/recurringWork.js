@@ -328,6 +328,10 @@ export function catchUpPeriods({
 const OWNER_NAMES = { AL: 'Antoine', ML: 'Michel' }
 function doneByName(task, completion) {
   if (!completion) return null
+  // Une case cochée par l'ERP lui-même n'a pas d'auteur : dire « fait par
+  // Antoine » attribuerait à quelqu'un un geste qu'il n'a pas posé. La ligne
+  // affiche alors ce qui a été constaté (`done_note`).
+  if (completion.source === 'auto') return null
   return OWNER_NAMES[task.owner] || completion.session_user_name || null
 }
 
@@ -383,7 +387,7 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
   `).all(...params)
 
   const completion = db.prepare(`
-    SELECT c.done_at, c.note, u.name AS session_user_name
+    SELECT c.done_at, c.note, c.source, u.name AS session_user_name
     FROM recurring_task_completions c
     LEFT JOIN users u ON u.id = c.done_by
     WHERE c.task_id=? AND c.period_key=?
@@ -405,6 +409,7 @@ export function listRecurringTasks({ owner = null, includeInactive = false, date
       done_at: c?.done_at || null,
       done_by_name: doneByName(t, c),
       done_note: c?.note || null,
+      done_source: c?.source || null,
       ...dueInfo({ cadence: t.cadence, periodKey: period_key, dueDay: t.due_day, done, today }),
       // Mois (trimestres, années) terminés et jamais cochés : c'est le travail
       // de juillet qu'on coche début août, nommément, plutôt que celui d'août.
@@ -447,6 +452,7 @@ function biweeklyTask(t, { date, today, completion }) {
     done_at: lastDone?.done_at || null,
     done_by_name: lastDone?.done_by_name || null,
     done_note: null,
+    done_source: null,
     due_date: null, days_until_due: null, due_status: null,
     catch_up: [],
   }
@@ -660,6 +666,30 @@ export function isValidPeriodKey(cadence, periodKey) {
   return !!periodRange(cadence, periodKey)
 }
 
+// ─── Cochage automatique (l'ERP constate le travail) ──────────────────────────
+//
+// Certains travaux récurrents laissent une trace ailleurs dans l'ERP : quand le
+// message hebdomadaire du budget marketing part à Émilie, « Compiler les
+// dépenses pour le suivi budgétaire d'Émilie » EST fait — le redemander à la
+// main, c'est faire cocher une case pour un travail que l'app vient de faire.
+//
+// Deux garde-fous : on ne touche jamais une période déjà cochée (un cochage
+// humain garde son auteur), et un travail supprimé ou désactivé ne ressuscite
+// pas. Le cochage reste décochable comme n'importe quel autre.
+export function completeFromAutomation(taskId, { note = null, date = new Date() } = {}) {
+  const task = db.prepare('SELECT * FROM recurring_tasks WHERE id=? AND deleted_at IS NULL AND active=1').get(taskId)
+  if (!task) return null
+  const period_key = shiftPeriodKey(task.cadence, periodKeyFor(task.cadence, date), task.period_offset || 0)
+  if (!period_key || !isValidPeriodKey(task.cadence, period_key)) return null
+  const info = db.prepare(`
+    INSERT INTO recurring_task_completions (id, task_id, period_key, done_by, note, source)
+    VALUES (?,?,?,NULL,?,'auto')
+    ON CONFLICT(task_id, period_key) DO NOTHING
+  `).run(newRecordId(), taskId, period_key, note)
+  if (info.changes) broadcast()
+  return { task_id: taskId, period_key, created: !!info.changes }
+}
+
 export function setCompletion(taskId, { done, periodKey = null, userId = null, note = null } = {}) {
   const task = db.prepare('SELECT * FROM recurring_tasks WHERE id=? AND deleted_at IS NULL').get(taskId)
   if (!task) return null
@@ -673,7 +703,8 @@ export function setCompletion(taskId, { done, periodKey = null, userId = null, n
       INSERT INTO recurring_task_completions (id, task_id, period_key, done_by, note)
       VALUES (?,?,?,?,?)
       ON CONFLICT(task_id, period_key) DO UPDATE SET
-        done_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), done_by=excluded.done_by, note=excluded.note
+        done_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), done_by=excluded.done_by, note=excluded.note,
+        source=NULL
     `).run(newRecordId(), taskId, key, userId, note)
   } else {
     db.prepare('DELETE FROM recurring_task_completions WHERE task_id=? AND period_key=?').run(taskId, key)

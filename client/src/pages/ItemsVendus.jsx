@@ -55,7 +55,7 @@ export default function ItemsVendus() {
       amount:      row => <span className="font-medium text-slate-700">{fmtMoney(row.amount, row.currency, { cents: true })}</span>,
       currency:    row => <span className="font-mono text-xs text-slate-600">{row.currency || '—'}</span>,
       facture_document_number: row => row.facture_id
-        ? <Link to={`/factures/${row.facture_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.facture_document_number || row.facture_invoice_id || row.facture_id}</Link>
+        ? <Link to={`/factures/${row.facture_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.facture_document_number || row.facture_invoice_id || row.facture_id}</Link>
         : <span className="text-slate-400">—</span>,
       stripe_price_id:   row => row.stripe_price_id ? <span className="font-mono text-xs text-slate-500">{row.stripe_price_id}</span> : <span className="text-slate-400">—</span>,
       stripe_product_id: row => row.stripe_product_id ? <span className="font-mono text-xs text-slate-500">{row.stripe_product_id}</span> : <span className="text-slate-400">—</span>,

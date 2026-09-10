@@ -8,7 +8,7 @@ import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
-import { AddressCheckBadge, AddressCheckIssues, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
+import { AddressCheckBadge, AddressCheckPanel, AddressConfirmPanel } from '../components/AddressCheckIssues.jsx'
 import { US_STATES, CA_PROVINCES } from '../components/AdresseModal.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
@@ -26,10 +26,10 @@ const SHIPMENT_RENDERS = {
   // Certains envois pointent une commande sans numéro (import Airtable) : on
   // garde le lien, avec un libellé lisible plutôt qu'un « # » orphelin.
   order_number: row => row.order_id
-    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline font-medium">{row.order_number ? `#${row.order_number}` : 'Commande'}</Link>
+    ? <Link to={`/orders/${row.order_id}`} onClick={e => e.stopPropagation()} className="link-record font-medium">{row.order_number ? `#${row.order_number}` : 'Commande'}</Link>
     : <span className="text-slate-400">—</span>,
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   tracking_number: row => <span className="font-mono text-xs text-slate-700">{row.tracking_number || '—'}</span>,
   status: row => (row.status
@@ -61,13 +61,14 @@ function InlineText({ value, saving, onSave, testId }) {
 
 // C'est ce qui s'ouvre quand on clique l'adresse de livraison depuis la fiche
 // d'un envoi.
-export default function AdresseDetail({ recordId: id }) {
+export default function AdresseDetail({ recordId: id, onClose }) {
   const { record: adresse, setRecord: setAdresse, loading, loadError, reload: load } =
     useDetailRecord(() => api.adresses.get(id), [id], { clearOnError: true })
   const [contacts, setContacts] = useState([])
   const [envois, setEnvois] = useState([])
   const [loadingEnvois, setLoadingEnvois] = useState(true)
   const [fieldSaving, setFieldSaving] = useState({})
+  const [confirming, setConfirming] = useState(false)
   const { status: saveState, save } = useSaveStatus()
 
   // Contacts de l'entreprise propriétaire — options du champ « Contact associé ».
@@ -107,10 +108,26 @@ export default function AdresseDetail({ recordId: id }) {
     }
   }
 
+  // Confirmation auprès de l'API d'adresses : « Utiliser » écrit l'écriture
+  // proposée par Google, « Reconfirmer » redemande à l'API.
+  async function applySuggestion(s) {
+    await saveField({
+      line1: s.line1 || '', city: s.city || '', province: s.province || '',
+      postal_code: s.postal_code || '', country: s.country || adresse.country,
+    }, ['line1', 'city', 'province', 'postal_code', 'country'])
+  }
+
+  async function reconfirm() {
+    setConfirming(true)
+    try {
+      const updated = await api.adresses.reconfirm(id)
+      setAdresse(a => (a ? { ...a, ...updated } : a))
+    } catch { /* le verdict reste tel quel */ } finally { setConfirming(false) }
+  }
+
   const pending = detailPending({ loading, loadError, onRetry: load, record: adresse, notFound: 'Adresse introuvable.' })
   if (pending) return pending
 
-  const checkIssues = parseCheckIssues(adresse.check_issues)
   const provinceOptions = adresse.country === 'US' ? US_STATES : CA_PROVINCES
 
   return (
@@ -135,17 +152,25 @@ export default function AdresseDetail({ recordId: id }) {
         ),
       }}
     >
-      {checkIssues.length > 0 && (
-        <div
-          className={`mb-4 rounded-lg border px-3 py-2.5 ${adresse.check_status === 'error' ? 'border-red-200 bg-red-50' : 'border-orange-200 bg-orange-50'}`}
-          data-testid="adresse-check-panel"
-        >
-          <div className="text-xs text-slate-600 mb-1">Cette adresse ne passe pas la vérification</div>
-          <AddressCheckIssues issues={checkIssues} />
-        </div>
-      )}
+      <AddressCheckPanel
+        adresseId={adresse.id}
+        status={adresse.check_status}
+        issues={adresse.check_issues}
+        onChecked={updated => setAdresse(a => (a ? { ...a, ...updated } : a))}
+        className="mb-4"
+      />
 
-      <DetailFieldGrid entityType="adresses" record={adresse} className="card p-5 mb-4" testId="adresse-fields">
+      <AddressConfirmPanel
+        status={adresse.confirm_status}
+        formatted={adresse.confirm_formatted}
+        suggestion={adresse.confirm_suggestion}
+        busy={confirming}
+        onApply={applySuggestion}
+        onRecheck={reconfirm}
+        className="mb-4"
+      />
+
+      <DetailFieldGrid entityType="adresses" record={adresse} className="card p-5 mb-4" testId="adresse-fields" onDeleted={onClose}>
         <DetailField id="line1" label="Rue / Ligne 1" span2 saving={fieldSaving.line1}>
           <InlineText
             value={adresse.line1}

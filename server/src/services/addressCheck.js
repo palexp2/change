@@ -16,6 +16,7 @@
 
 import db from '../db/database.js'
 import { createNotification } from './notifications.js'
+import { emitEntity } from './realtimeEmitters.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { createChangeLogWatcher } from './changeLogWatcher.js'
 
@@ -243,7 +244,16 @@ export function checkAddress(addressId, { actorUserId = null, notify = true } = 
     `).get(addressId)
     if (!row) return null
     const cfg = getAddressCheckConfig()
-    return persistVerdict(row, cfg, { actorUserId, notify })
+    const verdict = persistVerdict(row, cfg, { actorUserId, notify })
+    // Une adresse de livraison ou de ferme est en plus CONFIRMÉE auprès de
+    // l'API d'adresses (services/addressConfirm.js) : appel réseau, donc en
+    // tâche de fond, jamais dans le chemin de l'écriture. Import dynamique —
+    // addressConfirm ne doit pas être évalué au chargement d'addressCheck
+    // (cycle) et le module n'est pas utile aux passes hors-ligne.
+    import('./addressConfirm.js')
+      .then(m => m.scheduleAddressConfirm(addressId))
+      .catch(e => console.error('⚠️  scheduleAddressConfirm:', e.message))
+    return verdict
   } catch (e) {
     console.error('⚠️  checkAddress:', e.message)
     return null
@@ -275,6 +285,18 @@ function persistVerdict(row, cfg, { actorUserId = null, notify = true } = {}) {
          SET check_status = ?, check_issues = ?, checked_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
        WHERE id = ?
     `).run(status, nextJson, row.id)
+    // Le verdict est affiché en clair (bandeau rouge/orange sur la fiche
+    // adresse, la fiche entreprise, Paramètres → Adresses). Sans cette
+    // émission, une adresse corrigée ailleurs que par PUT /adresses (sync
+    // Airtable, formulaire du client, appel de qualification, watcher) gardait
+    // son ancien message à l'écran jusqu'au rechargement de la page.
+    const fresh = db.prepare('SELECT check_status, check_issues, checked_at FROM adresses WHERE id = ?').get(row.id)
+    emitEntity('adresse', 'updated', row.id, {
+      id: row.id,
+      company_id: row.company_id,
+      contact_id: row.contact_id,
+      ...fresh,
+    })
   }
 
   let notified = false

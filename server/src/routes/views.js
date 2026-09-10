@@ -11,14 +11,32 @@ const ALLOWED_TABLES = new Set([
   'orders', 'order_items', 'shipment_items', 'order_envois', 'adresse_envois', 'tickets', 'purchases', 'serial_numbers', 'interactions', 'shipments',
   'abonnements', 'abonnement_events', 'retours', 'retour_items', 'factures', 'assemblages',
   'achats_fournisseurs', 'vendor_subscriptions', 'tasks',
-  'employees', 'paies', 'paie_items', 'bom_items', 'hour_bank',
+  'employees', 'paies', 'paie_items', 'bom_items',
   'company_serials', 'sale_receipts',
   'automations', 'catalog', 'discovery_forms', 'journal_entries',
   'public_files', 'qualification_calls', 'soumissions', 'stock_movements',
-  'product_movements', 'product_achats', 'sync_log', 'bank_transactions',
+  'product_movements', 'sync_log', 'bank_transactions',
   'stripe_invoice_items', 'stripe_payouts', 'users', 'payments',
+  'ops_issues',
   // Vues dérivées (pas de table DB) — règles comptables des numéros de série.
   'serial_transitions', 'serial_accounting_rules', 'serial_missing_valuations',
+  // ── Clés de vue des tableaux ENCASTRÉS dans une fiche ───────────────────
+  // Un DataTable embarqué dans une fiche porte sa propre clé de vue (ses
+  // colonnes visibles, ses largeurs et son tri lui appartiennent — cf.
+  // VIEW_KEY_TO_FIELD_KEY, client/src/lib/customFieldDisplay.jsx). Sans ces
+  // clés ici, GET/PATCH renvoyaient « Table inconnue » : les largeurs de
+  // colonnes redimensionnées à la souris étaient perdues au rechargement.
+  // Volontairement absentes de VIEW_KEY_TO_SQL_TABLE : les champs custom de
+  // ces tableaux passent déjà par la clé de champs côté client, les ajouter
+  // ici dupliquerait les colonnes.
+  'company_contacts', 'company_projects', 'company_orders', 'company_factures',
+  'company_abonnements', 'company_envois', 'company_tasks', 'company_achats',
+  'company_retours',
+  'product_purchases',
+  'project_factures', 'project_soumissions', 'project_commissions',
+  'contact_tasks', 'serial_state_changes',
+  // Pages listes sans table SQL propre (ou dérivée) qui n'avaient pas leur clé.
+  'activity_log', 'activity_codes', 'changelog', 'mapaq_import', 'vendor_profiles',
 ])
 
 // Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom :
@@ -38,9 +56,8 @@ const VIEW_KEY_TO_SQL_TABLE = {
   // Envois expédiés à une adresse (fiche adresse) : mêmes lignes shipments,
   // vues séparées elles aussi.
   adresse_envois: 'shipments',
-  // Achats d'une pièce (fiche produit) : lignes purchases, vues séparées de la
-  // page /purchases.
-  product_achats: 'purchases',
+  // `product_achats` (achats d'une pièce) retiré : `purchases.product_id` a été
+  // droppée (migration 035), la fiche pièce n'a plus de tableau d'achats.
 }
 
 function validateTable(req, res) {
@@ -352,26 +369,44 @@ router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
 // GET /api/views/detail/:entityType
 router.get('/detail/:entityType', requireAuth, (req, res) => {
   const config = db.prepare(
-    'SELECT field_order FROM detail_field_configs WHERE entity_type=?'
+    'SELECT field_order, allow_delete FROM detail_field_configs WHERE entity_type=?'
   ).get(req.params.entityType)
-  res.json({ field_order: config ? JSON.parse(config.field_order) : null })
+  res.json({
+    field_order: config ? JSON.parse(config.field_order) : null,
+    // null = non réglé : la fiche garde son comportement d'origine.
+    allow_delete: config?.allow_delete == null ? null : config.allow_delete === 1,
+  })
 })
 
 // PUT /api/views/detail/:entityType
+// Deux réglages, chacun envoyé seul : la disposition des champs (`field_order`)
+// et « suppression permise » (`allow_delete`, cochée dans le même mode de
+// personnalisation).
 router.put('/detail/:entityType', requireAdmin, (req, res) => {
-  const { field_order } = req.body
-  if (!Array.isArray(field_order)) return res.status(400).json({ error: 'field_order array required' })
+  const { field_order, allow_delete } = req.body
+  const hasOrder = field_order !== undefined
+  const hasDelete = allow_delete !== undefined
+  if (hasOrder && !Array.isArray(field_order)) return res.status(400).json({ error: 'field_order array required' })
+  if (hasDelete && allow_delete !== null && typeof allow_delete !== 'boolean') {
+    return res.status(400).json({ error: 'allow_delete boolean|null required' })
+  }
+  if (!hasOrder && !hasDelete) return res.status(400).json({ error: 'field_order ou allow_delete requis' })
 
+  const deleteVal = allow_delete === null ? null : (allow_delete ? 1 : 0)
   const existing = db.prepare(
     'SELECT id FROM detail_field_configs WHERE entity_type=?'
   ).get(req.params.entityType)
 
   if (existing) {
-    db.prepare('UPDATE detail_field_configs SET field_order=?, updated_at=datetime(\'now\') WHERE id=?')
-      .run(JSON.stringify(field_order), existing.id)
+    const sets = []
+    const vals = []
+    if (hasOrder) { sets.push('field_order=?'); vals.push(JSON.stringify(field_order)) }
+    if (hasDelete) { sets.push('allow_delete=?'); vals.push(deleteVal) }
+    db.prepare(`UPDATE detail_field_configs SET ${sets.join(', ')}, updated_at=datetime('now') WHERE id=?`)
+      .run(...vals, existing.id)
   } else {
-    db.prepare('INSERT INTO detail_field_configs (id, entity_type, field_order) VALUES (?,?,?)')
-      .run(newRecordId(), req.params.entityType, JSON.stringify(field_order))
+    db.prepare('INSERT INTO detail_field_configs (id, entity_type, field_order, allow_delete) VALUES (?,?,?,?)')
+      .run(newRecordId(), req.params.entityType, JSON.stringify(hasOrder ? field_order : []), hasDelete ? deleteVal : null)
   }
   res.json({ ok: true })
 })

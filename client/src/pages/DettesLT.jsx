@@ -638,7 +638,7 @@ export default function DettesLT() {
               <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
                 <div>
                   <div className="font-medium text-slate-800">{debt.label}
-                    <button onClick={() => setEditingDebt(debt)} className="ml-2 text-xs text-brand-600 hover:underline">Configurer</button>
+                    <button onClick={() => setEditingDebt(debt)} className="ml-2 text-xs link-record">Configurer</button>
                   </div>
                   <div className="text-xs text-slate-500 mt-0.5">
                     Dette #{debt.qb_debt_acctnum || '—'} · Intérêts #{debt.qb_interest_acctnum || '—'} · Banque #{debt.qb_bank_acctnum || '—'}

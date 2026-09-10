@@ -7,9 +7,12 @@
 // Claude du précédent via --resume. À la fin de chaque item, un recap part dans le
 // DM Slack perso : c'est ce qui permet de ne plus surveiller le terminal.
 //
-// La file est éclatée en EXEC_LANES sous-files parallèles : chaque item reçoit sa
-// file AU HASARD à la création (colonne `exec_lane`, migration 020) et chaque file
-// n'avance qu'un item à la fois. Il y a donc jusqu'à EXEC_LANES chantiers en cours
+// La file est éclatée en EXEC_LANES sous-files parallèles (colonne `exec_lane`,
+// migration 020) et chaque file n'avance qu'un item à la fois. La file d'un item
+// est choisie à la création selon son heure de départ : « maintenant » → la file la
+// moins chargée (les demandes déposées coup sur coup partent donc EN MÊME TEMPS),
+// « ce soir 19 h » → toujours la file du soir (les travaux programmés s'enchaînent
+// dans UNE seule file). Il y a donc jusqu'à EXEC_LANES chantiers en cours
 // — ils partagent le même arbre de travail, sans isolation (choix assumé, voir
 // taskRunner.js).
 import db from '../db/database.js'
@@ -22,6 +25,7 @@ import {
 } from './taskRunner.js'
 import { heuristicTitle, refineTitle, refineProjectTitle } from './promptTitle.js'
 import { classifyPreset, provisionalPreset, PRESET_KEYS } from './promptPreset.js'
+import { KNOWN_MODELS } from './agentModel.js'
 import { APP_URL } from '../config/appUrl.js'
 
 
@@ -45,7 +49,40 @@ function laneOfRow(row) {
   const n = Number(row?.exec_lane)
   return Number.isInteger(n) && n >= 0 && n < EXEC_LANES ? n : 0
 }
-function randomLane() { return Math.floor(Math.random() * EXEC_LANES) }
+// File du soir : TOUS les départs programmés y vont, donc ils s'enchaînent l'un
+// après l'autre au lieu de saturer les quatre postes à 19 h.
+export const SCHEDULED_LANE = 0
+
+/**
+ * Pure : file retenue pour un item, d'après la charge de chaque file.
+ * - départ programmé → toujours la même file (une seule file le soir) ;
+ * - départ immédiat → la file la moins chargée, donc deux demandes déposées coup
+ *   sur coup partent en même temps sur deux postes différents.
+ */
+export function pickLane({ startAt = null, loads = [] } = {}) {
+  if (startAt) return SCHEDULED_LANE
+  let best = 0
+  for (let lane = 1; lane < EXEC_LANES; lane++) {
+    if ((loads[lane] ?? 0) < (loads[best] ?? 0)) best = lane
+  }
+  return best
+}
+
+/** Charge par file : items qui disputent un poste et n'ont pas fini. */
+function laneLoads(excludeId = null) {
+  const loads = new Array(EXEC_LANES).fill(0)
+  const rows = db.prepare(`${SELECT} AND status IN ('queued','running') AND ${EXEC_LANE_WHERE}`).all()
+  for (const row of rows) {
+    if (excludeId && row.id === excludeId) continue
+    loads[laneOfRow(row)] += 1
+  }
+  return loads
+}
+
+/** File d'un nouvel item (ou d'un item dont l'heure de départ vient de changer). */
+function laneFor(startAt, excludeId = null) {
+  return pickLane({ startAt, loads: laneLoads(excludeId) })
+}
 
 /**
  * Vrai si l'item passe par la voie lecture seule (questions, parallèles et hors
@@ -56,6 +93,46 @@ function isQuestionLane(row) { return row.mode === 'question' && !row.same_conte
 
 // Clause SQL des items qui disputent un poste de file (le complément de isQuestionLane).
 const EXEC_LANE_WHERE = `(mode!='question' OR same_context=1)`
+
+// Départ différé (« ce soir, 19 h ») : tant que l'heure n'est pas venue, l'item
+// n'est pas candidat — les autres passent devant, il reste en file. Les valeurs
+// stockées sont en UTC, comme strftime(…,'now').
+const DUE_WHERE = `(start_at IS NULL OR start_at <= strftime('%Y-%m-%dT%H:%M:%fZ','now'))`
+
+/**
+ * Heure de départ différé retenue : ISO UTC, ou null si absente, illisible ou déjà
+ * passée — on ne diffère jamais dans le passé, l'item part alors normalement.
+ */
+export function futureStart(value) {
+  if (!value) return null
+  const t = Date.parse(value)
+  if (Number.isNaN(t) || t <= Date.now()) return null
+  return new Date(t).toISOString()
+}
+
+// Réveil de l'ordonnanceur à l'heure du prochain départ différé. Sans lui, un item
+// programmé pour 19 h attendrait qu'un autre événement (dépôt, fin d'exécution)
+// rappelle advanceQueue — donc, une file au repos, jamais.
+let wakeTimer = null
+
+function armStartWake() {
+  if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = null }
+  const row = db.prepare(`
+    SELECT MIN(start_at) AS at FROM work_prompts
+    WHERE deleted_at IS NULL AND status='queued' AND start_at IS NOT NULL`).get()
+  const at = row?.at ? Date.parse(row.at) : NaN
+  if (Number.isNaN(at)) return
+  // Borné à six heures : un setTimeout très long dérive, et on se rendort d'un cran
+  // en re-vérifiant l'échéance (le réveil est idempotent — advanceQueue ne prend que
+  // les items réellement dus).
+  const delay = Math.min(Math.max(at - Date.now(), 1_000), 6 * 3600_000)
+  wakeTimer = setTimeout(() => {
+    wakeTimer = null
+    try { advanceQueue() } catch (e) { console.error('🤖 File de travaux: départ programmé —', e.message) }
+    armStartWake()
+  }, delay)
+  wakeTimer.unref?.()
+}
 
 // Sous-requête corrélée plutôt qu'un JOIN : `work_prompts` reste sans alias, donc
 // tous les `${SELECT} AND status=…` / `AND id=…` composés plus bas restent valides
@@ -117,10 +194,28 @@ function frontPosition(space) {
 
 function broadcast() { broadcastAll({ type: 'travaux:prompts:updated' }) }
 
+/** Modèle épinglé sur l'item, ou null si rien de valable n'y est inscrit. */
+function pinnedModel(model) {
+  const m = String(model || '').toLowerCase()
+  return KNOWN_MODELS.includes(m) ? m : null
+}
+
+/**
+ * Modèle + effort d'une exécution de cet item. Le préréglage donne les deux ; le
+ * modèle choisi à la création ou modifié pendant l'attente dans la file
+ * prend le dessus sur le sien. Le repli quota s'applique ensuite normalement
+ * (taskRunner résout le modèle réellement utilisable au démarrage).
+ */
+function specForRow(row) {
+  const spec = presetFor(row.preset)
+  const pinned = pinnedModel(row.model)
+  return pinned ? { ...spec, model: pinned } : spec
+}
+
 export function createPrompt({
   title = '', prompt, mode = 'implement', preset = 'deep',
   same_context = 0, created_by = null, suggestion_id = null, status = 'queued',
-  priority = false, space = 'finance',
+  priority = false, space = 'finance', model = null, start_at = null,
 }) {
   const text = String(prompt || '').trim()
   if (!text) throw new Error('prompt requis')
@@ -141,22 +236,33 @@ export function createPrompt({
   // clé concrète : c'est elle que lit l'ordonnanceur.
   const autoPreset = preset === 'auto' || !PRESET_KEYS.includes(preset)
   const chosen = autoPreset ? provisionalPreset(cleanMode) : preset
+  // Départ différé demandé (« ce soir, 19 h ») : l'item entre en file tout de suite,
+  // mais l'ordonnanceur ne le prendra pas avant l'heure.
+  const startAt = futureStart(start_at)
   db.prepare(`
-    INSERT INTO work_prompts (id, title, prompt, status, position, same_context, mode, preset, suggestion_id, created_by, title_auto, preset_auto, space, exec_lane)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO work_prompts (id, title, prompt, status, position, same_context, mode, preset, suggestion_id, created_by, title_auto, preset_auto, space, model, exec_lane, start_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(id, label, text, initial, priority ? frontPosition(inSpace) : nextPosition(inSpace), same_context ? 1 : 0,
     cleanMode, chosen, suggestion_id, created_by,
     given ? 0 : 1, autoPreset && preset === 'auto' ? 1 : 0, inSpace,
-    // File tirée au sort : c'est la répartition qui fait avancer quatre chantiers de
-    // front sans que personne n'ait à ranger les tâches à la main.
-    randomLane())
+    // Modèle épinglé à la demande (sélecteur de la fenêtre « Modifier le système ») ;
+    // NULL = on suit le modèle du préréglage.
+    pinnedModel(model),
+    // File choisie selon l'heure de départ : immédiat = la file la moins chargée
+    // (les demandes du moment partent ensemble), programmé = la file du soir
+    // (elles s'enchaînent).
+    laneFor(startAt),
+    startAt)
   broadcast()
   if (!given) scheduleTitleRefine(id, text, label)
   if (preset === 'auto') schedulePresetClassify(id)
   // « Prioritaire » = vraiment le même effet que « Passer en premier » : reprendre
   // aussi les items déjà remis à l'ordonnanceur, pas seulement une position en
-  // tête. Jamais sur un dépôt « de côté » (ça le réveillerait).
-  if (priority && initial === 'queued') moveToFront(id)
+  // tête. Jamais sur un dépôt « de côté » (ça le réveillerait), ni sur un départ
+  // différé — « premier » veut dire « tout de suite », ce qui effacerait l'heure
+  // demandée ; la position en tête, elle, est déjà posée à l'insertion.
+  if (priority && initial === 'queued' && !startAt) moveToFront(id)
+  if (startAt) armStartWake()
   return getPrompt(id)
 }
 
@@ -240,7 +346,7 @@ function schedulePresetClassify(id) {
     .finally(() => _classifying.delete(id))
 }
 
-const EDITABLE = ['title', 'prompt', 'mode', 'preset', 'status', 'position', 'stop_after', 'seen']
+const EDITABLE = ['title', 'prompt', 'mode', 'preset', 'model', 'status', 'position', 'stop_after', 'seen', 'start_at']
 
 // ─── Items « en attente » : remis à l'ordonnanceur, mais pas encore démarrés ───
 //
@@ -282,12 +388,12 @@ function reclaimPending(row) {
 /** Répercute une retouche de texte / réglages sur la tâche pas encore démarrée. */
 function syncPendingTask(row) {
   if (!isPending(row)) return
-  const { model, effort } = presetFor(row.preset)
+  const { model, effort } = specForRow(row)
   updatePendingAgentTask(row.agent_task_id, {
     title: row.title,
     // Tâche « suite de conversation » (réponse relancée) : son brief est le fil,
     // pas le prompt d'origine — le réécrire avec row.prompt effacerait la réponse.
-    description: row.follow_up ? buildFollowUpPrompt(row, listMessages(row.id)) : row.prompt,
+    description: briefFor(row, { followUp: !!row.follow_up }),
     mode: row.mode, model, effort,
   })
 }
@@ -295,6 +401,15 @@ function syncPendingTask(row) {
 export function updatePrompt(id, patch) {
   let row = getPrompt(id)
   if (!row) return null
+  if (Object.hasOwn(patch, 'model')) {
+    if (patch.model !== null && patch.model !== '' &&
+        (typeof patch.model !== 'string' || !pinnedModel(patch.model))) {
+      throw Object.assign(new Error(`Modèle invalide — choix possibles : ${KNOWN_MODELS.join(', ')}`), { status: 400 })
+    }
+    if (!['queued', 'paused'].includes(row.status) && !isPending(row)) {
+      throw Object.assign(new Error('Le modèle ne peut être changé que tant que la tâche attend son tour.'), { status: 409 })
+    }
+  }
   // Mettre de côté / réordonner un item pas encore démarré : on le reprend d'abord,
   // sinon le garde-fou « les états d'exécution appartiennent au runner » l'en empêche.
   if (patch.status !== undefined || patch.position !== undefined) row = reclaimPending(row) || row
@@ -305,12 +420,18 @@ export function updatePrompt(id, patch) {
   let backToAuto = false
   let frozen = false
   let reclassify = false
+  let rearmWake = false
   for (const [k, v] of Object.entries(patch)) {
     if (!EDITABLE.includes(k)) continue
     // Le statut n'est pilotable à la main que pour mettre de côté / remettre en
     // file : les états d'exécution appartiennent au runner.
     if (k === 'status' && !['queued', 'paused', 'cancelled'].includes(v)) continue
     if (k === 'status' && row.status === 'running') continue
+    if (k === 'model') {
+      sets.push('model=?')
+      vals.push(pinnedModel(v))
+      continue
+    }
     // Préréglage : « auto » rend le choix au modèle (le provisoire tient la carte
     // exécutable en attendant le verdict) ; une clé concrète fige le choix.
     if (k === 'preset') {
@@ -335,6 +456,21 @@ export function updatePrompt(id, patch) {
       vals.push(v ? new Date().toISOString() : null)
       continue
     }
+    // Heure de départ différé : vidée (null, ou heure déjà passée) = l'item repart
+    // dès qu'un poste est libre.
+    if (k === 'start_at') {
+      const at = futureStart(v)
+      sets.push('start_at=?')
+      vals.push(at)
+      rearmWake = true
+      // La file suit l'heure : programmé → la file unique du soir, remis en immédiat
+      // → la file la moins chargée. Jamais sur un item déjà parti (il occupe son poste).
+      if (row.status !== 'running' && !isQuestionLane(row)) {
+        sets.push('exec_lane=?')
+        vals.push(laneFor(at, id))
+      }
+      continue
+    }
     sets.push(`${k}=?`)
     vals.push(['same_context', 'stop_after'].includes(k) ? (v ? 1 : 0) : v)
   }
@@ -342,6 +478,7 @@ export function updatePrompt(id, patch) {
   db.prepare(`UPDATE work_prompts SET ${sets.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
     .run(...vals, id)
   broadcast()
+  if (rearmWake) armStartWake()
   // Le prompt réécrit change la nature du projet → titre re-déduit, sauf s'il vient
   // d'être figé à la main dans le même PATCH.
   if (backToAuto || (!frozen && patch.prompt !== undefined)) scheduleProjectTitleRefine(id)
@@ -441,10 +578,12 @@ export function moveToFront(id) {
       reclaimPending(row) // no-op si l'exécution a réellement commencé
     }
   }
-  db.prepare(`UPDATE work_prompts SET position=?, status='queued', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+  // start_at=NULL : « passer en premier » veut dire partir maintenant — un départ
+  // différé encore en attente serait la contradiction exacte de ce clic.
+  db.prepare(`UPDATE work_prompts SET position=?, status='queued', start_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
     .run(frontPosition(target.space), id)
   broadcast()
-  if (getSettings().enabled && !isQueuePaused()) return startPrompt(getPrompt(id)).prompt
+  if (getSettings().enabled && !isQueuePaused(specForRow(getPrompt(id)).model)) return startPrompt(getPrompt(id)).prompt
   return getPrompt(id)
 }
 
@@ -489,8 +628,8 @@ export function getQueuePauseState() {
  * seulement les DÉPARTS, donc reprendre relance simplement le prochain item — rien
  * n'a été refait, rien n'a été perdu.
  */
-export function pauseQueue({ reason = null } = {}) {
-  const state = setQueuePaused(true, { reason })
+export function pauseQueue({ reason = null, quotaGuard = false } = {}) {
+  const state = setQueuePaused(true, { reason, quotaGuard })
   broadcast()
   return { paused: state.paused, paused_at: state.pausedAt, reason: state.reason }
 }
@@ -527,7 +666,9 @@ export function advanceQueue() {
   // 2. Pause posée à la main (ou par un item « arrêter après celle-ci ») : la
   // réconciliation ci-dessus a quand même tourné — un item fauché par un redémarrage
   // ne doit pas rester « en cours » pour l'éternité juste parce que la file dort.
-  if (isQueuePaused()) return { started: null, startedCount: 0, reason: 'queue-paused' }
+  if (isQueuePaused('codex')) return { started: null, startedCount: 0, reason: 'queue-paused' }
+  // A Claude quota pause leaves Codex eligible. Manual pauses still stop everyone.
+  const eligible = row => !isQueuePaused(specForRow(row).model)
 
   if (!getSettings().enabled) return { started: null, startedCount: 0, reason: 'agent-disabled' }
 
@@ -543,7 +684,7 @@ export function advanceQueue() {
   // il doit reprendre la session de son prédécesseur, donc attendre son tour.
   const slots = MAX_PARALLEL_QUESTION_PROMPTS - runningQuestions
   if (slots > 0) {
-    const questions = db.prepare(`${SELECT} AND status='queued' AND mode='question' AND same_context=0 ORDER BY position, created_at LIMIT ?`).all(slots)
+    const questions = db.prepare(`${SELECT} AND status='queued' AND mode='question' AND same_context=0 AND ${DUE_WHERE} ORDER BY position, created_at`).all().filter(eligible).slice(0, slots)
     for (const q of questions) started.push(startPrompt(q))
   }
 
@@ -556,14 +697,16 @@ export function advanceQueue() {
   for (let lane = 0; lane < EXEC_LANES; lane++) {
     if (busyLanes.has(lane)) continue
     const next = PROMPT_SPACES
-      .map(sp => db.prepare(`${SELECT} AND status IN ('queued','running') AND space=? AND exec_lane=? AND ${EXEC_LANE_WHERE} ORDER BY position, created_at LIMIT 1`).get(sp, lane))
+      .map(sp => db.prepare(`${SELECT} AND status IN ('queued','running') AND space=? AND exec_lane=? AND ${EXEC_LANE_WHERE} AND ${DUE_WHERE} ORDER BY position, created_at`).all(sp, lane).find(eligible))
       .filter(Boolean)
       .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0]
     if (next) started.push(startPrompt(next))
   }
 
   if (!started.length) {
-    const anyQueued = db.prepare(`SELECT 1 FROM work_prompts WHERE deleted_at IS NULL AND status='queued' LIMIT 1`).get()
+    // Un item dont l'heure de départ n'est pas venue ne fait pas de la file une file
+    // « occupée » : rien ne l'attend, elle est vide jusqu'à l'heure dite.
+    const anyQueued = db.prepare(`SELECT 1 FROM work_prompts WHERE deleted_at IS NULL AND status='queued' AND ${DUE_WHERE} LIMIT 1`).get()
     return { started: null, startedCount: 0, reason: anyQueued ? 'busy' : 'empty' }
   }
   return { started: started[0], startedCount: started.length, reason: null }
@@ -580,27 +723,35 @@ function sessionOfPrevious(row) {
   // finance (et inversement), ni celle d'un chantier d'une autre file — qui
   // n'était même pas son prédécesseur.
   const prev = db.prepare(`
-    SELECT session_id FROM work_prompts
+    SELECT session_id, model, preset, agent_task_id FROM work_prompts
     WHERE deleted_at IS NULL AND session_id IS NOT NULL AND space = ? AND exec_lane = ?
       AND (position < ? OR (position = ? AND created_at < ?))
     ORDER BY position DESC, created_at DESC LIMIT 1
   `).get(row.space, laneOfRow(row), row.position, row.position, row.created_at)
+  if (prev && !sessionMatchesModel(prev, specForRow(row).model)) return null
   return prev?.session_id || null
 }
 
+function sessionMatchesModel(row, model) {
+  const previousTask = row.agent_task_id ? findAgentTask(row.agent_task_id) : null
+  const previousModel = previousTask?.run_model || previousTask?.model || row.model
+  // Older sessions without a recorded provider were Claude sessions.
+  return (previousModel === 'codex') === (model === 'codex')
+}
+
 function startPrompt(row, { forceFresh = false } = {}) {
-  const { model, effort } = presetFor(row.preset)
+  const { model, effort } = specForRow(row)
   // Item marqué follow_up : ce départ est la SUITE d'une conversation (réponse de
   // l'utilisateur remise en fin de file, ou relance fauchée avant d'avoir travaillé).
   // Le brief est le fil complet — autoportant — et la session de l'item lui-même
   // est reprise quand elle existe encore.
   const followUp = !!row.follow_up
   const resume = forceFresh ? null
-    : followUp ? (row.session_id || null)
+    : followUp ? (sessionMatchesModel(row, model) ? row.session_id || null : null)
       : row.same_context ? sessionOfPrevious(row) : null
   const task = enqueueAgentTask({
     title: row.title,
-    description: followUp ? buildFollowUpPrompt(row, listMessages(row.id)) : row.prompt,
+    description: briefFor(row, { followUp }),
     kind: 'queue',
     mode: row.mode,
     model, effort,
@@ -692,6 +843,30 @@ export function buildFollowUpPrompt(row, messages) {
 }
 
 /**
+ * Brief remis à l'exécution : le texte de la demande (ou le fil, pour une relance)
+ * plus, quand la demande vient d'un humain, SON NOM.
+ *
+ * C'est par cette ligne que l'identité du demandeur remonte de la fenêtre
+ * « Modifier le système » jusqu'à la colonne « Demandé par » du journal des
+ * nouveautés (/changelog) : l'agent recopie le nom dans le champ `requester` de
+ * l'entrée qu'il ajoute. Item né de l'agent lui-même (suggestion, travail
+ * récurrent, relance interne) : pas de demandeur, pas de ligne — la colonne reste
+ * vide, aucune déduction.
+ */
+export const REQUESTER_MARKER = '=== DEMANDÉ PAR ==='
+export function briefFor(row, { followUp = false, messages = null } = {}) {
+  const base = followUp ? buildFollowUpPrompt(row, messages || listMessages(row.id)) : row.prompt
+  const who = String(row.created_by_name || '').trim()
+  if (!who) return base
+  return [
+    base, '\n\n', REQUESTER_MARKER, '\n', who, '\n',
+    'Cette personne a demandé le changement : reporte son nom tel quel dans le champ ',
+    '`requester` de la nouvelle entrée de `client/src/data/changelog.json` ',
+    '(colonne « Demandé par » de /changelog).',
+  ].join('')
+}
+
+/**
  * Réponse de l'humain dans le fil → relance de la tâche avec ce complément. La
  * session précédente est reprise quand elle existe (contexte intact) ; sinon le
  * fil réinjecté fait office de mémoire.
@@ -725,16 +900,16 @@ export function replyToPrompt(id, { text, userId = null, placement = 'front' }) 
  */
 function relaunchWithThread(row) {
   const messages = listMessages(row.id)
-  const { model, effort } = presetFor(row.preset)
+  const { model, effort } = specForRow(row)
   const task = enqueueAgentTask({
     title: row.title,
-    description: buildFollowUpPrompt(row, messages),
+    description: briefFor(row, { followUp: true, messages }),
     kind: 'queue',
     mode: row.mode,
     model, effort,
     author: 'File de travaux (suite)',
     work_prompt_id: row.id,
-    resume_session_id: row.session_id || null,
+    resume_session_id: sessionMatchesModel(row, model) ? row.session_id || null : null,
     exec_lane: laneOfRow(row),
   })
   // follow_up=1 : si cette exécution est fauchée avant d'avoir travaillé (quota,
@@ -1059,6 +1234,10 @@ async function sendRecap(prompt, task, { stopped = false } = {}) {
 export function initPromptQueue() {
   const timer = setTimeout(() => {
     try { advanceQueue() } catch (e) { console.error('🤖 File de travaux: démarrage —', e.message) }
+    // Réveil des départs différés : le timer vit en mémoire, il faut le reposer à
+    // chaque démarrage (sinon un item programmé pour 19 h et un redémarrage à 18 h
+    // ne partirait jamais de lui-même).
+    try { armStartWake() } catch (e) { console.error('🤖 File de travaux: réveil programmé —', e.message) }
     repairAgentReplies().catch(e => console.error('🤖 File de travaux: réparation des compte-rendus —', e.message))
   }, 20_000)
   timer.unref?.()

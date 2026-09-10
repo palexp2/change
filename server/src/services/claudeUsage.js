@@ -39,8 +39,80 @@ const HOME = process.env.HOME || '/home/ec2-user'
 const CREDENTIALS_PATH = resolve(HOME, '.claude', '.credentials.json')
 const USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
 
-const CACHE_TTL_MS        = 60 * 1000
-const FAILED_CACHE_TTL_MS = 15 * 1000  // lecture de quotas ratée → nouvel essai rapide
+const CACHE_TTL_MS = 60 * 1000
+
+// ─── Ce qui se passe quand la lecture échoue ──────────────────────────────────
+// L'endpoint des quotas est lui-même limité en fréquence (HTTP 429). Avant, un
+// échec RACCOURCISSAIT le cache à 15 s : on frappait donc quatre fois plus fort
+// l'endpoint qui venait de nous refouler, et le refus s'entretenait tout seul
+// (jauges vides pendant des heures). Désormais un échec espace les tentatives —
+// 30 s, 1 min, 2 min… jusqu'à 10 min — et l'`Retry-After` du serveur, s'il en
+// donne un, prime sur ce calcul. Une réussite remet le compteur à zéro.
+const RETRY_BASE_MS = 30 * 1000
+const RETRY_MAX_MS  = 10 * 60 * 1000
+
+let _fail = null // { at, reason, message, attempts, retryAt }
+
+const FAIL_LABELS = {
+  no_credentials: 'aucun jeton Claude lisible sur la machine',
+  rate_limited: 'limite de consultation atteinte chez Anthropic',
+  unauthorized: 'jeton Claude refusé (reconnexion nécessaire)',
+  http_error: 'réponse inattendue d\'Anthropic',
+  network: 'endpoint des quotas injoignable',
+}
+
+/** Nature d'un refus HTTP — c'est elle qui sera dite à l'écran. */
+export function failureReasonForStatus(status) {
+  if (status === 429) return 'rate_limited'
+  if (status === 401 || status === 403) return 'unauthorized'
+  return 'http_error'
+}
+
+/**
+ * Attente avant le prochain essai. `retryAfterMs` = en-tête `Retry-After` du serveur
+ * quand il en donne un ; il ne sert qu'à ALLONGER l'attente (Anthropic renvoie parfois
+ * `Retry-After: 0` avec son 429 — le prendre au mot relancerait la boucle qu'on veut
+ * casser).
+ */
+export function nextRetryDelayMs(attempts, retryAfterMs = null) {
+  const backoff = Math.min(RETRY_BASE_MS * 2 ** Math.max(0, attempts - 1), RETRY_MAX_MS)
+  return Number.isFinite(retryAfterMs) && retryAfterMs > backoff
+    ? Math.min(retryAfterMs, RETRY_MAX_MS)
+    : backoff
+}
+
+function noteFailure(reason, message = null, retryAfterMs = null) {
+  const attempts = (_fail?.attempts || 0) + 1
+  const wait = nextRetryDelayMs(attempts, retryAfterMs)
+  const now = Date.now()
+  // Une seule ligne de journal au premier échec puis à chaque palier : de quoi
+  // répondre à « est-ce passager ou récurrent ? » en relisant les logs.
+  if (attempts === 1 || attempts % 5 === 0) {
+    console.warn(`🤖 Quotas Claude: lecture impossible (${reason}${message ? ' — ' + message : ''}) `
+      + `— tentative n° ${attempts}, prochaine dans ${Math.round(wait / 1000)} s`)
+  }
+  _fail = { at: now, reason, message, attempts, retryAt: now + wait, since: _fail?.since || now }
+  return null
+}
+
+function noteSuccess() {
+  if (_fail) {
+    console.log(`🤖 Quotas Claude: lecture rétablie après ${_fail.attempts} échec(s)`)
+    _fail = null
+  }
+}
+
+/** État d'échec exposé à la page (null = tout va bien). */
+function failureInfo() {
+  if (!_fail) return null
+  return {
+    reason: _fail.reason,
+    label: FAIL_LABELS[_fail.reason] || _fail.reason,
+    attempts: _fail.attempts,
+    since: new Date(_fail.since).toISOString(),
+    retryAt: new Date(_fail.retryAt).toISOString(),
+  }
+}
 
 // Dernière lecture RÉUSSIE des quotas, gardée en mémoire. Un appel raté (token en
 // cours de rafraîchissement, réseau, endpoint lent) effacerait les jauges : à tort —
@@ -56,12 +128,17 @@ const SUB_STALE_MAX_MS = 30 * 60 * 1000
 // contente de le relire à chaque appel. Dégradation silencieuse (→ null) si le
 // fichier de credentials est absent, le token expiré/refusé, ou le réseau KO.
 async function fetchSubscription() {
+  // Tentative trop rapprochée d'un échec : on ne frappe même pas l'endpoint (c'est
+  // la fréquence elle-même qui déclenche les 429). L'appelant se rabattra sur la
+  // dernière lecture connue, comme pour n'importe quel échec.
+  if (_fail && Date.now() < _fail.retryAt) return null
+
   let token
   try {
     const raw = await readFile(CREDENTIALS_PATH, 'utf8')
     token = JSON.parse(raw)?.claudeAiOauth?.accessToken
-  } catch { return null }
-  if (!token) return null
+  } catch { return noteFailure('no_credentials') }
+  if (!token) return noteFailure('no_credentials')
 
   let data
   try {
@@ -79,9 +156,15 @@ async function fetchSubscription() {
         signal: controller.signal,
       })
     } finally { clearTimeout(timer) }
-    if (!res.ok) return null
+    if (!res.ok) {
+      return noteFailure(
+        failureReasonForStatus(res.status),
+        `HTTP ${res.status}`,
+        Number(res.headers.get('retry-after')) * 1000,
+      )
+    }
     data = await res.json()
-  } catch { return null }
+  } catch (e) { return noteFailure('network', e?.message || null) }
 
   // `limits[]` est la vue faisant foi (elle porte severity + scope, et c'est elle
   // que Claude Code affiche). Les champs plats `five_hour`/`seven_day` restent en
@@ -122,7 +205,42 @@ async function fetchSubscription() {
   }
 
   _lastSub = { at: Date.now(), data: parsed }
+  noteSuccess()
   return parsed
+}
+
+// ─── Quel compte Claude ? ─────────────────────────────────────────────────────
+// Les plafonds sont ceux d'UN abonnement précis : sans dire lequel, un pourcentage
+// bas ou haut ne s'explique pas (« c'est mon compte ou celui de l'agent ? »).
+// Claude Code garde le profil du compte connecté dans ~/.claude.json
+// (`oauthAccount`) ; la nature du forfait vient du fichier de credentials
+// (`subscriptionType`). Lecture mise en cache longtemps : ça ne change qu'à une
+// reconnexion.
+const CLAUDE_CONFIG_PATH = resolve(HOME, '.claude.json')
+const ACCOUNT_TTL_MS = 10 * 60 * 1000
+let _account = null // { at, data }
+
+async function readAccount() {
+  if (_account && Date.now() - _account.at < ACCOUNT_TTL_MS) return _account.data
+  let data = null
+  try {
+    const acc = JSON.parse(await readFile(CLAUDE_CONFIG_PATH, 'utf8'))?.oauthAccount
+    if (acc?.emailAddress || acc?.displayName) {
+      data = {
+        email: acc.emailAddress || null,
+        name: acc.displayName || acc.fullName || null,
+        organization: acc.organizationName || null,
+      }
+    }
+  } catch { /* pas de config lisible → on n'affiche simplement pas de compte */ }
+  if (data) {
+    try {
+      const oauth = JSON.parse(await readFile(CREDENTIALS_PATH, 'utf8'))?.claudeAiOauth
+      data.plan = oauth?.subscriptionType || null
+    } catch { data.plan = null }
+  }
+  _account = { at: Date.now(), data }
+  return data
 }
 
 const emptyBucket = () => ({ utilizationPct: null, resetsAt: null, severity: null })
@@ -131,7 +249,7 @@ let _cache = null // { at, data, ttl }
 
 async function compute() {
   const now = Date.now()
-  const fresh = await fetchSubscription()
+  const [fresh, account] = await Promise.all([fetchSubscription(), readAccount()])
 
   // Lecture ratée → on garde la dernière connue (moins de 30 min) plutôt que d'effacer
   // les jauges. Les `resetsAt` étant absolus, les décomptes restent exacts ; seuls les
@@ -140,6 +258,8 @@ async function compute() {
   const sub = fresh || recovered?.data || null
 
   return {
+    // Compte Claude auquel ces plafonds appartiennent (null si non lisible).
+    account,
     session: sub?.session ?? emptyBucket(),
     week: sub?.week ?? emptyBucket(),
     // Troisième limite : plafond hebdomadaire d'un modèle donné — seulement le % et la
@@ -152,6 +272,9 @@ async function compute() {
     // la page l'annonce au lieu de laisser croire à des chiffres frais.
     subscriptionStale: !!recovered,
     subscriptionAt: new Date(fresh ? now : (recovered?.at ?? now)).toISOString(),
+    // Pourquoi la lecture échoue, et quand on réessaie : sans ça, la page ne pouvait
+    // afficher qu'un tiret muet, impossible à distinguer d'une panne durable.
+    subscriptionError: fresh ? null : failureInfo(),
     generatedAt: new Date(now).toISOString(),
   }
 }
@@ -180,10 +303,11 @@ function refresh() {
   if (_inflight) return _inflight
   _inflight = compute()
     .then(data => {
-      // Une lecture de quotas ratée ne se garde pas une minute entière : on réessaie au
-      // prochain rafraîchissement de la page pour retrouver des chiffres frais vite.
-      const ttl = data.subscriptionAvailable && !data.subscriptionStale ? CACHE_TTL_MS : FAILED_CACHE_TTL_MS
-      _cache = { at: Date.now(), data, ttl }
+      // Après un échec, le cache tient jusqu'à la prochaine tentative autorisée : pas
+      // la peine de laisser dix lecteurs relancer un appel qui ne partira pas.
+      const now = Date.now()
+      const ttl = _fail ? Math.max(5_000, _fail.retryAt - now) : CACHE_TTL_MS
+      _cache = { at: now, data, ttl }
       return data
     })
     .finally(() => { _inflight = null })

@@ -127,7 +127,7 @@ export function FactureQuickViewModal({ factureId, isOpen, onClose }) {
               {facture.company_id ? (
                 <Link
                   to={`/companies/${facture.company_id}`}
-                  className="text-brand-600 hover:underline"
+                  className="link-record"
                   onClick={onClose}
                 >
                   {facture.company_name || `Entreprise #${facture.company_id}`}
@@ -140,7 +140,7 @@ export function FactureQuickViewModal({ factureId, isOpen, onClose }) {
               {facture.project_id ? (
                 <Link
                   to={`/projects/${facture.project_id}`}
-                  className="text-brand-600 hover:underline"
+                  className="link-record"
                   onClick={onClose}
                 >
                   {facture.project_name || `Projet #${facture.project_id}`}
@@ -178,7 +178,7 @@ export function FactureQuickViewModal({ factureId, isOpen, onClose }) {
               <Field label="Commande">
                 <Link
                   to={`/orders/${facture.order_id_resolved || facture.order_id}`}
-                  className="text-brand-600 hover:underline"
+                  className="link-record"
                   onClick={onClose}
                 >
                   {facture.order_number || `Commande #${facture.order_id_resolved || facture.order_id}`}
@@ -189,7 +189,7 @@ export function FactureQuickViewModal({ factureId, isOpen, onClose }) {
               <Field label="Abonnement">
                 <Link
                   to={`/abonnements/${facture.subscription_local_id}`}
-                  className="text-brand-600 hover:underline"
+                  className="link-record"
                   onClick={onClose}
                 >
                   {facture.subscription_stripe_id || `#${facture.subscription_local_id}`}

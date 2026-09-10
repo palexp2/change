@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/auth.js'
 import { saveConfig, deleteConfig, publicConfig, isUpsConfigured, DEFAULTS } from '../connectors/ups.js'
 import { createReturnLabel, getShipmentRates, getReturnRates, trackNumber, testConnection } from '../services/ups.js'
 import { buildReturnPartyContext } from '../services/returnContext.js'
+import { RETURN_COMPANY_SQL } from '../services/returnCompany.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
 import { uploadsPath } from '../config/uploads.js'
@@ -85,9 +86,12 @@ router.post('/test', async (req, res) => {
 
 // ── Étiquette de retour ──────────────────────────────────────────────────────
 function getReturn(id) {
+  // L'entreprise d'un retour vient de ses articles depuis la migration 037
+  // (colonnes `company_id` et `contact` droppées).
   return db.prepare(`
-    SELECT r.*, co.name AS company_name FROM returns r
-    LEFT JOIN companies co ON r.company_id = co.id
+    SELECT r.*, ${RETURN_COMPANY_SQL('r.id')} AS company_id, co.name AS company_name
+    FROM returns r
+    LEFT JOIN companies co ON co.id = ${RETURN_COMPANY_SQL('r.id')}
     WHERE r.id = ?
   `).get(id)
 }
@@ -221,7 +225,8 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
   }
 
   const started = Date.now()
-  const label = ret.n_de_retour || req.params.id
+  // Le n° RMA a été détruit (migration 037) : le dossier se nomme par son id.
+  const label = req.params.id
   const subject = `Votre étiquette de retour UPS — ${label}`
   const trackingLine = ret.return_label_tracking_number
     ? `<p>Numéro de suivi UPS : <strong>${ret.return_label_tracking_number}</strong></p>`
@@ -256,7 +261,7 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
         VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(interactionId, ret.contact || null, ret.company_id || null)
+      `).run(interactionId, null, ret.company_id || null)
       db.prepare(`
         INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, automated)
         VALUES (?, ?, ?, ?, ?, ?, 1)
@@ -289,7 +294,7 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
 
 // ── Tarifs (envoi sortant) ───────────────────────────────────────────────────
 const SHIPMENT_CTX_SQL = `
-  SELECT s.id, o.company_id, c.name AS company_name, c.phone AS company_phone, c.email AS company_email,
+  SELECT s.id, o.company_id, c.name AS company_name, c.email AS company_email,
          a.id AS address_id, a.line1 AS address_line1, a.city AS address_city,
          a.province AS address_province, a.postal_code AS address_postal_code, a.country AS address_country,
          ct.first_name AS address_contact_first_name, ct.last_name AS address_contact_last_name,

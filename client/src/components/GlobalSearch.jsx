@@ -71,10 +71,11 @@ function parseSlashCommand(raw) {
 // du routage interne.
 const PAGE_ITEMS = (() => {
   const pages = []
-  // Une entrée à sous-menu flottant (Espace finance) n'est pas navigable
-  // elle-même : ce sont ses sections qui le sont, sous son propre libellé.
+  // Une entrée à sous-menu flottant (Espace finance) est navigable elle-même
+  // (sa page d'accueil) et ses sections le sont aussi, sous son propre libellé.
   const push = (item, group) => {
     if (item.flyoutGroups) {
+      if (item.to) pages.push({ to: item.to, label: item.label, icon: item.icon, group })
       for (const sub of item.flyoutGroups) {
         for (const s of sub.items) {
           pages.push({ to: s.to, label: s.label, icon: s.icon, group: item.label })

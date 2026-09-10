@@ -1,5 +1,4 @@
-import { useSearchParams } from 'react-router-dom'
-import { usePeekOpenId } from '../lib/usePeekOpenId.js'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { Plus, X, Building2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
@@ -9,12 +8,9 @@ import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import CompanyDetail from './CompanyDetail.jsx'
 
-const TYPES = ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin',
-  'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire',
-  'Compétiteur', 'Consultant', 'Autre']
-
+// Plus de TYPES : la colonne « Type » de l'entreprise a été droppée
+// (migration 045), comme « Téléphone » et « Site web ».
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 
 const RENDERS = {
@@ -36,16 +32,10 @@ const COLUMNS = TABLE_COLUMN_META.companies.map(meta => ({
 const COMPANY_FORM_FIELDS = [
   { field: 'name', label: 'Nom', span: 2, locked: true, required: true },
   {
-    field: 'type', label: 'Type', type: 'select', options: TYPES,
-    searchable: true, testId: 'company-form-type',
-  },
-  {
     field: 'lifecycle_phase', label: 'Phase', type: 'select', options: PHASES,
     searchable: true, testId: 'company-form-phase',
   },
-  { field: 'phone', label: 'Téléphone' },
   { field: 'email', label: 'Courriel', type: 'email' },
-  { field: 'website', label: 'Site web', span: 2 },
   { field: 'address', label: 'Adresse', span: 2 },
   { field: 'city', label: 'Ville' },
   { field: 'province', label: 'Province' },
@@ -58,10 +48,10 @@ const COMPANY_FORM_FIELDS = [
 
 export default function Companies() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const farmProvince = searchParams.get('farm_province') || ''
   const shippingProvince = searchParams.get('shipping_province') || ''
   const undoableDelete = useUndoableDelete()
-  const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
   const filtered = !!(farmProvince || shippingProvince)
   const { rows: companies, loading, reload: load } = useListData({
@@ -111,15 +101,8 @@ export default function Companies() {
           columns={COLUMNS}
           data={companies}
           loading={loading}
-          peek={{
-            title: row => row.name || 'Entreprise',
-            subtitle: row => [row.type, row.city].filter(Boolean).join(' · '),
-            to: row => `/companies/${row.id}`,
-            width: 720,
-            openId: peekOpenId,
-            onOpenConsumed: consumePeekOpen,
-            render: (row, { close }) => <CompanyDetail recordId={row.id} embedded onClose={close} /> }}
-          searchFields={['name', 'email', 'city', 'phone']}
+          onRowClick={row => navigate(`/companies/${row.id}`)}
+          searchFields={['name', 'email', 'city']}
           onBulkDelete={async (ids) => {
             await undoableDelete({
               table: 'companies',

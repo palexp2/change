@@ -330,7 +330,7 @@ router.post('/:id/subscribe-card', async (req, res) => {
   const h = Number(helper) || 0
   const c = Number(chief) || 0
   if (h <= 0 && c <= 0) {
-    return res.status(400).json({ error: 'Au moins un Helper ou un Chief Grower est requis' })
+    return res.status(400).json({ error: 'Au moins un Helper ou un Chef de culture est requis' })
   }
 
   // Validation du discount ad-hoc (optionnel). Le vendeur définit le pourcentage

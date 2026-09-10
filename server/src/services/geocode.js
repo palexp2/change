@@ -7,6 +7,7 @@
 // est `findplacefromtext` du Places legacy. Voir aussi `routes/places.js`.
 
 const FIND_PLACE = 'https://maps.googleapis.com/maps/api/place/findplacefromtext/json'
+const PLACE_DETAILS = 'https://maps.googleapis.com/maps/api/place/details/json'
 const TIMEOUT_MS = 12000
 
 // Cache mémoire des échecs : évite de rappeler Google à chaque consultation
@@ -87,4 +88,94 @@ export async function geocodeAddress(query) {
   return { lat: loc.lat, lng: loc.lng, formatted_address: c.formatted_address || q }
 }
 
-export default { geocodeAddress, buildAddressQuery }
+// ── Adresse structurée (confirmation d'adresse) ──────────────────────────────
+
+/**
+ * Convertit les `address_components` Google (street_number, route, locality, …)
+ * en { line1, city, province, postal_code, country } — province et pays en
+ * codes courts (QC, CA), format stocké dans la table `adresses` et attendu par
+ * Stripe. Partagé par le proxy Places (routes/places.js) et le confirmateur
+ * d'adresses (services/addressConfirm.js).
+ */
+export function parseAddressComponents(components) {
+  const out = { line1: '', city: '', province: '', postal_code: '', country: '' }
+  let streetNumber = ''
+  let route = ''
+  for (const c of components || []) {
+    const types = c.types || []
+    if (types.includes('street_number')) streetNumber = c.long_name || ''
+    else if (types.includes('route')) route = c.long_name || ''
+    else if (types.includes('locality')) out.city = c.long_name || ''
+    else if (!out.city && types.includes('sublocality')) out.city = c.long_name || ''
+    else if (!out.city && types.includes('postal_town')) out.city = c.long_name || ''
+    else if (types.includes('administrative_area_level_1')) out.province = c.short_name || ''
+    else if (types.includes('postal_code')) out.postal_code = c.long_name || ''
+    else if (types.includes('country')) out.country = c.short_name || ''
+  }
+  out.line1 = [streetNumber, route].filter(Boolean).join(' ').trim()
+  return out
+}
+
+function placesKey() {
+  const key = process.env.GOOGLE_MAPS_API_KEY
+  if (!key) {
+    const err = new Error('GOOGLE_MAPS_API_KEY not configured')
+    err.code = 'NO_KEY'
+    throw err
+  }
+  return key
+}
+
+/**
+ * Meilleur candidat Google pour un texte libre.
+ * @returns {Promise<{place_id,formatted_address,lat,lng}|null>} null = introuvable.
+ */
+export async function findPlace(query) {
+  const key = placesKey()
+  const q = String(query || '').trim()
+  if (!q) return null
+
+  const params = new URLSearchParams({
+    input: q,
+    inputtype: 'textquery',
+    fields: 'geometry,formatted_address,place_id',
+    key,
+  })
+  const r = await fetch(`${FIND_PLACE}?${params.toString()}`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+  if (!r.ok) throw new Error(`Places findplacefromtext HTTP ${r.status}`)
+  const json = await r.json()
+  if (json.status === 'ZERO_RESULTS' || !(json.candidates || []).length) return null
+  if (json.status !== 'OK') throw new Error(json.error_message || json.status || 'Places API error')
+
+  const c = json.candidates[0]
+  const loc = c?.geometry?.location || {}
+  return {
+    place_id: c.place_id || '',
+    formatted_address: c.formatted_address || '',
+    lat: Number.isFinite(loc.lat) ? loc.lat : null,
+    lng: Number.isFinite(loc.lng) ? loc.lng : null,
+  }
+}
+
+/**
+ * Adresse structurée d'un place_id.
+ * @returns {Promise<{formatted_address,components}|null>}
+ */
+export async function placeDetails(placeId) {
+  const key = placesKey()
+  const id = String(placeId || '').trim()
+  if (!id) return null
+
+  const params = new URLSearchParams({ place_id: id, key, fields: 'formatted_address,address_component' })
+  const r = await fetch(`${PLACE_DETAILS}?${params.toString()}`, { signal: AbortSignal.timeout(TIMEOUT_MS) })
+  if (!r.ok) throw new Error(`Places details HTTP ${r.status}`)
+  const json = await r.json()
+  if (json.status !== 'OK') throw new Error(json.error_message || json.status || 'Places API error')
+  const result = json.result || {}
+  return {
+    formatted_address: result.formatted_address || '',
+    components: parseAddressComponents(result.address_components || []),
+  }
+}
+
+export default { geocodeAddress, buildAddressQuery, findPlace, placeDetails, parseAddressComponents }

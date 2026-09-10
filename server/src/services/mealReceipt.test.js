@@ -15,6 +15,15 @@ test('isTipLine reconnaît les libellés de pourboire, pas les plats', () => {
   }
 })
 
+test('isTipLine ne prend pas un poste de facturation SaaS pour un pourboire', () => {
+  for (const d of ['Frais de service AWS — août 2026', 'Autres frais de service AWS — août 2026']) {
+    assert.equal(isTipLine(d), false, d)
+  }
+  for (const d of ['Frais de service', 'Frais de service 15%', 'Frais de service (15%)']) {
+    assert.equal(isTipLine(d), true, d)
+  }
+})
+
 test('codes par ligne : pourboire hors champ, repas TPS/TVQ repas', () => {
   const { items, applied } = applyMealTaxCodeNames([
     { description: '1 Poisson midi', total: 27 },

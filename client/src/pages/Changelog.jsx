@@ -112,27 +112,13 @@ function GuardStatus() {
 }
 
 export default function Changelog() {
-  // Demandeurs : le champ `requester` de l'entrée s'il existe, sinon le
-  // rapprochement serveur avec la demande d'origine. Absent = « — ».
-  const [requesters, setRequesters] = useState({})
-
-  useEffect(() => {
-    let alive = true
-    api.changelog
-      .requesters()
-      .then((r) => alive && setRequesters(r || {}))
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [])
-
+  // Demandeur : uniquement le champ `requester` de l'entrée — le nom que la
+  // demande d'origine a fait remonter jusqu'ici. Aucune déduction — absent = « — ».
   const rows = useMemo(
     () =>
       changelogEntries.map((entry, i) => {
         const changes = entry.changes || []
         const types = [...new Set(changes.map((c) => c.type || 'improved'))]
-        const who = requesters[`${entry.date}|${entry.title}`]
         const dominantType = TYPE_RANK.find((t) => types.includes(t)) || 'improved'
         return {
           id: `${entry.date}-${i}`,
@@ -141,16 +127,13 @@ export default function Changelog() {
           category: entry.category || '',
           dominantType,
           type: TYPE_CONFIG[dominantType].label,
-          requester: who?.name || '',
-          requesterSource: who?.source || '',
-          requestTitle: who?.requestTitle || '',
-          requestDate: who?.requestDate || '',
+          requester: entry.requester || '',
           summary: changes.map((c) => c.text).join(' • '),
           types,
           changes,
         }
       }),
-    [requesters]
+    []
   )
 
   const columns = useMemo(() => {
@@ -168,16 +151,7 @@ export default function Changelog() {
       type: (row) => <TypeBadge type={row.dominantType} />,
       requester: (row) =>
         row.requester ? (
-          <span
-            className={row.requesterSource === 'match' ? 'text-slate-500 italic' : 'font-medium text-slate-800'}
-            title={
-              row.requesterSource === 'match'
-                ? `Rapproché de la demande « ${row.requestTitle} »${row.requestDate ? ` (${fmtDate(row.requestDate)})` : ''}`
-                : undefined
-            }
-          >
-            {row.requester}
-          </span>
+          <span className="font-medium text-slate-800">{row.requester}</span>
         ) : (
           <span className="text-slate-300">—</span>
         ),

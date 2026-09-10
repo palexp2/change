@@ -14,6 +14,7 @@ import { newRecordId } from '../utils/recordId.js'
 import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
 import { logSync } from './syncLog.js'
+import { isSameVendorFamily } from './prepaidStatementAttach.js'
 
 // Slug d'URL QBO par type de transaction (page d'édition dans l'app QB).
 const QB_URL_SLUGS = { Purchase: 'expense', Bill: 'bill', VendorCredit: 'vendorcredit' }
@@ -188,16 +189,17 @@ export function classifyQbTxn(txnType, txn, assetAccountId = null) {
   return 'ajustement'
 }
 
-async function resolveQbVendorId(account) {
-  if (account.qb_vendor_id) return account.qb_vendor_id
+// Ids QB du fournisseur, toutes devises confondues — un fournisseur bi-devise a
+// un vendor QB par devise (ex. « Twilio » CAD Id 109 et « Twilio  USD » Id 976,
+// double espace) ; matcher sur le nom exact du compte prépayé en ratait un.
+// Pas de cache (l'ancien qb_vendor_id figeait un seul id) : requête à chaque sync.
+async function resolveQbVendorIds(account) {
   const name = (account.qb_vendor_name || account.vendor || '').replace(/'/g, "\\'")
-  const q = encodeURIComponent(`SELECT Id, DisplayName FROM Vendor WHERE DisplayName = '${name}'`)
+  const q = encodeURIComponent(`SELECT Id, DisplayName FROM Vendor WHERE DisplayName LIKE '%${name}%'`)
   const data = await qbGet(`/query?query=${q}`)
-  const v = (data.QueryResponse?.Vendor || [])[0]
-  if (!v) return null
-  db.prepare(`UPDATE prepaid_accounts SET qb_vendor_id = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-    .run(String(v.Id), account.id)
-  return String(v.Id)
+  return (data.QueryResponse?.Vendor || [])
+    .filter(v => isSameVendorFamily(account.qb_vendor_name || account.vendor, v.DisplayName))
+    .map(v => String(v.Id))
 }
 
 async function queryTxnsSince(entity, sinceDate) {
@@ -218,7 +220,8 @@ async function queryTxnsSince(entity, sinceDate) {
 
 // Transactions QB du fournisseur d'un compte, normalisées au format ledger
 // (montant tel que stocké : positif, sauf VendorCredit négatif).
-async function fetchVendorQbTxns(account, vendorId, assetAccountId, since) {
+async function fetchVendorQbTxns(account, vendorIds, assetAccountId, since) {
+  const ids = new Set(vendorIds.map(String))
   const out = []
   for (const [entity, vendorOf] of [
     ['Purchase', t => t.EntityRef?.value],
@@ -227,7 +230,7 @@ async function fetchVendorQbTxns(account, vendorId, assetAccountId, since) {
   ]) {
     const txns = await queryTxnsSince(entity, since)
     for (const t of txns) {
-      if (String(vendorOf(t) || '') !== String(vendorId)) continue
+      if (!ids.has(String(vendorOf(t) || ''))) continue
       const amount = Math.abs(Number(t.TotalAmt) || 0)
       if (!amount) continue
       out.push({
@@ -251,8 +254,8 @@ export async function syncPrepaidAccountFromQB(accountId, trigger = 'manual') {
   const account = db.prepare('SELECT * FROM prepaid_accounts WHERE id = ? AND deleted_at IS NULL').get(accountId)
   if (!account) throw new Error('Compte prépayé introuvable')
   try {
-    const vendorId = await resolveQbVendorId(account)
-    if (!vendorId) throw new Error(`Fournisseur QB introuvable : « ${account.qb_vendor_name || account.vendor} »`)
+    const vendorIds = await resolveQbVendorIds(account)
+    if (!vendorIds.length) throw new Error(`Fournisseur QB introuvable : « ${account.qb_vendor_name || account.vendor} »`)
     const assetAccountId = account.qb_asset_acctnum
       ? await resolveAccountByAcctNum(account.qb_asset_acctnum)
       : null
@@ -277,7 +280,7 @@ export async function syncPrepaidAccountFromQB(accountId, trigger = 'manual') {
       VALUES (?,?,?,?,?,?,'qb',?,?)
     `)
     let imported = 0
-    for (const t of await fetchVendorQbTxns(account, vendorId, assetAccountId, since)) {
+    for (const t of await fetchVendorQbTxns(account, vendorIds, assetAccountId, since)) {
       const r = insert.run(newRecordId(), accountId, t.entry_date, t.type,
         t.amount, t.description, t.qb_txn_type, t.qb_txn_id)
       imported += r.changes
@@ -324,13 +327,13 @@ export async function auditPrepaidAccountAgainstQB(accountId, { apply = false, t
   const account = db.prepare('SELECT * FROM prepaid_accounts WHERE id = ? AND deleted_at IS NULL').get(accountId)
   if (!account) throw new Error('Compte prépayé introuvable')
   try {
-    const vendorId = await resolveQbVendorId(account)
-    if (!vendorId) throw new Error(`Fournisseur QB introuvable : « ${account.qb_vendor_name || account.vendor} »`)
+    const vendorIds = await resolveQbVendorIds(account)
+    if (!vendorIds.length) throw new Error(`Fournisseur QB introuvable : « ${account.qb_vendor_name || account.vendor} »`)
     const assetAccountId = account.qb_asset_acctnum
       ? await resolveAccountByAcctNum(account.qb_asset_acctnum)
       : null
     const since = account.sync_start_date || '2000-01-01'
-    const qbTxns = await fetchVendorQbTxns(account, vendorId, assetAccountId, since)
+    const qbTxns = await fetchVendorQbTxns(account, vendorIds, assetAccountId, since)
     const erpEntries = db.prepare(`
       SELECT * FROM prepaid_ledger_entries
       WHERE account_id = ? AND source = 'qb' AND deleted_at IS NULL AND entry_date >= ?

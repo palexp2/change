@@ -22,6 +22,7 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { sendSlackWebhook } from './slack.js'
+import { completeFromAutomation } from './recurringWork.js'
 import { shiftDate, localDay } from '../utils/datetime.js'
 export { localDay }
 
@@ -360,6 +361,23 @@ export function isoWeekday(dayIso) {
   return ((d.getUTCDay() + 6) % 7) + 1 // 1 = lundi … 7 = dimanche
 }
 
+// Travail récurrent (page /travaux) que cet envoi accomplit. Id stable du seed
+// Travaux_OS_ML ; si la ligne a été supprimée ou désactivée, rien ne se passe.
+export const EMILIE_RECURRING_TASK_ID = 'rt-al-depenses-emilie'
+
+function markWeeklyRecurringDone(dayIso) {
+  try {
+    return completeFromAutomation(EMILIE_RECURRING_TASK_ID, {
+      date: dayIso,
+      note: 'Message des dépenses envoyé à Émilie',
+    })
+  } catch (e) {
+    // Un cochage raté ne doit jamais faire passer un envoi réussi pour un échec.
+    console.error('marketingBudget : cochage du travail récurrent :', e.message)
+    return null
+  }
+}
+
 function alreadySentThisWeek(dayIso) {
   return !!db.prepare(`
     SELECT 1 FROM automation_logs
@@ -443,13 +461,19 @@ export async function checkWeeklyMarketingSlack({ force = false, trigger = 'sche
     const tx = db.transaction(() => { for (const e of expenses) markSent.run(e.id) })
     tx()
 
+    // Le message parti à Émilie EST le travail récurrent « Compiler les dépenses
+    // pour le suivi budgétaire d'Émilie » : la case de la semaine se coche seule
+    // dans /travaux (elle reste décochable, et un cochage humain a priorité).
+    const checked = markWeeklyRecurringDone(dayIso)
+
     // Seul l'envoi planifié porte le préfixe HEBDO <semaine> : c'est lui qui
     // consomme l'idempotence. Un envoi forcé ne fait pas sauter le mardi suivant.
     const scheduled = isoWeekday(dayIso) === sendDay && !force
     logSystemRun(MARKETING_SLACK_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger, day: dayIso },
       result: `${scheduled ? `HEBDO ${isoWeekKey(dayIso)}` : 'ENVOI MANUEL'} — ${expenses.length} dépense(s) annoncée(s) à ${cfg.recipient}` +
-        (pending ? ` · ⚠️ ${pending} en attente de validation (non incluses)` : ''),
+        (pending ? ` · ⚠️ ${pending} en attente de validation (non incluses)` : '') +
+        (checked?.created ? ` · travail récurrent coché (${checked.period_key})` : ''),
     })
     return { ok: true, sent: true, count: expenses.length, pending, message }
   } catch (e) {

@@ -15,6 +15,8 @@ import EmptyState from '../components/EmptyState.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { api } from '../lib/api.js'
+import { invalidate } from '../lib/prefetch.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { SystemeContent, UtilisateursContent } from './AdminSections.jsx'
 import { CorbeilleContent } from './Corbeille.jsx'
 import { ConnectorsContent } from './Connectors.jsx'
@@ -186,15 +188,25 @@ function AddressCheckSection() {
   const [state, setState] = useState(null)
   const [loading, setLoading] = useState(true)
   const [running, setRunning] = useState(false)
+  const [tick, setTick] = useState(0)
 
   useEffect(() => {
     let alive = true
+    // Le GET est mis en cache 30 s : sans purge, un rafraîchissement déclenché
+    // par un verdict qui vient de changer resservirait la liste d'avant.
+    if (tick) invalidate('/projets')
     api.adresses.check()
       .then(r => { if (alive) setState(r) })
       .catch(err => { if (alive) addToast({ message: err.message, type: 'error' }) })
       .finally(() => { if (alive) setLoading(false) })
     return () => { alive = false }
-  }, [addToast])
+  }, [addToast, tick])
+
+  // Une adresse corrigée ailleurs doit sortir de la liste sans rechargement :
+  // le serveur émet dès qu'un verdict change (services/addressCheck.js).
+  useRealtimeChannel('adresse:list', (msg) => {
+    if (msg.type === 'adresse:updated' && msg.payload?.check_status !== undefined) setTick(t => t + 1)
+  })
 
   async function runNow() {
     setRunning(true)
@@ -280,11 +292,11 @@ function AddressCheckSection() {
                         {/* Une adresse appartient à une entreprise OU à un
                             contact : le lien mène là où elle se corrige. */}
                         {p.company_id ? (
-                          <Link to={`/companies/${p.company_id}`} className="text-sm font-medium text-brand-600 hover:underline">
+                          <Link to={`/companies/${p.company_id}`} className="text-sm font-medium link-record">
                             {p.company_name || 'Entreprise sans nom'}
                           </Link>
                         ) : p.contact_id ? (
-                          <Link to={`/contacts/${p.contact_id}`} className="text-sm font-medium text-brand-600 hover:underline">
+                          <Link to={`/contacts/${p.contact_id}`} className="text-sm font-medium link-record">
                             {p.contact_name?.trim() || 'Contact sans nom'}
                           </Link>
                         ) : (

@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { useSearchParams, Link } from 'react-router-dom'
+import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import {
   Plus, Truck, Package, FileText, X, Printer,
   Copy, Check, Trash2, ScanBarcode, Boxes,
-  MapPin, Clock, ChevronDown, ChevronRight, AlertCircle, RefreshCw
+  Clock, ChevronDown, ChevronRight, AlertCircle, RefreshCw,
+  SkipForward, Cpu, Terminal, Recycle, Sparkles, Maximize2, Minimize2,
+  CornerDownLeft
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
@@ -27,6 +29,7 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
+import { InlineTextarea } from '../components/InlineFields.jsx'
 import { trackingUrl } from '../lib/trackingUrl.js'
 import { shipmentTitle } from '../lib/shipmentLabel.js'
 import { invalidate } from '../lib/prefetch.js'
@@ -92,6 +95,47 @@ function useBarcodeScanner(onScan, { minLength = 3, maxDelay = 500 } = {}) {
   }, [onScan, minLength, maxDelay])
 }
 
+// ── Saisie manuelle d'un numéro de série ──────────────────────────────────────
+//
+// Même chemin que le pistolet (`handleScan`) : étiquette illisible, série lue à
+// l'œil ou pas de scanner sous la main, l'opérateur tape le numéro et Entrée.
+// Le hook scanner ignore les frappes faites dans un INPUT — pas de double
+// déclenchement, et un vrai scan tapé dans le champ finit par son Enter.
+function ManualScanInput({ onSubmit, className = '' }) {
+  const [value, setValue] = useState('')
+  const [busy, setBusy] = useState(false)
+  const code = value.trim()
+
+  async function submit(e) {
+    e.preventDefault()
+    if (!code || busy) return
+    setBusy(true)
+    try { await onSubmit(code) } finally { setBusy(false); setValue('') }
+  }
+
+  return (
+    <form onSubmit={submit} className={`flex items-center gap-1.5 ${className}`} data-testid="manual-scan-form">
+      <ScanBarcode size={13} className="text-slate-400 flex-shrink-0" />
+      <input
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        aria-label="Numéro de série ou code"
+        title="Scanner, ou saisir le numéro de série à la main puis Entrée"
+        className="input py-1 text-xs font-mono w-36"
+        data-testid="manual-scan-input"
+      />
+      <button
+        type="submit"
+        disabled={!code || busy}
+        title="Valider"
+        className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <CornerDownLeft size={13} />
+      </button>
+    </form>
+  )
+}
+
 // ── Scan toast ─────────────────────────────────────────────────────────────────
 
 function ScanToast({ toast, onClose }) {
@@ -108,6 +152,102 @@ function ScanToast({ toast, onClose }) {
       <ScanBarcode size={16} />
       <span>{toast.message}</span>
       <button onClick={onClose} className="ml-1 opacity-70 hover:opacity-100"><X size={13} /></button>
+    </div>
+  )
+}
+
+// ── Code scanné inconnu — l'associer à un article de la commande ──────────────
+//
+// Beaucoup d'articles n'ont pas d'étiquette Orisha : le seul code scannable est
+// celui du fournisseur (UPC/EAN/ASIN). Au premier scan, on demande de quelle
+// pièce il s'agit ; le code est retenu sur la fiche pièce et reconnu ensuite
+// comme son SKU (fiche pièce → « Codes-barres »).
+function UnknownScanCodeModal({ code, items, onAssign, onClose }) {
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+
+  const choices = []
+  const seen = new Set()
+  for (const i of items) {
+    if (!i.product_id || seen.has(i.product_id)) continue
+    seen.add(i.product_id)
+    choices.push(i)
+  }
+
+  async function pick(item) {
+    setBusy(item.product_id)
+    setError(null)
+    try {
+      await onAssign(item)
+    } catch (e) {
+      setError(e.message || 'Échec')
+      setBusy(null)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="font-mono text-sm bg-slate-100 rounded-lg px-3 py-2 text-slate-800">{code}</div>
+      {choices.length === 0 ? (
+        <div className="text-sm text-slate-500">Aucun article à associer.</div>
+      ) : (
+        <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
+          {choices.map(item => (
+            <button
+              key={item.product_id}
+              onClick={() => pick(item)}
+              disabled={!!busy}
+              className="w-full flex items-center gap-3 px-2 py-2.5 text-left hover:bg-slate-50 disabled:opacity-50"
+            >
+              <span className="flex-1 min-w-0 truncate font-medium text-slate-900">{item.product_name || 'Produit inconnu'}</span>
+              {item.sku && <span className="text-xs font-mono text-slate-400">{item.sku}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+      <div className="flex justify-end">
+        <button onClick={onClose} className="btn-secondary">Annuler</button>
+      </div>
+    </div>
+  )
+}
+
+// ── Rappels de prélèvement — selon le préfixe du numéro de série ──────────────
+//
+// Certains produits partent toujours avec un accessoire que le scan ne voit pas
+// (le paquet de 3 piles d'un contrôleur TH…, la boîte de carton d'un CV…). Le
+// rappel bloque le scan tant que l'opérateur ne l'a pas coché : ni X, ni Échap,
+// ni clic hors modale (pas de titre → pas de bouton fermer, `onClose` no-op).
+const SERIAL_REMINDERS = [
+  { prefix: /^TH/i, message: "N'oubliez pas le paquet de 3 piles!" },
+  { prefix: /^CV/i, message: "N'oubliez pas la boîte de carton !" },
+]
+
+function serialReminderMessage(serial) {
+  return SERIAL_REMINDERS.find(r => r.prefix.test(serial || ''))?.message || null
+}
+
+function ScanReminderModal({ serial, message, onConfirm }) {
+  const [checked, setChecked] = useState(false)
+  return (
+    <div className="space-y-4 py-2">
+      <div className="text-lg font-semibold text-slate-900">{message}</div>
+      <div className="font-mono text-xs text-slate-400">{serial}</div>
+      <label className="flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={e => setChecked(e.target.checked)}
+          className="w-4 h-4 accent-emerald-600"
+        />
+        C'est fait
+      </label>
+      <div className="flex justify-end">
+        <button onClick={onConfirm} disabled={!checked} className="btn-primary disabled:opacity-40">
+          Continuer
+        </button>
+      </div>
     </div>
   )
 }
@@ -179,7 +319,26 @@ function AddItemModal({ orderId, onSave, onClose }) {
 
 // ── Expedition mode — Pick item row ───────────────────────────────────────────
 
-function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipment }) {
+// Étagère où prendre l'article. Le reconditionné ne sert qu'un abonnement :
+// hors abonnement, c'est toujours du neuf. En abonnement, un produit suivi par
+// numéro de série se décide sur le stock « Disponible - Location » ; un article
+// sans numéro de série ne se décide pas d'ici — l'opérateur regarde d'abord les
+// reconditionnés, puis les neufs. Compteurs fournis par la route commande.
+function shelfHint(item, isSubscription) {
+  if (!isSubscription) return { label: 'Étagère neufs', tone: 'new' }
+  if (!(item.product_serial_count > 0)) return { label: 'Étagère reconditionnés, sinon neufs', tone: 'either' }
+  return item.refurb_serials_available > 0
+    ? { label: 'Étagère reconditionnés', tone: 'refurb' }
+    : { label: 'Étagère neufs', tone: 'new' }
+}
+
+const SHELF_TONES = {
+  refurb: 'bg-amber-100 text-amber-800 border-amber-200',
+  either: 'bg-amber-50 text-amber-700 border-amber-200',
+  new:    'bg-sky-100 text-sky-800 border-sky-200',
+}
+
+function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipment, isSubscription, hero }) {
   const status = item.fulfillment_status || 'À prélever'
   const isPicked = status === 'Prélevé'
   const isOnHold = status === 'En attente'
@@ -188,6 +347,12 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
 
   const fulfilledQty = item.fulfilled_qty || 0
   const isPartial = !isPicked && !isLocked && !isOnHold && fulfilledQty > 0
+  // Indication d'étagère : utile tant que l'article reste à prendre.
+  const shelf = !isPicked && !isLocked ? shelfHint(item, isSubscription) : null
+  // Un produit suivi par numéro de série se prélève au pistolet : le scan
+  // rattache la série à la ligne. Sans numéro de série il n'y a rien à scanner
+  // — la ligne se coche à la main, et la case doit se voir depuis l'atelier.
+  const manualPick = !isLocked && !(item.product_serial_count > 0)
 
   // Locked rows accept a click only when an explicit `onUnship` handler is
   // provided (used by the "Déjà expédié" section to let the user pull an
@@ -196,6 +361,83 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
   const handleRowClick = () => {
     if (isLocked) { if (onUnship) onUnship(item); return }
     onToggle(item)
+  }
+
+  // ── Variante géante ────────────────────────────────────────────────────────
+  // Réservée aux articles qu'il reste à prendre : c'est la seule chose que
+  // l'opérateur regarde depuis l'autre bout de l'atelier (jusqu'à 20 pi), donc
+  // nom, quantité, image et emplacement occupent toute la largeur disponible.
+  // Les tailles vivent dans `index.css` (.pick-hero-*) : elles suivent la
+  // largeur du panneau, pas celle de la fenêtre.
+  if (hero) {
+    return (
+      <div
+        onClick={() => clickable && handleRowClick()}
+        data-testid="pick-hero"
+        className={`pick-hero select-none cursor-pointer px-5 py-5 transition-colors
+          ${isPicked ? 'bg-emerald-50' : isOnHold ? 'bg-amber-50' : isPartial ? 'bg-blue-50' : 'bg-white hover:bg-slate-50'}
+          ${isFlashing ? 'ring-4 ring-inset ring-emerald-400' : ''}`}
+      >
+        <div className="flex items-start gap-4">
+          {manualPick && (
+            <button
+              onClick={e => { e.stopPropagation(); onToggle(item) }}
+              title={isPicked ? 'Décocher' : 'Cocher — pas de numéro de série à scanner'}
+              className={`pick-hero-check flex-shrink-0 rounded-2xl border-4 flex items-center justify-center transition-colors
+                ${isPicked
+                  ? 'bg-emerald-500 border-emerald-500 text-white'
+                  : 'bg-white border-slate-300 text-slate-200 hover:border-emerald-400 hover:text-emerald-400'}`}
+            >
+              <Check className="pick-hero-icon" strokeWidth={3} />
+            </button>
+          )}
+          <div className={`pick-hero-name flex-1 min-w-0 font-black break-words ${isPicked ? 'text-emerald-900' : 'text-slate-900'}`}>
+            {item.product_name || 'Produit inconnu'}
+          </div>
+          <div className={`pick-hero-qty flex-shrink-0 font-black tabular-nums ${isPicked ? 'text-emerald-600' : 'text-slate-900'}`}>
+            {isPartial ? `${fulfilledQty}/${item.qty}` : `×${item.qty}`}
+          </div>
+        </div>
+
+        <div className="mt-4 flex items-start gap-5">
+          {item.product_image && (
+            <img
+              src={item.product_image}
+              alt=""
+              className={`pick-hero-img flex-shrink-0 aspect-square object-contain rounded-2xl bg-white border-2 border-slate-200 ${isPicked ? 'opacity-40' : ''}`}
+            />
+          )}
+          <div className="flex-1 min-w-0 space-y-3 pt-1">
+            {shelf && (
+              <div className={`pick-hero-sub inline-flex items-center gap-2 px-4 py-2 rounded-xl border font-bold ${SHELF_TONES[shelf.tone]}`}>
+                {shelf.tone === 'new'
+                  ? <Sparkles className="pick-hero-icon-sm flex-shrink-0" />
+                  : <Recycle className="pick-hero-icon-sm flex-shrink-0" />}
+                {shelf.label}
+              </div>
+            )}
+            {!!(item.sku || item.serials?.length) && (
+              <div className="pick-hero-meta flex flex-wrap items-center gap-2 font-mono text-slate-400">
+                {item.sku && <span>{item.sku}</span>}
+                {item.serials?.map(s => (
+                  <span key={s.id} className="bg-brand-100 text-brand-700 px-2 rounded">{s.serial}</span>
+                ))}
+              </div>
+            )}
+          </div>
+          {!isPicked && (
+            <button
+              onClick={e => { e.stopPropagation(); onHold(item) }}
+              title={isOnHold ? 'Remettre en liste' : 'Marquer en attente'}
+              className={`flex-shrink-0 p-2 rounded-lg transition-colors
+                ${isOnHold ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-slate-300 hover:text-amber-500 hover:bg-amber-50'}`}
+            >
+              <AlertCircle className="pick-hero-icon-sm" />
+            </button>
+          )}
+        </div>
+      </div>
+    )
   }
 
   return (
@@ -242,16 +484,13 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
             </span>
           ))}
         </div>
+        {shelf && (
+          <div className={`mt-1.5 inline-flex items-center gap-1.5 px-2 py-1 rounded-md border text-sm font-semibold ${SHELF_TONES[shelf.tone]}`}>
+            {shelf.tone === 'new' ? <Sparkles size={14} /> : <Recycle size={14} />}
+            {shelf.label}
+          </div>
+        )}
       </div>
-
-      {/* Location badge */}
-      {item.product_location && (
-        <div className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg font-mono font-bold text-sm
-          ${isPicked ? 'bg-emerald-200 text-emerald-800' : 'bg-slate-800 text-white'}`}>
-          <MapPin size={12} />
-          {item.product_location}
-        </div>
-      )}
 
       {/* Qty counter */}
       <div className="flex-shrink-0 text-right">
@@ -312,8 +551,10 @@ function ExpeditionCreateShipmentModal({ orderId, pickedItems, onSave, onClose }
     if (selected.size === 0) return
     setSaving(true)
     try {
-      await api.orders.addShipment(orderId, { ...form, item_ids: [...selected] })
-      onSave()
+      // L'envoi créé est remonté à l'appelant : il enchaîne sur sa fiche
+      // (étiquette → impression → ramassage).
+      const created = await api.orders.addShipment(orderId, { ...form, item_ids: [...selected] })
+      onSave(created)
       onClose()
     } finally { setSaving(false) }
   }
@@ -336,9 +577,6 @@ function ExpeditionCreateShipmentModal({ orderId, pickedItems, onSave, onClose }
                 <div className="font-medium text-slate-900 text-sm">{item.product_name}</div>
                 {item.sku && <div className="text-xs text-slate-400 font-mono">{item.sku}</div>}
               </div>
-              {item.product_location && (
-                <span className="text-xs font-mono bg-slate-100 text-slate-600 px-2 py-0.5 rounded">{item.product_location}</span>
-              )}
               <span className="text-sm font-bold text-slate-600">×{item.qty}</span>
             </label>
           ))}
@@ -472,9 +710,10 @@ function AddToShipmentModal({ item, shipments, onConfirm, onClose }) {
 
 // ── Expedition mode — Full view ────────────────────────────────────────────────
 
-function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, scanToast, setScanToast, flashItemId }) {
+function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, scanToast, setScanToast, flashItemId, onManualScan }) {
   const [showCreateShipment, setShowCreateShipment] = useState(false)
   const [showDoneSection, setShowDoneSection] = useState(false)
+  const [skipped, setSkipped] = useState([])                // ids passés, dans l'ordre du skip
   const [unshipItem, setUnshipItem] = useState(null)        // item from "Déjà expédié" awaiting confirmation
   const [addToShipItem, setAddToShipItem] = useState(null)  // picked item awaiting target shipment selection
   const [novoxConfigured, setNovoxConfigured] = useState(false)
@@ -482,10 +721,40 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
   const [openingLabelId, setOpeningLabelId] = useState(null) // shipment id currently being fetched
   const [generatingDocs, setGeneratingDocs] = useState(false)
   const [docsError, setDocsError] = useState(null)
+  // Langue des documents d'installation : proposée par le serveur (contact de
+  // l'adresse de livraison), forçable ici par l'opérateur pour cette impression.
+  const [docsLangOverride, setDocsLangOverride] = useState(null)
+  const docsLang = docsLangOverride || order.docs_lang?.lang || 'fr'
+  const docsLangHint = docsLangOverride
+    ? 'Langue forcée pour cette impression'
+    : order.docs_lang?.contact_name
+      ? `Langue de ${order.docs_lang.contact_name} (contact de l'adresse de livraison)`
+      : 'Langue par défaut — aucun contact sur l\'adresse de livraison'
+  const [fullscreen, setFullscreen] = useState(false)
+  const rootRef = useRef(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     api.novoxpress.status().then(r => setNovoxConfigured(!!r.configured)).catch(() => {})
   }, [])
+
+  // Plein écran : l'opérateur lit l'écran de l'autre bout de l'atelier (20 pi).
+  // La page garde sa barre de navigation et son en-tête ; en plein écran, la
+  // carte de l'article prend toute la surface de l'écran d'atelier.
+  useEffect(() => {
+    const onChange = () => setFullscreen(document.fullscreenElement === rootRef.current)
+    document.addEventListener('fullscreenchange', onChange)
+    return () => document.removeEventListener('fullscreenchange', onChange)
+  }, [])
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen?.()
+    else rootRef.current?.requestFullscreen?.()
+  }
+
+  // Le prélèvement se lit de loin : la colonne est plus large que celle d'un
+  // écran de lecture, et sans limite du tout en plein écran.
+  const shellWidth = fullscreen ? 'max-w-none' : 'max-w-5xl'
 
   async function openLabelModal(shipmentId) {
     setOpeningLabelId(shipmentId)
@@ -503,7 +772,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
     setGeneratingDocs(true)
     setDocsError(null)
     try {
-      const { blob } = await api.orders.generateInstallationDocsBlob(orderId)
+      const { blob } = await api.orders.generateInstallationDocsBlob(orderId, docsLang)
       const url = URL.createObjectURL(blob)
       window.open(url, '_blank', 'noopener')
       // Note: ne pas révoquer immédiatement — le nouvel onglet en a besoin
@@ -517,6 +786,33 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
 
   const items = order.items || []
   const toPick   = items.filter(i => (i.fulfillment_status || 'À prélever') === 'À prélever')
+  // Prélèvement un à un : un seul article affiché à la fois. « Passer » le
+  // renvoie en fin de file (il revient une fois les autres traités) — les
+  // articles JWT, eux, se prélèvent en bloc à la fin de la liste.
+  const isJwt = i => String(i.product_type || '').toUpperCase() === 'JWT'
+  const toPickJwt  = toPick.filter(isJwt)
+  const toPickMain = toPick.filter(i => !isJwt(i))
+  const skippedSet = new Set(skipped)
+  const queue = [
+    ...toPickMain.filter(i => !skippedSet.has(i.id)),
+    ...skipped.map(sid => toPickMain.find(i => i.id === sid)).filter(Boolean),
+  ]
+  const current = queue[0]
+  const skip = item => setSkipped(s => [...s.filter(x => x !== item.id), item.id])
+
+  // L'avis « prendre du reconditionné » ne vaut que pour les articles sans
+  // numéro de série : ceux qui en ont un portent déjà leur étagère, décidée sur
+  // le stock réel (shelfHint) — l'avis serait au mieux redondant, au pire faux.
+  const shownToPick = current ? [current] : toPickJwt
+  const showRefurbHint = !!order.is_subscription
+    && shownToPick.some(i => !(i.product_serial_count > 0))
+
+  // Tant qu'il reste un article à prendre, l'écran ne montre que le travail en
+  // cours : ce qui est sur la table, les envois et le bouton « Créer un envoi »
+  // n'apparaissent qu'une fois la file vide (c'est le seul endroit de l'app où
+  // un envoi se crée — les masquer pour de bon fermerait le chemin).
+  const picking = !!current || toPickJwt.length > 0
+
   const onHold   = items.filter(i => i.fulfillment_status === 'En attente')
   const picked   = items.filter(i => i.fulfillment_status === 'Prélevé')
   const done     = items.filter(i => i.fulfillment_status === "Dans l'envoi" || i.fulfillment_status === 'Envoyé')
@@ -580,17 +876,35 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
   const pct = totalItems > 0 ? Math.round((doneCount / totalItems) * 100) : 0
 
   return (
-    <div className="min-h-screen bg-slate-100" data-testid="expedition-view">
+    /* En plein écran, cet élément EST le viewport : il doit défiler lui-même
+       (sinon le bas de la liste est inatteignable) et garder son en-tête
+       collant. Hors plein écran, c'est le panneau qui défile — pas de conteneur
+       de défilement ici, sans quoi le sticky ne collerait plus. */
+    <div
+      ref={rootRef}
+      data-testid="expedition-view"
+      className={`bg-slate-100 ${fullscreen ? 'h-screen overflow-y-auto' : 'min-h-screen'}`}
+    >
       {/* Expedition header — le n° de commande et l'entreprise sont déjà dans
           l'en-tête du panneau : ici, seulement l'avancement du prélèvement. */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
-        <div className="max-w-3xl mx-auto px-4 py-3">
+        <div className={`${shellWidth} mx-auto px-4 py-3`}>
           <div className="flex items-center justify-between gap-3 mb-1.5">
             <span className="text-sm font-medium text-slate-600">
               {doneCount} / {totalItems} article{totalItems > 1 ? 's' : ''} prélevé{doneCount > 1 ? 's' : ''}
             </span>
             <div className="flex items-center gap-3 flex-shrink-0">
+              {/* Série illisible ou pas de pistolet : on la tape ici, même
+                  traitement qu'un scan (prélèvement de la ligne). */}
+              <ManualScanInput onSubmit={onManualScan} />
               <span className="text-sm font-bold text-slate-700">{pct}%</span>
+              <button
+                onClick={toggleFullscreen}
+                title={fullscreen ? 'Quitter le plein écran' : 'Plein écran'}
+                className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
+              >
+                {fullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              </button>
               <button
                 onClick={onToggleMode}
                 className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors"
@@ -609,42 +923,88 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         </div>
       </div>
 
-      <div className="max-w-3xl mx-auto px-4 py-4 space-y-4">
+      <div className={`${shellWidth} mx-auto px-4 py-4 space-y-4`}>
 
         {/* Avertissement abonnement — privilégier le reconditionné */}
-        {order.is_subscription ? (
+        {showRefurbHint ? (
           <div className="flex items-center gap-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl px-4 py-3 shadow-sm">
-            <AlertCircle size={20} className="text-amber-600 flex-shrink-0" />
-            <span className="font-semibold text-sm">Prendre les produits reconditionnés si possible !</span>
+            <AlertCircle size={28} className="text-amber-600 flex-shrink-0" />
+            <span className="font-bold text-xl">Prendre les produits reconditionnés si possible !</span>
           </div>
         ) : null}
 
-        {/* À prélever */}
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
-            <h2 className="font-semibold text-slate-800 flex items-center gap-2">
-              <Boxes size={16} className="text-slate-400" />
-              À prélever
-              {toPick.length > 0 && (
-                <span className="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-0.5 rounded-full">{toPick.length}</span>
+        {/* À prélever — un article à la fois, « Passer » le renvoie en fin de file */}
+        {(current || toPickJwt.length === 0) && (
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+            <div className="px-5 py-3 border-b border-slate-100 flex items-center justify-between">
+              <h2 className="font-semibold text-slate-800 flex items-center gap-2">
+                <Boxes size={16} className="text-slate-400" />
+                À prélever
+                {toPick.length > 0 && (
+                  <span className="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-0.5 rounded-full">{toPick.length}</span>
+                )}
+              </h2>
+              {/* Sans numéro de série, il n'y a rien à scanner : l'article se
+                  coche. L'indice suit donc l'article affiché. */}
+              {current && !(current.product_serial_count > 0) ? (
+                <div className="text-xs text-slate-400 flex items-center gap-1">
+                  <Check size={13} />
+                  Cochez pour prélever
+                </div>
+              ) : (
+                <div className="text-xs text-slate-400 flex items-center gap-1">
+                  <ScanBarcode size={13} />
+                  Scannez pour prélever
+                </div>
               )}
-            </h2>
-            <div className="text-xs text-slate-400 flex items-center gap-1">
-              <ScanBarcode size={13} />
-              Scannez pour prélever
+            </div>
+            {current ? (
+              <>
+                <PickItemRow item={current} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
+                <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
+                  <span className="text-xs text-slate-400 tabular-nums">
+                    {queue.length - 1} après{toPickJwt.length > 0 ? ` + ${toPickJwt.length} JWT` : ''}
+                  </span>
+                  <button
+                    onClick={() => skip(current)}
+                    disabled={queue.length < 2}
+                    className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <SkipForward size={13} />
+                    Passer
+                  </button>
+                </div>
+              </>
+            ) : (
+              <div className="py-10 text-center text-slate-400 text-sm">
+                <Check size={28} className="mx-auto mb-2 text-emerald-300" strokeWidth={2.5} />
+                Tous les articles ont été prélevés
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* JWT — en bloc, seulement une fois la file terminée */}
+        {toPickJwt.length > 0 && !current && (
+          <div className="bg-white rounded-xl shadow-sm overflow-hidden border-l-4 border-blue-400">
+            <div className="px-5 py-3 border-b border-slate-100">
+              <h2 className="font-semibold text-blue-700 flex items-center gap-2">
+                <Cpu size={16} />
+                JWT
+                <span className="bg-blue-100 text-blue-700 text-xs font-bold px-2 py-0.5 rounded-full">{toPickJwt.length}</span>
+              </h2>
+              <p className="mt-1.5 flex items-center gap-1.5 text-sm font-medium text-blue-800">
+                <Terminal size={14} className="flex-shrink-0" />
+                Ouvrir Super&nbsp;Flash sur l'ordinateur
+              </p>
+            </div>
+            <div className="divide-y divide-slate-100">
+              {toPickJwt.map(item => (
+                <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
+              ))}
             </div>
           </div>
-          {toPick.length === 0 ? (
-            <div className="py-10 text-center text-slate-400 text-sm">
-              <Check size={28} className="mx-auto mb-2 text-emerald-300" strokeWidth={2.5} />
-              Tous les articles ont été prélevés
-            </div>
-          ) : (
-            toPick.map(item => (
-              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} />
-            ))
-          )}
-        </div>
+        )}
 
         {/* En attente */}
         {onHold.length > 0 && (
@@ -657,13 +1017,13 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               </h2>
             </div>
             {onHold.map(item => (
-              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} />
+              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} isSubscription={!!order.is_subscription} />
             ))}
           </div>
         )}
 
-        {/* Sur la table (prélevés) */}
-        {picked.length > 0 && (
+        {/* Sur la table (prélevés) — seulement quand il n'y a plus rien à prélever */}
+        {!picking && picked.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm overflow-hidden border-l-4 border-emerald-400">
             <div className="px-5 py-3 border-b border-emerald-100 bg-emerald-50">
               <h2 className="font-semibold text-emerald-800 flex items-center gap-2">
@@ -683,15 +1043,32 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               />
             ))}
             <div className="p-4 bg-emerald-50 border-t border-emerald-100 space-y-2">
-              <button
-                onClick={handleGenerateInstallationDocs}
-                disabled={generatingDocs}
-                className="w-full flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-medium text-sm py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                title="Fusionne les PDFs d'installation/remplacement (copies locales) pour les articles prêts"
-              >
-                <FileText size={16} />
-                {generatingDocs ? 'Génération…' : 'Générer les documents'}
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleGenerateInstallationDocs}
+                  disabled={generatingDocs}
+                  className="flex-1 flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-medium text-sm py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                  title="Fusionne les PDFs d'installation/remplacement (copies locales) pour les articles prêts"
+                >
+                  <FileText size={16} />
+                  {generatingDocs ? 'Génération…' : 'Générer les documents'}
+                </button>
+                {/* Langue des documents : proposée d'après le contact de
+                    l'adresse de livraison, l'opérateur peut la forcer. */}
+                <div className="flex rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden" title={docsLangHint}>
+                  {['fr', 'en'].map(l => (
+                    <button
+                      key={l}
+                      onClick={() => setDocsLangOverride(l)}
+                      className={`px-3 text-sm font-semibold transition-colors ${
+                        docsLang === l ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-50'
+                      }`}
+                    >
+                      {l.toUpperCase()}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {docsError && (
                 <div className="text-xs text-red-600 px-2">{docsError}</div>
               )}
@@ -707,7 +1084,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         )}
 
         {/* Expédiés / dans l'envoi */}
-        {done.length > 0 && (
+        {!picking && done.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm overflow-hidden">
             <button
               onClick={() => setShowDoneSection(s => !s)}
@@ -734,7 +1111,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         )}
 
         {/* Shipments summary */}
-        {order.shipments?.length > 0 && (
+        {!picking && order.shipments?.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm overflow-hidden">
             <div className="px-5 py-3 border-b border-slate-100">
               <h2 className="font-semibold text-slate-700 text-sm flex items-center gap-2">
@@ -752,12 +1129,12 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                     {s.carrier && <span className="text-sm font-medium text-slate-700">{s.carrier}</span>}
                     {s.tracking_number && (
                       url
-                        ? <a href={url} target="_blank" rel="noreferrer" className="text-xs font-mono text-brand-600 hover:underline">{s.tracking_number}</a>
+                        ? <a href={url} target="_blank" rel="noreferrer" className="text-xs font-mono link-record">{s.tracking_number}</a>
                         : <span className="text-xs font-mono text-slate-500">{s.tracking_number}</span>
                     )}
                     <Link
                       to={`/envois/${s.id}`}
-                      className="ml-auto text-xs text-slate-500 hover:text-brand-600 hover:underline"
+                      className="ml-auto text-xs text-slate-500 hover:text-brand-700 hover:underline"
                     >
                       Détails →
                     </Link>
@@ -797,7 +1174,13 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         <ExpeditionCreateShipmentModal
           orderId={orderId}
           pickedItems={picked}
-          onSave={onUpdate}
+          /* L'envoi créé s'ouvre aussitôt en panneau, en parcours guidé :
+             achat de l'étiquette, impression, puis ramassage. La commande
+             reste dessous, l'opérateur y revient en fermant le panneau. */
+          onSave={created => {
+            onUpdate()
+            if (created?.id) navigate(`/envois/${created.id}?flow=expedition`)
+          }}
           onClose={() => setShowCreateShipment(false)}
         />
       </Modal>
@@ -873,6 +1256,18 @@ export default function OrderDetail({ recordId, onClose }) {
   // Shared
   const [scanToast, setScanToast] = useState(null)
   const [flashItemId, setFlashItemId] = useState(null)
+  const [unknownScan, setUnknownScan] = useState(null)   // code scanné non reconnu, à associer
+  // Rappel d'accessoire après le scan d'une série reconnue (voir
+  // SERIAL_REMINDERS) ; le ref sert au scanner (window keydown, hors React) pour
+  // ignorer les codes tant que le rappel n'est pas coché.
+  const [scanReminder, setScanReminder] = useState(null)   // { serial, message }
+  const scanReminderRef = useRef(null)
+  // Scan qui demande l'accord de l'opérateur avant d'être appliqué (ex. série
+  // reconditionnée sur une commande d'achat) : { value, serial, message }.
+  const [scanConfirm, setScanConfirm] = useState(null)
+  const scanConfirmRef = useRef(null)
+  function openScanReminder(serial, message) { scanReminderRef.current = serial; setScanReminder({ serial, message }) }
+  function closeScanReminder() { scanReminderRef.current = null; setScanReminder(null) }
 
   // Rentabilité — brouillons des champs override (revenu et coûts manuels)
   const [overrideDraft, setOverrideDraft] = useState('')
@@ -948,30 +1343,13 @@ export default function OrderDetail({ recordId, onClose }) {
   }, [orderFields])
 
   // ── Notes : édition en ligne ────────────────────────────────────────────────
-  // Clic sur le texte (ou sur « Ajouter une note… » quand c'est vide) → textarea
-  // qui grandit avec le contenu ; la valeur part au blur (règle autosave), Échap
-  // annule, ⌘/Ctrl+Entrée valide. Pas de bouton « Enregistrer ».
+  // Zone de texte long partagée (<InlineTextarea>) : rectangle blanc toujours
+  // visible, qui grandit avec le contenu ; la valeur part au blur (règle
+  // autosave). Pas de bouton « Enregistrer ».
   const notesSave = useSaveStatus()
-  const [editingNotes, setEditingNotes] = useState(false)
-  const [notesDraft, setNotesDraft] = useState('')
-  const notesRef = useRef(null)
 
-  const startEditNotes = () => {
-    setNotesDraft(order?.notes || '')
-    setEditingNotes(true)
-  }
-
-  // Auto-hauteur du textarea (une note fait souvent plusieurs lignes).
-  useEffect(() => {
-    const el = notesRef.current
-    if (!el) return
-    el.style.height = 'auto'
-    el.style.height = `${el.scrollHeight}px`
-  }, [editingNotes, notesDraft])
-
-  async function commitNotes() {
-    setEditingNotes(false)
-    const next = notesDraft.trim() === '' ? null : notesDraft
+  async function commitNotes(draft) {
+    const next = String(draft ?? '').trim() === '' ? null : draft
     const current = order?.notes ?? null
     if (next === current) return
     // On ne fusionne PAS la réponse du PUT dans `order` : la list-row contient la
@@ -1161,18 +1539,38 @@ export default function OrderDetail({ recordId, onClose }) {
     api.orders.reorderItems(id, reorderData).catch(() => load())
   }
 
-  const handleScan = useCallback(async (value) => {
+  const handleScan = useCallback(async (value, { confirm = false } = {}) => {
+    // Rappel ou confirmation en attente : on n'accepte plus rien avant la coche.
+    if (scanReminderRef.current || scanConfirmRef.current) return
     const mode = expeditionMode ? 'pick' : 'add'
     try {
-      const result = await api.orders.scan(id, value, mode)
+      const result = await api.orders.scan(id, value, mode, confirm)
       if (result.type === 'not_found') {
-        setScanToast({ message: `Code non reconnu : ${value}`, status: 'error' })
+        // Ni numéro de série, ni SKU, ni code-barre connu : on propose de
+        // l'associer à un article de la commande (il sera retenu sur la pièce).
+        setUnknownScan(value)
         return
       }
 
       if (mode === 'pick') {
         if (result.action === 'not_in_order') {
           setScanToast({ message: `Article non trouvé dans cette commande`, status: 'warn' })
+        } else if (result.action === 'not_available') {
+          setScanToast({ message: `Série ${result.serial.serial} : ${result.serial.status || 'sans statut'}`, status: 'error' })
+        } else if (result.action === 'confirm_required') {
+          scanConfirmRef.current = value
+          setScanConfirm({
+            value,
+            serial: result.serial,
+            message: 'Série de location sur une commande d\u2019achat.',
+          })
+        } else if (result.action === 'lines_full') {
+          setScanToast({ message: `Lignes déjà complètes`, status: 'warn' })
+        } else if (result.action === 'address_conflict') {
+          setScanToast({
+            message: `Adresse ${result.conflict.address} déjà prise (${result.conflict.serial}${result.conflict.scope === 'order' ? ', cette commande' : ', chez le client'})`,
+            status: 'error',
+          })
         } else {
           if (result.item) {
             handlePatchItem(result.item.id, {
@@ -1200,17 +1598,32 @@ export default function OrderDetail({ recordId, onClose }) {
           const prod = result.product?.name_fr || value
           setScanToast({
             message: result.action === 'added'
-              ? `Article ajouté : ${prod} (SKU : ${value})`
+              ? `Article ajouté : ${prod}`
               : `Qté incrémentée : ${prod} → ${result.item?.qty}`,
             status: 'ok'
           })
         }
+      }
+
+      // Séries à accessoire (TH… piles, CV… boîte de carton) : rappel bloquant.
+      if (result.type === 'serial' && ['picked', 'linked', 'added'].includes(result.action)) {
+        const reminder = serialReminderMessage(result.serial?.serial)
+        if (reminder) openScanReminder(result.serial.serial, reminder)
       }
     } catch {
       setScanToast({ message: `Erreur lors du scan`, status: 'error' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, expeditionMode])
+
+  // Association d'un code inconnu : le code part sur la fiche pièce, puis on
+  // rejoue le scan — qui prélève (ou ajoute) l'article comme un SKU connu.
+  async function assignScanCode(item) {
+    const code = unknownScan
+    await api.products.addScanCode(item.product_id, code)
+    setUnknownScan(null)
+    await handleScan(code)
+  }
 
   useBarcodeScanner(handleScan)
 
@@ -1229,6 +1642,59 @@ export default function OrderDetail({ recordId, onClose }) {
   const pending = detailPending({ loading, loadError, onRetry: load, record: order, notFound: 'Commande introuvable.' })
   if (pending) return pending
 
+  // Code scanné inconnu : même modale dans les deux modes (prélèvement et
+  // commerciale) — le scanner est actif dans les deux.
+  const unknownScanModal = (
+    <Modal isOpen={!!unknownScan} onClose={() => setUnknownScan(null)} title="Associer ce code à un article">
+      {unknownScan && (
+        <UnknownScanCodeModal
+          code={unknownScan}
+          items={order.items || []}
+          onAssign={assignScanCode}
+          onClose={() => setUnknownScan(null)}
+        />
+      )}
+    </Modal>
+  )
+
+  function cancelScanConfirm() {
+    scanConfirmRef.current = null
+    setScanConfirm(null)
+  }
+
+  // « Prélever quand même » : on rejoue le scan, cette fois avec l'accord.
+  function acceptScanConfirm() {
+    const value = scanConfirm?.value
+    scanConfirmRef.current = null
+    setScanConfirm(null)
+    if (value) handleScan(value, { confirm: true })
+  }
+
+  const scanReminderModal = (
+    <Modal isOpen={!!scanReminder} onClose={() => {}} size="sm">
+      {scanReminder && (
+        <ScanReminderModal serial={scanReminder.serial} message={scanReminder.message} onConfirm={closeScanReminder} />
+      )}
+    </Modal>
+  )
+
+  const scanConfirmModal = (
+    <Modal isOpen={!!scanConfirm} onClose={() => {}} size="sm">
+      {scanConfirm && (
+        <div className="space-y-4 py-2">
+          <div className="text-lg font-semibold text-slate-900">{scanConfirm.message}</div>
+          <div className="font-mono text-xs text-slate-400">
+            {scanConfirm.serial?.serial} · {scanConfirm.serial?.status}
+          </div>
+          <div className="flex justify-end gap-2">
+            <button onClick={cancelScanConfirm} className="btn-secondary">Annuler</button>
+            <button onClick={acceptScanConfirm} className="btn-primary">Prélever quand même</button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  )
+
   // ── Expedition mode ─────────────────────────────────────────────────────────
   if (expeditionMode) {
     return (
@@ -1242,7 +1708,11 @@ export default function OrderDetail({ recordId, onClose }) {
           scanToast={scanToast}
           setScanToast={setScanToast}
           flashItemId={flashItemId}
+          onManualScan={handleScan}
         />
+        {unknownScanModal}
+        {scanReminderModal}
+        {scanConfirmModal}
       </DetailShell>
     )
   }
@@ -1259,7 +1729,7 @@ export default function OrderDetail({ recordId, onClose }) {
       <div className="flex items-center min-w-0">
         <span className="font-medium text-slate-900 truncate">
           {item.product_id
-            ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="hover:text-brand-600 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
+            ? <Link to={`/products/${item.product_id}`} onClick={e => e.stopPropagation()} className="hover:text-brand-700 hover:underline">{item.product_name || 'Produit inconnu'}</Link>
             : (item.product_name || 'Produit inconnu')}
         </span>
       </div>
@@ -1402,7 +1872,7 @@ export default function OrderDetail({ recordId, onClose }) {
       const url = trackingUrl(s.carrier, s.tracking_number)
       if (!s.tracking_number) return <span className="text-slate-300">—</span>
       return url
-        ? <a href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="font-mono text-xs text-brand-600 hover:underline">{s.tracking_number}</a>
+        ? <a href={url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="font-mono text-xs link-record">{s.tracking_number}</a>
         : <span className="font-mono text-xs text-slate-600">{s.tracking_number}</span>
     },
     status: s => <Badge color={s.status === 'Envoyé' ? 'green' : 'gray'}>{s.status || 'À envoyer'}</Badge>,
@@ -1444,11 +1914,19 @@ export default function OrderDetail({ recordId, onClose }) {
   const envoiColumns = TABLE_COLUMN_META.order_envois.map(meta => ({ ...meta, render: ENVOI_RENDERS[meta.id] }))
 
   // ── Commercial mode ─────────────────────────────────────────────────────────
-  // Aucun champ dans l'en-tête : statut, type, entreprise, projet, factures et
-  // dates vivent dans la carte de champs, la seule zone éditable de la fiche.
+  // Le statut est la seule chose de l'en-tête : c'est ce qu'on vient lire en
+  // premier sur une commande, et la carte de champs (où il vit aussi) peut
+  // l'avoir replié — la disposition des champs est partagée par toute l'app.
+  // Type, entreprise, projet, factures et dates restent dans la carte, la seule
+  // zone éditable de la fiche.
   return (
     <DetailShell
       header={{
+        badge: order.status && (
+          <span data-testid="order-header-status">
+            <Badge color={orderStatusColor(order.status)}>{order.status}</Badge>
+          </span>
+        ),
         actions: (
           <button
             onClick={() => setExpeditionMode(true)}
@@ -1473,6 +1951,7 @@ export default function OrderDetail({ recordId, onClose }) {
           savingKeys={fieldSaving}
           className="card p-5 mb-4"
           testId="order-fields"
+          onDeleted={onClose}
         >
           <DetailField id="status" label="Statut">
             <div><Badge color={orderStatusColor(order.status)}>{order.status}</Badge></div>
@@ -1583,34 +2062,11 @@ export default function OrderDetail({ recordId, onClose }) {
           </DetailField>
           <DetailField id="notes" label="Notes" span2>
             <SaveStatus status={notesSave.status} className="mb-1" />
-            {editingNotes ? (
-              <textarea
-                ref={notesRef}
-                value={notesDraft}
-                autoFocus
-                onChange={e => setNotesDraft(e.target.value)}
-                onBlur={commitNotes}
-                onKeyDown={e => {
-                  if (e.key === 'Escape') { e.preventDefault(); setEditingNotes(false) }
-                  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.currentTarget.blur() }
-                }}
-                rows={2}
-                className="input text-sm w-full resize-none overflow-hidden"
-                data-testid="order-notes-input"
-              />
-            ) : (
-              <p
-                role="button"
-                tabIndex={0}
-                onClick={startEditNotes}
-                onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEditNotes() } }}
-                title="Cliquer pour modifier"
-                className={`text-sm whitespace-pre-wrap cursor-text rounded px-2 py-1 -mx-2 hover:bg-slate-50 ${order.notes ? 'text-slate-600' : 'text-slate-400 italic'}`}
-                data-testid="order-notes-text"
-              >
-                {order.notes || 'Ajouter une note…'}
-              </p>
-            )}
+            <InlineTextarea
+              value={order.notes}
+              onSave={commitNotes}
+              testId="order-notes-input"
+            />
           </DetailField>
         </DetailFieldGrid>
 
@@ -1619,7 +2075,12 @@ export default function OrderDetail({ recordId, onClose }) {
         <div className="mb-4">
           {/* Pas de bouton « Ajouter » : un article se crée en ligne, par le
               « + » sous la dernière ligne de la table (recordOps). */}
-          <h2 className="font-semibold text-slate-900 mb-2">Articles ({order.items?.length || 0})</h2>
+          <div className="flex items-center justify-between gap-3 mb-2">
+            <h2 className="font-semibold text-slate-900">Articles ({order.items?.length || 0})</h2>
+            {/* Scanner OU saisie manuelle du numéro de série : même action —
+                la série se lie à sa ligne (créée au besoin). */}
+            <ManualScanInput onSubmit={handleScan} />
+          </div>
           <DataTable
             table="order_items"
             columns={itemColumns}
@@ -1787,6 +2248,10 @@ export default function OrderDetail({ recordId, onClose }) {
       <Modal isOpen={showAddItem} onClose={() => setShowAddItem(false)} title="Ajouter un article">
         <AddItemModal orderId={id} onSave={load} onClose={() => setShowAddItem(false)} />
       </Modal>
+
+      {unknownScanModal}
+      {scanReminderModal}
+      {scanConfirmModal}
     </DetailShell>
   )
 }

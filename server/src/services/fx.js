@@ -67,6 +67,22 @@ function pickCachedRate(pair, dateStr) {
   `).get(pair, dateStr) || null
 }
 
+// Table des taux USD→CAD déjà en cache, du plus récent au plus ancien, avec un
+// accès SYNCHRONE au « taux du jour ouvré le plus proche ». Aucun appel réseau :
+// réservé à l'affichage (conversion indicative d'une liste), jamais aux écritures
+// comptables — celles-ci passent par getUsdCadRate(), qui interroge la Banque du
+// Canada et refuse un taux périmé. Pour une date antérieure au cache, on retombe
+// sur le plus ancien taux connu.
+export function usdCadRateLookup() {
+  const rows = db.prepare("SELECT date, rate FROM fx_rates WHERE pair='USDCAD' ORDER BY date DESC").all()
+  return (dateStr) => {
+    if (!dateStr || !rows.length) return null
+    const date = String(dateStr).slice(0, 10)
+    const onOrBefore = rows.find(r => r.date <= date)
+    return (onOrBefore || rows[rows.length - 1]).rate
+  }
+}
+
 // Return the USD→CAD rate for `dateStr` (YYYY-MM-DD). Handles weekends/holidays
 // by walking back to the nearest available business day. Results are cached in
 // the `fx_rates` table so the BoC API is only hit once per window.

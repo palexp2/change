@@ -166,6 +166,11 @@ export function seedMonthEndProvisions() {
     }
   }
 
+  // Volet retiré des écritures de fin de mois à la demande de l'utilisateur —
+  // l'historique (mois déjà comptabilisés, JE QuickBooks) reste en base, la
+  // carte disparaît simplement de l'UI via le filtre `active` du front.
+  db.prepare(`UPDATE month_end_provisions SET active = 0 WHERE id = ? AND active = 1`).run(LB_PROVISION_ID)
+
   const rd = seedHistory(RD_PROVISION_ID, RD_HISTORY)
   const lb = seedHistory(LB_PROVISION_ID, LB_HISTORY)
   const hours = seedHours()

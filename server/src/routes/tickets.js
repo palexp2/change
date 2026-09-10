@@ -3,18 +3,61 @@ import { newRecordId } from '../utils/recordId.js';
 import db from '../db/database.js'
 import { readRelation } from '../services/customFieldsView.js';
 import { requireAuth } from '../middleware/auth.js';
-import { getCentralControllers } from '../utils/centralController.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
-import { checkForeignKeys } from '../utils/fkExists.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
-import { notifyAssignment } from '../services/notifications.js';
 import { surveyEligibility, getSurveyByTicket, sendTicketSurvey, surveyUrl } from '../services/ticketSurveys.js';
-import { writeBackRecord } from '../services/airtableWriteback.js';
+import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js';
+import { logSync } from '../services/syncLog.js';
 import { deleteTicketCascade } from '../services/ticketDelete.js';
 import { parsePage } from '../utils/pagination.js';
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
 
 const router = Router();
 router.use(requireAuth);
+
+// Titre, question, réponse, type, statut, durée, date de création, entreprise et
+// contact ont été droppés sur demande (migration 040) : un billet n'a plus de
+// colonne native descriptive. Tout ce qui le décrit vit dans ses champs
+// personnalisés, réglés depuis /champs/tickets et lus par la vue `tickets_v`.
+// Conséquences ici : plus de /meta (aucun type ni statut), plus de filtres
+// entreprise / statut / type, tri sur `updated_at`.
+const ORDER_BY = 't.updated_at DESC'
+
+// Colonnes modifiables depuis la fiche : les champs Airtable adoptés que la
+// fiche édite en ligne. Les colonnes cf_ éditables s'y ajoutent au PUT
+// (getWritableCustomColumns) — c'est par là que passent « Entreprise »
+// (cf_entreprise) et « Contact » (cf_contact), les deux champs lien de la fiche.
+//
+// L'assignation n'est plus là : `assigned_to` (FK vers `users`, 8 billets sur
+// 3 688) doublait « Assigné à », le champ réglé dans /champs/tickets et importé
+// du « Responsable » d'Airtable — elle a été droppée (migration 048). Il n'y a
+// donc plus de notification « Billet assigné » : le champ survivant porte un
+// prénom, pas un utilisateur ERP.
+const PATCHABLE_FIELDS = ['lien_issue_github', 'escalade', 'mots_cles',
+  'arbre_de_troubleshoot_utilise', 'documents', 'items_retours']
+
+// Colonnes déjà posées par le INSERT de base : une colonne du registre du même
+// nom les dupliquerait dans la requête.
+const CREATE_BASE_COLUMNS = new Set(['id'])
+
+// SQLite ne sait pas lier un booléen : une case à cocher arrive en true/false.
+function bindable(v) {
+  if (typeof v === 'boolean') return v ? 1 : 0
+  if (v === '' || v === undefined) return null
+  return v
+}
+
+// Miroir Airtable d'un billet, asynchrone et non bloquant : le billet existe
+// dans Boréal même si Airtable est indisponible, et le prochain enregistrement
+// de la fiche retentera la création (cf. PUT plus bas). `createInAirtable` ne
+// lève jamais — chaque échec laisse déjà une trace dans sync_log — ce .catch
+// n'est donc qu'un dernier filet.
+function pushAirtable(promise, trigger, recordId) {
+  return promise.catch(e => {
+    console.error(`${trigger} billets ${recordId} (async):`, e.message)
+    logSync('billets', trigger, { status: 'error', error: `${recordId}: ${e.message}` })
+  })
+}
 
 // Sondage de satisfaction : le rating remonte sur CHAQUE ligne de billet pour
 // alimenter la colonne « Satisfaction » (masquée par défaut) sans second appel.
@@ -27,66 +70,28 @@ const SURVEY_COLS = `,
       tsv.responded_at as survey_responded_at, tsv.sent_at as survey_sent_at`
 
 function buildTicketRow(id) {
-  const r = db.prepare(
-    `SELECT t.*,
-      ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
-     FROM ${readRelation('tickets')} t
-     LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
+  return db.prepare(
+    `SELECT t.*${SURVEY_COLS}
+     FROM ${readRelation('tickets')} t${SURVEY_JOIN}
      WHERE t.id = ?`
   ).get(id)
-  if (r) r.central_controllers = getCentralControllers(r.company_id)
-  return r
 }
-
-// GET /api/tickets/meta — distinct types & statuses
-router.get('/meta', (req, res) => {
-  const types = db.prepare("SELECT DISTINCT type FROM tickets WHERE type IS NOT NULL AND type != '' ORDER BY type").all().map(r => r.type);
-  const statuses = db.prepare("SELECT DISTINCT status FROM tickets WHERE status IS NOT NULL AND status != '' ORDER BY status").all().map(r => r.status);
-  res.json({ types, statuses });
-});
 
 // GET /api/tickets
 router.get('/', (req, res) => {
-  const { search, status, type, company_id, assigned_to } = req.query;
   const { page, limit, limitVal, offset } = parsePage(req.query, 50);
-  let where = 'WHERE 1=1';
+  const where = 'WHERE 1=1';
   const params = [];
-
-  if (search) {
-    // EXISTS plutôt que JOIN : indépendant de la jointure retirée et de la
-    // colonne company_name de la vue (supprimable par l'utilisateur).
-    where += ' AND (t.title LIKE ? OR EXISTS (SELECT 1 FROM companies c WHERE c.id = t.company_id AND c.name LIKE ?))';
-    const q = `%${search}%`;
-    params.push(q, q);
-  }
-  if (status) {
-    where += ' AND t.status = ?';
-    params.push(status);
-  }
-  if (type) {
-    where += ' AND t.type = ?';
-    params.push(type);
-  }
-  if (company_id) {
-    where += ' AND t.company_id = ?';
-    params.push(company_id);
-  }
-  if (assigned_to) {
-    where += ' AND t.assigned_to = ?';
-    params.push(assigned_to);
-  }
 
   const total = db.prepare(
     `SELECT COUNT(*) as c FROM ${readRelation('tickets')} t ${where}`
   ).get(...params).c;
 
   const tickets = db.prepare(
-    `SELECT t.*,
-      ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
-     FROM ${readRelation('tickets')} t
-     LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
+    `SELECT t.*${SURVEY_COLS}
+     FROM ${readRelation('tickets')} t${SURVEY_JOIN}
      ${where}
-     ORDER BY t.created_at DESC
+     ORDER BY ${ORDER_BY}
      LIMIT ? OFFSET ?`
   ).all(...params, limitVal, offset);
 
@@ -95,7 +100,7 @@ router.get('/', (req, res) => {
 
 // GET /api/tickets/ids — minimal payload (id only) for prev/next navigation
 router.get('/ids', (req, res) => {
-  const rows = db.prepare(`SELECT id FROM tickets ORDER BY created_at DESC`).all()
+  const rows = db.prepare(`SELECT id FROM tickets t ORDER BY ${ORDER_BY}`).all()
   res.json(rows.map(r => r.id))
 })
 
@@ -123,9 +128,10 @@ router.get('/keywords', (req, res) => {
   res.json(keywords)
 })
 
-// GET /api/tickets/:id/survey — état du sondage + éligibilité à l'envoi.
-// L'éligibilité vient du serveur (jamais recalculée côté front) pour que le
-// bouton désactivé et le refus d'envoi appliquent exactement la même règle.
+// GET /api/tickets/:id/survey — état du sondage + valeurs proposées à l'envoi.
+// Le numéro proposé vient du dernier envoi, sinon du contact lié au billet
+// (mobile, puis téléphone) ; la langue, du dernier envoi seulement. Une seule
+// fonction décide, pour le front comme pour la route d'envoi.
 router.get('/:id/survey', (req, res) => {
   const exists = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id)
   if (!exists) return res.status(404).json({ error: 'Ticket not found' })
@@ -138,7 +144,7 @@ router.get('/:id/survey', (req, res) => {
 })
 
 // POST /api/tickets/:id/survey — envoie (ou renvoie) le sondage par SMS.
-// Envoi 100 % manuel, aucune restriction de statut : c'est l'humain qui juge.
+// Envoi 100 % manuel : c'est l'humain qui juge le moment, le numéro et la langue.
 router.post('/:id/survey', async (req, res) => {
   const exists = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id)
   if (!exists) return res.status(404).json({ error: 'Ticket not found' })
@@ -146,6 +152,7 @@ router.post('/:id/survey', async (req, res) => {
   const result = await sendTicketSurvey(req.params.id, {
     userId: req.user?.id || null,
     phoneOverride: req.body?.phone || null,
+    language: req.body?.language || null,
   })
   if (!result.ok) return res.status(400).json({ error: result.error, survey: result.survey || null })
 
@@ -159,89 +166,94 @@ router.post('/:id/survey', async (req, res) => {
 
 // GET /api/tickets/:id
 router.get('/:id', (req, res) => {
-  const ticket = db.prepare(
-    `SELECT t.*,
-      ct.first_name || ' ' || ct.last_name as contact_name${SURVEY_COLS}
-     FROM ${readRelation('tickets')} t
-     LEFT JOIN contacts ct ON t.contact_id = ct.id${SURVEY_JOIN}
-     WHERE t.id = ?`
-  ).get(req.params.id);
+  const ticket = buildTicketRow(req.params.id);
   if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
-  ticket.central_controllers = getCentralControllers(ticket.company_id);
   res.json(ticket);
 });
 
 // POST /api/tickets
+//
+// La création accepte TOUS les champs du registre de la table qui sont
+// éditables (règle unique de customFieldWritability.js) : le formulaire
+// « Nouveau billet » les propose tous dans « Modifier le formulaire »
+// (client/src/pages/Tickets.jsx, `includeAllFields`). Sans ça, un champ ajouté
+// au formulaire semblerait se saisir puis ne rien enregistrer.
 router.post('/', (req, res) => {
-  const { company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes } = req.body;
-  const fkErr = checkForeignKeys({ company_id, contact_id });
-  if (fkErr) return res.status(400).json({ error: fkErr.message });
+  // Un champ Airtable en import seul est refusé en 400 explicite plutôt
+  // qu'ignoré en silence : la valeur saisie serait écrasée au prochain sync.
+  if (refusedAirtablePullKeys('tickets', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+
+  const extras = {};
+  const writable = new Set();
+  for (const { column_name: col } of getWritableCustomColumns('tickets')) {
+    writable.add(col);
+    if (CREATE_BASE_COLUMNS.has(col) || col in extras) continue;
+    if (!Object.prototype.hasOwnProperty.call(req.body, col)) continue;
+    extras[col] = bindable(req.body[col]);
+  }
+  // Date d'ouverture. Un billet né dans Airtable porte toujours la sienne (le
+  // champ « Date » y est rempli à la création) : on la pose donc aussi ici,
+  // quand le formulaire ne la demande pas. Sans elle, un billet ouvert sans
+  // aucun autre champ rempli n'aurait rien à pousser vers Airtable — et donc
+  // pas de jumeau du tout.
+  if (writable.has('cf_date') && !extras.cf_date) extras.cf_date = new Date().toISOString();
+  const extraCols = Object.keys(extras);
+
   const id = newRecordId();
   db.prepare(
-    `INSERT INTO tickets (id, company_id, contact_id, assigned_to, title, description, response, type, status, duration_minutes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, company_id || null, contact_id || null, assigned_to || null,
-    title, description || null, response || null, type || null, status || 'Waiting on us', duration_minutes || 0);
+    `INSERT INTO tickets (id${extraCols.map(c => `, ${c}`).join('')})
+     VALUES (?${extraCols.map(() => ', ?').join('')})`
+  ).run(id, ...extraCols.map(c => extras[c]));
 
   const created = buildTicketRow(id);
   emitEntity('ticket', 'created', id, created, req.user?.id);
-  notifyAssignment({
-    assignedTo: assigned_to,
-    actorUserId: req.user?.id,
-    type: 'ticket:assigned',
-    title: `Ticket assigné : ${title}`,
-    link: `/tickets/${id}`,
-  });
+
+  // Création Boréal → Airtable : le support travaille encore les billets dans
+  // Airtable, un billet ouvert ici doit donc y apparaître aussi. Poussés : les
+  // champs dont le sens est « Bidirectionnel » ou « Boréal → Airtable » dans
+  // /champs/tickets, plus les liens entreprise et contact (cf.
+  // WRITEBACK_MODULES.billets). L'airtable_id revenu du POST est écrit sur le
+  // billet : la suite passe par le write-back ordinaire, sans doublon.
+  pushAirtable(createInAirtable('billets', id), 'erp-create', id);
+
   res.status(201).json(created);
 });
 
 // PUT /api/tickets/:id — partial update
 router.put('/:id', (req, res) => {
-  const existing = db.prepare('SELECT id, assigned_to, title FROM tickets WHERE id = ?').get(req.params.id);
+  const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Ticket not found' });
 
+  // Un champ Airtable en import seul est refusé en 400 explicite plutôt
+  // qu'ignoré en silence : la valeur saisie serait écrasée au prochain sync.
+  if (refusedAirtablePullKeys('tickets', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+  const customCols = getWritableCustomColumns('tickets').map(c => c.column_name);
   const { setClause, values, error } = buildPartialUpdate(req.body, {
-    allowed: ['company_id', 'contact_id', 'assigned_to', 'title', 'description',
-      'response', 'type', 'status', 'duration_minutes',
-      'lien_issue_github', 'escalade', 'mots_cles',
-      'arbre_de_troubleshoot_utilise', 'documents', 'items_retours'],
+    allowed: [...PATCHABLE_FIELDS, ...customCols],
   });
   if (error) return res.status(400).json({ error });
   if (setClause) {
     db.prepare(`UPDATE tickets SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id);
-    // Write-back ERP → Airtable (fire-and-forget) : ne pousse que les colonnes
-    // modifiées dont le sens n'est pas 'pull' — échecs tracés dans sync_log.
-    writeBackRecord('billets', req.params.id, Object.keys(req.body));
+    const linked = db.prepare('SELECT airtable_id FROM tickets WHERE id = ?').get(req.params.id)?.airtable_id
+    if (linked) {
+      // Write-back ERP → Airtable (fire-and-forget) : ne pousse que les colonnes
+      // modifiées dont le sens n'est pas 'pull' — échecs tracés dans sync_log.
+      pushAirtable(writeBackRecord('billets', req.params.id, Object.keys(req.body)), 'erp-writeback', req.params.id);
+    } else {
+      // Billet pas encore lié : créé dans Boréal alors qu'Airtable était
+      // indisponible. Chemin de rattrapage — enregistrer la fiche le pousse enfin.
+      pushAirtable(createInAirtable('billets', req.params.id), 'erp-create', req.params.id);
+    }
   }
 
   const updated = buildTicketRow(req.params.id);
   emitEntity('ticket', 'updated', req.params.id, updated, req.user?.id);
-  if ('assigned_to' in req.body) {
-    notifyAssignment({
-      assignedTo: req.body.assigned_to,
-      prevAssignedTo: existing.assigned_to,
-      actorUserId: req.user?.id,
-      type: 'ticket:assigned',
-      title: `Ticket assigné : ${updated?.title || existing.title}`,
-      link: `/tickets/${req.params.id}`,
-    });
-  }
   res.json(updated);
-});
-
-// PATCH /api/tickets/:id/status
-router.patch('/:id/status', (req, res) => {
-  const existing = db.prepare('SELECT id FROM tickets WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'Ticket not found' });
-
-  const { status } = req.body;
-  if (!status) return res.status(400).json({ error: 'Status is required' });
-  db.prepare(`UPDATE tickets SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-    .run(status, req.params.id);
-  writeBackRecord('billets', req.params.id, ['status']);
-  emitEntity('ticket', 'updated', req.params.id, buildTicketRow(req.params.id), req.user?.id);
-  res.json({ message: 'Status updated' });
 });
 
 // DELETE /api/tickets/:id

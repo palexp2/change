@@ -3,6 +3,7 @@ import { requireAuth } from '../middleware/auth.js'
 import {
   resolveRecordKeys, searchRecords, RESOLVABLE_TABLES, LINKABLE_TABLES, MAX_KEYS,
 } from '../services/recordLinks.js'
+import { linkFilterColumns, parseLinkFilter } from '../services/linkFilter.js'
 
 const router = Router()
 
@@ -37,18 +38,34 @@ router.get('/tables', requireAuth, (_req, res) => {
   res.json({ data: LINKABLE_TABLES })
 })
 
-// GET /api/record-links/search?table=<table ERP>&q=<terme>&limit=<n>
+// GET /api/record-links/columns?table=<table ERP> — colonnes de la table cible
+// sur lesquelles le filtre d'un champ lien peut porter. Sert le sélecteur de
+// colonne de la modale de champ.
+router.get('/columns', requireAuth, (req, res) => {
+  const table = String(req.query.table || '')
+  if (!RESOLVABLE_TABLES.includes(table)) {
+    return res.status(400).json({ error: 'Table cible inconnue' })
+  }
+  res.json({ data: linkFilterColumns(table) })
+})
+
+// GET /api/record-links/search?table=<table ERP>&q=<terme>&limit=<n>&filter=<JSON>
 //
 // Candidats à une ASSOCIATION : les fiches de la table cible, libellées comme
 // les pastilles de lien. Sert l'éditeur de lien d'une cellule de DataTable
 // (client/src/components/LinkCellEditor.jsx), qui doit proposer une liste
 // recherchable sans que la page ait à charger la table entière.
+//
+// `filter` : le filtre du champ lien (cf. services/linkFilter.js), tel que le
+// serveur l'a publié avec le champ. Les colonnes et opérateurs sont revalidés
+// ici — une condition inconnue est ignorée, pas interpolée.
 router.get('/search', requireAuth, (req, res) => {
   const table = String(req.query.table || '')
   if (!RESOLVABLE_TABLES.includes(table)) {
     return res.status(400).json({ error: 'Table cible inconnue' })
   }
-  res.json({ data: searchRecords(table, req.query.q, req.query.limit) })
+  const filter = req.query.filter ? parseLinkFilter(req.query.filter) : null
+  res.json({ data: searchRecords(table, req.query.q, req.query.limit, filter) })
 })
 
 export default router

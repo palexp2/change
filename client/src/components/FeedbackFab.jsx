@@ -8,17 +8,27 @@ import { useToast } from '../contexts/ToastContext.jsx'
 // Ciblage d'un élément de la page + ligne de contexte : mécanisme partagé avec le
 // panneau rapide de la file de travaux (lib/pageContext.jsx).
 import { useElementPicker, buildPageContext, PickerBanner } from '../lib/pageContext.jsx'
-// Bouton « au début / à la fin de la file » : le même que la page /travaux et le
-// panneau rapide — un seul geste à apprendre, où qu'on dépose une tâche.
-import { PlacementToggle } from '../lib/travauxQueue.jsx'
+// Moment du départ (« maintenant / ce soir 19 h ») : bascule partagée avec la page
+// /travaux et le panneau rapide — un seul geste à apprendre, où qu'on dépose une
+// tâche. Le placement dans la file (« au début / à la fin ») a été retiré d'ici :
+// une demande déposée à la main part à la fin, comme tout le reste.
+import { StartToggle, eveningStart } from '../lib/travauxQueue.jsx'
+import { CodexUsageStrip } from './ClaudeUsage.jsx'
+
+// Modèle qui traitera la demande, choisi ici même : deux choix seulement, Opus
+// (défaut) ou Astra. Les petits modèles (Sonnet, Haiku) ne sont plus proposés —
+// personne ne les choisissait pour une demande écrite à la main. Le repli quota
+// s'applique ensuite comme d'habitude côté serveur.
+const MODELS = ['opus', 'codex']
+const MODEL_NAMES = { opus: 'Opus', codex: 'Astra' }
+const DEFAULT_MODEL = 'opus'
 
 // FAB discret « Modifier le système », monté dans Layout donc visible sur
 // toutes les pages. Une seule destination : la demande est déposée comme prompt
 // dans la file de la section Travaux (/travaux), avec la page courante et
 // l'élément ciblé inclus dans le texte du prompt — c'est lui que l'agent reçoit.
 // Le serveur relance l'ordonnanceur à la création : si rien ne tourne, la tâche
-// part tout de suite ; sinon elle attend son tour — à la fin de la file par
-// défaut, ou devant tout le reste si on a basculé le bouton de placement. Le choix de
+// part tout de suite ; sinon elle attend son tour, à la fin de la file. Le choix de
 // destination (« Tout de suite » vs « Ma file Travaux ») a été retiré — les deux
 // menaient au même exécuteur, à ceci près que la voie « tout de suite » doublait
 // la file au lieu de la respecter.
@@ -63,9 +73,14 @@ export function FeedbackFab({ contextRecord = '' }) {
     const p = readPersisted()
     return p.scope || (p.appWide ? 'app' : 'page')
   })
-  // Où la demande se dépose dans la file : 'last' (défaut, on respecte l'ordre
-  // déjà en place) ou 'first' (elle passe devant tout le reste).
-  const [placement, setPlacement] = useState(() => readPersisted().placement === 'first' ? 'first' : 'last')
+  // Quand la tâche démarre : 'now' (défaut, dès qu'un poste est libre) ou 'evening'
+  // — elle entre dans la file tout de suite, mais ne partira qu'à 19 h.
+  const [start, setStart] = useState(() => readPersisted().start === 'evening' ? 'evening' : 'now')
+  // Modèle qui traitera la demande — Opus par défaut.
+  const [model, setModel] = useState(() => {
+    const m = readPersisted().model
+    return MODELS.includes(m) ? m : DEFAULT_MODEL
+  })
   // Mode « picking » : transitoire (non persisté), bandeau + surbrillance actifs.
   const [picking, setPicking] = useState(false)
   // Le picking a-t-il été (re)lancé depuis le formulaire ? → Échap y retourne.
@@ -78,10 +93,10 @@ export function FeedbackFab({ contextRecord = '' }) {
 
   useEffect(() => {
     try {
-      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain, scope, placement }))
+      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain, scope, model, start }))
       else sessionStorage.removeItem(STORAGE_KEY)
     } catch { /* stockage indisponible (mode privé strict) — dégradation silencieuse */ }
-  }, [open, text, mode, element, chain, scope, placement])
+  }, [open, text, mode, element, chain, scope, model, start])
 
   // Étape « picking » — surbrillance, neutralisation des clics de la page et
   // description de l'élément choisi : lib/pageContext.jsx.
@@ -96,7 +111,8 @@ export function FeedbackFab({ contextRecord = '' }) {
     setElement('')
     setChain([])
     setScope('page')
-    setPlacement('last')
+    setModel(DEFAULT_MODEL)
+    setStart('now')
   }
 
   function removeElement() {
@@ -154,7 +170,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     // « Envoi… » une demi-seconde ou plus quand le serveur est occupé. Le
     // brouillon est mis de côté : si l'envoi échoue, la fenêtre revient telle
     // qu'elle était, rien n'est perdu.
-    const draft = { text, mode, element, chain, scope, placement }
+    const draft = { text, mode, element, chain, scope, model, start }
     setOpen(false)
     reset()
     try {
@@ -166,15 +182,21 @@ export function FeedbackFab({ contextRecord = '' }) {
         prompt: `${trimmed}\n\nContexte (ERP) : ${context}`,
         mode,
         space: 'finance',
-        // Le serveur dépose l'item devant la file quand priority est vrai.
-        priority: placement === 'first',
+        // Modèle choisi pour CETTE demande : il l'emporte sur le modèle préféré de
+        // l'agent, l'effort restant celui du calibre décidé côté serveur.
+        model,
+        // Départ programmé : l'item entre dans la file tout de suite, mais
+        // l'ordonnanceur ne le prendra pas avant cette heure (absent = tout de suite).
+        start_at: start === 'evening' ? eveningStart() : null,
       })
       // Pas d'écran de confirmation : la fenêtre est déjà refermée, le toast
       // accuse réception dès que le serveur a confirmé le dépôt.
       addToast({
-        message: created?.status === 'running'
-          ? 'Demande envoyée — l\'agent s\'y met tout de suite'
-          : draft.placement === 'first' ? 'Ajoutée en tête de la file de Travaux' : 'Ajoutée à la file de Travaux',
+        message: draft.start === 'evening'
+          ? 'Ajoutée à la file — départ programmé à 19 h'
+          : created?.status === 'running'
+            ? 'Demande envoyée — l\'agent s\'y met tout de suite'
+            : 'Ajoutée à la file de Travaux',
         type: 'success',
       })
     } catch {
@@ -185,7 +207,8 @@ export function FeedbackFab({ contextRecord = '' }) {
       setElement(draft.element)
       setChain(draft.chain)
       setScope(draft.scope)
-      setPlacement(draft.placement)
+      setModel(draft.model)
+      setStart(draft.start)
       setOpen(true)
       addToast({ message: 'Échec de l\'envoi de la suggestion', type: 'error' })
     } finally {
@@ -307,14 +330,35 @@ export function FeedbackFab({ contextRecord = '' }) {
             autoFocus
             className="input w-full resize-y"
           />
-          {/* Placement dans la file — bouton discret, sous le champ : la
-              demande part à la fin de la file par défaut, un clic la met au
-              début. Même contrôle que la page /travaux. */}
-          <div className="flex justify-end -mt-2">
-            <PlacementToggle
-              testId="feedback-placement"
-              value={placement}
-              onChange={setPlacement}
+          {model === 'codex' && <CodexUsageStrip />}
+          {/* Sous le champ, deux réglages discrets : le modèle qui traitera la
+              demande (bascule Opus / Astra, Opus par défaut) et le moment du
+              départ (tout de suite, ou programmé à 19 h — même contrôle que
+              /travaux). */}
+          <div className="flex justify-end items-center gap-2 -mt-2 flex-wrap">
+            <div
+              className="inline-flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg"
+              role="radiogroup"
+              aria-label="Modèle"
+            >
+              {MODELS.map(m => (
+                <button
+                  key={m}
+                  type="button"
+                  data-testid={`feedback-model-${m}`}
+                  role="radio"
+                  aria-checked={model === m}
+                  onClick={() => setModel(m)}
+                  className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${model === m ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
+                >
+                  {MODEL_NAMES[m]}
+                </button>
+              ))}
+            </div>
+            <StartToggle
+              testId="feedback-start"
+              value={start}
+              onChange={setStart}
             />
           </div>
           <div className="space-y-2 pt-1">

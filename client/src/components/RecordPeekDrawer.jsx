@@ -6,6 +6,7 @@ import api from '../lib/api.js'
 import { hasOpenModal } from './Modal.jsx'
 import { OVERLAY_BASE, registerOverlay } from '../lib/overlayLayers.js'
 import { PeekFieldEditProvider } from '../lib/detailFieldLayout.jsx'
+import { PeekFooterProvider } from './PeekFooter.jsx'
 import { PEEK_ROUTES, matchPeekRoute } from '../lib/recordPeekRoutes.jsx'
 import Spinner from './Spinner.jsx'
 
@@ -132,11 +133,18 @@ function maxWidth() {
   return Math.max(MIN_WIDTH, window.innerWidth - EDGE_MARGIN)
 }
 
-function clampWidth(w) {
-  return Math.min(Math.max(w, MIN_WIDTH), maxWidth())
+// `min` : plancher propre à la fiche (`minWidth` du registre). Les fiches au
+// layout CRM (3 colonnes) ne tiennent pas dans 500 px : leur plancher est plus
+// haut que celui commun, y compris face à une largeur déjà mémorisée. Il ne
+// peut pas manger la marge de bord : sur un petit écran, le panneau reste
+// borné à la largeur disponible (la fiche retombe alors sur 2 colonnes).
+function clampWidth(w, min = MIN_WIDTH) {
+  const max = maxWidth()
+  const floor = Math.min(Math.max(min, MIN_WIDTH), max)
+  return Math.min(Math.max(w, floor), max)
 }
 
-export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, peekKey, children }) {
+export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, minWidth = MIN_WIDTH, peekKey, children }) {
   const wKey = widthKey(peekKey, to)
   // `to` est une route du routeur (« /projects/:id ») ; l'app est servie sous
   // le basename /erp. window.history ne connaît pas ce basename : sans cette
@@ -150,11 +158,13 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
   const panelRef = useRef(null)
   // Identité stable de cette instance dans `openStack`.
   const stackIdRef = useRef({})
-  const [panelWidth, setPanelWidth] = useState(() => clampWidth(preferredWidth(wKey, width)))
+  const [panelWidth, setPanelWidth] = useState(() => clampWidth(preferredWidth(wKey, width), minWidth))
   // Panneaux ouverts DEPUIS celui-ci (clic sur un lien d'enregistrement dans
   // le corps) — voir « Panneaux empilés » plus bas.
   const [nested, setNested] = useState([])
   const [resizing, setResizing] = useState(false)
+  // Bande d'action épinglée en bas du panneau, remplie par <PeekFooter>.
+  const [footerEl, setFooterEl] = useState(null)
   // Rejoue l'animation d'entrée seulement à l'ouverture — évite qu'elle ne
   // reparte (et donne l'impression de rebond) au relâchement de la poignée
   // de redimensionnement, quand `resizing` repasse à false.
@@ -242,19 +252,19 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
           prefCache.widths = merged
           storeWidths()
         }
-        if (!cancelled) setPanelWidth(clampWidth(preferredWidth(wKey, width)))
+        if (!cancelled) setPanelWidth(clampWidth(preferredWidth(wKey, width), minWidth))
       })
       .catch(() => { prefCache.loaded = true })
     return () => { cancelled = true }
-  }, [open, wKey, width])
+  }, [open, wKey, width, minWidth])
 
   // Applique la préférence en cache à chaque (ré)ouverture — et à chaque
   // changement de ressource affichée — puis re-borne si la fenêtre a été
   // redimensionnée entre-temps.
   useEffect(() => {
     if (!open) return
-    setPanelWidth(clampWidth(preferredWidth(wKey, width)))
-  }, [open, width, wKey])
+    setPanelWidth(clampWidth(preferredWidth(wKey, width), minWidth))
+  }, [open, width, minWidth, wKey])
 
   // ── URL partageable ───────────────────────────────────────────────────────
   // Pendant que le drawer est ouvert, la barre d'adresse affiche l'URL de la
@@ -376,7 +386,7 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
     setResizing(true)
     const onMove = (ev) => {
       const clientX = ev.touches ? ev.touches[0].clientX : ev.clientX
-      setPanelWidth(clampWidth(window.innerWidth - clientX))
+      setPanelWidth(clampWidth(window.innerWidth - clientX, minWidth))
     }
     const onUp = () => {
       setResizing(false)
@@ -390,7 +400,7 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
     document.addEventListener('mouseup', onUp)
     document.addEventListener('touchmove', onMove, { passive: false })
     document.addEventListener('touchend', onUp)
-  }, [persistWidth])
+  }, [persistWidth, minWidth])
 
   if (!open) return null
 
@@ -469,9 +479,14 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
           onClickCapture={onBodyClickCapture}
         >
           <PeekFieldEditProvider value={fieldEditCtx}>
-            {children}
+            <PeekFooterProvider node={footerEl}>
+              {children}
+            </PeekFooterProvider>
           </PeekFieldEditProvider>
         </div>
+        {/* Bande d'action de la fiche (<PeekFooter>) : hors du corps scrollable,
+            donc toujours visible en bas du panneau. Vide, elle ne prend rien. */}
+        <div ref={setFooterEl} className="flex-shrink-0 empty:hidden" data-testid="record-peek-footer" />
       </div>
       {/* Panneaux ouverts depuis celui-ci. Rendus hors du corps : leurs propres
           liens sont interceptés par LEUR panneau, pas par celui-ci (les events

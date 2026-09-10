@@ -4,7 +4,7 @@ import { Pencil, Trash2, Plus, ArrowLeft, Search } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
-import { TABLE_LABELS, TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { TABLE_LABELS, TABLE_COLUMN_META, LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import {
   typeLabel, kindLabel, useFieldOverrides, applyFieldOverrides, applyFieldOrder,
   isComputedKind, isPushOnlyKind, noMappingReason, pushOnlyMappingReason,
@@ -24,7 +24,7 @@ import {
 } from '../components/FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import {
-  customFieldToColumn, CUSTOM_FIELD_TABLES, isAirtableLinkField,
+  customFieldToColumn, CUSTOM_FIELD_TABLES, isAirtableLinkField, linkDisplayTargetOf,
 } from '../lib/customFieldDisplay.jsx'
 import { groupDependents, DEPENDENT_CATEGORY_LABELS } from '../lib/customFieldDeps.js'
 
@@ -135,7 +135,7 @@ function FieldRow({
   // `onAdoptType` n'est fourni que pour les colonnes ERP que la table n'affiche
   // pas encore : choisir leur type les matérialise en champ. Une colonne native
   // de la DataTable se règle via « Modifier le champ » (crayon).
-  at, airtableFields, tableMap, onSaveMapping, onAdoptType, savingId,
+  at, airtableFields, tableMap, onSaveMapping, onAdoptType, savingId, onRefreshFields,
   // Colonne ERP alimentée par le mapping quand ce n'est pas celle de la ligne :
   // « Vendeur » s'affiche depuis `vendeur_label` mais c'est `vendeur_ref` que le
   // sync remplit (cf. `mappingColumn` dans tableDefs.js). Seules les cellules
@@ -249,6 +249,16 @@ function FieldRow({
             // Champ lien Airtable : stocké en texte (l'id du record lié), mais
             // c'est un lien — le nommer « Texte » n'apprenait rien à l'utilisateur.
             const atLink = isAirtableLinkField(cf) || !!at?.target_table
+            // Type « Lien » choisi à la main dans la fiche du champ : même
+            // icône et même libellé qu'un champ lien importé.
+            const asLink = atLink || !!linkDisplayTargetOf(cf)
+            // Colonne dont le rendu est un lien vers une fiche (« Lien vers
+            // Produit ») : l'icône suit le libellé. Elle prenait celle du champ
+            // qui ALIMENTE la colonne (loupe du lookup product_name), ce qui
+            // contredisait le type annoncé juste à côté.
+            const linkedRender = !col.fieldType
+              && !!col.renderTypeLabel
+              && col.renderTypeLabel === LINKED_RECORD_TYPE_LABELS[col.id]
             return (
               <span
                 className="text-xs text-slate-600 w-28 flex-shrink-0 flex items-center gap-1.5 min-w-0"
@@ -262,11 +272,11 @@ function FieldRow({
                   // `fieldType` = type choisi par l'utilisateur (override), plus
                   // fidèle que `type`, que la DataTable aplatit (devise → nombre,
                   // lien → texte).
-                  type={atLink ? 'link' : (col.fieldType || cf || col.type)}
+                  type={asLink || linkedRender ? 'link' : (col.fieldType || cf || col.type)}
                   data-testid={`fieldcfg-typeicon-${col.id}`}
                   className="text-slate-500"
                 />
-                <span className="truncate">{atLink ? kindLabel('link') : (col.renderTypeLabel || own || typeLabel(col.type))}</span>
+                <span className="truncate">{asLink ? kindLabel('link') : (col.renderTypeLabel || own || typeLabel(col.type))}</span>
               </span>
             )
           })()
@@ -389,6 +399,7 @@ function FieldRow({
                   : undefined}
                 onPick={core.onPick}
                 onUnmap={core.onUnmap}
+                onRefresh={core.onRefresh}
               />
             )
             : mapAt
@@ -399,6 +410,7 @@ function FieldRow({
                   tableMap={tableMap}
                   onSave={onSaveMapping}
                   savingId={savingId}
+                  onRefresh={onRefreshFields}
                 />
               )
               : <span className="text-[11px] text-slate-600">—</span>}
@@ -471,9 +483,20 @@ export default function FieldConfig() {
   // direct par URL (favori, rechargement), on retombe sur les métadonnées
   // partagées de tableDefs.js.
   const baseColumns = useMemo(() => {
+    const declared = TABLE_COLUMN_META[table] || []
     const fromNav = location.state?.columns
-    if (Array.isArray(fromNav) && fromNav.length > 0) return fromNav
-    return TABLE_COLUMN_META[table] || []
+    if (!Array.isArray(fromNav) || fromNav.length === 0) return declared
+    // Le state de navigation ne transporte que du sérialisable
+    // (DataTable.openFieldConfig) : `mappingColumn` s'y perdait. Sans lui, la
+    // colonne ERP pilotée par la ligne (`product_id` sous « Produit » des
+    // numéros de série) n'était plus reconnue comme déjà couverte et reprenait
+    // une SECONDE ligne, doublon du champ — avec une poubelle grisée. On la
+    // ré-attache depuis les définitions partagées.
+    const declaredById = new Map(declared.map(c => [c.id ?? c.field, c]))
+    return fromNav.map(c => {
+      const d = declaredById.get(c.id ?? c.field)
+      return d?.mappingColumn && !c.mappingColumn ? { ...c, mappingColumn: d.mappingColumn } : c
+    })
   }, [location.state, table])
   // Ce state de navigation est figé dans l'entrée d'historique : il SURVIT au
   // rechargement (même forcé). Supprimer un champ depuis cette page laissait donc
@@ -501,7 +524,7 @@ export default function FieldConfig() {
   const ownModule = modules.find(m => m.fields) || null
   const {
     data: atData, savingId: atSavingId, applyChange: atApplyChange, saveMapping: atSaveMapping,
-    reload: reloadAirtableColumns,
+    reload: reloadAirtableColumns, refreshFields: refreshAirtableFields,
   } = useModuleFields(ownModule?.module || null)
   const [filter, setFilter] = useState('')
 
@@ -566,7 +589,16 @@ export default function FieldConfig() {
     // (voir `fromNavState`). La liste des champs perso suffit à trancher pour une
     // colonne `cf_*` ; pour les autres on attend les métadonnées Airtable, sans
     // quoi on retirerait à tort une colonne encore mappée.
-    const live = (!fromNavState || !cfLoaded)
+    // Colonne de la page ADOSSÉE à un champ (colonne adoptée ou convertie, ex.
+    // « Projet » sur les projets) : son libellé vient du CHAMP, comme dans les
+    // tableaux (DataTable.columnsWithOwnCf). Sans ça, renommer un tel champ ici
+    // laissait la ligne afficher l'ancien libellé codé dans tableDefs.js — et la
+    // page des champs contredisait les tableaux.
+    const relabel = (cols) => cols.map(c => {
+      const f = cfByColumn.get(c.field ?? c.id) || cfByColumn.get(c.id)
+      return f?.name && f.name !== c.label ? { ...c, label: f.name } : c
+    })
+    const live = relabel((!fromNavState || !cfLoaded)
       ? baseColumns
       : baseColumns.filter(c => {
         const key = c.field ?? c.id
@@ -585,13 +617,21 @@ export default function FieldConfig() {
         // (render maison, pas un champ configurable) — on la garde.
         if (!at) return true
         return !!(at.mapped || at.cf_id)
-      })
+      }))
     const ids = new Set(live.map(c => c.id ?? c.field))
     const extra = customFields.filter(f => !ids.has(f.column_name)).map(customFieldToColumn)
     const known = new Set([...ids, ...customFields.map(f => f.column_name)])
     // Colonne ERP déjà pilotée par la ligne d'un champ affiché (`mappingColumn`,
     // ex. `vendeur_ref` sous « Vendeur ») : pas de seconde ligne pour elle.
-    for (const c of live) if (c.mappingColumn) known.add(c.mappingColumn)
+    // Sauf si cette ligne-là est SUPPRIMÉE (champ à la corbeille) : elle ne
+    // s'affiche plus, et son mapping deviendrait inatteignable — c'est ce qui
+    // cachait « Entreprise » (`company_id`) des contacts, dont la colonne
+    // « Entreprise » (`company_name`) avait été supprimée. La colonne ERP
+    // reprend alors sa propre ligne, comme n'importe quelle colonne mappée que
+    // le tableau n'affiche pas.
+    for (const c of live) {
+      if (c.mappingColumn && !overrides.get(c.id)?.hidden) known.add(c.mappingColumn)
+    }
     // Colonnes ERP que la table n'affiche pas (jamais mises en colonne, ou
     // simplement pas encore adoptées) : elles étaient listées par l'ancien
     // onglet Airtable, elles restent visibles ici.
@@ -631,7 +671,7 @@ export default function FieldConfig() {
       const cf = cfByColumn.get(key)
       return !!cf && cf.id !== removedColumns.get(key)
     })
-  }, [baseColumns, customFields, atByColumn, cfByColumn, cfLoaded, ownModule, atData, fromNavState, nativeIds, removedColumns, coreByColumn])
+  }, [baseColumns, customFields, atByColumn, cfByColumn, cfLoaded, ownModule, atData, fromNavState, nativeIds, removedColumns, coreByColumn, overrides])
   const baseById = useMemo(() => new Map(mergedBase.map(c => [c.id, c])), [mergedBase])
 
   // Un champ supprimé sort du tableau : le serveur republie les lignes
@@ -825,6 +865,7 @@ export default function FieldConfig() {
     ownModule,
     onSaveMapping: atSaveMapping,
     savingId: atSavingId,
+    onRefreshFields: ownModule ? refreshAirtableFields : null,
     fixedField: editingColumn ? (directFields?.[editingColumn] || null) : null,
     fixedReason: directSource?.reason,
   })
@@ -936,6 +977,7 @@ export default function FieldConfig() {
                     tableMap={atData?.airtable_table_to_erp}
                     savingId={atSavingId}
                     onSaveMapping={ownModule ? atSaveMapping : null}
+                    onRefreshFields={ownModule ? refreshAirtableFields : null}
                     showMapping={showMapping}
                     dynModule={ownModule?.module || null}
                     dynDirection={dynDirs[mappingKey(col)] ?? atByColumn.get(mappingKey(col))?.direction ?? 'pull'}
@@ -1008,7 +1050,15 @@ export default function FieldConfig() {
           ? { column: nativeModal.col, override: overrides.get(nativeModal.col.id) || null }
           : null}
         mappingSlot={mappingSlot}
-        onSaved={() => { nativeModal ? reloadOverrides() : reloadCustomFields() }}
+        onSaved={() => {
+          if (nativeModal) { reloadOverrides(); return }
+          reloadCustomFields()
+          // Champ tout juste CRÉÉ : sa colonne n'existe pas encore dans les
+          // métadonnées Airtable (`atData`), donc sa ligne s'affichait sans
+          // sélecteur de champ Airtable — il fallait recharger la page pour
+          // pouvoir le mapper. On relit les colonnes du module tout de suite.
+          if (!cfModal?.editing && ownModule) reloadAirtableColumns()
+        }}
         onDeleted={(field) => { forgetColumn(field); reloadCustomFields(); reloadAirtableColumns() }}
       />
     </Layout>

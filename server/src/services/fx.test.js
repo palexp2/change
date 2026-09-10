@@ -12,7 +12,10 @@ import assert from 'node:assert/strict'
 // Évite d'ouvrir la vraie DB au chargement de db/database.js.
 process.env.DATABASE_PATH = join(tmpdir(), `erp-test-fx-${process.pid}.db`)
 
-const { isFreshFallbackRate, fxRateAgeDays } = await import('./fx.js')
+const { isFreshFallbackRate, fxRateAgeDays, usdCadRateLookup } = await import('./fx.js')
+const { default: db } = await import('../db/database.js')
+
+db.exec(`CREATE TABLE IF NOT EXISTS fx_rates (pair TEXT, date TEXT, rate REAL, PRIMARY KEY (pair, date))`)
 
 test('fxRateAgeDays — écart en jours, absolu', () => {
   assert.equal(fxRateAgeDays('2026-06-20', '2026-06-20'), 0)
@@ -51,4 +54,27 @@ test('borne configurable — maxAgeDays explicite respecté', () => {
   assert.equal(isFreshFallbackRate('2026-06-15', '2026-06-20', 2), false)
   // …et un taux de 1 jour reste accepté.
   assert.equal(isFreshFallbackRate('2026-06-19', '2026-06-20', 2), true)
+})
+
+// Lookup synchrone (affichage) : ne fait aucun appel réseau et retombe sur le
+// jour ouvré précédent — c'est ce qui alimente la colonne « Montant (CAD) » de
+// la page Paiements pour les lignes USD sans conversion mémorisée.
+test('usdCadRateLookup — taux exact, jour ouvré précédent, hors cache', () => {
+  db.prepare('DELETE FROM fx_rates').run()
+  const ins = db.prepare('INSERT INTO fx_rates (pair, date, rate) VALUES (?, ?, ?)')
+  ins.run('USDCAD', '2026-06-18', 1.35)
+  ins.run('USDCAD', '2026-06-19', 1.36)
+
+  const rateAt = usdCadRateLookup()
+  assert.equal(rateAt('2026-06-19'), 1.36)
+  // Samedi/dimanche → dernier taux publié.
+  assert.equal(rateAt('2026-06-21T14:00:00Z'), 1.36)
+  // Date antérieure au cache → plus ancien taux connu (valeur indicative).
+  assert.equal(rateAt('2026-01-05'), 1.35)
+  assert.equal(rateAt(null), null)
+})
+
+test('usdCadRateLookup — cache vide → null (pas de conversion inventée)', () => {
+  db.prepare('DELETE FROM fx_rates').run()
+  assert.equal(usdCadRateLookup()('2026-06-19'), null)
 })

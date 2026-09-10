@@ -299,7 +299,7 @@ function BillPeekModal({ peek, onClose }) {
               </a>
             )}
             <Link to={`/fournisseurs/achats?id=${achat.id}`}
-              className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-600 hover:underline">
+              className="inline-flex items-center gap-1.5 text-sm font-medium link-record">
               Ouvrir la fiche complète <ExternalLink size={14} />
             </Link>
           </div>
@@ -652,7 +652,7 @@ function ProjectionCalendar({ days, threshold, renderEvent }) {
         <div className="flex items-center gap-1">
           {month !== todayStr.slice(0, 7) && (
             <button type="button" onClick={() => setMonth(todayStr.slice(0, 7))}
-              className="text-xs font-medium text-brand-600 hover:underline mr-1.5">
+              className="text-xs font-medium link-record mr-1.5">
               Aujourd&apos;hui
             </button>
           )}
@@ -970,7 +970,7 @@ export function TreasuryProjectionSection() {
                   </span>
                 </button>
                 <button onClick={() => setEditing({})} data-testid="recurring-add"
-                  className="inline-flex items-center gap-1 text-xs font-medium text-brand-600 hover:underline">
+                  className="inline-flex items-center gap-1 text-xs font-medium link-record">
                   <Plus size={13} /> Ajouter
                 </button>
               </div>
@@ -1691,7 +1691,7 @@ function AnomaliesCard() {
                 <p className="text-sm text-slate-700 leading-snug">{a.message}</p>
                 <p className="text-xs text-slate-400 mt-0.5">
                   {a.entity_type === 'sale_receipt' && !a.receipt_deleted_at && (
-                    <Link to={`/sale-receipts/${a.entity_id}`} className="text-brand-600 hover:underline mr-2">Ouvrir le reçu</Link>
+                    <Link to={`/sale-receipts/${a.entity_id}`} className="link-record mr-2">Ouvrir le reçu</Link>
                   )}
                   {fmtDate(a.created_at)}
                 </p>

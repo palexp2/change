@@ -4,7 +4,9 @@ import { ExternalLink } from 'lucide-react'
 import { api } from '../lib/api.js'
 
 /**
- * Autocomplete fournisseur (companies avec type=Fournisseur).
+ * Autocomplete fournisseur (entreprises).
+ * La colonne « Type » a été droppée (migration 045) : un fournisseur créé ici
+ * n'est plus étiqueté, il se reconnaît à ses achats et à son lien QuickBooks.
  *
  * Props:
  *   value        – texte affiché (nom du fournisseur)
@@ -65,7 +67,7 @@ export function VendorSelect({ value = '', vendorId = null, onChange, required =
     clearTimeout(debounceTid.current)
     setOpen(false)
     try {
-      const company = await api.companies.create({ name: query.trim(), type: 'Fournisseur' })
+      const company = await api.companies.create({ name: query.trim() })
       onChange({ vendor: company.name, vendor_id: company.id })
     } catch {
       onChange({ vendor: query.trim(), vendor_id: null })
@@ -112,7 +114,6 @@ export function VendorSelect({ value = '', vendorId = null, onChange, required =
             >
               <span>{c.name}</span>
               <span className="flex items-center gap-2 ml-2">
-                {c.type && <span className="text-xs text-slate-400">{c.type}</span>}
                 {c.quickbooks_vendor_id && (
                   <span className="text-xs text-slate-400">QB</span>
                 )}

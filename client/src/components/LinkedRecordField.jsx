@@ -2,10 +2,13 @@ import { useState, useRef, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { Plus, X, Search, ChevronDown } from 'lucide-react'
+import api from '../lib/api.js'
+
+const EMPTY_OPTIONS = []
 
 export default function LinkedRecordField({
   value,
-  options,
+  options = EMPTY_OPTIONS,
   labelFn,
   getHref,
   onOpen,
@@ -14,6 +17,25 @@ export default function LinkedRecordField({
   onChange,
   allowClear = true,
   name,
+  // Candidats cherchés côté SERVEUR plutôt que dans `options` : table ERP cible
+  // (`adresses`, `products`…). Pour les champs dont la page n'a pas — et ne peut
+  // pas avoir — la liste complète en mémoire (un champ lien de fiche vise
+  // n'importe quelle table du miroir). `options` ne sert alors qu'à donner son
+  // libellé à la valeur déjà posée.
+  searchTarget = null,
+  // Filtre du champ lien : seul ce sous-ensemble de la table cible est proposé
+  // (conditions posées dans la fiche du champ — cf. services/linkFilter.js).
+  searchFilter = null,
+  // Identifiant à STOCKER quand on choisit un candidat : 'airtable' (recXXX) ou
+  // 'erp' (id Boréal, défaut). Une colonne ne doit pas mélanger les deux.
+  identity = null,
+  title,
+  // Option : créer l'enregistrement cible au lieu d'en choisir un existant. La
+  // liste recherchable gagne alors une dernière entrée (`createLabel`) qui
+  // appelle `onCreate(recherche saisie)` — à l'appelant d'ouvrir son formulaire
+  // de création puis de poser la valeur. Sans `onCreate`, rien ne change.
+  onCreate = null,
+  createLabel = 'Créer',
 }) {
   const fieldTestId = name ? `linked-record-field-${name}` : 'linked-record-field'
   const [open, setOpen] = useState(false)
@@ -26,11 +48,36 @@ export default function LinkedRecordField({
   const hasValue = value != null && value !== ''
   const selected = hasValue ? options.find(o => String(o.id) === String(value)) : null
 
+  // Candidats venus du serveur (searchTarget) — débounce 200 ms : une frappe
+  // n'est pas un appel.
+  const [remote, setRemote] = useState(EMPTY_OPTIONS)
+  // Le filtre est un tableau : sérialisé pour les deps, sinon un littéral
+  // reconstruit à chaque rendu relancerait la recherche en boucle.
+  const filterKey = searchFilter?.length ? JSON.stringify(searchFilter) : ''
+  useEffect(() => {
+    if (!open || !searchTarget) return
+    let alive = true
+    const timer = setTimeout(() => {
+      api.recordLinks.search(searchTarget, search.trim(), 40, filterKey ? JSON.parse(filterKey) : null)
+        .then(r => {
+          if (!alive) return
+          setRemote((r?.data || []).map(rec => ({
+            id: String((identity === 'airtable' && rec.airtable_id) || rec.id),
+            name: rec.label || rec.id,
+            sub: rec.sub || null,
+          })))
+        })
+        .catch(() => { if (alive) setRemote(EMPTY_OPTIONS) })
+    }, 200)
+    return () => { alive = false; clearTimeout(timer) }
+  }, [open, search, searchTarget, identity, filterKey])
+
   const filtered = useMemo(() => {
+    if (searchTarget) return remote
     const q = search.trim().toLowerCase()
     if (!q) return options.slice(0, 60)
     return options.filter(o => getLabel(o).toLowerCase().includes(q)).slice(0, 60)
-  }, [options, search, getLabel])
+  }, [options, search, getLabel, searchTarget, remote])
 
   useEffect(() => {
     if (!open) { setSearch(''); return }
@@ -82,17 +129,28 @@ export default function LinkedRecordField({
             key={o.id}
             type="button"
             onClick={() => { onChange(o.id); setOpen(false) }}
-            className={`w-full text-left px-3 py-2 text-sm hover:bg-slate-50 ${String(o.id) === String(value) ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
+            className={`flex w-full items-center gap-2 text-left px-3 py-2 text-sm hover:bg-slate-50 ${String(o.id) === String(value) ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
           >
-            {getLabel(o)}
+            <span className="flex-1 truncate">{getLabel(o)}</span>
+            {o.sub && <span className="text-xs text-slate-400 truncate max-w-[40%]">{o.sub}</span>}
           </button>
         ))}
-        {!search && options.length > 60 && (
+        {!search && !searchTarget && options.length > 60 && (
           <div className="px-3 py-2 text-xs text-slate-400 border-t border-slate-100">
             {options.length - 60} autres — affinez la recherche
           </div>
         )}
       </div>
+      {onCreate && (
+        <button
+          type="button"
+          onClick={() => { setOpen(false); onCreate(search.trim()) }}
+          className="flex w-full items-center gap-1.5 px-3 py-2 text-xs font-medium text-brand-600 border-t border-slate-100 hover:bg-brand-50"
+          data-testid="linked-record-create"
+        >
+          <Plus size={12} /> {createLabel}
+        </button>
+      )}
     </div>,
     document.body
   )
@@ -102,7 +160,7 @@ export default function LinkedRecordField({
     const label = getLabel(selected)
     const bodyCls = 'text-sm text-slate-700 truncate'
     return (
-      <div className="flex items-center gap-1.5 min-w-0" data-testid={fieldTestId} data-state="selected">
+      <div className="flex items-center gap-1.5 min-w-0" data-testid={fieldTestId} data-state="selected" title={title}>
         <span ref={btnRef} className="inline-flex items-center gap-0.5 bg-slate-100 hover:bg-slate-200/70 rounded-md max-w-full transition-colors">
           {onOpen ? (
             // Pas de fiche dédiée pour la table cible : le libellé ouvre la
@@ -110,7 +168,7 @@ export default function LinkedRecordField({
             <button
               type="button"
               onClick={() => onOpen(selected)}
-              className={`${bodyCls} pl-2.5 pr-1 py-1 text-left hover:text-brand-600 hover:underline`}
+              className={`${bodyCls} pl-2.5 pr-1 py-1 text-left hover:text-brand-700 hover:underline`}
               data-testid="linked-record-open"
               title="Modifier"
             >
@@ -119,7 +177,7 @@ export default function LinkedRecordField({
           ) : href ? (
             <Link
               to={href}
-              className={`${bodyCls} pl-2.5 pr-1 py-1 hover:text-brand-600 hover:underline`}
+              className={`${bodyCls} pl-2.5 pr-1 py-1 hover:text-brand-700 hover:underline`}
               data-testid="linked-record-link"
             >
               {label}
@@ -164,7 +222,7 @@ export default function LinkedRecordField({
   }
 
   return (
-    <div className="flex items-center gap-1.5 min-w-0" data-testid={fieldTestId} data-state="empty">
+    <div className="flex items-center gap-1.5 min-w-0" data-testid={fieldTestId} data-state="empty" title={title}>
       <button
         ref={btnRef}
         type="button"

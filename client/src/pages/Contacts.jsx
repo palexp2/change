@@ -1,25 +1,29 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useTable } from '../lib/dataStore.js'
 import { useListData } from '../lib/useListData.js'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { Send } from 'lucide-react'
 import api from '../lib/api.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
-import ContactDetail from './ContactDetail.jsx'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 const RENDERS = {
-  full_name: row => (
-    <div className="font-medium text-slate-900">{row.first_name} {row.last_name}</div>
-  ),
+  // Les lignes de cette liste portent le nom complet sous `last_name`,
+  // pour que le rendu et les tris enregistrés utilisent la même valeur.
+  last_name: row => {
+    const name = row.last_name
+    return name
+      ? <div className="font-medium text-slate-900">{name}</div>
+      : <span className="text-slate-400">—</span>
+  },
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   language: row => row.language
     ? <Badge color={row.language === 'French' ? 'blue' : 'green'}>{row.language === 'French' ? 'FR' : 'EN'}</Badge>
@@ -56,6 +60,7 @@ function contactFormFields(companies) {
 }
 
 export default function Contacts() {
+  const navigate = useNavigate()
   const [companies, setCompanies] = useState([])
   const [showHubspotExport, setShowHubspotExport] = useState(false)
   const [filteredContacts, setFilteredContacts] = useState([])
@@ -69,11 +74,19 @@ export default function Contacts() {
   // Le bootstrap envoie les colonnes brutes — on joint company_name côté client
   // depuis le cache companies pour que la colonne "Entreprise" s'affiche.
   const contacts = useMemo(() => {
-    if (!companiesRaw.length) return contactsRaw
     const cById = new Map(companiesRaw.map(c => [c.id, c.name]))
-    return contactsRaw.map(r => r.company_id
-      ? { ...r, company_name: cById.get(r.company_id) || r.company_name }
-      : r)
+    return contactsRaw.map(r => {
+      const name = `${r.first_name || ''} ${r.last_name || ''}`.trim()
+      const fullName = name === 'Inconnu' ? '' : name
+      // Projection locale à la liste : le cache conserve le nom de famille.
+      // `full_name` reste disponible pour les tris des anciennes vues.
+      return {
+        ...r,
+        last_name: fullName,
+        full_name: fullName,
+        company_name: cById.get(r.company_id) || r.company_name,
+      }
+    })
   }, [contactsRaw, companiesRaw])
 
   useEffect(() => {
@@ -106,15 +119,11 @@ export default function Contacts() {
       <DataTable
         table="contacts"
         manageViews
+        sortIndicator
         columns={COLUMNS}
         data={contacts}
         loading={loading}
-        peek={{
-          title: row => `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Contact',
-          subtitle: row => row.company_name || row.email || '',
-          to: row => `/contacts/${row.id}`,
-          render: (row, { close }) => <ContactDetail recordId={row.id} embedded onClose={close} />,
-        }}
+        onRowClick={row => navigate(`/contacts/${row.id}`)}
         searchFields={['first_name', 'last_name', 'email', 'phone', 'mobile', 'company_name']}
         onFilteredDataChange={setFilteredContacts}
         onBulkDelete={async (ids) => {

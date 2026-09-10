@@ -19,8 +19,11 @@ export const MEAL_TAX_CODE_NAME = 'TPS/TVQ repas'
 export const TIP_TAX_CODE_NAME = 'Hors champ'
 
 // Une ligne de pourboire — libellés vus sur les coupons de terminal (FR et EN) et les
-// factures de traiteur/livraison. « Frais de service » est aussi un pourboire imposé.
-const TIP_RE = /pourboire|\btips?\b|gratuit(?:y|ies|é|és)|frais de service|service charge/i
+// factures de traiteur/livraison. « Frais de service » est aussi un pourboire imposé —
+// mais seule la ligne SEULE (avec au plus un taux/montant en suffixe) compte : suivie
+// d'un mot (« Frais de service AWS ») c'est un poste de facturation SaaS, pas un pourboire
+// — cas réel : AWS « Frais de service AWS » a fait classer une facture cloud en repas.
+const TIP_RE = /pourboire|\btips?\b|gratuit(?:y|ies|é|és)|(?:frais de service|service charge)(?=\s*(?:\d|%|$|[.,;:()-]))/i
 
 export function isTipLine(description) {
   return TIP_RE.test(String(description || ''))

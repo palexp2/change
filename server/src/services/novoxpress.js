@@ -189,7 +189,8 @@ export function buildRecipient(shipment, role = 'destinataire') {
   // Préférence : contact rattaché à l'adresse > company (le contact est le
   // destinataire physique du colis, ses coordonnées sont les bonnes).
   const rawEmail = shipment.address_contact_email || shipment.company_email || ''
-  const rawPhoneSource = shipment.address_contact_phone || shipment.address_contact_mobile || shipment.company_phone || ''
+  // Plus de repli sur le téléphone de l'entreprise : colonne droppée (045).
+  const rawPhoneSource = shipment.address_contact_phone || shipment.address_contact_mobile || ''
   const raw = rawPhoneSource.replace(/\D/g, '')
   const phone = raw.length === 11 && raw.startsWith('1') ? raw.slice(1) : raw
 
@@ -199,14 +200,21 @@ export function buildRecipient(shipment, role = 'destinataire') {
   // claire pour que l'utilisateur corrige la fiche contact/company. `role` est
   // paramétrable car pour une étiquette de retour c'est le CLIENT qui est
   // l'expéditeur (sender), pas le destinataire — cf. buildReturnPayload.
+  // Le nom de la personne est obligatoire : sans lui, le transporteur imprime
+  // « NA » sur la ligne « à l'attention de » de l'étiquette. On refuse plutôt
+  // que de produire une étiquette anonyme (cf. attention_to plus bas).
+  const contactName = [shipment.address_contact_first_name, shipment.address_contact_last_name]
+    .filter(Boolean).join(' ').trim()
+
   const missing = []
+  if (!contactName) missing.push('nom de la personne')
   if (!rawEmail) missing.push('courriel')
   if (phone.length !== 10) missing.push('numéro de téléphone (10 chiffres)')
   if (missing.length) {
     throw new Error(
       `Coordonnées du ${role} manquantes — ${missing.join(' et ')}. ` +
       `Ajoutez ${missing.join(' et ')} sur le contact rattaché à l'adresse ` +
-      `(ou à défaut sur la fiche entreprise « ${shipment.company_name || 'Client'} ») avant d'acheter l'étiquette.`
+      `de « ${shipment.company_name || 'Client'} » avant d'acheter l'étiquette.`
     )
   }
 
@@ -221,19 +229,19 @@ export function buildRecipient(shipment, role = 'destinataire') {
   const street = extractStreet(shipment.address_line1, shipment.address_city)
   const city = parsed?.city || shipment.address_city || ''
 
-  // Novoxpress rejette désormais `contact_name` dans `recipient` sur TOUS ses
-  // endpoints (rate-estimate ET create-shipment) avec « ... contact_name is not
-  // allowed ». Le champ était autrefois accepté (on l'envoyait pour éviter « NA »
-  // sur l'étiquette), mais leur schéma s'est durci. On ne l'envoie donc plus du
-  // tout — le destinataire reste lisible via `company_name`. Seul le `sender`
-  // (Orisha en sortant, le client en retour — cf. buildReturnPayload) tolère
-  // `contact_name` : on le construit ici mais on ne l'inclut que si role='expéditeur'.
-  const contactName = [shipment.address_contact_first_name, shipment.address_contact_last_name]
-    .filter(Boolean).join(' ').trim()
+  // Le nom de la personne ne se transporte PAS par la même clé selon le rôle :
+  //  - `recipient` refuse `contact_name` (et `name`, `attention`, `first_name`…
+  //    → « ... is not allowed », 400) mais accepte **`attention_to`** : c'est la
+  //    ligne « à l'attention de » de l'étiquette, celle qui imprimait « NA »
+  //    quand on n'envoyait rien (re-sondé sur rate-estimate prod + create-shipment
+  //    dev le 2026-09-10 : `attention_to` = seule clé de nom acceptée).
+  //  - `sender` refuse `attention_to` et accepte `contact_name`.
+  // Ne pas intervertir : chaque clé est rejetée par l'autre rôle.
+  const nameField = role === 'expéditeur' ? 'contact_name' : 'attention_to'
 
   return {
     company_name: sanitizeXmlText(shipment.company_name || 'Client').slice(0, 30),
-    ...(role === 'expéditeur' && contactName ? { contact_name: sanitizeXmlText(contactName).slice(0, 30) } : {}),
+    [nameField]: sanitizeXmlText(contactName).slice(0, 30),
     email_address: rawEmail,
     address: {
       street_address: sanitizeXmlText(street).slice(0, 35),
@@ -260,11 +268,11 @@ export function buildPayload(shipment, packaging_type, packages, declaredValue =
 }
 
 // Orisha en tant que DESTINATAIRE (étiquette de retour) — dérivé de SENDER en
-// retirant `contact_name` (toléré côté sender, rejeté côté recipient — même
-// contrainte que buildRecipient plus haut).
+// basculant `contact_name` (clé du sender) vers `attention_to` (clé du
+// recipient) : même personne, même contrainte de clés que buildRecipient.
 const ORISHA_AS_RECIPIENT = (() => {
-  const { contact_name: _drop, ...rest } = SENDER
-  return rest
+  const { contact_name, ...rest } = SENDER
+  return { ...rest, attention_to: contact_name }
 })()
 
 // Construit le payload d'une étiquette DE RETOUR : le client expédie, Orisha
@@ -332,9 +340,26 @@ export async function getReturnRates(ctx, { packaging_type, packages, declared_v
   return { request_id: data.request_id || null, rates, response, sent: payload }
 }
 
+// Novoxpress renvoie ses identifiants (shipment_id, pickup_id) tantôt en texte
+// (« 1ZB799Y36837329590 »), tantôt en NOMBRE JSON (9413689). Écrit tel quel dans
+// une colonne SQLite TEXT, un nombre JS est lié en REAL par better-sqlite3 et
+// converti par l'affinité TEXT en « 9413689.0 » — un identifiant que Novoxpress
+// ne reconnaît plus ensuite (print-label → {"status":404}, create-pickup → 400
+// « No shipment is exist with this shipment ID »). On normalise donc en chaîne à
+// l'aller (avant persistance) ET au retour (avant chaque appel), pour que les
+// envois déjà enregistrés avec le suffixe « .0 » redeviennent utilisables.
+export function normalizeNovoxpressId(value) {
+  if (value == null) return null
+  const s = String(value).trim()
+  if (!s) return null
+  const m = s.match(/^(\d+)\.0+$/)
+  return m ? m[1] : s
+}
+
 export async function cancelPickup(pickupId) {
   const token = await getToken()
-  const res = await fetch(`${BASE_URL}/pickup/cancel-pickup?pickup_id=${encodeURIComponent(pickupId)}`, {
+  const id = normalizeNovoxpressId(pickupId)
+  const res = await fetch(`${BASE_URL}/pickup/cancel-pickup?pickup_id=${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${token}` },
   })
@@ -351,7 +376,7 @@ export async function schedulePickup(novoxpressShipmentId, { date, ready_at, rea
   // strippe ce champ ici uniquement.
   const { residential: _residential, ...senderForPickup } = SENDER
   const body = {
-    shipment_id: novoxpressShipmentId,
+    shipment_id: normalizeNovoxpressId(novoxpressShipmentId),
     sender: senderForPickup,
     pickup_details: {
       date,
@@ -366,7 +391,16 @@ export async function schedulePickup(novoxpressShipmentId, { date, ready_at, rea
     }
   }
   const data = await apiPost('/pickup/create-pickup', body)
-  return data
+  // Novoxpress ne renvoie pas toujours l'identifiant sous `pickup_id` : on
+  // ratisse les variantes observées avant d'abandonner (sans identifiant, le
+  // ramassage existe quand même mais devient inannulable depuis l'ERP).
+  const rawId = data?.pickup_id ?? data?.pickupId ?? data?.pickup_number
+    ?? data?.confirmation_number ?? data?.data?.pickup_id ?? data?.data?.id ?? null
+  const pickup_id = normalizeNovoxpressId(rawId)
+  if (!pickup_id) {
+    console.warn('Novoxpress create-pickup sans identifiant — réponse:', JSON.stringify(data).slice(0, 500))
+  }
+  return { ...data, pickup_id }
 }
 
 // Construit un message clair quand `/shipment/create-shipment` répond sans
@@ -417,7 +451,7 @@ export async function fetchAndSaveLabelPdf(novoxShipmentId, erpShipmentId) {
   const labelRes = await fetch(`${BASE_URL}/shipment/print-label`, {
     method: 'POST',
     headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ shipment_id: novoxShipmentId, label_type: 'EightFiveByEleven' }).toString()
+    body: new URLSearchParams({ shipment_id: normalizeNovoxpressId(novoxShipmentId), label_type: 'EightFiveByEleven' }).toString()
   })
   if (!labelRes.ok) {
     const text = await labelRes.text()
@@ -482,7 +516,10 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
   const createPayload = { request_id, service_id, details }
   const data = await apiPost('/shipment/create-shipment', createPayload)
 
-  const novoxShipmentId = data.shipment_id
+  // Normalisé en chaîne : renvoyé en nombre JSON par certains transporteurs, il
+  // serait persisté « 9413689.0 » et deviendrait inutilisable (cf.
+  // normalizeNovoxpressId).
+  const novoxShipmentId = normalizeNovoxpressId(data.shipment_id)
   // Le numéro de suivi peut venir de create-shipment OU de print-label selon
   // le transporteur — on tente create-shipment ici, print-label plus bas.
   let trackingNumber = extractTrackingNumber(data)
@@ -532,13 +569,15 @@ export async function createReturnLabel(ctx, erpReturnId, { request_id, service_
   const senderCountry = details.sender.address.country
   if (senderCountry !== 'CA') {
     const items = db.prepare(`
-      SELECT ri.qty, p.price_cad AS unit_cost
+      SELECT p.price_cad AS unit_cost
       FROM return_items ri
       LEFT JOIN products p ON p.id = ri.product_id
       WHERE ri.return_id = ?
     `).all(erpReturnId)
 
-    const totalValue = items.reduce((sum, i) => sum + (i.unit_cost || 0) * (i.qty || 1), 0)
+    // Un article = une unité : la colonne `qty` a été droppée (migration 046),
+    // elle valait 1 partout.
+    const totalValue = items.reduce((sum, i) => sum + (i.unit_cost || 0), 0)
     const totalWeight = packages.reduce((sum, p) => sum + Math.ceil(parseFloat(p.weight)) * parseInt(p.quantity || 1), 0)
 
     Object.assign(details, {
@@ -562,7 +601,7 @@ export async function createReturnLabel(ctx, erpReturnId, { request_id, service_
   const createPayload = { request_id, service_id, details }
   const data = await apiPost('/shipment/create-shipment', createPayload)
 
-  const novoxShipmentId = data.shipment_id
+  const novoxShipmentId = normalizeNovoxpressId(data.shipment_id)
   let trackingNumber = extractTrackingNumber(data)
   if (!novoxShipmentId) {
     const { message, upstream } = describeCreateLabelFailure(data)

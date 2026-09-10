@@ -18,6 +18,11 @@ import {
   isOpaqueNovoError,
   runDiagnostic
 } from '../services/novoxpressDiagnostic.js'
+import {
+  SHIPMENT_ITEMS_COLUMN,
+  refreshShipmentItemsMirror,
+  pushShipmentToAirtable
+} from '../services/shipmentAirtableLink.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
@@ -46,7 +51,7 @@ function getShipmentWithAddress(shipmentId) {
       a.line1 as address_line1, a.city as address_city,
       a.province as address_province, a.postal_code as address_postal_code,
       a.country as address_country,
-      co.name as company_name, co.phone as company_phone, co.email as company_email,
+      co.name as company_name, co.email as company_email,
       ct.first_name as address_contact_first_name,
       ct.last_name as address_contact_last_name,
       ct.email as address_contact_email,
@@ -184,6 +189,16 @@ router.post('/label/:shipmentId', async (req, res) => {
     // est journalisé dans change_log et capté par revenueRecognitionWatcher, qui
     // pose la JE et persiste/retente tout échec. Voir services/revenueRecognitionWatcher.js.
 
+    // Miroir Airtable de l'envoi. L'achat écrivait le suivi et le transporteur en
+    // base SANS jamais les renvoyer : la fiche Airtable restait vide, et un envoi
+    // né dans Boréal n'y avait aucun article lié. On recalcule d'abord la colonne
+    // miroir des articles expédiés, puis on pousse — best-effort et non bloquant,
+    // l'étiquette est achetée quoi qu'il arrive.
+    refreshShipmentItemsMirror(req.params.shipmentId)
+    pushShipmentToAirtable(req.params.shipmentId, [
+      'tracking_number', 'carrier', 'status', 'shipped_at', SHIPMENT_ITEMS_COLUMN
+    ])
+
     res.json({
       purchased: true,
       shipment_id: result.shipment_id,
@@ -241,6 +256,9 @@ router.post('/label/:shipmentId/retry-pdf', async (req, res) => {
           tracking_number = COALESCE(?, tracking_number)
       WHERE id = ?
     `).run(pdf.filename, pdf.trackingNumber || null, req.params.shipmentId)
+    // Le suivi peut n'apparaître qu'ici (transporteur qui ne le renvoie qu'avec
+    // le PDF) : il doit repartir vers Airtable comme à l'achat.
+    if (pdf.trackingNumber) pushShipmentToAirtable(req.params.shipmentId, ['tracking_number'])
     res.json({
       label_url: `/erp/api/novoxpress/labels/${pdf.filename}`,
       tracking_id: pdf.trackingNumber || null
@@ -363,7 +381,15 @@ router.post('/pickup/:shipmentId', async (req, res) => {
     res.json({ pickup_id: result.pickup_id, message: result.message, details })
   } catch (e) {
     console.error('Novoxpress pickup error:', e.message)
-    res.status(502).json({ error: e.message })
+    // « No shipment is exist with this shipment ID » : Novoxpress ne reconnaît
+    // pas l'identifiant d'expédition rattaché à l'envoi. On le dit en clair —
+    // le message brut laissait croire à un problème du ramassage lui-même.
+    const unknownShipment = /no shipment is exist/i.test(String(e.responseBody || e.message || ''))
+    res.status(502).json({
+      error: unknownShipment
+        ? `Novoxpress ne reconnaît plus l'expédition de cet envoi (n° ${shipment.novoxpress_shipment_id}) : le ramassage ne peut pas y être rattaché. Rachetez l'étiquette, ou commandez le ramassage à la main sur app.novoxpress.ca. Détail : ${e.message}`
+        : e.message,
+    })
   }
 })
 

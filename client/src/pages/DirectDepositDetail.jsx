@@ -220,7 +220,7 @@ export default function DirectDepositDetail({ recordId: id }) {
               </div>
               <p className="text-sm text-slate-500 mt-1">
                 Dépôt direct (hors payouts Stripe) — facture{' '}
-                <Link to={`/factures/${factureId}`} className="font-mono text-brand-600 hover:underline">{documentNumber || factureId}</Link>
+                <Link to={`/factures/${factureId}`} className="font-mono link-record">{documentNumber || factureId}</Link>
               </p>
             </div>
           </div>

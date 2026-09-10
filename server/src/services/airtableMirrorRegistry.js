@@ -77,7 +77,10 @@ export const MIRROR_SEED = [
 
 const STATUS_BY_SYNC = { full: 'mirrored', 'links-only': 'paused', none: 'paused' }
 
-// Types Airtable calculés par Airtable : lecture seule de notre côté.
+// Types Airtable calculés par Airtable : lecture seule de notre côté. Volontairement
+// distinct de AIRTABLE_READONLY_TYPES (services/airtableFieldTypes.js), qui pilote le
+// verrou du sens de sync et le filtre du write-back : celle-ci décrit ce que le MIROIR
+// sait comparer, et y ajouter 'aiText' reclasserait des champs déjà audités.
 export const COMPUTED_AT_TYPES = new Set([
   'formula', 'rollup', 'count', 'lookup', 'multipleLookupValues',
   'autoNumber', 'createdTime', 'lastModifiedTime', 'lastModifiedBy', 'createdBy',

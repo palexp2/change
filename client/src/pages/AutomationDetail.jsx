@@ -1946,7 +1946,7 @@ function CtbSheetConfigEditor({ actionConfig, onChange }) {
             <a
               href={`https://docs.google.com/spreadsheets/d/${spreadsheetId || CTB_DEFAULTS.spreadsheet_id}/edit`}
               target="_blank" rel="noreferrer"
-              className="text-xs text-brand-600 hover:underline whitespace-nowrap">
+              className="text-xs link-record whitespace-nowrap">
               Ouvrir le fichier ↗
             </a>
           </div>

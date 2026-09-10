@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Plus, Trash2, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
@@ -11,8 +11,7 @@ import { useRealtimeChannel, useEntityListRealtime } from '../lib/useRealtimeCha
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
-import { useFieldGate } from '../lib/fieldGate.js'
-import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 
 const DEPARTMENTS = ['R&D', 'Opérations', 'Marketing']
 const GENDERS = ['Homme', 'Femme', 'Autre']
@@ -74,6 +73,21 @@ const SECTIONS = [
 
 const BOOL_KEYS = new Set(['active', 'is_salesperson', 'is_consultant', 'office_key', 'group_insurance', 'address_verified'])
 
+// Colonnes que la fiche affiche DÉJÀ : la carte des champs personnalisés ne doit
+// pas les répéter. Depuis que les champs de la table sont tous des champs
+// personnalisés, `vacation_days_per_year` (le seul dont la définition n'est pas
+// importée d'Airtable) s'y serait invité — il est saisi juste au-dessus, dans le
+// bloc « Vacances ».
+// Champs de la fiche, à plat : les sections de SECTIONS ne servent plus qu'à
+// fixer l'ordre de départ. L'ordre réel, et les champs qu'on garde, se règlent
+// depuis la fiche (bouton « Personnaliser les champs »).
+const ALL_FIELDS = SECTIONS.flatMap(s => s.fields)
+
+// Rendu AILLEURS que dans la carte de champs : l'allocation de vacances est
+// saisie dans le bloc « Vacances ». Sans ça elle reviendrait en double dans la
+// liste des champs de la table.
+const TAKEN_ELSEWHERE = ['vacation_days_per_year']
+
 function normalize(raw) {
   const out = { ...raw }
   for (const k of BOOL_KEYS) out[k] = raw?.[k] ? 1 : 0
@@ -84,19 +98,8 @@ const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-
 
 // `onClose` ferme le panneau après suppression du record.
 export default function EmployeeDetail({ recordId: id, onClose }) {
-  // Portier des champs supprimés : un champ retiré dans /champs/employees sort
-  // aussi de cette fiche (et un renommage s'y voit).
-  const fieldGate = useFieldGate('employees')
-  const gatedSections = useMemo(
-    () => SECTIONS
-      .map(sec => ({
-        ...sec,
-        fields: fieldGate.keep(sec.fields).map(f => ({ ...f, label: fieldGate.labelFor(f.key, f.label) })),
-      }))
-      .filter(sec => sec.fields.length > 0),
-    [fieldGate],
-  )
-
+  // Portier des champs supprimés, libellés, champs personnalisés, ordre et
+  // présence : tout est appliqué par la carte de champs commune.
   const leaveRecord = () => onClose?.()
   const confirm = useConfirm()
   const { addToast } = useToast()
@@ -170,6 +173,54 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
 
   // `form` est dérivé du record au chargement : tant qu'il n'existe pas, on est
   // encore en chargement (sauf si c'est le chargement lui-même qui a échoué).
+  // Commande de saisie d'un champ. Le libellé, la place et la présence du champ
+  // sont rendus par <DetailFieldGrid> : la fiche ne fournit que l'éditeur.
+  function fieldEditor(field) {
+    const val = form[field.key]
+    if (field.type === 'checkbox') {
+      return (
+        <input
+          type="checkbox" className="rounded" checked={!!val}
+          onChange={e => change(field.key, e.target.checked ? 1 : 0)}
+          data-testid={`employee-field-${field.key}`}
+        />
+      )
+    }
+    if (field.type === 'textarea') {
+      return <textarea className={inp} rows={2} value={val ?? ''} onChange={e => change(field.key, e.target.value)} />
+    }
+    if (field.type === 'select') {
+      // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
+      return (field.options || []).length > 10 ? (
+        <SearchableSelect
+          value={val || ''}
+          options={(field.options || []).map(o => ({ value: o, label: o }))}
+          emptyOption="—"
+          onChange={v => change(field.key, v)}
+          className={inp}
+          size="sm"
+          testId={`employee-field-${field.key}`}
+        />
+      ) : (
+        <select className={inp} value={val || ''} onChange={e => change(field.key, e.target.value)}
+          data-testid={`employee-field-${field.key}`}>
+          <option value="">—</option>
+          {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (field.type === 'number') {
+      return (
+        <input type="number" step={field.step || '1'} className={inp}
+          value={val ?? ''} onChange={e => change(field.key, e.target.value === '' ? null : parseFloat(e.target.value))} />
+      )
+    }
+    return (
+      <input type={field.type} className={inp}
+        value={val ?? ''} onChange={e => change(field.key, e.target.value)} />
+    )
+  }
+
   const pending = detailPending({
     loading: !loadError && (loading || !form),
     loadError, onRetry: load, record: employee, notFound: 'Employé introuvable.',
@@ -197,7 +248,7 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
             <>
               {form.matricule && <span className="font-mono bg-slate-100 px-2 py-0.5 rounded">{form.matricule}</span>}
               {form.accounting_department && <span>{form.accounting_department}</span>}
-              {form.email_work && <a href={`mailto:${form.email_work}`} className="text-brand-600 hover:underline">{form.email_work}</a>}
+              {form.email_work && <a href={`mailto:${form.email_work}`} className="link-record">{form.email_work}</a>}
             </>
           ),
           actions: (
@@ -212,85 +263,22 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
             onAllowanceChange={v => change('vacation_days_per_year', v)}
           />
 
-          {gatedSections.map(section => (
-            <div key={section.title} className="card p-5">
-              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-4">{section.title}</div>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-4">
-                {section.fields.map(field => {
-                  const val = form[field.key]
-                  const span = field.span2 ? 'col-span-2' : ''
-                  if (field.type === 'checkbox') {
-                    return (
-                      <div key={field.key} className={span}>
-                        <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-slate-700">
-                          <input type="checkbox" className="rounded" checked={!!val}
-                            onChange={e => change(field.key, e.target.checked ? 1 : 0)} />
-                          {field.label}
-                        </label>
-                      </div>
-                    )
-                  }
-                  if (field.type === 'textarea') {
-                    return (
-                      <div key={field.key} className={span}>
-                        <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</label>
-                        <textarea className={inp} rows={2}
-                          value={val ?? ''} onChange={e => change(field.key, e.target.value)} />
-                      </div>
-                    )
-                  }
-                  if (field.type === 'select') {
-                    // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
-                    return (
-                      <div key={field.key} className={span}>
-                        <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</label>
-                        {(field.options || []).length > 10 ? (
-                          <SearchableSelect
-                            value={val || ''}
-                            options={(field.options || []).map(o => ({ value: o, label: o }))}
-                            emptyOption="—"
-                            onChange={v => change(field.key, v)}
-                            className={inp}
-                            size="sm"
-                            testId={`employee-field-${field.key}`}
-                          />
-                        ) : (
-                          <select className={inp} value={val || ''} onChange={e => change(field.key, e.target.value)}>
-                            <option value="">—</option>
-                            {field.options.map(o => <option key={o} value={o}>{o}</option>)}
-                          </select>
-                        )}
-                      </div>
-                    )
-                  }
-                  if (field.type === 'number') {
-                    return (
-                      <div key={field.key} className={span}>
-                        <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</label>
-                        <input type="number" step={field.step || '1'} className={inp}
-                          value={val ?? ''} onChange={e => change(field.key, e.target.value === '' ? null : parseFloat(e.target.value))} />
-                      </div>
-                    )
-                  }
-                  return (
-                    <div key={field.key} className={span}>
-                      <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1">{field.label}</label>
-                      <input type={field.type} className={inp}
-                        value={val ?? ''} onChange={e => change(field.key, e.target.value)} />
-                    </div>
-                  )
-                })}
-              </div>
-            </div>
-          ))}
-
-          <CustomDetailFields
-            table="employees"
+          {/* Carte de champs commune : une seule liste, réordonnable depuis la
+              fiche (bouton « Personnaliser les champs »). Les champs
+              personnalisés de la table s'y posent seuls — d'où `record`. */}
+          <DetailFieldGrid
+            entityType="employees"
             record={employee}
-            labelClassName="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1"
-            gridClassName="grid grid-cols-2 gap-x-6 gap-y-4"
-            card
-          />
+            taken={TAKEN_ELSEWHERE}
+            className="card p-5"
+            testId="employee-fields"
+          >
+            {ALL_FIELDS.map(field => (
+              <DetailField key={field.key} id={field.key} label={field.label} span2={field.span2}>
+                {fieldEditor(field)}
+              </DetailField>
+            ))}
+          </DetailFieldGrid>
 
           <div className="flex justify-end pt-2">
             <button onClick={handleDelete}

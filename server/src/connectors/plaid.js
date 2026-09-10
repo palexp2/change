@@ -202,6 +202,46 @@ export function resetItemCursor(itemId) {
   saveItemMeta(itemId, { ...item.metadata, cursor: null })
 }
 
+// Ce que le webhook nous apprend sur l'état de la connexion. Même canal que
+// la sync : `last_error` est déjà lu par plaidSyncStatus et affiché sur la page
+// Connecteurs, donc un webhook d'item s'y range sans nouveau tuyau. `null`
+// efface (connexion réparée).
+export function recordItemIssue(itemId, message) {
+  const item = getItemRow(itemId)
+  if (!item) return false
+  saveItemMeta(itemId, { ...item.metadata, last_error: message })
+  return true
+}
+
+// Sonde Liabilities : on APPELLE pour lire l'erreur, pas pour les données.
+// Liabilities donnerait l'échéance et le solde de relevé de la MasterCard, mais
+// il faut l'activer commercialement chez Plaid et re-consentir chaque item via
+// Link — avant de payer, cette sonde dit si la BNC est seulement non consentie
+// (chantier viable) ou carrément non couverte au Canada (comme Statements, qui
+// est US only). Lecture seule, et rien n'est facturé quand l'appel échoue.
+export async function probeLiabilities(itemId) {
+  const item = getItemRow(itemId)
+  if (!item) throw new Error(`Item Plaid inconnu : ${itemId}`)
+  try {
+    const resp = await getClient().liabilitiesGet({ access_token: item.accessToken })
+    const l = resp.data.liabilities || {}
+    return {
+      supported: true,
+      credit: (l.credit || []).length,
+      student: (l.student || []).length,
+      mortgage: (l.mortgage || []).length,
+    }
+  } catch (e) {
+    const data = e?.response?.data || {}
+    return {
+      supported: false,
+      error_code: data.error_code || null,
+      error_type: data.error_type || null,
+      error_message: data.error_message || e.message,
+    }
+  }
+}
+
 // Santé de la connexion, vue de chez PLAID — à ne pas confondre avec notre
 // propre `last_synced_at` (qui dit seulement « on a demandé »). Une banque
 // peut cesser de répondre à Plaid pendant des jours sans la moindre erreur de

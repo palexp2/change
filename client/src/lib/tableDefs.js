@@ -1,3 +1,5 @@
+import { OPS_AREAS, OPS_SEVERITIES, OPS_STATUSES } from './opsIssues.js'
+
 // Métadonnées des colonnes par table — partagées entre les pages et l'admin.
 // Les fonctions render() restent dans les composants de page.
 // Ce fichier est la source de vérité pour : id, label, field, visibilité, tri, filtre, group.
@@ -28,6 +30,7 @@ export const TABLE_LABELS = {
   project_soumissions: 'Soumissions (projet)',
   project_commissions: 'Commissions (projet)',
   company_contacts: 'Contacts (entreprise)',
+  company_projects: 'Projets (entreprise)',
   company_orders: 'Commandes (entreprise)',
   company_tickets: 'Support (entreprise)',
   company_factures: 'Factures (entreprise)',
@@ -45,12 +48,11 @@ export const TABLE_LABELS = {
   shipments:      'Envois',
   shipment_items: "Articles d'envoi",
   employees:      'Employés',
-  hour_bank:      "Banque d'heures",
   paies:          'Paies',
   paie_items:     'Items de paie',
   stock_movements: "Mouvements d'inventaire",
   product_movements: "Mouvements de stock (produit)",
-  product_achats: 'Achats (pièce)',
+  product_purchases: 'Achats (pièce)',
   sync_log: 'Journal de synchronisation',
   journal_entries: 'Écritures de journal',
   stripe_payouts: 'Stripe Payouts',
@@ -67,6 +69,7 @@ export const TABLE_LABELS = {
   activity_log: 'Feed des opérations',
   changelog: 'Nouveautés',
   activity_codes: "Codes d'activité",
+  ops_issues: "Problèmes d'opérations",
   payments: 'Paiements',
   bank_transactions: 'Rapprochement bancaire',
 }
@@ -107,6 +110,7 @@ export const TABLE_RECORD_LABELS = {
   soumissions:    'Soumission',
   employees:      'Employé',
   users:          'Utilisateur',
+  ops_issues:     'Problème',
 }
 
 export const LINKED_RECORD_TYPE_LABELS = {
@@ -114,7 +118,6 @@ export const LINKED_RECORD_TYPE_LABELS = {
   contact_name: 'Lien vers Contact',
   product_name: 'Lien vers Produit',
   order_number: 'Lien vers Commande',
-  ticket_title: 'Lien vers Billet',
   project_name: 'Lien vers Projet',
 }
 
@@ -127,22 +130,23 @@ export const TABLE_COLUMN_META = {
     { id: 'created_at',  label: 'Quand',        field: 'created_at',  type: 'date' },
     { id: 'user_name',   label: 'Qui',          field: 'user_name',   type: 'user' },
     { id: 'action',      label: 'Action',       field: 'action',      type: 'single_select', options: ['created', 'updated', 'deleted'] },
-    { id: 'entity_type', label: 'Type',         field: 'entity_type', type: 'single_select', options: ['order', 'company', 'contact', 'product', 'ticket', 'task', 'project', 'interaction', 'soumission', 'call', 'purchase', 'facture', 'sale_receipt', 'timesheet', 'employee', 'paie', 'hour_bank_entry', 'activity_code', 'shipment', 'adresse', 'vacation', 'achat_fournisseur'] },
+    { id: 'entity_type', label: 'Type',         field: 'entity_type', type: 'single_select', options: ['order', 'company', 'contact', 'product', 'ticket', 'task', 'project', 'interaction', 'soumission', 'call', 'purchase', 'facture', 'sale_receipt', 'timesheet', 'employee', 'paie', 'activity_code', 'shipment', 'adresse', 'vacation', 'achat_fournisseur'] },
     { id: 'detail',      label: 'Enregistrement', field: 'detail' },
   ],
 
   // Journal des nouveautés (/changelog) — lignes construites à partir de
   // client/src/data/changelog.json, une par entrée. `type` = nature dominante
   // de l'entrée (nouveauté > amélioration > correction) ; le détail complet des
-  // changements s'ouvre en dépliant la ligne. `requester` vient du champ
-  // `requester` de l'entrée, sinon du rapprochement serveur avec la demande
-  // d'origine (GET /api/changelog/requesters).
+  // changements s'ouvre en dépliant la ligne. `requester` vient du seul champ
+  // `requester` de l'entrée : le nom porté par la demande d'origine (la file de
+  // travaux le joint au brief, voir services/promptQueue.js → briefFor). Vide
+  // quand la demande ne vient de personne — aucune déduction.
   changelog: [
     { id: 'date',      label: 'Date',       field: 'date',      type: 'date' },
     { id: 'title',     label: 'Nouveauté',  field: 'title' },
     { id: 'category',  label: 'Domaine',    field: 'category',  type: 'single_select' },
-    { id: 'type',      label: 'Nature',     field: 'type',      type: 'single_select', options: ['Nouveauté', 'Amélioration', 'Correction'], description: 'Nature dominante de l’entrée : nouveauté, puis amélioration, puis correction.' },
-    { id: 'requester', label: 'Demandé par', field: 'requester', type: 'user', description: 'Qui a demandé le changement. Déduit de la demande traitée le même jour quand l’entrée ne le précise pas.' },
+    { id: 'type',      label: 'Nature',     field: 'type',      type: 'single_select', options: ['Nouveauté', 'Amélioration', 'Correction'] },
+    { id: 'requester', label: 'Demandé par', field: 'requester', type: 'user' },
     { id: 'summary',   label: 'Détail',     field: 'summary' },
   ],
 
@@ -158,6 +162,22 @@ export const TABLE_COLUMN_META = {
     { id: 'created_at',   label: 'Créé le',      field: 'created_at',   type: 'date', defaultVisible: false },
   ],
 
+  // Problèmes d'opérations — journal des incidents du quotidien (assemblage,
+  // expédition, réception…). `reported_by_name` est joint côté page depuis le
+  // cache des utilisateurs, comme l'assignation d'un billet.
+  ops_issues: [
+    { id: 'occurred_at',      label: 'Date',        field: 'occurred_at', type: 'date' },
+    { id: 'title',            label: 'Problème',    field: 'title' },
+    { id: 'area',             label: 'Secteur',     field: 'area',     type: 'single_select', options: OPS_AREAS },
+    { id: 'severity',         label: 'Gravité',     field: 'severity', type: 'single_select', options: OPS_SEVERITIES },
+    { id: 'status',           label: 'Statut',      field: 'status',   type: 'single_select', options: OPS_STATUSES },
+    { id: 'reported_by_name', label: 'Signalé par', field: 'reported_by_name', type: 'user' },
+    { id: 'description',      label: 'Détails',     field: 'description', defaultVisible: false },
+    { id: 'resolution',       label: 'Correctif',   field: 'resolution',  defaultVisible: false },
+    { id: 'resolved_at',      label: 'Résolu le',   field: 'resolved_at', type: 'date', defaultVisible: false },
+    { id: 'created_at',       label: 'Créé le',     field: 'created_at',  type: 'date', defaultVisible: false },
+  ],
+
   tasks: [
     { id: 'title',         label: 'Titre',        field: 'title' },
     { id: 'type',          label: 'Type',         field: 'type',          type: 'single_select', options: ['Problème'] },
@@ -166,25 +186,45 @@ export const TABLE_COLUMN_META = {
     { id: 'due_date',      label: 'Échéance',     field: 'due_date',      type: 'date' },
     { id: 'company_name',  label: 'Entreprise',   field: 'company_name',  defaultVisible: true  },
     { id: 'contact_name',  label: 'Contact',      field: 'contact_name',  defaultVisible: true  },
-    { id: 'ticket_title',  label: 'Billet',       field: 'ticket_title',  defaultVisible: false  },
+    // « Billet » (ticket_title) retirée : c'était un lookup sur `tickets.title`,
+    // droppée (migration 040). Le lien vers le billet reste sur la fiche tâche.
     { id: 'assigned_name', label: 'Responsable',  field: 'assigned_name', type: 'user', defaultVisible: false },
     { id: 'created_at',    label: 'Créée le',     field: 'created_at',    type: 'date', defaultVisible: false },
   ],
 
   companies: [
     // « Contacts » (contacts_count) retirée le 2026-09-03 : champ supprimé.
+    // « Type » et « Téléphone » retirées le 2026-09-07 : colonnes droppées
+    // (migration 045), comme « URL » (site web) sur la fiche.
     { id: 'name',            label: 'Entreprise',   field: 'name' },
     { id: 'city',            label: 'Ville',        field: 'city' },
-    { id: 'type',            label: 'Type',         field: 'type',            type: 'single_select', options: ['ASC', 'Serriculteur', 'Pépinière', 'Producteur fleurs', 'Centre jardin', 'Agriculture urbaine', 'Cannabis', 'Particulier', 'Distributeur', 'Partenaire', 'Compétiteur', 'Consultant', 'Autre'] },
-    { id: 'phone',           label: 'Téléphone',    field: 'phone', type: 'phone' },
     { id: 'lifecycle_phase', label: 'Phase',        field: 'lifecycle_phase', type: 'single_select', options: ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore'] },
   ],
 
   contacts: [
     // « Adresse de livraison » (has_shipping_address) retirée le 2026-09-03 :
     // champ supprimé. La colonne SQL et son calcul serveur restent.
-    { id: 'full_name',    label: 'Nom',         field: 'first_name' },
-    { id: 'company_name', label: 'Entreprise',  field: 'company_name'  },
+    //
+    // Plus aucun de ces champs n'est « codé en dur » au sens du mapping : les 6
+    // clés du field_map cœur du CRM (Prénom, Nom, Email, Phone number,
+    // Entreprise, Langue) ont été reprises dans /champs/contacts et les
+    // colonnes adoptées en champs personnalisés (migration 044,
+    // nativeFieldConversions.js). Ce qui reste ici est le RENDU et la
+    // visibilité par défaut — « Prénom Nom » sur une seule cellule, le lien
+    // vers l'entreprise, la pastille de langue — que le registre ne sait pas
+    // porter. Les libellés, eux, viennent des champs (DataTable.relabeled).
+    //
+    // L'id de la colonne de nom est celui de sa colonne SQL (`last_name`) et
+    // plus `full_name` : le champ personnalisé porte forcément le nom de la
+    // colonne, et deux ids différents auraient donné deux colonnes « Nom ».
+    { id: 'last_name',    label: 'Nom',         field: 'last_name' },
+    { id: 'first_name',   label: 'Prénom',      field: 'first_name', defaultVisible: false },
+    // La colonne affichée est le nom joint de l'entreprise, la colonne
+    // réellement importée est la FK : `mappingColumn` rattache la cellule
+    // « Champ Airtable » de /champs/contacts à `company_id` (même geste que
+    // « Produit » des assemblages), plutôt que d'adopter la FK — ce qui
+    // afficherait des ids bruts et casserait le picker d'entreprise.
+    { id: 'company_name', label: 'Entreprise',  field: 'company_name', mappingColumn: 'company_id' },
     { id: 'email',        label: 'Courriel',    field: 'email' },
     { id: 'phone',        label: 'Téléphone',   field: 'phone',  type: 'phone' },
     { id: 'mobile',       label: 'Cellulaire',  field: 'mobile', type: 'phone', defaultVisible: false },
@@ -196,14 +236,23 @@ export const TABLE_COLUMN_META = {
     // « Mensuel (CAD) » (monthly_cad), « Commandes » (orders) et « Vendeur AT »
     // (nom_du_vendeur). Les colonnes SQL et la page Pipeline (servie par l'API,
     // pas par le cache) continuent de les lire.
+    // « Projet » (le numéro, PRJ-1637) n'est plus une définition : c'est un
+    // CHAMP (custom_fields kind='data', colonne `name`, cf.
+    // nativeFieldConversions.js). Son libellé, son type et sa suppression se
+    // règlent dans /champs/projects ; ce qui reste ici est sa place dans le
+    // tableau.
     { id: 'name',           label: 'Projet',            field: 'name' },
-    { id: 'company_name',   label: 'Entreprise',        field: 'company_name'  },
+    // La colonne affichée est le NOM de l'entreprise (jointure), mais la colonne
+    // réellement importée est la FK : `mappingColumn` rattache la cellule
+    // « Champ Airtable » de /champs/projects à `company_id`, que le champ
+    // Airtable « Client final » alimente.
+    { id: 'company_name',   label: 'Entreprise',        field: 'company_name', mappingColumn: 'company_id' },
     { id: 'type',           label: 'Type',              field: 'type',        type: 'single_select', options: ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange'] },
     // Le champ « Statut » a été retiré (signalement depuis /champs/projects) :
     // la colonne SQL `projects.status` et les routes qui la lisent restent en
     // place, mais elle ne s'affiche plus nulle part dans l'interface.
-    { id: 'probability',    label: 'Probabilité',       field: 'probability', type: 'number', defaultVisible: false, description: 'Probabilité de conclusion du projet, en pourcentage (0 à 100).' },
-    { id: 'nb_greenhouses', label: 'Nb serres',         field: 'nb_greenhouses', type: 'number', defaultVisible: false, description: 'Nombre de serres couvertes par ce projet.' },
+    { id: 'probability',    label: 'Probabilité',       field: 'probability', type: 'number', defaultVisible: false },
+    { id: 'nb_greenhouses', label: 'Nb serres',         field: 'nb_greenhouses', type: 'number', defaultVisible: false },
     // « Vendeur » est calculé depuis `vendeur_ref` : c'est cette colonne-là que
     // le mapping Airtable alimente (le nom importé y est résolu en employé ou
     // entreprise) — d'où `mappingColumn`, qui rattache la cellule « Champ
@@ -219,20 +268,25 @@ export const TABLE_COLUMN_META = {
     { id: 'updated_at',     label: 'Modifié le',       field: 'updated_at',  type: 'date', defaultVisible: false },
   ],
 
-  // Champs natifs de la table products. Les 139 champs Airtable dynamiques
-  // arrivent en plus via /api/views/products (custom_fields kind='data') —
-  // depuis la fusion airtable_field_defs → custom_fields, les défs `native_*`
-  // ne migrent plus côté serveur, donc les natifs doivent vivre ici comme pour
-  // les autres tables. Labels alignés sur ensureNativeFieldDefs (index.js).
+  // Colonnes de la table products. Ce ne sont PLUS des définitions : chacune a
+  // désormais son champ dans le registre (custom_fields kind='data', semé par
+  // services/nativeFieldConversions.js), donc son libellé, son type et sa
+  // suppression se règlent dans /champs/products. Ce qui reste ici est le RENDU
+  // et la visibilité par défaut — la vignette d'image, l'ordre d'apparition —
+  // que le registre ne sait pas porter. Les champs Airtable dynamiques
+  // s'ajoutent en plus, via /api/views/products.
   products: [
     // Rendu vignette : render() custom dans Products.jsx (pattern Purchases).
     { id: 'image_url', label: 'Image',                  field: 'image_url', sortable: false, filterable: false, groupable: false },
     { id: 'name_fr',   label: 'Nom',                    field: 'name_fr' },
     { id: 'name_en',   label: 'Nom (EN)',               field: 'name_en',   defaultVisible: false },
     { id: 'sku',       label: 'SKU',                    field: 'sku' },
+    // Codes-barres du fournisseur acceptés par le scan d'une commande (fiche
+    // pièce → « Codes-barres »). Masquée par défaut : sert surtout à chercher.
+    { id: 'scan_codes', label: 'Codes-barres',          field: 'scan_codes', defaultVisible: false },
     { id: 'type',      label: 'Type',                   field: 'type' },
-    { id: 'unit_cost', label: 'Coût unitaire',          field: 'unit_cost', type: 'number', defaultVisible: false },
-    { id: 'price_cad', label: 'Prix (CAD)',             field: 'price_cad', type: 'number', defaultVisible: false },
+    { id: 'unit_cost', label: 'Coût unitaire',          field: 'unit_cost', type: 'currency', defaultVisible: false },
+    { id: 'price_cad', label: 'Prix (CAD)',             field: 'price_cad', type: 'currency', defaultVisible: false },
     { id: 'stock_qty', label: 'Quantité en inventaire', field: 'stock_qty', type: 'number' },
     { id: 'min_stock', label: 'Stock minimum',          field: 'min_stock', type: 'number', defaultVisible: false },
     // « Qté à cmd » (≠ « Quantité à commander ») : le champ Airtable
@@ -241,6 +295,8 @@ export const TABLE_COLUMN_META = {
     { id: 'order_qty', label: 'Qté à cmd',              field: 'order_qty', type: 'number', defaultVisible: false },
     { id: 'supplier',  label: 'Fournisseur',            field: 'supplier',  defaultVisible: false },
     { id: 'is_sellable', label: 'Vendable',             field: 'is_sellable', type: 'boolean', defaultVisible: false },
+    // Permet d'isoler les fiches sans équivalent Airtable (filtre « Est vide »).
+    { id: 'airtable_id', label: 'ID Airtable',          field: 'airtable_id', defaultVisible: false },
   ],
 
   orders: [
@@ -252,7 +308,7 @@ export const TABLE_COLUMN_META = {
     // kind='data', colonne `priority`, cf. nativeFieldConversions.js). Ses choix,
     // ses couleurs et son libellé s'éditent dans l'app ; la colonne arrive dans
     // le tableau par la fusion des champs perso (DataTable.columnsWithOwnCf).
-    { id: 'items_count',    label: 'Items',             field: 'items_count', type: 'number', groupable: false, sortable: false, description: 'Nombre de lignes d\'articles (line items) sur la commande.' },
+    { id: 'items_count',    label: 'Items',             field: 'items_count', type: 'number', groupable: false, sortable: false },
     { id: 'assigned_name',  label: 'Assigné à',         field: 'assigned_name', type: 'user', defaultVisible: false },
   ],
 
@@ -268,7 +324,7 @@ export const TABLE_COLUMN_META = {
     // Tri / filtre / groupement désactivés : la valeur brute est un id, s'en
     // servir pour ordonner ou filtrer n'aurait aucun sens pour l'utilisateur.
     // La recherche du tableau porte déjà sur le nom du produit et le SKU.
-    { id: 'product_id', label: 'Produit', field: 'product_id', sortable: false, filterable: false, groupable: false, description: 'Produit lié à la ligne — affiché par son nom, cliquable vers sa fiche.' },
+    { id: 'product_id', label: 'Produit', field: 'product_id', sortable: false, filterable: false, groupable: false },
     { id: 'qty',                label: 'Qté',             field: 'qty', type: 'number' },
     { id: 'item_type',          label: 'Type',            field: 'item_type', type: 'single_select', options: ['Facturable', 'Remplacement', 'Non facturable'] },
     { id: 'fulfillment_status', label: 'Prélèvement',     field: 'fulfillment_status', type: 'single_select', options: ['À prélever', 'Prélevé', "Dans l'envoi", 'Envoyé', 'En attente'] },
@@ -294,8 +350,8 @@ export const TABLE_COLUMN_META = {
     { id: 'tracking_number', label: 'N° de suivi',  field: 'tracking_number' },
     { id: 'status',          label: 'Statut',       field: 'status', type: 'single_select', options: ['À envoyer', 'Envoyé'] },
     { id: 'shipped_at',      label: 'Envoyé le',    field: 'shipped_at', type: 'date' },
-    { id: 'items_summary',   label: 'Articles',     field: 'items_summary', sortable: false, groupable: false, description: "Articles de la commande rattachés à cet envoi." },
-    { id: 'serials_summary', label: 'N° de série',  field: 'serials_summary', sortable: false, groupable: false, description: 'Numéros de série des articles de cet envoi.' },
+    { id: 'items_summary',   label: 'Articles',     field: 'items_summary', sortable: false, groupable: false },
+    { id: 'serials_summary', label: 'N° de série',  field: 'serials_summary', sortable: false, groupable: false },
     { id: 'pays',            label: 'Pays',         field: 'pays', defaultVisible: false },
     { id: 'notes',           label: 'Notes',        field: 'notes', defaultVisible: false },
     { id: 'created_at',      label: 'Créé le',      field: 'created_at', type: 'date', defaultVisible: false },
@@ -315,49 +371,60 @@ export const TABLE_COLUMN_META = {
     { id: 'created_at',      label: 'Créé le',      field: 'created_at', type: 'date', defaultVisible: false },
   ],
 
+  // Colonnes NATIVES restantes d'un billet. Titre, question, réponse, type,
+  // statut, durée, date, entreprise et contact ont été supprimés sur demande
+  // (colonnes droppées, migration 040). Tout ce qui décrit encore un billet vit
+  // dans les champs personnalisés de la table : ils s'ajoutent d'eux-mêmes aux
+  // colonnes (cf. useTableView) et se règlent depuis /champs/tickets.
   tickets: [
-    { id: 'title',         label: 'Titre',      field: 'title' },
-    { id: 'contact_name',  label: 'Contact',    field: 'contact_name'  },
-    { id: 'company_name',  label: 'Entreprise', field: 'company_name'  },
-    { id: 'status',        label: 'Statut',     field: 'status', type: 'single_select', options: ['open', 'in_progress', 'resolved', 'closed'] },
-    { id: 'type',          label: 'Type',       field: 'type',   type: 'single_select', options: ['question', 'bug', 'feature', 'installation', 'maintenance', 'autre'] },
     { id: 'assigned_name', label: 'Assigné à',  field: 'assigned_name', type: 'user' },
-    { id: 'duration_minutes', label: 'Durée (min)', field: 'duration_minutes', type: 'number', defaultVisible: false, description: 'Temps total passé sur le billet, en minutes.' },
-    { id: 'survey_rating', label: 'Satisfaction', field: 'survey_rating', type: 'number', defaultVisible: false, description: 'Note du sondage de satisfaction envoyé par SMS (1 à 5). Vide = sondage non envoyé ou sans réponse.' },
-    { id: 'created_at', label: 'Créé le', field: 'created_at', type: 'date' },
+    { id: 'survey_rating', label: 'Satisfaction', field: 'survey_rating', type: 'rating', defaultVisible: false },
   ],
 
+  // Colonnes NATIVES restantes d'un achat. Produit, SKU, image, référence,
+  // dates, quantité commandée et prix unitaire ont été supprimés sur demande
+  // (colonnes droppées, migration 035), après « Fournisseur »/« Statut » (032),
+  // « Date prévue » (029), et « Qté reçue » (036). Tout ce qui décrit encore un
+  // achat vit dans les champs personnalisés de la table : ils s'ajoutent d'eux-
+  // mêmes aux colonnes (cf. useTableView) et se règlent depuis /champs/purchases.
   purchases: [
-    { id: 'image',         label: 'Image',       field: 'product_image', sortable: false, filterable: false, groupable: false, defaultVisible: false },
-    { id: 'product_name',  label: 'Produit',     field: 'product_name'  },
-    { id: 'sku',           label: 'SKU',         field: 'sku' },
-    { id: 'supplier',      label: 'Fournisseur', field: 'supplier' },
-    { id: 'status',        label: 'Statut',      field: 'status', type: 'single_select', options: ['pending', 'ordered', 'partial', 'received', 'cancelled'] },
-    { id: 'qty_ordered',   label: 'Qté commandée', field: 'qty_ordered', type: 'number' },
-    { id: 'qty_received',  label: 'Qté reçue',   field: 'qty_received', type: 'number' },
-    { id: 'order_date',    label: "Date commande", field: 'order_date', type: 'date' },
-    // « Date prévue » supprimée (colonne droppée, migration 029) — jamais remplie.
-    { id: 'received_date', label: 'Date de réception complète', field: 'received_date', type: 'date', defaultVisible: false },
+    { id: 'emplacement',   label: 'Emplacement', field: 'emplacement' },
   ],
 
-  // Achats d'une pièce (fiche produit) : mêmes lignes que /purchases, mais la
-  // pièce est déjà le sujet de la fiche — pas de colonnes Produit/SKU/Image.
-  product_achats: [
-    { id: 'reference',     label: 'Référence',   field: 'reference' },
-    { id: 'supplier',      label: 'Fournisseur', field: 'supplier' },
-    { id: 'status',        label: 'Statut',      field: 'status', type: 'single_select', options: ['Commandé', 'Reçu partiellement', 'Reçu', 'Annulé'] },
-    { id: 'qty_ordered',   label: 'Qté commandée', field: 'qty_ordered', type: 'number' },
-    { id: 'qty_received',  label: 'Qté reçue',   field: 'qty_received', type: 'number' },
-    { id: 'unit_cost',     label: 'Coût unitaire', field: 'unit_cost', type: 'number' },
-    { id: 'order_date',    label: 'Date commande', field: 'order_date', type: 'date' },
-    { id: 'received_date', label: 'Date de réception complète', field: 'received_date', type: 'date', defaultVisible: false },
+  // Tableau « Achats » d'une fiche pièce. `purchases.product_id` étant droppée
+  // (migration 035), le rattachement passe par le champ lien `nom_de_la_piece`
+  // (côté serveur : GET /products/:id/purchases). Les colonnes reprises ici sont
+  // les champs VIVANTS d'un achat — les prix ont été mis à la corbeille le
+  // 2026-09-06, on ne les ressuscite pas ici. Le reste du catalogue purchases
+  // reste PROPOSÉ dans le sélecteur de champs (tableau encastré).
+  product_purchases: [
+    // « Achat » (code LIA) est déclaré pour le jour où le champ « ID » de
+    // /champs/purchases sortira de la corbeille : le portier des champs le
+    // retire des colonnes tant qu'il y est (cf. mergedColumns, DataTable.jsx).
+    // En attendant, le code de l'achat s'affiche dans l'en-tête du panneau.
+    { id: 'at_id',                        label: 'Achat',       field: 'at_id' },
+    { id: 'date_de_commande',             label: 'Commandé',    field: 'date_de_commande', type: 'date' },
+    { id: 'quantite_commande',            label: 'Qté',         field: 'quantite_commande', type: 'number' },
+    { id: 'supplier',                     label: 'Fournisseur', field: 'supplier_company_name' },
+    { id: 'cf_date_de_reception_complete', label: 'Reçu',       field: 'cf_date_de_reception_complete', type: 'date' },
   ],
 
+  // Numéros de série : plus AUCUN champ codé en dur. Les 7 colonnes ci-dessous
+  // sont ADOPTÉES en champs (custom_fields, cf. nativeFieldConversions.js), qui
+  // portent désormais leur libellé, leur type et leur suppression ; les entrées
+  // survivent comme PORTEUSES DU RENDU (n° monospace, liens produit/entreprise,
+  // grille de permissions) et de la visibilité par défaut.
+  // « Produit » et « Entreprise » affichent un libellé JOINT alors que la
+  // colonne importée est la FK : `mappingColumn` rattache la cellule « Champ
+  // Airtable » de /champs/serial_numbers à la colonne que le sync remplit.
   serial_numbers: [
     { id: 'serial',        label: 'Numéro de série', field: 'serial' },
-    { id: 'product_name',  label: 'Produit',         field: 'product_name'  },
-    { id: 'company_name',  label: 'Entreprise',      field: 'company_name'  },
-    { id: 'status',        label: 'Statut',          field: 'status', type: 'single_select', options: ['active', 'inactive', 'returned', 'lost'] },
+    { id: 'product_name',  label: 'Produit',         field: 'product_name', mappingColumn: 'product_id' },
+    { id: 'company_name',  label: 'Entreprise',      field: 'company_name', mappingColumn: 'company_id' },
+    // Les choix du « Statut » vivent sur le CHAMP (custom_fields), pas ici :
+    // c'est lui que la modale « Modifier le champ » édite, et la colonne en
+    // hérite (libellés, ordre et couleurs).
+    { id: 'status',        label: 'Statut',          field: 'status', type: 'single_select' },
     { id: 'address',       label: 'Adresse',         field: 'address', defaultVisible: false },
     { id: 'permissions',   label: 'Permissions',     field: 'permissions', sortable: false, filterable: false, groupable: false, defaultVisible: false },
     { id: 'manufacture_date', label: 'Date fab.',    field: 'manufacture_date', type: 'date', defaultVisible: false },
@@ -369,6 +436,7 @@ export const TABLE_COLUMN_META = {
     { id: 'contact_name', label: 'Contact',     field: 'contact_name'  },
     { id: 'company_name', label: 'Entreprise',  field: 'company_name'  },
     { id: 'phone_number', label: 'Téléphone',   field: 'phone_number',     defaultVisible: false },
+    { id: 'subject',      label: 'Objet',       field: 'subject'  },
     { id: 'summary',      label: 'Résumé',      field: null,               sortable: false, filterable: false, groupable: false },
     { id: 'timestamp',    label: 'Date',        field: 'timestamp',        type: 'date' },
     { id: 'duration_seconds', label: 'Durée',   field: 'duration_seconds', type: 'number', defaultVisible: false },
@@ -376,19 +444,11 @@ export const TABLE_COLUMN_META = {
   ],
 
   retours: [
-    // Champ personnalisé depuis la migration 026 (le natif return_number a été
-    // droppé) : l'entrée reste ici pour le rendu monospace, le libellé vient
-    // désormais de custom_fields (DataTable.columnsWithOwnCf).
-    { id: 'n_de_retour',       label: 'N° de retour',         field: 'n_de_retour' },
-    // « Entreprise » est un CHAMP PERSO lui aussi (custom_fields, kind='lookup'
-    // sur company_id → companies.name, cf. nativeFieldConversions.js) : plus
-    // aucune définition en dur, plus de LEFT JOIN dans les routes. La ligne
-    // n'est gardée ici que pour son rendu — le nom cliquable vers la fiche
-    // entreprise, qu'un lookup texte ne saurait pas produire. Libellé, type et
-    // suppression viennent de /champs/retours.
-    { id: 'company_name',      label: 'Entreprise',           field: 'company_name'  },
-    // « Suivi » (tracking_number) et « Statut de traitement » (processing_status)
-    // retirés : colonnes droppées, cf. migration serveur 028.
+    // « N° de retour », « Entreprise », « Contact », « Statut du problème »,
+    // « Notes » et « Facturé le » retirés : colonnes droppées, cf. migration
+    // serveur 037 (comme « Suivi » et « Statut de traitement » l'ont été par
+    // la 028), et « Statut » par la 041. Les champs Airtable des retours se
+    // pilotent tous depuis /champs/retours.
     { id: 'created_at',        label: 'Date',                 field: 'created_at', type: 'date' },
   ],
 
@@ -397,16 +457,24 @@ export const TABLE_COLUMN_META = {
   // return_items (plus les libellés joints par la route : n° de série, nom du
   // produit, SKU) ; les 46 champs Airtable de la table restent proposés par le
   // sélecteur de champs sans s'afficher d'office.
+  // Deux colonnes affichent un libellé JOINT (n° de série, produit à recevoir)
+  // alors que la colonne réellement importée est la FK :
+  // `mappingColumn` rattache la cellule « Champ Airtable » de /champs/return_items
+  // à cette FK-là, sinon la ligne du libellé et celle de la FK feraient deux
+  // lignes homonymes. « Retour » (`return_id`) et « Entreprise » (`company_id`)
+  // n'ont aucune colonne affichée : elles prennent leur propre ligne, comme
+  // toute colonne mappée que le tableau ne montre pas.
+  // « Qté » a été droppée (migration 046) : un article de retour vaut une unité.
+  // « Produit à envoyer » aussi (migration 046) : la FK `product_send_id` qu'elle
+  // affichait n'existe plus.
   return_items: [
-    { id: 'serial_number',  label: 'N° de série',   field: 'serial_number', description: 'Numéro de série retourné — cliquable vers sa fiche.' },
-    { id: 'product_name',   label: 'Produit reçu',  field: 'product_name', description: 'Produit de la ligne, à défaut celui du numéro de série — cliquable vers sa fiche.' },
+    { id: 'serial_number',  label: 'N° de série',   field: 'serial_number', mappingColumn: 'serial_id' },
+    { id: 'product_name',   label: 'Produit reçu',  field: 'product_name' },
     { id: 'sku',            label: 'SKU',           field: 'sku' },
-    { id: 'qty',            label: 'Qté',           field: 'qty', type: 'number' },
     { id: 'return_reason',  label: 'Raison',        field: 'return_reason' },
     { id: 'action',         label: 'Action',        field: 'action' },
     { id: 'received_at',    label: 'Reçu le',       field: 'received_at', type: 'date' },
-    { id: 'product_to_receive', label: 'Produit à recevoir', field: 'product_to_receive' },
-    { id: 'product_to_send',    label: 'Produit à envoyer',  field: 'product_to_send' },
+    { id: 'product_to_receive', label: 'Produit à recevoir', field: 'product_to_receive', mappingColumn: 'product_id' },
     { id: 'return_reason_notes', label: 'Précisions',            field: 'return_reason_notes',  defaultVisible: false },
     { id: 'problem_category',    label: 'Catégorie de problème', field: 'problem_category',     defaultVisible: false },
     { id: 'received_by',         label: 'Reçu par',              field: 'received_by',          defaultVisible: false },
@@ -419,21 +487,21 @@ export const TABLE_COLUMN_META = {
     { id: 'document_number',       label: 'N° document',       field: 'document_number' },
     { id: 'invoice_id',            label: 'ID Stripe/source',  field: 'invoice_id',            defaultVisible: false },
     { id: 'company_name',          label: 'Entreprise',        field: 'company_name'  },
-    { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email',        defaultVisible: false, description: 'Courriel du client Stripe (mapping configurable via « Sync Stripe »). Utile pour les clients Stripe sans entreprise dans l\'ERP.' },
+    { id: 'customer_email',        label: 'Courriel client',   field: 'customer_email',        defaultVisible: false },
     { id: 'project_name',          label: 'Projet',            field: 'project_name',          defaultVisible: false  },
     { id: 'order_number',          label: 'Commande',          field: 'order_number',          defaultVisible: false  },
     { id: 'status',                label: 'Statut',            field: 'status',                type: 'single_select', options: ['Payée', 'Partielle', 'En retard', 'Envoyée', 'Brouillon', 'Annulée'] },
     { id: 'document_date',         label: 'Date document',     field: 'document_date',         type: 'date' },
-    { id: 'payment_date',          label: 'Date de paiement',  field: 'payment_date',          type: 'date', defaultVisible: false, description: 'Date à laquelle la facture a été payée : encaissement Stripe (paid_at) ou, à défaut, dernier paiement manuel enregistré (chèque, virement…). Couvre les paiements Stripe qu\'un rollup sur la table Paiements ne voit pas.' },
-    { id: 'payment_reference',     label: 'ID de paiement',    field: 'payment_reference',     defaultVisible: false, sortable: false, description: 'Identifiant du paiement : payment intent Stripe (pi_…) ou, à défaut, charge Stripe, encaissements manuels de la table Paiements, ou identifiant de facture Stripe (in_…). Couvre les encaissements Stripe qu\'un rollup sur la table Paiements ne voit pas (Stripe ne crée pas de ligne de paiement).' },
+    { id: 'payment_date',          label: 'Date de paiement',  field: 'payment_date',          type: 'date', defaultVisible: false },
+    { id: 'payment_reference',     label: 'ID de paiement',    field: 'payment_reference',     defaultVisible: false, sortable: false },
     { id: 'due_date',              label: 'Échéance',          field: 'due_date',              type: 'date', defaultVisible: false },
     { id: 'currency',              label: 'Devise',            field: 'currency',              type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
-    { id: 'amount_before_tax_cad', label: 'Avant taxes (CAD)', field: 'amount_before_tax_cad', type: 'number', description: 'Montant hors taxes converti en CAD au taux de la date de facture.' },
-    { id: 'total_amount',          label: 'Total',             field: 'total_amount',          type: 'number', description: 'Total taxes incluses, dans la devise d\'origine de la facture.' },
-    { id: 'balance_due',           label: 'Solde dû',          field: 'balance_due',           type: 'number', description: 'Reste à payer = total − paiements − remboursements. Zéro quand la facture est soldée.' },
-    { id: 'refund_amount',         label: 'Remboursé',         field: 'refund_amount',         type: 'number', defaultVisible: false, description: 'Somme des remboursements (refunds) appliqués à cette facture.' },
+    { id: 'amount_before_tax_cad', label: 'Avant taxes (CAD)', field: 'amount_before_tax_cad', type: 'number' },
+    { id: 'total_amount',          label: 'Total',             field: 'total_amount',          type: 'number' },
+    { id: 'balance_due',           label: 'Solde dû',          field: 'balance_due',           type: 'number' },
+    { id: 'refund_amount',         label: 'Remboursé',         field: 'refund_amount',         type: 'number', defaultVisible: false },
     { id: 'is_sent',               label: 'Envoyée',           field: 'is_sent',               type: 'boolean', defaultVisible: false },
-    { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false, description: 'État du revenu reporté : « En attente » tant que l\'expédition n\'a pas eu lieu, « Constaté » une fois la commande expédiée.' },
+    { id: 'deferred_revenue_state',label: 'Revenu reçu d\'avance', field: 'deferred_revenue_state', type: 'single_select', options: ['Constaté', 'En attente', '—'], defaultVisible: false },
     { id: 'notes',                 label: 'Notes',             field: 'notes' },
   ],
 
@@ -443,9 +511,9 @@ export const TABLE_COLUMN_META = {
     { id: 'method',         label: 'Méthode',     field: 'method',        type: 'single_select', options: ['stripe', 'cheque', 'virement_bancaire', 'interac', 'comptant', 'autre'] },
     { id: 'company_name',   label: 'Entreprise',  field: 'company_name'  },
     { id: 'document_number',label: 'Facture',     field: 'document_number' },
-    { id: 'amount',         label: 'Montant',     field: 'amount',        type: 'number', description: 'Montant du paiement dans sa devise d\'origine.' },
+    { id: 'amount',         label: 'Montant',     field: 'amount',        type: 'number' },
     { id: 'currency',       label: 'Devise',      field: 'currency',      type: 'single_select', options: ['CAD', 'USD', 'EUR'], defaultVisible: false },
-    { id: 'amount_cad',     label: 'Montant (CAD)', field: 'amount_cad',  type: 'number', description: 'Montant converti en CAD au taux de la date du paiement. Vide pour les encaissements Stripe (convertis au payout).' },
+    { id: 'amount_cad',     label: 'Montant (CAD)', field: 'amount_cad',  type: 'number' },
     { id: 'qb_status',      label: 'QuickBooks',  field: 'qb_status', sortable: false, filterable: false },
     { id: 'notes',          label: 'Notes',       field: 'notes', defaultVisible: false },
   ],
@@ -467,15 +535,18 @@ export const TABLE_COLUMN_META = {
     { id: 'category',            label: 'Mouvement',      field: 'category',       type: 'single_select', options: ['creation', 'upgrade', 'downgrade', 'churn', 'reactivation'] },
     { id: 'company_name',        label: 'Entreprise',     field: 'company_name'  },
     { id: 'subscription_link',   label: 'Abonnement',     field: 'stripe_subscription_id', sortable: false, filterable: false, groupable: false },
-    { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number', description: 'Variation du revenu mensuel récurrent (MRR) en CAD : positive pour un upgrade/création, négative pour un downgrade/churn.' },
-    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'merged', 'none'], sortable: false, description: 'Statut de détection d\'un rachat (churn suivi d\'une recréation rapprochée) : probable, confirmé, fusionné ou aucun.' },
+    { id: 'amount_cad_delta',    label: 'Δ MRR (CAD)',    field: 'amount_cad_delta', type: 'number' },
+    { id: 'rachat',              label: 'Rachat',         field: 'rachat_status', type: 'single_select', options: ['probable', 'confirmed', 'merged', 'none'], sortable: false },
     { id: 'previous_amount_cad', label: 'Avant (CAD)',    field: 'previous_amount_cad', type: 'number', defaultVisible: false },
     { id: 'new_amount_cad',      label: 'Après (CAD)',    field: 'new_amount_cad', type: 'number', defaultVisible: false },
     { id: 'currency',            label: 'Devise',         field: 'currency', type: 'single_select', options: ['CAD', 'USD'], defaultVisible: false },
   ],
 
   assemblages: [
-    { id: 'product_name', label: 'Produit',         field: 'product_name'  },
+    // « Produit » s'affiche depuis le nom joint, mais c'est `product_id` que le
+    // mapping Airtable alimente — d'où `mappingColumn`, qui rattache la cellule
+    // « Champ Airtable » de /champs/assemblages à la bonne colonne ERP.
+    { id: 'product_name', label: 'Produit',         field: 'product_name', mappingColumn: 'product_id' },
     { id: 'sku',          label: 'SKU',             field: 'sku' },
     { id: 'qty_produced', label: 'Qté produite',    field: 'qty_produced', type: 'number' },
     { id: 'assembled_at', label: 'Date assemblage', field: 'assembled_at', type: 'date' },
@@ -483,54 +554,38 @@ export const TABLE_COLUMN_META = {
 
   bom_items: [
     { id: 'component_image', label: 'Image',         field: 'component_image_url', sortable: false, filterable: false, groupable: false },
-    { id: 'component_name',  label: 'Composant',     field: 'component_name' },
+    // « Composant » et « Produit parent » s'affichent depuis le nom joint, mais
+    // ce sont `component_id` / `product_id` que le mapping Airtable alimente —
+    // d'où `mappingColumn`, qui rattache la cellule « Champ Airtable » de
+    // /champs/bom_items à la bonne colonne ERP.
+    // `linkTarget` : la colonne rend DÉJÀ un lien standard vers la fiche du
+    // produit (depuis `component_id`, l'identifiant exact). Passer le champ en
+    // « Lien vers Produit » ne remplace donc pas son rendu — cf.
+    // applyFieldOverrides, lib/fieldOverrides.jsx.
+    { id: 'component_name',  label: 'Composant',     field: 'component_name', mappingColumn: 'component_id', linkTarget: 'products' },
     { id: 'component_sku',   label: 'SKU composant', field: 'component_sku' },
     { id: 'qty_required',    label: 'Qté requise',   field: 'qty_required', type: 'number' },
-    { id: 'component_stock_qty', label: 'Stock composant', field: 'component_stock_qty', type: 'number', description: 'Stock courant du composant en inventaire. Croisé avec « Qté requise » pour calculer le nombre d\'unités assemblables.' },
-    { id: 'buildable',       label: 'Assemblables',  field: 'buildable', type: 'number', sortable: false, filterable: false, groupable: false, description: 'Unités du produit que ce composant seul permet d\'assembler = plancher(Stock composant ÷ Qté requise).' },
+    { id: 'component_stock_qty', label: 'Stock composant', field: 'component_stock_qty', type: 'number' },
+    { id: 'buildable',       label: 'Assemblables',  field: 'buildable', type: 'number', sortable: false, filterable: false, groupable: false },
     { id: 'ref_des',         label: 'Ref. des.',     field: 'ref_des' },
-    { id: 'product_name',    label: 'Produit parent', field: 'product_name', defaultVisible: false  },
+    { id: 'product_name',    label: 'Produit parent', field: 'product_name', mappingColumn: 'product_id', linkTarget: 'products', defaultVisible: false  },
     { id: 'product_sku',     label: 'SKU parent',     field: 'product_sku',  defaultVisible: false },
   ],
 
+  // Employés : les 28 champs de la table sont des CHAMPS PERSONNALISÉS
+  // (custom_fields, kind='data' — cf. server/services/nativeFieldConversions.js).
+  // Libellé, type, ordre, suppression et mapping Airtable se règlent dans
+  // /champs/employees ; les colonnes arrivent dans le tableau par la fusion des
+  // champs perso (DataTable.columnsWithOwnCf). Ne PAS redéclarer un champ ici :
+  // la définition en dur reprendrait la main sur le type choisi dans l'app.
+  //
+  // Seule survivante, et pour son RENDU seulement : la colonne « Nom », qui
+  // affiche une pastille d'initiales + « Prénom Nom » (le render vit dans
+  // Employees.jsx). Elle est posée sur la colonne `last_name` — son id était
+  // `full_name` jusqu'à la migration 038, qui l'a renommé dans les vues
+  // enregistrées pour que le champ perso `last_name` ne fasse pas doublon.
   employees: [
-    { id: 'full_name',             label: 'Nom',                field: 'last_name' },
-    { id: 'active',                label: 'Actif',              field: 'active', type: 'boolean' },
-    { id: 'accounting_department', label: 'Département',        field: 'accounting_department', type: 'single_select', options: ['R&D', 'Opérations', 'Marketing'] },
-    { id: 'matricule',             label: 'Matricule',          field: 'matricule', defaultVisible: false },
-    { id: 'email_work',            label: 'Courriel travail',   field: 'email_work' },
-    { id: 'email_personal',        label: 'Courriel perso',     field: 'email_personal', defaultVisible: false },
-    { id: 'phone_work',            label: 'Téléphone travail',  field: 'phone_work', type: 'phone' },
-    { id: 'phone_personal',        label: 'Téléphone perso',    field: 'phone_personal', type: 'phone', defaultVisible: false },
-    { id: 'hire_date',             label: "Date d'embauche",    field: 'hire_date',  type: 'date' },
-    { id: 'end_date',              label: "Date de fin",        field: 'end_date',   type: 'date', defaultVisible: false },
-    { id: 'birth_date',            label: 'Date de naissance',  field: 'birth_date', type: 'date', defaultVisible: false },
-    { id: 'gender',                label: 'Genre',              field: 'gender', type: 'single_select', options: ['Homme', 'Femme', 'Autre'], defaultVisible: false },
-    { id: 'hours_per_week',        label: 'Heures/sem',         field: 'hours_per_week', type: 'number', defaultVisible: false },
-    { id: 'last_raise_date',       label: 'Dernière augm.',     field: 'last_raise_date', type: 'date', defaultVisible: false },
-    { id: 'is_salesperson',        label: 'Vendeur',            field: 'is_salesperson', type: 'boolean', defaultVisible: false },
-    { id: 'is_consultant',         label: 'Consultant',         field: 'is_consultant',  type: 'boolean', defaultVisible: false },
-    { id: 'group_insurance',       label: 'Assurance coll.',    field: 'group_insurance', type: 'boolean', defaultVisible: false },
-    { id: 'office_key',            label: 'Clef bureau',        field: 'office_key', type: 'boolean', defaultVisible: false },
-    { id: 'address',               label: 'Adresse',            field: 'address', defaultVisible: false },
-    { id: 'address_verified',      label: 'Adresse validée',    field: 'address_verified', type: 'boolean', defaultVisible: false },
-    { id: 'emergency_contact',     label: "Contact d'urgence",  field: 'emergency_contact', defaultVisible: false },
-    { id: 'nethris_username',      label: 'Nethris username',   field: 'nethris_username', defaultVisible: false },
-    { id: 'insurance_id',          label: 'ID Assurances',      field: 'insurance_id', defaultVisible: false },
-    { id: 'banking_info',          label: 'Coord. bancaires',   field: 'banking_info', defaultVisible: false },
-    { id: 'peer_reviews',          label: 'Éval. par pairs',    field: 'peer_reviews', defaultVisible: false },
-    { id: 'issues',                label: 'Problèmes',          field: 'issues', defaultVisible: false },
-  ],
-
-  // Banque d'heures — soldes agrégés par employé (lignes expandables vers
-  // l'historique des ajustements). Voir BanqueHeures.jsx.
-  hour_bank: [
-    { id: 'employee_name',   label: 'Employé',         field: 'employee_name', type: 'text' },
-    { id: 'matricule',       label: 'Matricule',       field: 'matricule', type: 'text' },
-    { id: 'entry_count',     label: 'Ajustements',     field: 'entry_count', type: 'number', description: 'Nombre d\'ajustements enregistrés dans la banque d\'heures de l\'employé.' },
-    { id: 'balance_hours',   label: 'Solde (h)',       field: 'balance_hours', type: 'number', description: 'Solde courant en heures = somme algébrique de tous les ajustements de l\'employé.' },
-    { id: 'vacation_remaining', label: 'Solde vac. (j)', field: 'vacation_remaining', type: 'number', description: 'Jours de vacances payées restants pour l\'année civile courante = droit annuel − jours ouvrables pris. Négatif = dépassement.' },
-    { id: 'last_entry_date', label: 'Dernier ajust.',  field: 'last_entry_date', type: 'date', description: 'Date du dernier ajustement appliqué à la banque d\'heures.' },
+    { id: 'last_name', label: 'Nom', field: 'last_name' },
   ],
 
   paies: [
@@ -562,10 +617,10 @@ export const TABLE_COLUMN_META = {
     { id: 'vacation',       label: 'Vacances',       field: 'vacation', type: 'number', defaultVisible: false },
     { id: 'commission',     label: 'Commission',     field: 'commission', type: 'number' },
     { id: 'expense_reimb',  label: 'Remb. dépenses', field: 'expense_reimb', type: 'number', defaultVisible: false },
-    { id: 'holiday_1_20',   label: 'Férié 1/20',     field: 'holiday_1_20', type: 'number', description: 'Paie fériée Québec : 1/20 des heures régulières des 2 dernières paies × taux horaire × nombre de congés fériés. Calculé à la création de la paie.' },
-    { id: 'insurance_gains', label: 'Gains assur.',  field: 'insurance_gains', type: 'number', description: 'Gains assurables — synchronisés depuis Airtable.' },
-    { id: 'paid_leave',     label: 'Congés payés',   field: 'paid_leave', description: 'Congés payés — synchronisés depuis Airtable.' },
-    { id: 'rsde_pct',       label: 'RSDE %',         field: 'rsde_pct', type: 'number', defaultVisible: false, description: 'Pourcentage RSDE (recherche scientifique) — synchronisé depuis Airtable.' },
+    { id: 'holiday_1_20',   label: 'Férié 1/20',     field: 'holiday_1_20', type: 'number' },
+    { id: 'insurance_gains', label: 'Gains assur.',  field: 'insurance_gains', type: 'number' },
+    { id: 'paid_leave',     label: 'Congés payés',   field: 'paid_leave' },
+    { id: 'rsde_pct',       label: 'RSDE %',         field: 'rsde_pct', type: 'number', defaultVisible: false },
     { id: 'notes',          label: 'Notes',          field: 'notes', defaultVisible: false },
   ],
 
@@ -592,7 +647,7 @@ export const TABLE_COLUMN_META = {
     // Volontairement en 2e position : en bout de ligne le bouton tombait hors
     // écran (11 colonnes → défilement horizontal) et n'était donc visible que
     // dans la fiche.
-    { id: 'actions',        label: 'Action',         field: 'actions',    sortable: false, filterable: false, groupable: false, alwaysVisible: true, description: 'Bouton « Se désabonner » / « Réactiver » — ouvre la page d\'annulation du fournisseur.' },
+    { id: 'actions',        label: 'Action',         field: 'actions',    sortable: false, filterable: false, groupable: false, alwaysVisible: true },
     { id: 'plan',           label: 'Plan/Forfait',   field: 'plan' },
     { id: 'currency',       label: 'Devise',         field: 'currency',   type: 'single_select', options: ['CAD', 'USD', 'Euro'] },
     { id: 'variable',       label: 'Fixe/Variable',  field: 'variable',   type: 'single_select', options: ['Fixe', 'Variable'] },
@@ -635,12 +690,12 @@ export const TABLE_COLUMN_META = {
     // commande) : elle porte `product_id` et affiche le nom, cliquable. L'ancienne
     // colonne texte `product_name` a été supprimée le 2026-09-03 côté order_items
     // — la garder ici la faisait disparaître du sélecteur de colonnes.
-    { id: 'product_id',       label: 'Produit',         field: 'product_id', sortable: false, filterable: false, groupable: false, description: 'Produit lié à la ligne — affiché par son nom, cliquable vers sa fiche.' },
+    { id: 'product_id',       label: 'Produit',         field: 'product_id', sortable: false, filterable: false, groupable: false },
     { id: 'sku',              label: 'SKU',             field: 'sku' },
     { id: 'qty',              label: 'Qté',             field: 'qty', type: 'number' },
     // Pas de « Coût unitaire » ici non plus : ces lignes SONT des order_items
     // (voir VIEW_KEY_TO_SQL_TABLE) et le champ a été retiré le 2026-09-03.
-    { id: 'line_weight_lbs',  label: 'Poids (lbs)',     field: 'line_weight_lbs', type: 'number', description: 'Poids de la ligne = poids unitaire du produit × quantité.' },
+    { id: 'line_weight_lbs',  label: 'Poids (lbs)',     field: 'line_weight_lbs', type: 'number' },
     { id: 'weight_lbs',       label: 'Poids unitaire (lbs)', field: 'weight_lbs', type: 'number', defaultVisible: false },
     { id: 'fulfillment_status', label: 'Prélèvement',   field: 'fulfillment_status', type: 'single_select', options: ['À prélever', 'Prélevé', "Dans l'envoi", 'Envoyé', 'En attente'], defaultVisible: false },
   ],
@@ -662,17 +717,17 @@ export const TABLE_COLUMN_META = {
 
   bank_transactions: [
     { id: 'txn_date',     label: 'Date',        field: 'txn_date',    type: 'date', width: 104 },
-    { id: 'description',  label: 'Libellé',     field: 'label',       description: "« Autres détails » du relevé (la nature réelle : bénéficiaire, fournisseur…), avec la description de la banque en dessous. Les relevés sans « Autres détails » affichent la description." },
+    { id: 'description',  label: 'Libellé',     field: 'label' },
     { id: 'bank_description', label: 'Description banque', field: 'description', defaultVisible: false },
     { id: 'reference',    label: 'Référence',   field: 'reference',   defaultVisible: false },
     // Relevé bancaire : sortie et entrée dans deux colonnes séparées, comme sur
     // le papier de la banque et dans l'ancien TRX_Orisha.xlsx. `amount` (signé)
     // reste la vérité en base et sert au tri, à la recherche et aux filtres.
-    { id: 'debit',        label: 'Débit',       field: 'debit',       type: 'number', width: 112, description: 'Sortie d’argent (montant négatif du relevé).' },
-    { id: 'credit',       label: 'Crédit',      field: 'credit',      type: 'number', width: 112, description: 'Entrée d’argent (montant positif du relevé).' },
+    { id: 'debit',        label: 'Débit',       field: 'debit',       type: 'number', width: 112 },
+    { id: 'credit',       label: 'Crédit',      field: 'credit',      type: 'number', width: 112 },
     { id: 'amount',       label: 'Montant',     field: 'amount',      type: 'number', width: 120, defaultVisible: false },
     { id: 'balance',      label: 'Solde',       field: 'balance',     type: 'number', width: 124 },
-    { id: 'status',       label: 'Statut',      field: 'status',      type: 'single_select', width: 132, options: ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore'], description: "Dérivé automatiquement : rouge = aucun document trouvé (facture manquante), bleu = document apparié pas encore publié à QB, jaune = publié à QB, vert = rapproché avec le relevé." },
+    { id: 'status',       label: 'Statut',      field: 'status',      type: 'single_select', width: 132, options: ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore'] },
     { id: 'matched_label', label: 'Document',   field: 'matched_label', width: 200 },
     { id: 'match_confidence', label: 'Confiance', field: 'match_confidence', type: 'number', defaultVisible: false },
     // Rarement rempli, et il poussait les boutons d'action hors de l'écran.
@@ -688,7 +743,7 @@ export const TABLE_COLUMN_META = {
     { id: 'qty',            label: 'Quantité',       field: 'qty',            type: 'number' },
     { id: 'reason',         label: 'Raison',         field: 'reason',         type: 'single_select', options: ['Fabrication', 'Utilisation pour le reconditionnement', 'Ajustement (augmentation)', 'Ajustement (diminution)', 'Utilisation de pièces usagés', 'Prélèvement pour R&D'] },
     { id: 'unit_cost',      label: 'Coût unitaire',  field: 'unit_cost',      type: 'number' },
-    { id: 'movement_value', label: 'Valeur',         field: 'movement_value', type: 'number', description: 'Valeur du mouvement = quantité × coût unitaire.' },
+    { id: 'movement_value', label: 'Valeur',         field: 'movement_value', type: 'number' },
     { id: 'user_name',      label: 'Utilisateur',    field: 'user_name',      type: 'user', defaultVisible: false },
     { id: 'reference_id',   label: 'Référence',      field: 'reference_id',   defaultVisible: false },
   ],
@@ -852,6 +907,20 @@ export const TABLE_COLUMN_META = {
     { id: 'language', label: 'Langue',     field: 'language', type: 'single_select', options: ['French', 'English'] },
   ],
 
+  // Projets d'une entreprise. Colonnes tirées de `projects` ci-dessus (même
+  // table, mêmes champs — cf. VIEW_KEY_TO_FIELD_KEY), sans « Entreprise » : la
+  // fiche est déjà celle de l'entreprise. « Valeur (CAD) » n'y figure pas, le
+  // champ a été supprimé du registre le 2026-09-03 (le portier des champs
+  // supprimés le retirerait de toute façon).
+  company_projects: [
+    { id: 'name',           label: 'Projet',      field: 'name' },
+    { id: 'type',           label: 'Type',        field: 'type', type: 'single_select', options: ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange'] },
+    { id: 'probability',    label: 'Probabilité', field: 'probability', type: 'number' },
+    { id: 'nb_greenhouses', label: 'Nb serres',   field: 'nb_greenhouses', type: 'number' },
+    { id: 'vendeur_label',  label: 'Vendeur',     field: 'vendeur_label', mappingColumn: 'vendeur_ref', defaultVisible: false },
+    { id: 'close_date',     label: 'Fermeture',   field: 'close_date', type: 'date' },
+  ],
+
   company_orders: [
     { id: 'order_number', label: '# Commande', field: 'order_number'  },
     { id: 'status',       label: 'Statut',     field: 'status', type: 'single_select', options: ['Commande vide', "Gel d'envois", 'En attente', 'Items à fabriquer ou à acheter', 'Tous les items sont disponibles', 'Tout est dans la boite', 'Partiellement envoyé', 'Drop ship seulement', 'JWT-config', "Envoyé aujourd'hui", 'Envoyé', 'ERREUR SYSTÈME'] },
@@ -859,12 +928,9 @@ export const TABLE_COLUMN_META = {
     { id: 'created_at',   label: 'Date',       field: 'created_at', type: 'date' },
   ],
 
-  company_tickets: [
-    { id: 'title',      label: 'Titre',  field: 'title' },
-    { id: 'type',       label: 'Type',   field: 'type', type: 'single_select', options: ['question', 'bug', 'feature', 'installation', 'maintenance', 'autre'] },
-    { id: 'status',     label: 'Statut', field: 'status', type: 'single_select', options: ['open', 'in_progress', 'resolved', 'closed'] },
-    { id: 'created_at', label: 'Date',   field: 'created_at', type: 'date' },
-  ],
+  // `company_tickets` (l'onglet « Support » d'une fiche entreprise) a disparu
+  // avec `tickets.company_id` : un billet ne cite plus aucune entreprise, il n'y
+  // a plus de billets « de cette entreprise » à lister (migration 040).
 
   company_factures: [
     { id: 'document_number',       label: 'N° document', field: 'document_number' },
@@ -908,9 +974,8 @@ export const TABLE_COLUMN_META = {
   ],
 
   company_retours: [
-    { id: 'n_de_retour',       label: 'N° RMA',      field: 'n_de_retour' },
-    { id: 'status',            label: 'Statut',      field: 'status', type: 'single_select', options: ['Ouvert', 'En cours', 'Fermé'] },
-    { id: 'contact_name',      label: 'Contact',     field: 'contact_first_name'  },
+    // « N° RMA » et « Contact » retirés : colonnes droppées côté serveur
+    // (migration 037), « Statut » par la 041.
     { id: 'order_number',      label: 'Commande',    field: 'order_number'  },
     { id: 'items_count',       label: 'Articles',    field: 'items_count', type: 'number' },
     { id: 'created_at',        label: 'Date',        field: 'created_at', type: 'date' },
@@ -930,8 +995,8 @@ export const TABLE_COLUMN_META = {
     { id: 'summary',         label: 'Déclencheur', field: 'summary', sortable: false },
     { id: 'active',          label: 'Statut',      field: 'active', type: 'boolean' },
     { id: 'last_run_at',     label: 'Dernier run', field: 'last_run_at', type: 'date' },
-    { id: 'runs_30d',        label: 'Runs (30j)',  field: 'runs_30d', type: 'number', description: 'Nombre de déclenchements de l\'automation sur les 30 derniers jours.' },
-    { id: 'health',          label: 'Santé',       field: 'errors_30d', type: 'number', sortable: true, description: 'Nombre d\'exécutions en erreur sur les 30 derniers jours. 0 = en bonne santé.' },
+    { id: 'runs_30d',        label: 'Runs (30j)',  field: 'runs_30d', type: 'number' },
+    { id: 'health',          label: 'Santé',       field: 'errors_30d', type: 'number', sortable: true },
     { id: 'system',          label: 'Système',     field: 'system', type: 'boolean', defaultVisible: false },
     { id: 'description',     label: 'Description', field: 'description', defaultVisible: false },
   ],
@@ -975,8 +1040,8 @@ export const TABLE_COLUMN_META = {
     { id: 'status',            label: 'Statut',        field: 'status',            type: 'single_select', options: ['En cours', 'Terminé', 'Abandonné'] },
     { id: 'contact_full_name', label: 'Contact',       field: 'contact_full_name', defaultVisible: false },
     { id: 'motivation_today',  label: 'Motivation',    field: 'motivation_today' },
-    { id: 'pain_points_count', label: 'Pains',         field: 'pain_points_count', type: 'number', description: 'Nombre de points de douleur (pain points) relevés pendant l\'appel de qualification.' },
-    { id: 'red_flags_count',   label: 'Red flags',     field: 'red_flags_count',   type: 'number', description: 'Nombre de signaux d\'alerte (red flags) identifiés pendant l\'appel.' },
+    { id: 'pain_points_count', label: 'Pains',         field: 'pain_points_count', type: 'number' },
+    { id: 'red_flags_count',   label: 'Red flags',     field: 'red_flags_count',   type: 'number' },
     { id: 'quote_paid_at',     label: 'Payé',          field: 'quote_paid_at',     type: 'date' },
     { id: 'source',            label: 'Source',        field: 'source',            type: 'single_select', options: ['ERP', 'Airtable'] },
     { id: 'summary',           label: 'Résumé',        field: 'summary',           defaultVisible: false },
@@ -989,7 +1054,7 @@ export const TABLE_COLUMN_META = {
     { id: 'company_name',         label: 'Entreprise',       field: 'company_name'  },
     { id: 'status',               label: 'Statut',           field: 'status', type: 'single_select', options: ['in_progress', 'submitted'] },
     { id: 'num_greenhouses',      label: 'Nb serres',        field: 'num_greenhouses', type: 'number' },
-    { id: 'chief_grower_count',   label: 'Chief',            field: 'chief_grower_count', type: 'number' },
+    { id: 'chief_grower_count',   label: 'Chef de culture',  field: 'chief_grower_count', type: 'number' },
     { id: 'helper_count',         label: 'Helper',           field: 'helper_count', type: 'number' },
     { id: 'submitted_at',         label: 'Soumis le',        field: 'submitted_at', type: 'date' },
     { id: 'created_at',           label: 'Créé le',          field: 'created_at', type: 'date' },
@@ -1003,7 +1068,7 @@ export const TABLE_COLUMN_META = {
     { id: 'tags',             label: 'Étiquettes',      field: 'tags', sortable: false },
     { id: 'mime_type',        label: 'Type',            field: 'mime_type', defaultVisible: false },
     { id: 'size',             label: 'Taille',          field: 'size', type: 'number' },
-    { id: 'uploaded_by_name', label: 'Téléversé par',   field: 'uploaded_by_name', defaultVisible: false },
+    { id: 'uploaded_by_name', label: 'Téléversé par',   field: 'uploaded_by_name', description: "Utilisateur connecté au moment du téléversement." },
     { id: 'created_at',       label: 'Téléversé le',    field: 'created_at', type: 'date' },
     { id: 'link',             label: 'Lien public',     field: 'token', sortable: false, filterable: false, groupable: false },
   ],
@@ -1020,6 +1085,6 @@ export const TABLE_COLUMN_META = {
     { id: 'original_name',   label: 'Fichier',        field: 'original_name', defaultVisible: false },
     { id: 'created_at',      label: 'Téléversé le',   field: 'created_at', type: 'date', defaultVisible: false },
     { id: 'archived_at',     label: 'Archivé le',     field: 'archived_at', type: 'date', defaultVisible: false },
-    { id: 'read_at',         label: 'Lu le',          field: 'read_at', type: 'date', defaultVisible: false, description: 'Date de première ouverture du document. Vide = jamais consulté (point bleu dans la liste).' },
+    { id: 'read_at',         label: 'Lu le',          field: 'read_at', type: 'date', defaultVisible: false },
   ],
 }

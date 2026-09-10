@@ -62,14 +62,16 @@ function hsOf(row) {
 export function returnCustomsItems(returnId) {
   const hsCol = productHsColumn()
   const rows = db.prepare(`
-    SELECT ri.qty, p.name_en, p.name_fr, p.price_cad${hsCol ? `, p.${hsCol}` : ''}
+    SELECT p.name_en, p.name_fr, p.price_cad${hsCol ? `, p.${hsCol}` : ''}
     FROM return_items ri
     LEFT JOIN products p ON p.id = ri.product_id
     WHERE ri.return_id = ?
   `).all(returnId)
+  // Un article = une unité : la colonne `qty` a été droppée (migration 046),
+  // elle valait 1 partout.
   return rows.map(r => ({
     description: r.name_en || r.name_fr || 'Greenhouse controller',
-    qty: r.qty || 1,
+    qty: 1,
     unit_value: r.price_cad || 1,
     origin_country: 'CA',
     hs_code: hsOf(r),

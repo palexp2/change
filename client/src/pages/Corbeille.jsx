@@ -10,6 +10,7 @@ const TABLE_ORDER = [
   'custom_fields',
   'companies', 'contacts', 'orders', 'products', 'shipments',
   'returns', 'projects', 'assemblages', 'tasks', 'interactions', 'serial_numbers',
+  'ops_issues',
 ]
 
 const CLEANUP_AUTOMATION_ID = 'sys_trash_auto_cleanup'

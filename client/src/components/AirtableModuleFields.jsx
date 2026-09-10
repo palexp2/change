@@ -4,10 +4,12 @@ import { RefreshCw, Trash2, Plus, Sparkles, AlertCircle } from 'lucide-react'
 import api from '../lib/api.js'
 import { AirtableTypeIcon, airtableTypeLabel } from '../lib/airtableFieldIcons.jsx'
 import { invalidate } from '../lib/prefetch.js'
+import { readStale, writeStale, pruneStale } from '../lib/swr.js'
 import { useSyncStatus } from '../lib/useSyncStatus.js'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
+import { RefreshFieldsButton, refreshAirtableSchema } from './AirtableRefreshFields.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
 import { DIRECTIONS } from './AirtableCoreMapModal.jsx'
 import Spinner from './Spinner.jsx'
@@ -23,11 +25,23 @@ import Spinner from './Spinner.jsx'
 // Compat type Airtable (côté ERP) ↔ type colonne ERP. Aligné sur TYPE_COMPAT
 // dans server/src/routes/connectors.js.
 const TYPE_COMPAT = {
-  text:          new Set(['text', 'long_text']),
+  // Un champ Airtable qui produit une CHAÎNE alimente aussi une colonne
+  // « Sélection » : les champs FORMULE (et rollup/lookup à résultat texte) n'ont
+  // pas de type propre côté ERP et retombent tous sur 'text' — sans ça un
+  // « Statut » calculé par formule n'apparaissait dans aucun sélecteur de champ
+  // dès que la colonne d'accueil était rendue en Choix unique. 'multi_select'
+  // reste exclu (sa colonne stocke un tableau JSON).
+  text:          new Set(['text', 'long_text', 'single_select']),
   long_text:     new Set(['text', 'long_text']),
-  number:        new Set(['number']),
+  // Un montant Airtable alimente aussi une colonne affichée en DEVISE : le type
+  // ERP décrit le rendu, pas la donnée.
+  // 'rating' aussi : une note Airtable (ou un simple nombre) alimente une
+  // colonne rendue en étoiles — la donnée reste un nombre.
+  number:        new Set(['number', 'currency', 'rating']),
   date:          new Set(['date']),
-  single_select: new Set(['single_select']),
+  // Une Sélection Airtable atterrit très bien dans une colonne TEXTE (products.type
+  // et toute colonne adoptée avant que la liste de choix existe côté ERP).
+  single_select: new Set(['single_select', 'text', 'long_text']),
   multi_select:  new Set(['multi_select']),
   checkbox:      new Set(['checkbox']),
   // Un champ « enregistrement lié » Airtable atterrit dans une colonne TEXTE
@@ -161,14 +175,17 @@ function AirtableFieldOption({ option: o }) {
 //   suggestion    nom détecté automatiquement, proposé en un clic
 //   requireTarget la colonne ERP est un lien : une table cible est demandée
 //                 avant l'enregistrement (defaultTargetFor la pré-remplit)
+//   onRefresh     () => Promise — relit la liste des champs de la table Airtable
+//                 (« Rafraîchir » au bas du menu). Absent = pas de bouton.
 export function AirtableFieldCell({
   mapped, targetTable, options, suggestion, saving, mappedIssue,
   requireTarget, targetOptions, defaultTargetFor, canUnmap = true, unmapTitle,
-  onPick, onUnmap, testId,
+  onPick, onUnmap, onRefresh, testId,
 }) {
   const [pending, setPending] = useState(null)        // nom choisi, en attente de la table cible
   const [target, setTarget] = useState(targetTable || '')
   const [err, setErr] = useState(null)
+  const [refreshing, setRefreshing] = useState(false)
 
   useEffect(() => { setTarget(targetTable || '') }, [targetTable])
 
@@ -207,6 +224,18 @@ export function AirtableFieldCell({
     setErr(null)
     setPending(null)
     try { await onUnmap() } catch (e) { setErr(e.message || 'Erreur') }
+  }
+
+  // Un champ ajouté à l'instant dans Airtable n'apparaît pas ici tant que le
+  // serveur ressert ses métadonnées mémorisées. Ce bouton les fait oublier et
+  // recharge la liste — sans fermer le menu : la nouvelle option est là, sous
+  // le curseur.
+  async function refresh() {
+    if (!onRefresh || refreshing) return
+    setRefreshing(true)
+    setErr(null)
+    try { await onRefresh() } catch (e) { setErr(e.message || 'Erreur') }
+    finally { setRefreshing(false) }
   }
 
   function pick(name) {
@@ -260,7 +289,17 @@ export function AirtableFieldCell({
             emptyOption={canUnmap ? '— Non mappé —' : undefined}
             placeholder={noCandidates ? 'Aucun champ compatible' : '— Non mappé —'}
             searchPlaceholder="Rechercher un champ…"
-            disabled={saving || noCandidates}
+            footer={onRefresh ? (
+              <RefreshFieldsButton
+                onClick={refresh}
+                refreshing={refreshing}
+                testId={testId ? `${testId}-refresh` : 'airtable-fields-refresh'}
+              />
+            ) : undefined}
+            // Liste vide : le menu reste ouvrable tant qu'il y a un
+            // « Rafraîchir » dedans — c'est justement quand rien n'apparaît
+            // qu'on en a besoin.
+            disabled={saving || (noCandidates && !onRefresh)}
           />
         </div>
         {!canUnmap && unmapTitle && (
@@ -334,7 +373,7 @@ export function AirtableFieldCell({
 // Mapping dynamique (airtable_field_mappings) d'une colonne ERP : prépare les
 // options et l'enregistrement, le rendu est celui d'AirtableFieldCell — commun
 // aux champs « cœur ».
-export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId }) {
+export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, savingId, onRefresh }) {
   const isLink = erpColumn.field_type === 'link'
 
   // Champs Airtable candidats : ceux dont le type est compatible avec la
@@ -402,6 +441,7 @@ export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, sav
       options={options}
       mappedIssue={mappedIssue}
       saving={savingId === erpColumn.column_name}
+      onRefresh={onRefresh}
       requireTarget={isLink}
       targetOptions={linkTargets}
       defaultTargetFor={name => {
@@ -499,27 +539,64 @@ export function ModuleSourceStatus({ data, onSynced }) {
 // Chargement du mapping-data d'un module + écritures associées. Partagé entre
 // ce composant (onglets des modules « enfants ») et la page de configuration
 // des champs, qui fusionne ces colonnes dans son tableau unique.
+//
+// Le mapping-data est PERSISTÉ (lib/swr.js) : au retour sur la page, les champs
+// Airtable s'affichent tout de suite avec la dernière réponse connue, et le
+// rafraîchissement se fait derrière. Avant, chaque ouverture repartait de zéro
+// (« Chargement des champs Airtable… ») en attendant l'aller-retour serveur +
+// les métadonnées Airtable. Le préfixe `connectors` est celui qu'invalide
+// api.js à chaque mutation sur /connectors — une réponse périmée ne peut donc
+// pas survivre à un changement de mapping.
+export function moduleFieldsCacheKey(module) {
+  return `connectors:airtable-mapping-data:${module}`
+}
+// Nombre de modules dont on garde le mapping-data (payload ~80 ko chacun).
+const MODULE_FIELDS_CACHE_KEEP = 4
+
 export function useModuleFields(module) {
-  const [data, setData] = useState(null)
+  const [data, setData] = useState(() => (module ? readStale(moduleFieldsCacheKey(module)) : null))
   const [savingId, setSavingId] = useState(null)
   const { addToast } = useToast()
 
   const erpTable = data?.erp_table || (module === 'projets' ? 'projects' : null)
 
-  const reload = useCallback(() => {
+  // `fromCache` : premier chargement de la page — la réponse déjà en vol
+  // (préchargée au survol du bouton « Configurer les champs ») est réutilisée
+  // telle quelle. Les rechargements qui suivent une écriture, eux, doivent
+  // repartir du serveur.
+  const load = useCallback((fromCache) => {
     if (!module) { setData(null); return Promise.resolve() }
     // Le cache prefetch (TTL 30 s) est indexé par préfixe de ressource : une
     // mutation sur /custom-fields ne le purge pas pour /connectors. Sans cette
     // invalidation, un reload déclenché juste après la suppression d'un champ
     // resservait la réponse d'avant — la colonne supprimée réapparaissait.
-    invalidate('/connectors')
+    if (!fromCache) invalidate('/connectors')
     return api.airtable.moduleMappingData(module)
-      .then(d => setData(d))
+      .then(d => {
+        setData(d)
+        writeStale(moduleFieldsCacheKey(module), d)
+        pruneStale('connectors:airtable-mapping-data:', MODULE_FIELDS_CACHE_KEEP)
+      })
       .catch(e => addToast({ message: e.message || 'Erreur chargement', type: 'error' }))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [module])
 
-  useEffect(() => { setData(null); reload() }, [reload])
+  const reload = useCallback(() => load(false), [load])
+
+  useEffect(() => {
+    setData(module ? readStale(moduleFieldsCacheKey(module)) : null)
+    load(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [load])
+
+  // « Rafraîchir » des sélecteurs de champ : on fait oublier au serveur les
+  // métadonnées Airtable mémorisées, puis on recharge — la liste proposée est
+  // alors celle de la table Airtable telle qu'elle est maintenant.
+  const refreshFields = useCallback(async () => {
+    if (!module) return
+    await refreshAirtableSchema(module)
+    await reload()
+  }, [module, reload])
 
   // Notifie les DataTable ouverts pour rafraîchir le rendu (labels/types).
   const notify = useCallback((tbl) => {
@@ -559,7 +636,7 @@ export function useModuleFields(module) {
     }
   }, [module, erpTable, reload, notify])
 
-  return { data, reload, savingId, setSavingId, applyChange, saveMapping, erpTable, notify }
+  return { data, reload, refreshFields, savingId, setSavingId, applyChange, saveMapping, erpTable, notify }
 }
 
 export function AirtableModuleFields({ module: moduleProp }) {
@@ -568,7 +645,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
   const [showNewField, setShowNewField] = useState(false)
   const confirm = useConfirm()
   const { addToast } = useToast()
-  const { data, reload, savingId, setSavingId, applyChange, saveMapping, erpTable, notify } = useModuleFields(module)
+  const { data, reload, refreshFields, savingId, setSavingId, applyChange, saveMapping, erpTable, notify } = useModuleFields(module)
 
   async function handleRename(col, newLabel) {
     if (newLabel === (col.display_label || '')) return
@@ -726,6 +803,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
                         tableMap={data.airtable_table_to_erp}
                         onSave={saveMapping}
                         savingId={savingId}
+                        onRefresh={refreshFields}
                       />
                     </td>
                     <td className="px-2 py-2 align-top">

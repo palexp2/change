@@ -69,7 +69,7 @@ function buildPaieItemsColumns(isHR) {
             <Link
               to={`/employees/${row.employee_id}`}
               onClick={e => e.stopPropagation()}
-              className="font-medium text-brand-600 hover:underline"
+              className="font-medium link-record"
             >
               {row.first_name} {row.last_name}
             </Link>

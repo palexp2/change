@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-09-06T18:12:25.026Z",
+  "generatedAt": "2026-09-10T22:30:06.152Z",
   "stats": {
-    "routes": 78,
-    "pages": 70,
+    "routes": 82,
+    "pages": 73,
     "groups": 6,
-    "api": 101,
-    "tables": 158,
+    "api": 102,
+    "tables": 159,
     "connectors": 9
   },
   "groups": [
@@ -130,9 +130,9 @@ export const architectureManifest = {
       "group": "Comptabilité",
       "items": [
         {
-          "to": "/finance",
+          "to": "/comptabilite",
           "label": "Espace finance",
-          "component": null,
+          "component": "ComptaDashboard",
           "adminOnly": false,
           "hrOnly": false,
           "api": null
@@ -212,7 +212,7 @@ export const architectureManifest = {
       ]
     },
     {
-      "group": "Inventaire",
+      "group": "Atelier",
       "items": [
         {
           "to": "/purchases",
@@ -282,14 +282,6 @@ export const architectureManifest = {
           "adminOnly": false,
           "hrOnly": false,
           "api": "/api/paies"
-        },
-        {
-          "to": "/banque-heures",
-          "label": "/banque-heures",
-          "component": "BanqueHeures",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
         }
       ]
     },
@@ -327,6 +319,14 @@ export const architectureManifest = {
           "adminOnly": false,
           "hrOnly": false,
           "api": "/api/public-files"
+        },
+        {
+          "to": "/problemes-operations",
+          "label": "/problemes-operations",
+          "component": "OpsIssues",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
         }
       ]
     }
@@ -421,6 +421,22 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/orders/:id",
+      "label": "OrderDetailPage",
+      "component": "OrderDetailPage",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": "/api/orders"
+    },
+    {
+      "to": "/discovery-form-editor",
+      "label": "DiscoveryFormEditor",
+      "component": "DiscoveryFormEditor",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/paiements-emis",
       "label": "PaiementsEmis",
       "component": "PaiementsEmis",
@@ -509,14 +525,6 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/comptabilite",
-      "label": "ComptaDashboard",
-      "component": "ComptaDashboard",
-      "adminOnly": false,
-      "hrOnly": false,
-      "api": null
-    },
-    {
       "to": "/finance/*",
       "label": "LegacyFinanceRedirect",
       "component": "LegacyFinanceRedirect",
@@ -539,6 +547,22 @@ export const architectureManifest = {
       "adminOnly": false,
       "hrOnly": false,
       "api": null
+    },
+    {
+      "to": "/contacts/:id",
+      "label": "ContactDetailPage",
+      "component": "ContactDetailPage",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": "/api/contacts"
+    },
+    {
+      "to": "/companies/:id",
+      "label": "CompanyDetailPage",
+      "component": "CompanyDetailPage",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": "/api/companies"
     },
     {
       "to": "/admin",
@@ -639,6 +663,7 @@ export const architectureManifest = {
     "/api/customer/post-payment",
     "/api/dashboard",
     "/api/digikey",
+    "/api/discovery-form-schema",
     "/api/discovery-forms",
     "/api/documents",
     "/api/drive-inventory",
@@ -650,7 +675,6 @@ export const architectureManifest = {
     "/api/fx",
     "/api/hooks",
     "/api/hooks/telnyx",
-    "/api/hour-bank",
     "/api/hub",
     "/api/hubspot",
     "/api/instagram",
@@ -665,6 +689,7 @@ export const architectureManifest = {
     "/api/notifications",
     "/api/novoxpress",
     "/api/novoxpress/labels",
+    "/api/ops-issues",
     "/api/orders",
     "/api/paies",
     "/api/payments",
@@ -767,11 +792,13 @@ export const architectureManifest = {
     "customer_tech_info_responses",
     "detail_field_configs",
     "digikey_orders",
+    "discovery_form_schema",
     "document_items",
     "drive_inventory_items",
     "drive_inventory_state",
     "drive_inventory_tabs",
     "drive_sync_state",
+    "email_attachments",
     "email_relance_overrides",
     "emails",
     "employees",
@@ -781,7 +808,6 @@ export const architectureManifest = {
     "fiscal_anomalies",
     "fx_rates",
     "gmail_sync_state",
-    "hour_bank_entries",
     "hubspot_push_failures",
     "instagram_dm_threads",
     "instagram_prospect_events",

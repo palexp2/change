@@ -1,4 +1,5 @@
 import db from '../db/database.js'
+import { linkFilterSql } from './linkFilter.js'
 
 // Résolution d'une clé d'enregistrement vers une fiche ERP : libellé + URL.
 //
@@ -52,11 +53,16 @@ const SPECS = {
     joins: 'LEFT JOIN products p ON p.id = t.product_id', path: null,
   },
   products: { label: 'COALESCE(t.name_fr, t.name_en, t.sku)', sub: 't.sku', path: '/products' },
+  // `reference` et le lien vers le produit ont été droppés (migration 035) : le
+  // libellé d'un achat retombe sur son code LIA (`at_id`, l'identifiant Airtable
+  // du record), puis sur son id.
   purchases: {
-    label: 'COALESCE(t.reference, p.name_fr, p.name_en, t.nom_de_la_piece)', sub: 't.supplier',
-    joins: 'LEFT JOIN products p ON p.id = t.product_id', path: '/purchases',
+    label: "COALESCE(t.at_id, 'Achat')", sub: 't.supplier_vendor_name',
+    path: '/purchases',
   },
-  tickets: { label: 't.title', sub: 't.status', path: '/tickets' },
+  // Titre et statut ont été droppés (migration 040) : un billet n'a plus de
+  // libellé propre.
+  tickets: { label: "'Billet'", path: '/tickets' },
   serial_numbers: {
     label: 't.serial', sub: 'COALESCE(p.name_fr, p.name_en)',
     joins: 'LEFT JOIN products p ON p.id = t.product_id', path: '/serials',
@@ -65,9 +71,13 @@ const SPECS = {
     label: "COALESCE('Envoi #' || o.order_number, 'Envoi')", sub: 'COALESCE(t.tracking_number, t.carrier)',
     joins: 'LEFT JOIN orders o ON o.id = t.order_id', path: '/envois',
   },
-  returns: { label: "COALESCE(t.n_de_retour, 'Retour')", sub: 't.status', path: '/retours' },
+  // Le n° de retour a été droppé (migration 037) et le statut par la 041 : un
+  // retour n'a plus ni libellé ni sous-titre propres.
+  returns: { label: "'Retour'", path: '/retours' },
+  // La quantité a été droppée (migration 046) : un article de retour vaut une
+  // unité, il n'a plus de sous-titre propre.
   return_items: {
-    label: 'COALESCE(p.name_fr, p.name_en, p.sku)', sub: "'× ' || COALESCE(t.qty, 0)",
+    label: 'COALESCE(p.name_fr, p.name_en, p.sku)',
     joins: 'LEFT JOIN products p ON p.id = t.product_id', path: null,
   },
   adresses: {
@@ -260,13 +270,21 @@ export function resolveRecordKeys(keys, { hint = null, byLabel = false } = {}) {
 // Les deux identités sont renvoyées (`id` ERP + `airtable_id`) : l'appelant
 // stocke celle qui a cours dans la colonne — un champ lien Airtable sans table
 // cible garde des `recXXXX`, avec table cible des ids ERP.
-export function searchRecords(table, q, limit = 40) {
+// `filter` : filtre du champ lien (cf. services/linkFilter.js) — la liste ne
+// propose que le sous-ensemble voulu (les produits actifs, les entreprises
+// clientes…). Les conditions portent sur les colonnes de la table cible.
+export function searchRecords(table, q, limit = 40, filter = null) {
   const spec = SPECS[table]
   if (!spec) return []
   const n = Math.max(1, Math.min(100, parseInt(limit, 10) || 40))
   const where = []
   const params = []
   if (hasDeletedAt(table)) where.push('t.deleted_at IS NULL')
+  if (filter) {
+    const f = linkFilterSql(filter, table, 't')
+    where.push(...f.clauses)
+    params.push(...f.params)
+  }
   const term = String(q || '').trim()
   if (term) {
     // Recherche sur le libellé ET son contexte (le `sub` d'un contact est le nom

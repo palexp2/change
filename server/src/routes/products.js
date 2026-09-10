@@ -8,12 +8,12 @@ import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { makeUpload } from '../utils/upload.js';
 import { buildPurchaseOrderPdf, fetchOrishaLogo } from '../services/purchaseOrderPdf.js';
 import { sendEmail as sendGmail } from '../services/gmail.js';
-import { insertPurchasesFromPo } from '../services/purchaseOrder.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { parseFiniteInt, parsePositiveInt, parseNonNegativeInt } from '../utils/validateNumbers.js';
 import { readRelation } from '../services/customFieldsView.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { addScanCode, normalizeScanCodes, matchesScanCode } from '../utils/scanCodes.js'
 
 const INSTALLATION_DOC_FIELDS = [
   { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
@@ -71,9 +71,9 @@ router.get('/', (req, res) => {
   const params = [];
 
   if (search) {
-    where += ' AND (unaccent(sku) LIKE unaccent(?) OR unaccent(name_fr) LIKE unaccent(?) OR unaccent(name_en) LIKE unaccent(?) OR unaccent(supplier) LIKE unaccent(?))';
+    where += ' AND (unaccent(sku) LIKE unaccent(?) OR unaccent(name_fr) LIKE unaccent(?) OR unaccent(name_en) LIKE unaccent(?) OR unaccent(supplier) LIKE unaccent(?) OR unaccent(scan_codes) LIKE unaccent(?))';
     const q = `%${search}%`;
-    params.push(q, q, q, q);
+    params.push(q, q, q, q, q);
   }
   if (type) {
     where += ' AND type = ?';
@@ -119,6 +119,30 @@ router.get('/:id', (req, res) => {
   res.json({ ...product, movements, supplier_company });
 });
 
+// GET /api/products/:id/purchases — les achats (PO du miroir Airtable
+// « Achats ») qui citent cette pièce. `purchases.product_id` a été droppée
+// (migration 035) : le lien vit dans le champ lien `nom_de_la_piece`, qui porte
+// un (ou plusieurs) record ID Airtable, soit brut soit en tableau JSON. On
+// cherche donc l'identifiant DANS le texte du champ — et aussi l'id ERP, au cas
+// où une table cible serait posée un jour sur le mapping (elle réécrirait les
+// valeurs, cf. link_target_table).
+router.get('/:id/purchases', (req, res) => {
+  const product = db.prepare('SELECT id, airtable_id FROM products WHERE id = ?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+
+  const keys = [product.airtable_id, product.id].filter(Boolean);
+  const where = keys.map(() => "instr(COALESCE(p.nom_de_la_piece, ''), ?) > 0").join(' OR ');
+  const rows = db.prepare(`
+    SELECT p.*, c.name as supplier_company_name
+    FROM ${readRelation('purchases')} p
+    LEFT JOIN companies c ON p.supplier_company_id = c.id
+    WHERE ${where}
+    ORDER BY COALESCE(p.date_de_commande, p.created_at) DESC
+  `).all(...keys);
+
+  res.json({ data: rows });
+});
+
 // POST /api/products
 router.post('/', (req, res) => {
   const { sku, name_fr, name_en, type, unit_cost, price_cad, stock_qty, min_stock, order_qty, supplier, procurement_type, weight_lbs, notes } = req.body;
@@ -147,13 +171,14 @@ router.put('/:id', (req, res) => {
       'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'min_stock', 'order_qty',
       'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
       'weight_lbs', 'notes', 'active', 'manufacturier', 'order_email',
-      'role', 'purchase_snooze_until'],
+      'role', 'purchase_snooze_until', 'scan_codes'],
     nonNullable: new Set(['name_fr']),
     coerce: {
       is_sellable: v => v ? 1 : 0,
       buy_via_po: v => v ? 1 : 0,
       active: v => v ? 1 : 0,
       order_email: v => v ? String(v).trim() : null,
+      scan_codes: v => normalizeScanCodes(v),
     },
   });
   if (error) return res.status(400).json({ error });
@@ -161,6 +186,40 @@ router.put('/:id', (req, res) => {
     db.prepare(`UPDATE products SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id);
   }
+
+  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+  res.json(updated);
+});
+
+// POST /api/products/:id/scan-codes — apprend un code-barre à la pièce
+// (étiquette fournisseur/fabricant scannée au prélèvement). Lecture-modif-
+// écriture faite ici pour que deux apprentissages simultanés ne s'écrasent pas.
+router.post('/:id/scan-codes', (req, res) => {
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+
+  const code = String(req.body?.code || '').trim();
+  if (!code) return res.status(400).json({ error: 'code is required' });
+  if (/[,;\n\r]/.test(code)) return res.status(400).json({ error: 'code cannot contain a separator' });
+
+  // Un code déjà porté par une AUTRE pièce (comme SKU ou comme code-barre)
+  // rendrait le scan ambigu : on refuse plutôt que de créer un doublon muet.
+  const skuOwner = db.prepare('SELECT id, sku, name_fr FROM products WHERE sku = ? COLLATE NOCASE AND id <> ? AND deleted_at IS NULL')
+    .get(code, req.params.id);
+  if (skuOwner) return res.status(409).json({ error: `Code déjà utilisé comme SKU par « ${skuOwner.name_fr} »` });
+
+  const others = db.prepare(
+    `SELECT id, name_fr, scan_codes FROM products
+     WHERE id <> ? AND deleted_at IS NULL AND scan_codes IS NOT NULL AND scan_codes <> ''
+       AND instr(lower(scan_codes), lower(?)) > 0`
+  ).all(req.params.id, code);
+  const codeOwner = others.find(p => matchesScanCode(p.scan_codes, code));
+  if (codeOwner) return res.status(409).json({ error: `Code déjà associé à « ${codeOwner.name_fr} »` });
+
+  const next = addScanCode(product.scan_codes, code);
+  db.prepare(`UPDATE products SET scan_codes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+    .run(next, req.params.id);
 
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
@@ -437,24 +496,19 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
       `Créé automatiquement depuis PO ${po.po_number} envoyé à ${to}.${po.details ? ' ' + po.details : ''}`,
     )
 
-    return insertPurchasesFromPo(db, po, { supplierCompanyId: companyId, to })
   })
-  const { ids: purchaseIds, skipped: purchasesSkipped } = persist()
+  persist()
 
-  // Realtime APRÈS le commit : la page Achats et la fiche produit voient les
-  // achats du PO tout de suite, sans attendre le prochain delta du cache client.
-  for (const purchaseId of purchaseIds) {
-    const row = db.prepare('SELECT * FROM purchases WHERE id = ?').get(purchaseId)
-    if (row) emitEntity('purchase', 'created', purchaseId, row, req.user?.id)
-  }
-
+  // Un PO envoyé ne crée plus d'achats (table `purchases`) : les colonnes qui
+  // décrivaient la commande — produit, référence, date, quantité, prix unitaire,
+  // notes — ont été droppées sur demande (migration 035). Il ne reste rien à y
+  // écrire. Le bill brouillon dans achats_fournisseurs, lui, est inchangé : la
+  // comptabilité du PO est intacte.
   res.json({
     success: true,
     interaction_id: interactionId,
     email_id: emailId,
     achat_id: achatId,
-    purchase_ids: purchaseIds,
-    purchases_skipped: purchasesSkipped,
   })
 });
 
@@ -590,17 +644,18 @@ router.delete('/:id/image', (req, res) => {
 });
 
 // Une pièce ne se supprime que si plus rien ne la référence : nomenclature
-// (elle-même assemblée, ou composant d'un autre produit), envoi (une ligne de
-// commande rattachée à un envoi) et achats. Sans ce garde-fou, la fiche
-// disparaît de /products mais reste citée dans des BOM, des envois expédiés et
-// l'historique d'achat, qui affichent alors une pièce introuvable.
+// (elle-même assemblée, ou composant d'un autre produit) et envoi (une ligne de
+// commande rattachée à un envoi). Sans ce garde-fou, la fiche disparaît de
+// /products mais reste citée dans des BOM et des envois expédiés, qui affichent
+// alors une pièce introuvable.
+// Les achats ne sont plus un verrou : `purchases.product_id` a été droppée
+// (migration 035), un achat ne cite plus aucune pièce.
 function productDeleteBlockers(id) {
   const bom = db.prepare('SELECT COUNT(*) AS c FROM bom_items WHERE product_id = ? OR component_id = ?').get(id, id).c;
   const shipments = db.prepare(
     'SELECT COUNT(DISTINCT shipment_id) AS c FROM order_items WHERE product_id = ? AND shipment_id IS NOT NULL'
   ).get(id).c;
-  const purchases = db.prepare('SELECT COUNT(*) AS c FROM purchases WHERE product_id = ?').get(id).c;
-  return { bom, shipments, purchases };
+  return { bom, shipments };
 }
 
 function plural(n, one, many) { return `${n} ${n > 1 ? many : one}`; }
@@ -609,7 +664,6 @@ function blockersMessage(b) {
   const parts = [];
   if (b.bom) parts.push(plural(b.bom, 'ligne de nomenclature', 'lignes de nomenclature'));
   if (b.shipments) parts.push(plural(b.shipments, 'envoi', 'envois'));
-  if (b.purchases) parts.push(plural(b.purchases, 'achat', 'achats'));
   return `Pièce liée à ${parts.join(', ')} — suppression impossible.`;
 }
 
@@ -618,7 +672,7 @@ router.get('/:id/delete-check', (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
   const blockers = productDeleteBlockers(req.params.id);
-  const deletable = !blockers.bom && !blockers.shipments && !blockers.purchases;
+  const deletable = !blockers.bom && !blockers.shipments;
   res.json({ deletable, blockers, reason: deletable ? null : blockersMessage(blockers) });
 });
 
@@ -627,7 +681,7 @@ router.delete('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
   const blockers = productDeleteBlockers(req.params.id);
-  if (blockers.bom || blockers.shipments || blockers.purchases) {
+  if (blockers.bom || blockers.shipments) {
     return res.status(409).json({ error: blockersMessage(blockers), blockers });
   }
   db.prepare("UPDATE products SET active=0, deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);

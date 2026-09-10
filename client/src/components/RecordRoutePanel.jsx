@@ -65,6 +65,7 @@ export default function RecordRoutePanel({ match, canGoBack }) {
       // empilerait une entrée d'historique en double).
       syncUrl={false}
       width={def.width}
+      minWidth={def.minWidth}
       peekKey={match.resource}
     >
       <ErrorBoundary resetKey={match.path}>

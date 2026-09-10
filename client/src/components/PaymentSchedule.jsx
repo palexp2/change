@@ -70,7 +70,7 @@ function BillLink({ item }) {
       </Link>
       {item.qb_url ? (
         <a href={item.qb_url} target="_blank" rel="noreferrer" data-testid={`schedule-qb-${item.id}`}
-          className="min-w-0 inline-flex items-center gap-1 text-sm text-brand-600 hover:underline"
+          className="min-w-0 inline-flex items-center gap-1 text-sm link-record"
           title={`${name} — ouvrir dans QuickBooks`}>
           <span className="truncate">{num}</span>
           <ExternalLink size={12} className="shrink-0 opacity-60" />
@@ -269,7 +269,7 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onAccount
           {payDate !== suggestedPay.date && (
             <button type="button" onClick={() => setPayDate(suggestedPay.date)}
               data-testid={`schedule-pay-date-restore-${item.id}`}
-              className="text-[11px] text-brand-600 hover:underline whitespace-nowrap"
+              className="text-[11px] link-record whitespace-nowrap"
               title={`Remettre au ${fmtDay(suggestedPay.date)}`}>
               remettre à l'échéance
             </button>

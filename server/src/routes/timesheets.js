@@ -8,7 +8,30 @@ import { emitEntity } from '../services/realtimeEmitters.js'
 const router = Router()
 router.use(requireAuth)
 
+// Modes de saisie d'une JOURNÉE. 'week' n'en fait pas partie : une semaine
+// déclarée d'un seul chiffre ne se rattache à aucune journée (voir timesheet_weeks).
 const ALLOWED_MODES = new Set(['simple', 'detailed'])
+// Modes de saisie proposés à l'employé — 'week' est une façon de travailler,
+// donc une préférence, pas une propriété d'une journée.
+const PREF_MODES = new Set(['simple', 'detailed', 'week'])
+
+const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
+const MAX_WEEK_MINUTES = 7 * 24 * 60
+
+// Lundi (ISO) de la semaine contenant `dateStr`. Calcul en UTC : la chaîne
+// n'a pas de fuseau, on ne veut pas que le serveur en invente un.
+function weekStartOf(dateStr) {
+  if (!DATE_RE.test(String(dateStr || ''))) return null
+  const d = new Date(dateStr + 'T00:00:00Z')
+  if (Number.isNaN(d.getTime())) return null
+  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7))
+  return d.toISOString().slice(0, 10)
+}
+function addDays(dateStr, n) {
+  const d = new Date(dateStr + 'T00:00:00Z')
+  d.setUTCDate(d.getUTCDate() + n)
+  return d.toISOString().slice(0, 10)
+}
 
 // Admin et RH peuvent voir/modifier toutes les feuilles. Sinon, restreint à l'utilisateur connecté.
 function resolveTargetUserId(req, requested) {
@@ -106,19 +129,113 @@ router.get('/day', (req, res) => {
   res.json(loadDayWithEntries(day.id))
 })
 
-// GET /api/timesheets/preferences — préférences de l'utilisateur courant (mode par défaut)
+// GET /api/timesheets/preferences[?user_id=X] — mode de saisie de l'employé.
+// `user_id` (RH/admin seulement) : le mode est propre à l'employé consulté, pas
+// à celui qui regarde — sinon un gestionnaire en mode « détaillé » verrait la
+// feuille d'un employé en mode « semaine » avec le mauvais formulaire.
 router.get('/preferences', (req, res) => {
-  const row = db.prepare('SELECT timesheet_default_mode FROM users WHERE id = ?').get(req.user.id)
+  const target = resolveTargetUserId(req, req.query.user_id)
+  if (!target) return res.status(403).json({ error: 'Accès refusé' })
+  const row = db.prepare('SELECT timesheet_default_mode FROM users WHERE id = ?').get(target)
   const mode = row?.timesheet_default_mode
-  res.json({ default_mode: ALLOWED_MODES.has(mode) ? mode : 'simple' })
+  res.json({ default_mode: PREF_MODES.has(mode) ? mode : 'simple', user_id: target })
 })
 
-// PATCH /api/timesheets/preferences — maj explicite du mode par défaut
+// PATCH /api/timesheets/preferences — maj explicite du mode de saisie
 router.patch('/preferences', (req, res) => {
+  const target = resolveTargetUserId(req, req.body?.user_id)
+  if (!target) return res.status(403).json({ error: 'Accès refusé' })
   const { default_mode } = req.body || {}
-  if (!ALLOWED_MODES.has(default_mode)) return res.status(400).json({ error: 'default_mode invalide' })
-  db.prepare('UPDATE users SET timesheet_default_mode = ? WHERE id = ?').run(default_mode, req.user.id)
-  res.json({ default_mode })
+  if (!PREF_MODES.has(default_mode)) return res.status(400).json({ error: 'default_mode invalide' })
+  db.prepare('UPDATE users SET timesheet_default_mode = ? WHERE id = ?').run(default_mode, target)
+  res.json({ default_mode, user_id: target })
+})
+
+// ── Mode « semaine » : un seul chiffre pour la semaine complète ──────────────
+// Une ligne par (employé, lundi ISO) dans timesheet_weeks. Aucune journée n'est
+// créée : c'est ce qui rend le total non ambigu à la paie.
+
+function loadWeek(userId, weekStart) {
+  return db.prepare(`
+    SELECT * FROM timesheet_weeks
+    WHERE user_id = ? AND week_start = ? AND deleted_at IS NULL
+  `).get(userId, weekStart) || null
+}
+
+// Heures déjà saisies au JOUR dans la semaine — un total hebdo par-dessus
+// serait compté deux fois par l'import de paie.
+function weekHasDayHours(userId, weekStart) {
+  const { n } = db.prepare(`
+    SELECT COUNT(*) AS n FROM timesheet_days d
+    WHERE d.user_id = ? AND d.deleted_at IS NULL
+      AND d.date >= ? AND d.date <= ?
+      AND (
+        (d.mode = 'simple' AND d.start_time IS NOT NULL AND d.end_time IS NOT NULL)
+        OR EXISTS (SELECT 1 FROM timesheet_entries e WHERE e.day_id = d.id)
+      )
+  `).get(userId, weekStart, addDays(weekStart, 6))
+  return n > 0
+}
+
+// Total hebdomadaire déclaré pour la semaine contenant `date` (0 si aucun) —
+// symétrique de weekHasDayHours : on refuse aussi d'ajouter des heures au jour
+// dans une semaine déjà déclarée d'un seul chiffre.
+function weekTotalFor(userId, date) {
+  const weekStart = weekStartOf(date)
+  if (!weekStart) return 0
+  return Number(loadWeek(userId, weekStart)?.minutes) || 0
+}
+const WEEK_DECLARED_ERROR =
+  'Cette semaine est déclarée d\'un seul total hebdomadaire. Remettez-le à 0 avant de saisir des heures au jour.'
+
+// GET /api/timesheets/week?user_id=X&date=YYYY-MM-DD — `date` = n'importe quel jour de la semaine
+router.get('/week', (req, res) => {
+  const target = resolveTargetUserId(req, req.query.user_id)
+  if (!target) return res.status(403).json({ error: 'Accès refusé' })
+  const weekStart = weekStartOf(req.query.date)
+  if (!weekStart) return res.status(400).json({ error: 'date requise (YYYY-MM-DD)' })
+  res.json(loadWeek(target, weekStart))
+})
+
+// GET /api/timesheets/weeks?user_id=X&from=&to= — bornes sur le lundi de la semaine
+router.get('/weeks', (req, res) => {
+  const target = resolveTargetUserId(req, req.query.user_id)
+  if (!target) return res.status(403).json({ error: 'Accès refusé' })
+  let where = 'WHERE deleted_at IS NULL AND user_id = ?'
+  const params = [target]
+  if (req.query.from) { where += ' AND week_start >= ?'; params.push(req.query.from) }
+  if (req.query.to) { where += ' AND week_start <= ?'; params.push(req.query.to) }
+  const data = db.prepare(`SELECT * FROM timesheet_weeks ${where} ORDER BY week_start DESC`).all(...params)
+  res.json({ data })
+})
+
+// PUT /api/timesheets/week — upsert du total de la semaine (autosave d'un champ unique)
+router.put('/week', (req, res) => {
+  const target = resolveTargetUserId(req, req.body?.user_id)
+  if (!target) return res.status(403).json({ error: 'Accès refusé' })
+  const weekStart = weekStartOf(req.body?.date)
+  if (!weekStart) return res.status(400).json({ error: 'date requise (YYYY-MM-DD)' })
+
+  const raw = req.body?.minutes != null ? req.body.minutes : req.body?.duration
+  const minutes = parseDurationToMinutes(raw)
+  if (minutes == null) return res.status(400).json({ error: 'minutes invalide' })
+  if (minutes > MAX_WEEK_MINUTES) return res.status(400).json({ error: 'Total hebdomadaire irréaliste' })
+
+  if (minutes > 0 && weekHasDayHours(target, weekStart)) {
+    return res.status(409).json({
+      error: 'Cette semaine contient déjà des heures saisies au jour. Supprimez-les avant de déclarer un total hebdomadaire.',
+    })
+  }
+
+  const existing = loadWeek(target, weekStart)
+  if (existing) {
+    db.prepare(`UPDATE timesheet_weeks SET minutes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(minutes, existing.id)
+    return res.json(loadWeek(target, weekStart))
+  }
+  db.prepare('INSERT INTO timesheet_weeks (id, user_id, week_start, minutes) VALUES (?, ?, ?, ?)')
+    .run(newRecordId(), target, weekStart, minutes)
+  res.status(201).json(loadWeek(target, weekStart))
 })
 
 // POST /api/timesheets/day — crée (ou retourne l'existant) le jour pour (user_id, date)
@@ -143,8 +260,11 @@ router.post('/day', (req, res) => {
     INSERT INTO timesheet_days (id, user_id, date, mode)
     VALUES (?, ?, ?, ?)
   `).run(id, target, date, mode)
-  // Synchronise la pref uniquement si le user agit sur sa propre journée
-  if (req.user.id === target) {
+  // Synchronise la pref uniquement si le user agit sur sa propre journée.
+  // `mode` fourni explicitement seulement : sinon la création d'une journée
+  // ferait sortir du mode « semaine » un employé qui y est, sans qu'il l'ait
+  // demandé (le mode semaine n'existe pas au niveau de la journée).
+  if (req.user.id === target && typeof req.body?.mode === 'string') {
     db.prepare('UPDATE users SET timesheet_default_mode = ? WHERE id = ?').run(mode, req.user.id)
   }
   const created = loadDayWithEntries(id)
@@ -177,6 +297,9 @@ router.patch('/day/:id', (req, res) => {
       if (n > 0) {
         return res.status(409).json({ error: 'Impossible de basculer en mode simplifié : la journée contient des activités détaillées. Supprimez-les d\'abord.' })
       }
+    }
+    if ((k === 'start_time' || k === 'end_time') && v !== null && weekTotalFor(day.user_id, day.date) > 0) {
+      return res.status(409).json({ error: WEEK_DECLARED_ERROR })
     }
     if (k === 'break_minutes' && v !== null) {
       const n = parseDurationToMinutes(v)
@@ -283,11 +406,12 @@ router.patch('/day/:id/status', (req, res) => {
 
 // POST /api/timesheets/day/:dayId/entries — ajoute une activité
 router.post('/day/:dayId/entries', (req, res) => {
-  const day = db.prepare('SELECT user_id, status FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.dayId)
+  const day = db.prepare('SELECT user_id, date, status FROM timesheet_days WHERE id = ? AND deleted_at IS NULL').get(req.params.dayId)
   if (!day) return res.status(404).json({ error: 'Day not found' })
   if (!resolveTargetUserId(req, day.user_id)) return res.status(403).json({ error: 'Accès refusé' })
   const lockMsg = editLockError(day, req.user)
   if (lockMsg) return res.status(409).json({ error: lockMsg })
+  if (weekTotalFor(day.user_id, day.date) > 0) return res.status(409).json({ error: WEEK_DECLARED_ERROR })
 
   const { description, activity_code_id, company_id, duration, duration_minutes, rsde, sort_order } = req.body || {}
   const mins = duration_minutes != null

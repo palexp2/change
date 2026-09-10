@@ -685,7 +685,7 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
       {isAdmin && (
         <button
           onClick={() => setEditing(true)}
-          className="text-brand-600 hover:underline text-[11px]"
+          className="link-record text-[11px]"
           title="Rattacher l'id du Deposit / JE / SalesReceipt créé manuellement dans QuickBooks"
           data-testid={`payment-qb-link-btn-${payment.id}`}
         >
@@ -802,7 +802,7 @@ function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
         {isAdmin && (
           <button
             onClick={() => setEditing(true)}
-            className="ml-1 text-brand-600 hover:underline"
+            className="ml-1 link-record"
             title="Modifier le compte crédité"
             data-testid={`payment-qb-credit-edit-${payment.id}`}
           >
@@ -817,7 +817,7 @@ function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
   return (
     <button
       onClick={() => setEditing(true)}
-      className="text-[10px] text-brand-600 hover:underline mt-0.5 w-fit"
+      className="text-[10px] link-record mt-0.5 w-fit"
       title="Annoter le compte crédité dans QB pour la traçabilité comptable"
       data-testid={`payment-qb-credit-add-${payment.id}`}
     >
@@ -870,7 +870,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
               href={`https://dashboard.stripe.com/payments/${p.stripe_charge_id}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-0.5 ml-1.5 text-brand-600 hover:underline"
+              className="inline-flex items-center gap-0.5 ml-1.5 link-record"
               title="Voir dans Stripe"
             >
               <ExternalLink size={10} />
@@ -882,7 +882,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
           {p.payout_stripe_id ? (
             <Link
               to={`/stripe-payouts/${p.payout_stripe_id}`}
-              className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+              className="inline-flex items-center gap-1 text-xs font-mono link-record"
               title="Voir le payout Stripe"
             >
               {p.payout_stripe_id.slice(-8)}
@@ -900,7 +900,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                     href={p.qb_payment_url}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-mono link-record"
                     title="Ouvrir dans QuickBooks"
                   >
                     QB <ExternalLink size={10} />
@@ -915,7 +915,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                     href={p.payout_qb_deposit_url || undefined}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+                    className="inline-flex items-center gap-1 text-xs font-mono link-record"
                     title={`Comptabilisé via le Deposit du payout (DEP #${p.payout_qb_deposit_id})`}
                   >
                     DEP #{p.payout_qb_deposit_id} <ExternalLink size={10} />
@@ -952,7 +952,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                       href={p.payout_qb_deposit_url || undefined}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline"
+                      className="inline-flex items-center gap-1 text-xs font-mono link-record"
                       title={`Comptabilisé via le Deposit du payout (DEP #${p.payout_qb_deposit_id})`}
                     >
                       DEP #{p.payout_qb_deposit_id} <ExternalLink size={10} />
@@ -987,7 +987,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                     href={qbUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-xs font-mono text-brand-600 hover:underline w-fit"
+                    className="inline-flex items-center gap-1 text-xs font-mono link-record w-fit"
                     title={`Ouvrir dans QuickBooks (${label} #${qbId})`}
                   >
                     {label} #{qbId} <ExternalLink size={10} />

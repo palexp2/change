@@ -3,9 +3,9 @@ import { useNavigate, Link } from 'react-router-dom'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import {
   ChevronLeft, ChevronRight,
-  RefreshCw, AlertCircle, CheckCircle, Clock, BookOpen, ReceiptText,
+  RefreshCw, AlertCircle, AlertTriangle, CheckCircle, Clock, BookOpen, ReceiptText,
   Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail, Sparkles, FileX, Paperclip,
-  ArrowLeftRight,
+  ArrowLeftRight, Landmark,
 } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
@@ -13,6 +13,7 @@ import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { CurrencyConversionModal } from '../components/CurrencyConversionModal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { PeekFooter } from '../components/PeekFooter.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -22,6 +23,15 @@ import { findBestVendorMatch } from '../lib/vendorMatch.js'
 import { fmtCad } from '../utils/formatters.js'
 
 const round2 = x => Math.round((Number(x) || 0) * 100) / 100
+
+// Saisie d'un montant : la virgule décimale (clavier FR/QC) vaut le point.
+// Retourne null si la saisie est vide ou n'est pas un nombre.
+function parseAmountInput(x) {
+  const s = String(x ?? '').trim().replace(/\s/g, '').replace(',', '.')
+  if (s === '') return null
+  const n = Number(s)
+  return Number.isFinite(n) ? n : null
+}
 
 // Montants synchronisés avec le total : toute édition de l'un de ces champs doit
 // recalculer `total` dans le même PATCH pour rester cohérent en DB.
@@ -48,8 +58,7 @@ function withRecomputedTotal(receipt, patch) {
 }
 
 import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
-import { Field } from '../components/Field.jsx'
-import { CustomDetailFields } from '../components/CustomDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
@@ -135,6 +144,16 @@ const TAX_SPLIT_BY_NAME = new Map([
   ['Exonéré', { tps: 0, tvq: 0 }],
   ['Hors champ', { tps: 0, tvq: 0 }],
 ])
+
+// Types d'écriture QB proposés en tête du formulaire de comptabilisation. Libellés
+// COURTS : le nom exact de l'entité QuickBooks est en infobulle. Les trois libellés
+// longs d'origine (« Dépense payée (Purchase) », « Facture à payer (Bill → Comptes
+// fournisseurs) »…) débordaient sur trois lignes dans la colonne étroite du panneau.
+const QB_ENTRY_TYPES = [
+  { key: 'purchase', label: 'Dépense payée', testId: 'qb-type-purchase', hint: 'Purchase — dépense déjà réglée' },
+  { key: 'bill', label: 'Facture à payer', testId: 'qb-type-bill', hint: 'Bill — portée aux Comptes fournisseurs' },
+  { key: 'cc_credit', label: 'Crédit carte', testId: 'qb-type-cc-credit', hint: 'Credit Card Credit — remboursement porté sur la carte' },
+]
 
 // Ventilation TPS/TVQ d'un code (Id QB ou sentinel NO_TAX). null si taux inconnu.
 function taxSplitForCode(codeId, taxNameById) {
@@ -541,9 +560,9 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
       if (!paymentAccountId) { fail('Sélectionnez un compte de carte de crédit', 'payment_account'); return }
       if (!creditCardOptions.some(o => o.value === paymentAccountId)) { fail('Le compte sélectionné n\'est pas un compte de carte de crédit', 'payment_account'); return }
     }
-    if (type === 'purchase' && bankChargedTotal !== '') {
-      const bank = Number(bankChargedTotal)
-      if (!Number.isFinite(bank) || bank <= 0) { fail('Montant passé à la banque invalide', 'bank_charged_total'); return }
+    if (type === 'purchase' && bankChargedTotal.trim() !== '') {
+      const bank = parseAmountInput(bankChargedTotal)
+      if (bank == null || bank <= 0) { fail('Montant passé à la banque invalide', 'bank_charged_total'); return }
     }
     if (vendorMode === 'existing' && !vendorId) { fail('Sélectionnez un fournisseur', 'vendor'); return }
     if (vendorMode === 'new' && !newVendorName.trim()) { fail('Entrez le nom du fournisseur', 'vendor'); return }
@@ -570,7 +589,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         taxCodeId: taxCodeId === NO_TAX ? null : taxCodeId,
         transactionType,
         forceReason: fiscalOk ? undefined : forceReason.trim(),
-        bankChargedTotal: type === 'purchase' && bankChargedTotal !== '' ? Number(bankChargedTotal) : undefined,
+        bankChargedTotal: type === 'purchase' ? (parseAmountInput(bankChargedTotal) ?? undefined) : undefined,
         anomalyOverride: anomalyOverride || undefined,
       })
       setShowConfirm(false)
@@ -633,62 +652,86 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   }
 
   return (
-    <div className="mt-3 border border-green-200 bg-green-50 rounded-xl p-4 space-y-4">
-      <div>
-        <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Type</label>
-        <div className="flex gap-4">
-          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-            <input type="radio" data-testid="qb-type-purchase" checked={type === 'purchase'} onChange={() => touchAndDraft(setType, 'quickbooks_type')('purchase')} />
-            <span>Dépense payée (Purchase)</span>
-          </label>
-          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-            <input type="radio" data-testid="qb-type-bill" checked={type === 'bill'} onChange={() => touchAndDraft(setType, 'quickbooks_type')('bill')} />
-            <span>Facture à payer (Bill → Comptes fournisseurs)</span>
-          </label>
-          <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-            <input type="radio" data-testid="qb-type-cc-credit" checked={type === 'cc_credit'} onChange={() => touchAndDraft(setType, 'quickbooks_type')('cc_credit')} />
-            <span>Crédit sur carte de crédit (Credit Card Credit)</span>
-          </label>
+    <div className="mt-3 border border-green-200 bg-green-50 rounded-xl p-3.5 space-y-3">
+      {/* En-tête : titre du bloc + type d'écriture en segments. Le type occupait une
+          ligne de champ entière (libellé à gauche + 3 radios à libellés longs) qui se
+          cassait sur trois lignes dans la colonne étroite du panneau latéral. */}
+      <div className="flex items-center justify-between gap-x-3 gap-y-2 flex-wrap">
+        <h3 className="text-sm font-semibold text-green-800 flex items-center gap-1.5">
+          <BookOpen size={14} /> Comptabiliser
+        </h3>
+        <div className="flex items-center gap-0.5 bg-white/70 border border-green-200 rounded-lg p-0.5">
+          {QB_ENTRY_TYPES.map(t => (
+            <label
+              key={t.key}
+              title={t.hint}
+              className={`flex items-center gap-1.5 text-xs cursor-pointer rounded-md px-2 py-1 transition-colors ${
+                type === t.key ? 'bg-white ring-1 ring-green-400 text-green-900 font-medium' : 'text-slate-500 hover:bg-white/70'
+              }`}
+            >
+              <input
+                type="radio"
+                data-testid={t.testId}
+                className="accent-green-700"
+                checked={type === t.key}
+                onChange={() => touchAndDraft(setType, 'quickbooks_type')(t.key)}
+              />
+              {t.label}
+            </label>
+          ))}
         </div>
-        {profileApplied && (
-          <p data-testid="qb-profile-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
-            Pré-rempli depuis le <Link to="/fournisseurs" className="underline font-medium">profil fournisseur</Link>
-            {receipt.vendor_profile?.name ? ` « ${receipt.vendor_profile.name} »` : ''}
-            {(receipt.currency || 'CAD').toUpperCase() === 'USD' ? ' (défauts USD)' : ''}. Vérifiez puis publiez.
-          </p>
-        )}
-        {autoAppliedFrom && !userTouchedRef.current && (
-          <p data-testid="qb-prefill-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
-            Pré-rempli depuis la dernière compta de ce fournisseur{autoAppliedFrom.receipt_date ? ` — ${fmtDate(autoAppliedFrom.receipt_date)}` : ''}. Vérifiez puis publiez.
-          </p>
-        )}
       </div>
 
-      <div className="grid grid-cols-1 gap-4">
+      {profileApplied && (
+        <p data-testid="qb-profile-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 leading-snug">
+          Pré-rempli depuis le <Link to="/fournisseurs" className="underline font-medium">profil fournisseur</Link>
+          {receipt.vendor_profile?.name ? ` « ${receipt.vendor_profile.name} »` : ''}
+          {(receipt.currency || 'CAD').toUpperCase() === 'USD' ? ' (défauts USD)' : ''}.
+        </p>
+      )}
+      {autoAppliedFrom && !userTouchedRef.current && (
+        <p data-testid="qb-prefill-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 leading-snug">
+          Pré-rempli depuis la dernière compta de ce fournisseur{autoAppliedFrom.receipt_date ? ` — ${fmtDate(autoAppliedFrom.receipt_date)}` : ''}.
+        </p>
+      )}
+
+      {/* ⚠ Chaque champ n'a que DEUX enfants : le libellé, puis UN conteneur qui porte
+          le contrôle ET ses notes. En panneau latéral, `index.css` met le libellé dans
+          une colonne de 140 px et la valeur dans l'autre : un 3e enfant (une note)
+          retombait dans la colonne du libellé et s'affichait sur 140 px de large. */}
+      <div className="grid grid-cols-1 gap-3">
         <div className={fieldFrame('vendor')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Fournisseur</label>
-          <div className="flex gap-3 mb-1.5">
-            <label className="flex items-center gap-1 text-xs cursor-pointer">
-              <input type="radio" checked={vendorMode === 'existing'} onChange={() => setVendorMode('existing')} /> Existant
-            </label>
-            <label className="flex items-center gap-1 text-xs cursor-pointer">
-              <input type="radio" checked={vendorMode === 'new'} onChange={() => setVendorMode('new')} /> Nouveau
-            </label>
+          {/* « Existant / Nouveau » tenait une ligne de radios au-dessus du champ ;
+              c'est maintenant une bascule posée à côté du champ lui-même. */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 min-w-0">
+              {vendorMode === 'existing' ? (
+                <SearchableSelect
+                  testId="qb-vendor-select"
+                  value={vendorId}
+                  options={vendorOptions}
+                  onChange={v => { setVendorId(v); saveDraft({ vendor_id: v || null }) }}
+                />
+              ) : (
+                <input type="text" value={newVendorName} onChange={e => setNewVendorName(e.target.value)} className="input-field text-xs w-full" />
+              )}
+            </div>
+            <button
+              type="button"
+              data-testid="qb-vendor-mode-toggle"
+              onClick={() => setVendorMode(m => (m === 'existing' ? 'new' : 'existing'))}
+              className="shrink-0 text-[11px] text-slate-400 hover:text-brand-600 underline decoration-dotted"
+              title={vendorMode === 'existing' ? 'Créer un fournisseur qui n’existe pas encore dans QuickBooks' : 'Choisir un fournisseur existant'}
+            >
+              {vendorMode === 'existing' ? 'Nouveau' : 'Existant'}
+            </button>
           </div>
-          {vendorMode === 'existing' ? (
-            <SearchableSelect
-              testId="qb-vendor-select"
-              value={vendorId}
-              options={vendorOptions}
-              onChange={v => { setVendorId(v); saveDraft({ vendor_id: v || null }) }}
-            />
-          ) : (
-            <input type="text" value={newVendorName} onChange={e => setNewVendorName(e.target.value)} className="input-field text-xs w-full" />
-          )}
         </div>
 
         <div className={fieldFrame('expense_account')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de dépense</label>
+          <div>
           <SearchableSelect
             testId="qb-expense-select"
             value={expenseAccountId}
@@ -709,6 +752,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
               <strong> propre compte de dépense</strong> (section Articles) — ce compte-ci s’applique aux autres lignes.
             </p>
           )}
+          </div>
         </div>
 
         {type !== 'bill' ? (
@@ -716,6 +760,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
               {type === 'cc_credit' ? 'Compte de carte de crédit' : 'Compte de paiement'}
             </label>
+            <div>
             <SearchableSelect
               testId="qb-payment-select"
               value={paymentAccountId}
@@ -744,16 +789,16 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                       Montant passé à la banque
                     </label>
                     <input
-                      type="number"
-                      step="0.01"
-                      min="0"
+                      type="text"
+                      inputMode="decimal"
                       data-testid="qb-bank-charged"
                       value={bankChargedTotal}
                       onChange={e => setBankChargedTotal(e.target.value)}
                       onBlur={() => {
                         // Autosave brouillon au blur (pas à chaque frappe — saisie partielle).
-                        const v = bankChargedTotal === '' ? null : Number(bankChargedTotal)
-                        if (v !== null && (!Number.isFinite(v) || v < 0)) return
+                        const v = parseAmountInput(bankChargedTotal)
+                        if (bankChargedTotal.trim() !== '' && v === null) return
+                        if (v !== null && v < 0) return
                         if (v === (receipt.bank_charged_total ?? null)) return
                         saveDraft({ bank_charged_total: v })
                       }}
@@ -764,12 +809,12 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                       // Aperçu de l'écart : seulement quand la devise du reçu est celle de la
                       // transaction (fournisseur QB) — sinon le serveur convertit d'abord et
                       // l'écart exact est calculé là-bas.
-                      const bank = Number(bankChargedTotal)
+                      const bank = parseAmountInput(bankChargedTotal)
                       const vendorCur = vendorMode === 'existing'
                         ? ((vendors.find(v => v.Id === vendorId)?.CurrencyRef?.value) || 'CAD').toUpperCase()
                         : (receipt.currency || 'CAD').toUpperCase()
                       const sameCur = vendorCur === (receipt.currency || 'CAD').toUpperCase()
-                      if (!bankChargedTotal || !Number.isFinite(bank) || bank <= 0 || receipt.total == null) {
+                      if (bank == null || bank <= 0 || receipt.total == null) {
                         return (
                           <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
                             L'écart sera ajouté comme article « Frais de conversion » (Exonéré).
@@ -809,10 +854,12 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                 Facture en {(receipt.currency || '').toUpperCase()} à comptabiliser en CAD ? Convertir les montants
               </button>
             )}
+            </div>
           </div>
         ) : (
           <div>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Échéance</label>
+            <div>
             <input
               type="date"
               value={dueDate}
@@ -832,6 +879,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
               Le crédit est posté automatiquement au compte <strong>Comptes fournisseurs</strong> du vendor — aucun compte de paiement à choisir.
             </p>
+            </div>
           </div>
         )}
 
@@ -839,6 +887,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
             Type de transaction <span className="text-red-500">*</span>
           </label>
+          <div>
           <SearchableSelect
             testId="qb-txtype-select"
             value={transactionType}
@@ -895,10 +944,12 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
               <AlertCircle size={11} className="shrink-0 mt-0.5" /> <span>{w}</span>
             </p>
           ))}
+          </div>
         </div>
 
         <div className={fieldFrame('tax_code')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Code de taxe</label>
+          <div>
           <SearchableSelect
             testId="qb-taxcode-select"
             value={taxCodeId}
@@ -917,12 +968,18 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             )
           ) : (
             <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
-              Présélectionné d'après les montants TPS/TVQ — changez-le au besoin (ex. <strong>TPS/TVQ repas</strong>, <strong>TPS/TVQ kilométrage</strong>).
+              Présélectionné d'après les montants TPS/TVQ — changez-le au besoin.
             </p>
           )}
+          </div>
         </div>
       </div>
 
+      {/* Publication : erreurs et bouton vivent dans la bande épinglée au bas du
+          panneau — l'action reste sous la main même en bas de la fiche, et un
+          échec s'affiche là où l'on vient de cliquer. */}
+      <PeekFooter>
+      <div className="border-t border-green-200 bg-white/95 backdrop-blur px-5 py-3 space-y-2 shadow-[0_-10px_28px_-20px_rgba(15,23,42,0.45)]">
       {error && (
         <div className="text-xs text-red-600 bg-red-100 rounded-lg px-3 py-2" data-testid="qb-publish-error">
           <p>{error}</p>
@@ -960,11 +1017,20 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         </div>
       )}
 
-      <div className="flex gap-2">
-        <button className="btn-primary text-xs py-1.5 px-3" data-testid="qb-publish-open" onClick={() => handlePublish()} disabled={submitting}>
-          <BookOpen size={12} /> {submitting ? 'Publication…' : 'Publier sur QuickBooks'}
-        </button>
+      <button
+        type="button"
+        data-testid="qb-publish-open"
+        onClick={() => handlePublish()}
+        disabled={submitting}
+        className="group w-full inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-b from-brand-500 to-brand-600 ring-1 ring-inset ring-white/25 shadow-lg shadow-brand-700/25 transition-all duration-150 hover:from-brand-400 hover:to-brand-500 hover:shadow-brand-700/35 hover:-translate-y-px active:translate-y-0 active:scale-[0.985] active:shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:active:scale-100"
+      >
+        {submitting
+          ? <RefreshCw size={15} className="animate-spin" />
+          : <BookOpen size={15} className="transition-transform duration-150 group-active:scale-90" />}
+        {submitting ? 'Publication…' : 'Publier sur QuickBooks'}
+      </button>
       </div>
+      </PeekFooter>
 
       {vendorHistory.length > 0 && (
         <div className="border-t border-green-200 pt-2" data-testid="vendor-history">
@@ -1129,7 +1195,7 @@ function CurrencyField({ receipt, onUpdate }) {
   }
 
   return (
-    <Field table="sale_receipts" id="currency" label="Devise" labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
+    <>
       <div className="flex items-center gap-2 mt-0.5">
         <select
           className="input-field text-sm py-1 px-2"
@@ -1145,19 +1211,19 @@ function CurrencyField({ receipt, onUpdate }) {
         </select>
         {saving && <RefreshCw size={12} className="animate-spin text-slate-400" />}
       </div>
-    </Field>
+    </>
   )
 }
 
-function InfoField({ id, label, value }) {
+function InfoField({ value }) {
   return (
-    <Field table="sale_receipts" id={id} label={label} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
+    <>
       <p className="text-sm text-slate-700 mt-0.5">{value || <span className="text-slate-300">—</span>}</p>
-    </Field>
+    </>
   )
 }
 
-function EditableDateField({ receipt, field, label, onUpdate, testId }) {
+function EditableDateField({ receipt, field, onUpdate, testId }) {
   const { addToast } = useToast()
   // Normalise vers YYYY-MM-DD pour l'input type=date (la valeur peut arriver en ISO complet).
   const toDateInput = v => (v ? String(v).slice(0, 10) : '')
@@ -1187,7 +1253,7 @@ function EditableDateField({ receipt, field, label, onUpdate, testId }) {
   }
 
   return (
-    <Field table="sale_receipts" id={field} label={label} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
+    <>
       <div className="flex items-center gap-1 mt-0.5">
         {editing ? (
           <input
@@ -1212,11 +1278,11 @@ function EditableDateField({ receipt, field, label, onUpdate, testId }) {
         )}
         {saving && <RefreshCw size={11} className="animate-spin text-slate-400 flex-shrink-0" />}
       </div>
-    </Field>
+    </>
   )
 }
 
-function EditableTextField({ receipt, field, label, onUpdate, testId }) {
+function EditableTextField({ receipt, field, onUpdate, testId }) {
   const { addToast } = useToast()
   const [value, setValue] = useState(receipt[field] || '')
   const [saving, setSaving] = useState(false)
@@ -1239,7 +1305,7 @@ function EditableTextField({ receipt, field, label, onUpdate, testId }) {
   }
 
   return (
-    <Field table="sale_receipts" id={field} label={label} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium">
+    <>
       <div className="flex items-center gap-1 mt-0.5">
         <input
           type="text"
@@ -1253,7 +1319,7 @@ function EditableTextField({ receipt, field, label, onUpdate, testId }) {
         />
         {saving && <RefreshCw size={11} className="animate-spin text-slate-400 flex-shrink-0" />}
       </div>
-    </Field>
+    </>
   )
 }
 
@@ -1306,42 +1372,184 @@ function EditableMemoField({ receipt, onUpdate }) {
 // automatique n'était pas assez sûr pour écrire la description — la suggestion à
 // accepter d'un clic. Un achat déjà facturé ailleurs (dépôt + solde, facture partielle)
 // reste sélectionnable mais est signalé.
+// Résumé compact de l'achat — nom, quantité, prix unitaire, date, fournisseur — pour
+// vérifier la suggestion sans aller consulter Airtable. Même contenu que le tooltip
+// (title) et affiché en dessous, tenu court par la règle « le moins de texte possible ».
+function liaPurchaseSummary(p) {
+  if (!p) return ''
+  const bits = []
+  if (p.qty_ordered) bits.push(`${p.qty_ordered} u.`)
+  if (p.unit_cost) bits.push(fmtCad(Number(p.unit_cost)))
+  if (p.order_date) bits.push(fmtDate(p.order_date))
+  if (p.supplier) bits.push(p.supplier)
+  return bits.join(' · ')
+}
+
+// Tolérance de prix : au-delà de 5 % d'écart entre le prix unitaire facturé et
+// le prix unitaire Airtable, l'écart est jugé notable. Les quantités, elles,
+// doivent concorder exactement (une unité de différence est déjà un signal).
+const LIA_PRICE_TOL_PCT = 0.05
+
+function numOrNull(v) {
+  const n = Number(v)
+  return v != null && v !== '' && Number.isFinite(n) ? n : null
+}
+
+// Écart entre deux valeurs numériques ; null si l'une des deux manque (rien à
+// comparer, pas d'alerte). `tolPct` = tolérance relative (0 = doit être égal).
+function liaMismatch(a, b, tolPct = 0) {
+  if (a == null || b == null) return null
+  if (tolPct === 0) return a !== b
+  const base = Math.max(Math.abs(a), Math.abs(b)) || 1
+  return Math.abs(a - b) / base > tolPct
+}
+
+// Normalisation légère (accents/casse/ponctuation) pour comparer deux libellés
+// sans dépendance serveur — repli quand `nameScore` (similarité déjà calculée
+// par purchaseLiaMatch.js, cf. `detail.name`) n'est pas disponible (achat
+// RATTACHÉ : la liste des candidats ne porte pas ce détail, seule la
+// suggestion scorée l'a).
+function normalizeLiaText(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// true = vraiment différent (aucun mot significatif commun), false = ok, null = rien à comparer.
+function nameLooksOff(invName, atName) {
+  const a = normalizeLiaText(invName), b = normalizeLiaText(atName)
+  if (!a || !b) return null
+  if (a.includes(b) || b.includes(a)) return false
+  const wordsA = a.split(' ').filter(w => w.length >= 3)
+  const wordsB = new Set(b.split(' ').filter(w => w.length >= 3))
+  if (!wordsA.length || !wordsB.size) return null
+  return !wordsA.some(w => wordsB.has(w))
+}
+
+// Comparaison compacte « Facture » (ligne extraite du reçu) vs « Airtable »
+// (achat suggéré ou rattaché) — nom, qté et prix unitaire, pour repérer un
+// écart sans faire l'aller-retour entre deux colonnes du tableau. `nameScore`
+// (0-1, cf. `suggestion.detail.name`) sert quand il est déjà connu ; sinon
+// repli sur une comparaison de texte simple.
+//
+// Un seul badge résumé quand tout concorde (le cas courant, pas de lecture
+// détaillée requise) ; grille 2 colonnes (Facture | Airtable) × 3 lignes
+// (Nom/Qté/Prix) seulement quand il y a un écart à arbitrer.
+function LiaCompare({ item, purchase, nameScore }) {
+  if (!purchase) return null
+  const invQty = numOrNull(item.quantity)
+  const invPrice = numOrNull(item.unit_price)
+  const atQty = numOrNull(purchase.qty_ordered)
+  const atPrice = numOrNull(purchase.unit_cost)
+  const invName = item.description || ''
+  const atName = purchase.part_name || purchase.part_name_en || ''
+  const qtyOff = liaMismatch(invQty, atQty, 0)
+  const priceOff = liaMismatch(invPrice, atPrice, LIA_PRICE_TOL_PCT)
+  const nameOff = nameScore != null ? nameScore < 0.35 : nameLooksOff(invName, atName)
+  const anyOff = qtyOff || priceOff || nameOff
+  const cellClass = off => off ? 'text-red-600 font-semibold' : 'text-slate-600'
+  const comparable = (invQty != null || invPrice != null || invName) && (atQty != null || atPrice != null || atName)
+  if (!comparable) return null
+  if (!anyOff) {
+    return (
+      <span
+        className="inline-flex items-center gap-1 text-[11px] text-green-700"
+        title={`Facture ${invName || '—'} · ${invQty ?? '—'} × ${invPrice != null ? fmtCad(invPrice) : '—'} · Airtable ${atName || '—'} · ${atQty ?? '—'} × ${atPrice != null ? fmtCad(atPrice) : '—'}`}
+      >
+        <CheckCircle size={10} className="shrink-0" />
+        tout concorde
+      </span>
+    )
+  }
+  const offParts = [nameOff && 'nom', qtyOff && 'qté', priceOff && 'prix'].filter(Boolean)
+  return (
+    <div className="mt-0.5 border border-slate-200 rounded overflow-hidden text-[11px]">
+      <div className="flex items-center gap-1 px-1.5 py-0.5 bg-red-50 text-red-600">
+        <AlertTriangle size={10} className="shrink-0" />
+        <span>écart détecté : {offParts.join(' + ')}</span>
+      </div>
+      <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 bg-slate-50 text-slate-400 border-t border-slate-100">
+        <span></span>
+        <span>Facture</span>
+        <span>Airtable</span>
+      </div>
+      <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 items-center border-t border-slate-100">
+        <span className="text-slate-400 shrink-0">Nom</span>
+        <span className={`truncate ${cellClass(nameOff)}`} title={invName || undefined}>{invName || '—'}</span>
+        <span className={`truncate ${cellClass(nameOff)}`} title={atName || undefined}>{atName || '—'}</span>
+      </div>
+      <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 items-center border-t border-slate-100">
+        <span className="text-slate-400 shrink-0">Qté</span>
+        <span className={`tabular-nums ${cellClass(qtyOff)}`}>{invQty ?? '—'}</span>
+        <span className={`tabular-nums ${cellClass(qtyOff)}`}>{atQty ?? '—'}</span>
+      </div>
+      <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 items-center border-t border-slate-100">
+        <span className="text-slate-400 shrink-0">P.U.</span>
+        <span className={`tabular-nums ${cellClass(priceOff)}`}>{invPrice != null ? fmtCad(invPrice) : '—'}</span>
+        <span className={`tabular-nums ${cellClass(priceOff)}`}>{atPrice != null ? fmtCad(atPrice) : '—'}</span>
+      </div>
+    </div>
+  )
+}
+
 function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, onSelect }) {
   const reused = linkedPurchase?.linked_receipts || []
+  const linkedSummary = liaPurchaseSummary(linkedPurchase)
+  const suggestionSummary = liaPurchaseSummary(suggestion)
+  // La ligne est rattachée à un achat que le serveur n'a pas renvoyé dans les
+  // candidats (autre fournisseur, achat archivé…) : sans option correspondante,
+  // le sélecteur affichait « — », c'est-à-dire « aucun achat », alors que la ligne
+  // EST rattachée. On ajoute l'achat rattaché à la liste pour qu'il s'affiche.
+  const selectOptions = item.purchase_id && !options.some(o => String(o.value) === String(item.purchase_id))
+    ? [{ value: item.purchase_id, label: item.lia_ref || 'Achat rattaché' }, ...options]
+    : options
   return (
-    <div className="space-y-1">
+    <div className="space-y-0.5">
       <SearchableSelect
         testId={`receipt-item-lia-${index}`}
         value={item.purchase_id || ''}
-        options={options}
+        options={selectOptions}
         emptyOption="— Aucun achat —"
         onChange={val => onSelect(val || null)}
       />
       {item.purchase_id && (
-        <div className="flex items-center gap-1.5 px-1 text-[11px] min-w-0">
-          <Link to={`/purchases/${item.purchase_id}`} className="text-brand-600 hover:underline font-medium shrink-0">
+        // Confirmation de l'appariement sur UNE ligne : lien vers l'achat, date,
+        // fournisseur, témoin de concordance. Le nom de la pièce n'est répété que
+        // s'il ne figure pas déjà dans la description de la ligne (le rattachement
+        // l'y recopie) — sinon c'est la même phrase deux fois. Le détail complet
+        // reste au survol.
+        <div className="px-1 text-[11px] text-slate-500 flex items-baseline gap-x-1.5 gap-y-0.5 flex-wrap min-w-0">
+          <Link to={`/purchases/${item.purchase_id}`} className="link-record font-medium shrink-0">
             {item.lia_ref || 'Achat'}
           </Link>
-          {/* Rappel du nom de la pièce tel qu'il est dans la fiche Achat : c'est ce nom
-              qui est recopié derrière le code dans la description de la ligne. */}
-          {linkedPurchase?.part_name && (
-            <span className="text-slate-500 truncate" title={linkedPurchase.part_name}>{linkedPurchase.part_name}</span>
+          {linkedPurchase?.part_name && !(item.description || '').includes(linkedPurchase.part_name) && (
+            <span className="text-slate-700 break-words" title={linkedSummary || linkedPurchase.part_name}>{linkedPurchase.part_name}</span>
           )}
-          {reused.length > 0 && (
-            <span
-              className="text-amber-600 shrink-0"
-              title={`Déjà rattaché à ${reused.map(r => r.receipt_number || r.receipt_date || r.receipt_id).join(', ')}`}
-            >
-              · déjà facturé
+          {linkedPurchase?.order_date && (
+            <span title={linkedSummary || undefined}>
+              {fmtDate(linkedPurchase.order_date)}{linkedPurchase.supplier ? ` · ${linkedPurchase.supplier}` : ''}
             </span>
           )}
-        </div>
-      )}
-      {/* Libellé imprimé sur la facture, remplacé par « code LIA + nom de la pièce » dans
-          la description : on le garde visible pour que la ligne reste identifiable à l'œil. */}
-      {item.purchase_id && item.source_description && (
-        <div className="px-1 text-[11px] text-slate-400 truncate" title={item.source_description}>
-          Facture : {item.source_description}
+          <LiaCompare item={item} purchase={linkedPurchase} />
+          {reused.length > 0 && (
+            <span
+              className="text-amber-600"
+              title={`Déjà rattaché à ${reused.map(r => r.receipt_number || r.receipt_date || r.receipt_id).join(', ')}`}
+            >
+              déjà facturé ailleurs
+            </span>
+          )}
+          {/* Libellé imprimé sur la facture, remplacé par « code LIA + nom de la pièce »
+              dans la description : gardé visible (en secours au survol) pour que la ligne
+              reste identifiable à l'œil. */}
+          {item.source_description && (
+            <span className="text-slate-400 truncate max-w-full" title={item.source_description}>
+              Facture : {item.source_description}
+            </span>
+          )}
         </div>
       )}
       {!item.purchase_id && suggestion && (
@@ -1351,17 +1559,32 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
           data-testid={`receipt-item-lia-suggest-${index}`}
           title={[
             `Confiance ${Math.round(suggestion.score * 100)} %`,
+            suggestionSummary,
             ...(suggestion.reasons || []),
             // Hors section « À recevoir » : la commande est déjà reçue, sa facture
             // n'était simplement pas encore entrée. On le dit plutôt que de le taire.
             ...(suggestion.pending_reception === false ? ['achat déjà reçu — hors section « À recevoir »'] : []),
-          ].join(' · ')}
-          className="w-full flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-left text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded"
+          ].filter(Boolean).join(' · ')}
+          className="w-full flex flex-col gap-0.5 px-1.5 py-1 text-xs text-left text-amber-700 bg-amber-50 hover:bg-amber-100 border border-amber-200 rounded"
         >
-          <CheckCircle size={11} className="shrink-0" />
-          <span className="truncate">{suggestion.lia_ref} · {suggestion.part_name}{suggestion.pending_reception === false && ' · reçu'}</span>
-          <span className="ml-auto shrink-0 tabular-nums opacity-70">{Math.round(suggestion.score * 100)}%</span>
+          <span className="flex items-baseline gap-1.5 flex-wrap w-full">
+            <CheckCircle size={11} className="shrink-0 relative top-px" />
+            <span className="font-medium">{suggestion.lia_ref}</span>
+            <span className="break-words">{suggestion.part_name}</span>
+            {suggestion.pending_reception === false && <span>· reçu</span>}
+            <span className="ml-auto shrink-0 tabular-nums opacity-70">{Math.round(suggestion.score * 100)}%</span>
+          </span>
+          {/* Détails de l'achat servant à valider d'un coup d'œil : quantité, prix,
+              date de commande — équivalent de ce que la fiche Achats montrerait. */}
+          {suggestionSummary && (
+            <span className="pl-[15px] text-amber-600/80 tabular-nums">{suggestionSummary}</span>
+          )}
         </button>
+      )}
+      {!item.purchase_id && suggestion && (
+        <div className="pl-px">
+          <LiaCompare item={item} purchase={suggestion} nameScore={suggestion.detail?.name} />
+        </div>
       )}
       {/* Aucune proposition parce que l'achat qui correspond le mieux est déjà facturé :
           on le dit plutôt que de proposer un code libre moins pertinent. Il reste
@@ -1370,9 +1593,9 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
         <div
           data-testid={`receipt-item-lia-blocked-${index}`}
           title={[`${blockedBy.lia_ref} — ${blockedBy.reason}`, ...(blockedBy.receipts || []).map(r => r.receipt_number || r.receipt_date || r.receipt_id)].join(' · ')}
-          className="flex items-center gap-1 px-1.5 py-0.5 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded"
+          className="flex items-baseline gap-1 px-1.5 py-1 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded"
         >
-          <span className="truncate">{blockedBy.lia_ref} correspond, mais est déjà facturé</span>
+          <span className="break-words">{blockedBy.lia_ref} correspond, mais est déjà facturé</span>
         </div>
       )}
     </div>
@@ -1578,6 +1801,20 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   })()
   const exemptCodeName = taxCodes.find(c => c.Name === 'Exonéré')?.Name || 'Exonéré'
 
+  // Transport/escompte global extrait par l'IA (raw_data), déjà réparti au prorata dans
+  // le `total` de chaque ligne par reconcileDiscountFreightProrata côté serveur — rien à
+  // calculer ici, juste rappeler discrètement que les montants ci-dessus l'incluent déjà
+  // (sans ça, aucune trace de ce prorata n'est visible dans la fiche).
+  const prorata = (() => {
+    if (!receipt.raw_data || items.length <= 1) return null
+    let parsed
+    try { parsed = JSON.parse(receipt.raw_data) } catch { return null }
+    const freight = round2(Number(parsed.freight_amount) || 0)
+    const discount = round2(Number(parsed.discount_amount) || 0)
+    if (!freight && !discount) return null
+    return { freight, discount }
+  })()
+
   return (
     <div>
       <div className="flex items-center justify-between mb-2">
@@ -1594,11 +1831,17 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
           </button>
         </div>
       </div>
-      {/* Une ligne = un bloc de DEUX rangées, pas une rangée de tableau : la fiche vit
-          dans une demi-largeur d'écran (aperçu du document à gauche), où quatre colonnes
-          côte à côte rendaient la description illisible (~15 caractères visibles).
-          Rangée 1 : description pleine largeur + montant. Rangée 2 : achat LIA + code de
-          taxe, chacun avec assez de place pour montrer son libellé complet. */}
+      {/* Une ligne = un bloc de rangées, pas une rangée de tableau : la fiche vit dans une
+          demi-largeur d'écran (aperçu du document à gauche), où quatre colonnes côte à côte
+          rendaient la description illisible (~15 caractères visibles).
+          Rangée 1 : description pleine largeur + montant. Rangée 2 : achat LIA sur toute la
+          largeur (son menu reprend la largeur du bouton — un sélecteur étroit rendrait les
+          libellés d'achats illisibles). Rangée 3 : taxe et compte de dépense, deux valeurs
+          courtes qui se partagent la rangée.
+          ⚠ Aucun libellé ne porte `uppercase tracking-wide` : dans un panneau latéral, ce
+          couple de classes est le crochet des règles `.peek-panel` d'index.css, qui
+          transforme le bloc en grille « libellé 140 px | champ » — les trois sélecteurs se
+          retrouvaient écrasés dans la moitié droite, sous un libellé démesuré. */}
       <div className="border border-slate-200 rounded-lg divide-y divide-slate-200 overflow-hidden">
         {items.length === 0 && (
           <div className="px-3 py-4 text-center text-slate-400 text-xs">
@@ -1636,9 +1879,9 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                 <Trash2 size={12} />
               </button>
             </div>
-            <div className="flex items-start gap-2 mt-1 pl-2 pr-[2.375rem]">
+            <div className="flex items-start gap-1.5 mt-1 pl-2 pr-[2.375rem]">
+              <span className="shrink-0 pt-1 text-[11px] text-slate-400">Achat</span>
               <div className="flex-1 min-w-0">
-                <span className="block text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">Achat LIA</span>
                 <LiaCell
                   index={i}
                   item={item}
@@ -1649,30 +1892,36 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                   onSelect={id => setLiaPurchase(i, id)}
                 />
               </div>
-              <div className="w-44 shrink-0">
-                <span className="block text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">Code de taxe</span>
-                <SearchableSelect
-                  testId={`receipt-item-taxcode-${i}`}
-                  value={item.tax_code_id || ''}
-                  options={taxCodeOptions}
-                  emptyOption="— Code du document —"
-                  onChange={val => setTaxCode(i, val)}
-                />
-              </div>
             </div>
-            {/* Compte de dépense de la ligne : sur sa propre rangée (les libellés de
-                comptes — « 14000 — Stock de Pièces » — sont trop longs pour partager
-                la rangée du code de taxe dans une demi-largeur d'écran). Facture qui
-                touche plusieurs comptes → on ventile ici, ligne par ligne. */}
-            <div className="mt-1 pl-2 pr-[2.375rem]">
-              <span className="block text-[10px] uppercase tracking-wide text-slate-400 mb-0.5">Compte de dépense</span>
-              <SearchableSelect
-                testId={`receipt-item-account-${i}`}
-                value={item.expense_account_id || ''}
-                options={lineAccountOptions}
-                emptyOption="— Compte du document —"
-                onChange={val => setLineExpenseAccount(i, val)}
-              />
+            {/* Taxe et compte de dépense : deux valeurs courtes, donc côte à côte sur une
+                seule rangée, libellé À GAUCHE du sélecteur (au-dessus, chacun coûtait une
+                rangée de plus). Facture qui touche plusieurs comptes → on ventile ici,
+                ligne par ligne. */}
+            <div className="flex items-center gap-3 mt-1 pl-2 pr-[2.375rem]">
+              <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                <span className="shrink-0 text-[11px] text-slate-400">Taxe</span>
+                <div className="flex-1 min-w-0">
+                  <SearchableSelect
+                    testId={`receipt-item-taxcode-${i}`}
+                    value={item.tax_code_id || ''}
+                    options={taxCodeOptions}
+                    emptyOption="— Code du document —"
+                    onChange={val => setTaxCode(i, val)}
+                  />
+                </div>
+              </div>
+              <div className="flex-1 min-w-0 flex items-center gap-1.5">
+                <span className="shrink-0 text-[11px] text-slate-400">Compte</span>
+                <div className="flex-1 min-w-0">
+                  <SearchableSelect
+                    testId={`receipt-item-account-${i}`}
+                    value={item.expense_account_id || ''}
+                    options={lineAccountOptions}
+                    emptyOption="— Compte du document —"
+                    onChange={val => setLineExpenseAccount(i, val)}
+                  />
+                </div>
+              </div>
             </div>
           </div>
         ))}
@@ -1691,6 +1940,13 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
           </div>
         )}
       </div>
+      {prorata && (
+        <p className="text-[11px] text-slate-400 mt-1 leading-snug" data-testid="receipt-freight-prorata-hint">
+          Totaux ci-dessus incluant{prorata.freight > 0 ? ` transport ${fmtCad(prorata.freight)}` : ''}
+          {prorata.freight > 0 && prorata.discount > 0 ? ' et' : ''}
+          {prorata.discount > 0 ? ` escompte ${fmtCad(prorata.discount)}` : ''} réparti au prorata des lignes.
+        </p>
+      )}
       {liaOtherVendorOnly && (
         <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
           Aucun achat n'est rattaché à ce fournisseur dans Achats : la liste est ouverte à
@@ -1704,7 +1960,7 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
             type="button"
             data-testid="lia-show-all"
             onClick={() => setShowAllLia(v => !v)}
-            className="text-brand-600 hover:underline"
+            className="link-record"
           >
             {showAllLia ? 'Revenir à « À recevoir »' : 'Tous les achats du fournisseur'}
           </button>
@@ -1859,29 +2115,67 @@ function splitTaxTotal(newTotal, { tps = 0, tvq = 0, other_taxes = 0 }) {
   return rounded
 }
 
-// À quel champ du document (tps / tvq / other_taxes) rattacher un label de taxe
-// tel qu'imprimé sur la facture (« TPS », « T.P.S. (5%) », « GST », « TVQ »,
-// « QST », « HST ON », « PST BC »…). Miroir simplifié de la règle d'extraction
-// (saleReceiptExtraction.js) : TPS/GST → tps, TVQ/QST → tvq, tout le reste
-// (TVH/HST d'une autre province, PST, etc.) → other_taxes.
+// À quelle ligne du sommaire rattacher un label de taxe tel qu'imprimé sur la
+// facture (« TPS », « T.P.S. (5%) », « GST », « TVQ », « QST », « HST ON »,
+// « PST BC »…). Miroir de transportInvoice.js (serveur) : TPS/GST → tps,
+// TVQ/QST → tvq, TVH/HST → other_taxes (récupérable). Une PST provinciale ou une
+// taxe inconnue n'est PAS récupérable : le serveur la replie dans le coût, donc
+// elle n'apparaît dans aucun champ de taxe du dossier mais dans le sous-total.
 function taxFieldForLabel(label) {
-  const l = (label || '').toUpperCase()
-  if (l.includes('TPS') || l.includes('GST')) return 'tps'
+  const l = (label || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z]/g, '')
   if (l.includes('TVQ') || l.includes('QST')) return 'tvq'
-  return 'other_taxes'
+  if (l.includes('TVH') || l.includes('HST')) return 'other_taxes'
+  if (l.includes('PST') || l.includes('RST') || l.includes('TVP')) return 'non_recoverable'
+  if (l.includes('TPS') || l.includes('GST')) return 'tps'
+  return 'non_recoverable'
 }
 
-const TAX_FIELD_LABEL = { tps: 'TPS / GST', tvq: 'TVQ / QST', other_taxes: 'Autres taxes' }
+const TAX_FIELD_LABEL = {
+  tps: 'TPS / GST',
+  tvq: 'TVQ / QST',
+  other_taxes: 'TVH',
+  non_recoverable: 'Taxe non récupérable',
+}
 
-// Sommaire des taxes telles qu'extraites par l'IA, REGROUPÉES par type (comme le
-// « Sommaire des frais d'expédition » imprimé en page 1 des factures de transport
-// multi-régions — Novoxpress, etc.) : un montant par type de taxe rencontré dans
-// les expéditions, avec un repère ✓/⚠️ indiquant si la somme extraite pour ce type
-// correspond bien au montant du document (tps/tvq/other_taxes) — sans avoir à
-// rouvrir le PDF pour vérifier l'extraction ligne par ligne. Replié par défaut ;
-// n'existe et ne s'affiche que si `raw_data` contient des `shipments`.
+// Une ligne du sommaire extrait : libellé + montant, ✓/⚠️ selon qu'elle retombe
+// sur le montant retenu au dossier. Les libellés exacts imprimés (« TPS »,
+// « TVH ON »…) ne sont détaillés QUE si la ligne en regroupe plusieurs — sinon
+// c'est le même montant écrit deux fois.
+function ExtractedSummaryLine({ label, amount, documented, labels, strong }) {
+  const ok = documented == null || Math.abs(round2(documented - amount)) < 0.02
+  return (
+    <div>
+      <div className={`flex justify-between gap-2 ${strong ? 'text-sm font-semibold text-slate-800' : 'text-xs text-slate-700'}`}>
+        <span className="inline-flex items-center gap-1.5 min-w-0">
+          {documented == null
+            ? <span className="w-3 shrink-0" />
+            : ok
+              ? <CheckCircle size={12} className="text-green-600 shrink-0" />
+              : <AlertCircle size={12} className="text-amber-500 shrink-0" />}
+          <span className="truncate">{label}</span>
+        </span>
+        <span className="tabular-nums shrink-0">{fmtCad(amount)}</span>
+      </div>
+      {labels && labels.length > 1 && labels.map(([l, amt], i) => (
+        <div key={i} className="flex justify-between gap-2 pl-[22px] text-[11px] text-slate-400">
+          <span className="truncate">{l}</span>
+          <span className="tabular-nums shrink-0">{fmtCad(amt)}</span>
+        </div>
+      ))}
+      {!ok && (
+        <p className="pl-[22px] text-[11px] text-amber-600">Au dossier : {fmtCad(documented)}</p>
+      )}
+    </div>
+  )
+}
+
+// Sommaire de la facture reconstruit à partir des expéditions extraites, présenté
+// DANS L'ORDRE du sommaire imprimé en haut des factures de transport multi-régions
+// (Novoxpress & co.) — sous-total, taxes par type, total dû — pour se comparer à
+// l'œil au papier sans rouvrir le PDF. Un ⚠️ marque la ligne qui ne retombe pas sur
+// le montant retenu au dossier. Toujours visible dès que `raw_data` contient des
+// `shipments` ; n'existe pas autrement.
 function ExtractedTaxDetail({ receipt }) {
-  const [open, setOpen] = useState(false)
   const shipments = (() => {
     if (!receipt.raw_data) return null
     try {
@@ -1892,66 +2186,73 @@ function ExtractedTaxDetail({ receipt }) {
   if (!shipments) return null
 
   // Regroupe TOUTES les taxes de TOUTES les expéditions par label exact imprimé
-  // (« TPS », « HST ON »…), puis par champ document (tps/tvq/other_taxes).
+  // (« TPS », « TVH ON »…), puis par ligne de sommaire.
   const byLabel = new Map()
+  let shipTotal = 0
   for (const sh of shipments) {
+    shipTotal = round2(shipTotal + (Number(sh.total) || 0))
     for (const t of (sh.taxes || [])) {
       if (!t || !t.label) continue
       byLabel.set(t.label, round2((byLabel.get(t.label) || 0) + (Number(t.amount) || 0)))
     }
   }
-  const byField = { tps: 0, tvq: 0, other_taxes: 0 }
-  const labelsByField = { tps: [], tvq: [], other_taxes: [] }
+  const byField = { tps: 0, tvq: 0, other_taxes: 0, non_recoverable: 0 }
+  const labelsByField = { tps: [], tvq: [], other_taxes: [], non_recoverable: [] }
   for (const [label, amount] of byLabel) {
     const field = taxFieldForLabel(label)
     byField[field] = round2(byField[field] + amount)
     labelsByField[field].push([label, amount])
   }
 
+  // Sous-total = total des expéditions moins les taxes récupérables. La taxe non
+  // récupérable reste dedans (elle est repliée dans le coût à la publication).
+  const recoverable = round2(byField.tps + byField.tvq + byField.other_taxes)
+  const subtotal = round2(shipTotal - recoverable)
+
+  const taxRows = ['tps', 'tvq', 'other_taxes']
+    .filter(f => labelsByField[f].length)
+    .map(f => ({ field: f, amount: byField[f], documented: round2(receipt[f] || 0), labels: labelsByField[f] }))
+
   return (
-    <div className="text-[11px]">
-      <button
-        type="button"
-        onClick={() => setOpen(o => !o)}
-        data-testid="receipt-extracted-tax-detail-toggle"
-        className="text-brand-600 hover:underline"
-      >
-        {open ? 'Masquer' : 'Voir'} le détail des taxes extraites (par type)
-      </button>
-      {open && (
-        <div className="mt-1 space-y-2 border border-slate-200 rounded-md p-2 bg-white">
-          {['tps', 'tvq', 'other_taxes'].filter(f => labelsByField[f].length).map(field => {
-            const documented = round2(receipt[field] || 0)
-            const ok = Math.abs(documented - byField[field]) < 0.02
-            return (
-              <div key={field}>
-                <div className="flex justify-between gap-2 text-slate-700 font-medium">
-                  <span className="inline-flex items-center gap-1">
-                    {ok
-                      ? <CheckCircle size={11} className="text-green-600" />
-                      : <AlertCircle size={11} className="text-amber-500" />}
-                    {TAX_FIELD_LABEL[field]}
-                  </span>
-                  <span className="tabular-nums shrink-0" title="Somme extraite pour ce type, sur toutes les expéditions">
-                    {fmtCad(byField[field])}
-                  </span>
-                </div>
-                {labelsByField[field].map(([label, amount], i) => (
-                  <div key={i} className="flex justify-between gap-2 pl-4 text-slate-400">
-                    <span className="truncate">{label}</span>
-                    <span className="tabular-nums shrink-0">{fmtCad(amount)}</span>
-                  </div>
-                ))}
-                {!ok && (
-                  <p className="pl-4 text-amber-600">
-                    Écart avec le document ({fmtCad(documented)}) — vérifier l'extraction.
-                  </p>
-                )}
-              </div>
-            )
-          })}
-        </div>
+    <div
+      data-testid="receipt-extracted-tax-summary"
+      className="rounded-md border border-slate-300 bg-white p-3 space-y-1"
+    >
+      <div className="flex items-baseline justify-between gap-2 pb-1">
+        <span className="text-xs font-semibold text-slate-700">Sommaire de la facture</span>
+        <span className="text-[11px] text-slate-400">
+          {shipments.length} expédition{shipments.length > 1 ? 's' : ''}
+        </span>
+      </div>
+      <ExtractedSummaryLine
+        label="Sous-total"
+        amount={subtotal}
+        documented={round2(receipt.subtotal || 0)}
+      />
+      {byField.non_recoverable > 0 && (
+        <ExtractedSummaryLine
+          label={`dont ${labelsByField.non_recoverable.map(([l]) => l).join(', ')} — non récupérable`}
+          amount={byField.non_recoverable}
+          documented={null}
+        />
       )}
+      {taxRows.map(row => (
+        <ExtractedSummaryLine
+          key={row.field}
+          label={TAX_FIELD_LABEL[row.field]}
+          amount={row.amount}
+          documented={row.documented}
+          labels={row.labels}
+        />
+      ))}
+      <div className="border-t border-slate-200 pt-1.5 mt-1.5">
+        <ExtractedSummaryLine
+          label="Total dû"
+          amount={shipTotal}
+          documented={round2(receipt.total || 0)}
+          strong
+        />
+      </div>
     </div>
   )
 }
@@ -2017,6 +2318,65 @@ function EditableTotalTaxesRow({ receipt, onUpdate }) {
 // diverge — signe que les lignes ne sont pas encore HT (ex. prix Amazon taxes
 // incluses), pour inviter l'utilisateur à corriger l'article plutôt que de fausser
 // la compta.
+// Contrôle du total contre le DOCUMENT : le serveur relit le texte du PDF et dit si
+// le montant affiché figure sur une ligne « total » du papier (aucun appel IA).
+// Rien pour les photos et les PDF scannés (pas de couche texte) — l'indicateur
+// n'apparaît que quand la vérification est possible.
+function useDocumentAmountCheck(receipt, amount) {
+  const [check, setCheck] = useState(null)
+  const id = receipt?.id
+  const hasPdf = (receipt?.pages || []).some(p => p?.file_type === '.pdf')
+  useEffect(() => {
+    if (!id || !hasPdf || !amount) { setCheck(null); return }
+    let alive = true
+    // Le total suit les éditions de lignes/taxes : on laisse retomber la poussière.
+    const t = setTimeout(() => {
+      api.saleReceipts.amountCheck(id, amount)
+        .then(r => { if (alive) setCheck(r) })
+        .catch(() => { if (alive) setCheck(null) })
+    }, 500)
+    return () => { alive = false; clearTimeout(t) }
+  }, [id, hasPdf, amount])
+  return check
+}
+
+const CURRENCY_SIGNS = { EUR: '€', GBP: '£', CHF: 'CHF', USD: '$ US', CAD: '$' }
+
+function DocumentAmountBadge({ receipt, amount }) {
+  const check = useDocumentAmountCheck(receipt, amount)
+  if (!check || !check.text_available || check.status === 'unknown') return null
+  if (check.status === 'confirmed') {
+    return (
+      <span
+        data-testid="receipt-amount-doc-check"
+        data-status="confirmed"
+        className="inline-flex items-center text-green-600"
+        title={`Montant retrouvé sur le document${check.matched_label ? ` — « ${check.matched_label.replace(/\s+/g, ' ').trim()} »` : ''}`}
+      >
+        <CheckCircle size={12} />
+      </span>
+    )
+  }
+  const cur = check.document_currency && check.document_currency !== (receipt.currency || 'CAD')
+    ? CURRENCY_SIGNS[check.document_currency] || check.document_currency
+    : null
+  return (
+    <span
+      data-testid="receipt-amount-doc-check"
+      data-status="mismatch"
+      className="inline-flex items-center gap-1 text-[11px] text-red-700"
+      title={check.document_total != null
+        ? `Le document imprime un autre montant${check.matched_label ? ` — « ${check.matched_label.replace(/\s+/g, ' ').trim()} »` : ''}. Vérifiez le total avant de publier.`
+        : 'Ce montant n’apparaît pas sur le document. Vérifiez le total avant de publier.'}
+    >
+      <AlertCircle size={12} />
+      {check.document_total != null
+        ? `doc : ${cur ? `${check.document_total.toFixed(2).replace('.', ',')} ${cur}` : fmtCad(check.document_total)}`
+        : 'absent du doc'}
+    </span>
+  )
+}
+
 function DerivedTotalRow({ receipt }) {
   const total = computedTotal(receipt)
   const printed = receipt.total
@@ -2028,6 +2388,7 @@ function DerivedTotalRow({ receipt }) {
         <span className="text-[11px] text-slate-400 ml-1 font-normal">(articles + taxes)</span>
       </span>
       <div className="flex items-center gap-2">
+        <DocumentAmountBadge receipt={receipt} amount={total} />
         {drift && (
           <span
             className="text-[11px] text-amber-600"
@@ -2294,11 +2655,32 @@ function DuplicateBanner({ receiptId, excludeId }) {
 }
 
 // Bandeau « relevé mensuel de fournisseur prépayé » (Twilio). Visible seulement
+// Sortie d'argent au relevé qui porte cette facture (receipt.bank_txn, posé par
+// le rapprochement bancaire dans un sens ou dans l'autre). Une ligne, pas un
+// bandeau : c'est une information de contexte, pas une action à faire.
+function BankTxnLine({ receipt }) {
+  const t = receipt?.bank_txn
+  if (!t) return null
+  return (
+    <div className="mb-3 flex items-center gap-1.5 text-xs text-slate-500" data-testid="receipt-bank-txn">
+      <Landmark size={13} className="text-slate-400 shrink-0" />
+      <span>Débité le {fmtDate(t.txn_date)}</span>
+      <span className="text-slate-300">·</span>
+      <Link to={`/rapprochement?compte=${t.account_id}`} className="text-blue-600 hover:underline">
+        {t.account_name}
+      </Link>
+      <span className="text-slate-300">·</span>
+      <span>{fmtCad(Math.abs(t.amount))}</span>
+      {t.match_method === 'auto' && <span className="text-slate-400">(auto)</span>}
+    </div>
+  )
+}
+
 // quand le serveur détecte ce type de document (receipt.prepaid_statement) : le
 // fournisseur est un compte prépayé, donc la dépense du mois est DÉJÀ comptabilisée
 // par les recharges. Rien à publier — un clic joint le document en pièce jointe aux
 // transactions QuickBooks du mois couvert. Le mois détecté reste modifiable.
-function PrepaidStatementBanner({ receipt, onDone }) {
+function PrepaidStatementBanner({ receipt, onDone, onArchive }) {
   const { addToast } = useToast()
   const st = receipt?.prepaid_statement
   const [month, setMonth] = useState(st?.month || '')
@@ -2321,7 +2703,11 @@ function PrepaidStatementBanner({ receipt, onDone }) {
           : 'Aucune transaction QuickBooks trouvée pour ce fournisseur dans ce mois',
         type: r.transactions.length ? 'success' : 'error',
       })
-      onDone?.()
+      // Rattachement réussi : rien d'autre à comptabiliser pour ce document,
+      // on l'archive comme les autres reçus déjà traités — il sort de la file
+      // « À publier » (mêmes toast + retour liste que l'archivage manuel).
+      if (r.transactions.length && !receipt.archived_at) await onArchive?.()
+      else onDone?.()
     } catch (e) {
       addToast({ message: 'Erreur: ' + e.message, type: 'error' })
     } finally {
@@ -2605,7 +2991,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
           </div>
           <div className="flex items-center gap-1">
             <button
-              onClick={() => prevId && navigate(`/sale-receipts/${prevId}`)}
+              onClick={() => prevId && navigate(`/sale-receipts/${prevId}`, { replace: true })}
               disabled={!prevId}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               data-testid="receipt-prev"
@@ -2615,7 +3001,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
               <ChevronLeft size={16} />
             </button>
             <button
-              onClick={() => nextId && navigate(`/sale-receipts/${nextId}`)}
+              onClick={() => nextId && navigate(`/sale-receipts/${nextId}`, { replace: true })}
               disabled={!nextId}
               className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
               data-testid="receipt-next"
@@ -2674,7 +3060,8 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
 
         <ObsoleteBanner receipt={receipt} acting={acting} onArchive={handleArchiveToggle} onDismissed={load} />
         <DuplicateBanner receiptId={receipt.id} excludeId={receipt.obsolete?.anomaly_id} />
-        <PrepaidStatementBanner receipt={receipt} onDone={load} />
+        <PrepaidStatementBanner receipt={receipt} onDone={load} onArchive={handleArchiveToggle} />
+        <BankTxnLine receipt={receipt} />
 
         {/* Onglets */}
         <div className="flex items-center gap-1 border-b border-slate-200 mb-5">
@@ -2733,20 +3120,40 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
                     // (même ordre que les flèches ‹ › — vue filtrée/triée mémorisée au clic
                     // sur la ligne) pour traiter la pile sans repasser par le menu. Dernier
                     // document de la liste → retour à l'interface Extraction de données.
-                    if (nextId) navigate(`/sale-receipts/${nextId}`); else leave()
+                    if (nextId) navigate(`/sale-receipts/${nextId}`, { replace: true }); else leave()
                   }}
                 />
               )}
 
-              <div className="grid grid-cols-2 gap-4">
-                <EditableTextField receipt={receipt} field="company" label="Entreprise" onUpdate={setReceipt} testId="receipt-company" />
-                <EditableDateField receipt={receipt} field="receipt_date" label="Date" onUpdate={setReceipt} testId="receipt-date" />
-                <EditableTextField receipt={receipt} field="receipt_number" label="N° de reçu" onUpdate={setReceipt} testId="receipt-number" />
-                <EditableTextField receipt={receipt} field="payment_method" label="Mode de paiement" onUpdate={setReceipt} testId="receipt-payment-method" />
-                <CurrencyField receipt={receipt} onUpdate={setReceipt} />
-                <InfoField id="original_name" label="Fichier" value={receipt.original_name} />
-                <CustomDetailFields table="sale_receipts" record={receipt} labelClassName="text-xs text-slate-400 uppercase tracking-wide font-medium" />
-              </div>
+              {/* Carte de champs commune : une seule liste, réordonnable et
+                  masquable depuis la fiche (bouton « Personnaliser les
+                  champs »). Les champs personnalisés de la table s'y posent
+                  seuls — d'où `record`. */}
+              <DetailFieldGrid
+                entityType="sale_receipts"
+                record={receipt}
+                className=""
+                testId="receipt-fields"
+              >
+                <DetailField id="company" label="Entreprise">
+                  <EditableTextField receipt={receipt} field="company" onUpdate={setReceipt} testId="receipt-company" />
+                </DetailField>
+                <DetailField id="receipt_date" label="Date">
+                  <EditableDateField receipt={receipt} field="receipt_date" onUpdate={setReceipt} testId="receipt-date" />
+                </DetailField>
+                <DetailField id="receipt_number" label="N° de reçu">
+                  <EditableTextField receipt={receipt} field="receipt_number" onUpdate={setReceipt} testId="receipt-number" />
+                </DetailField>
+                <DetailField id="payment_method" label="Mode de paiement">
+                  <EditableTextField receipt={receipt} field="payment_method" onUpdate={setReceipt} testId="receipt-payment-method" />
+                </DetailField>
+                <DetailField id="currency" label="Devise">
+                  <CurrencyField receipt={receipt} onUpdate={setReceipt} />
+                </DetailField>
+                <DetailField id="original_name" label="Fichier">
+                  <InfoField value={receipt.original_name} />
+                </DetailField>
+              </DetailFieldGrid>
 
               <EditableItems receipt={receipt} onUpdate={setReceipt} taxCodes={taxCodes} accounts={accounts} />
 
@@ -2780,11 +3187,14 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
                   </p>
                 </div>
                 <div className="bg-slate-50 rounded-lg p-4 space-y-2">
+                  {/* Facture de transport multi-expéditions : le sommaire extrait
+                      (miroir de celui imprimé en haut de la facture) précède les
+                      montants du dossier, pour comparaison directe avec le papier. */}
+                  <ExtractedTaxDetail receipt={receipt} />
                   <EditableAmountRow receipt={receipt} field="subtotal"    label="Sous-total (avant taxes)" onUpdate={setReceipt} readOnly={(receipt.items || []).some(it => it && it.total != null)} hint={(receipt.items || []).some(it => it && it.total != null) ? '(somme des lignes)' : undefined} />
                   <EditableAmountRow receipt={receipt} field="tps"         label="TPS / GST"                onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
                   <EditableAmountRow receipt={receipt} field="tvq"         label="TVQ / QST / PST"          onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
                   <EditableAmountRow receipt={receipt} field="other_taxes" label="Autres taxes"             onUpdate={setReceipt} readOnly={codeDriven} hint={codeHint} />
-                  <ExtractedTaxDetail receipt={receipt} />
                   {!codeDriven && <EditableTotalTaxesRow receipt={receipt} onUpdate={setReceipt} />}
                   {!codeDriven && <TaxReconciliationRow receipt={receipt} taxCodes={taxCodes} />}
                   <div className="border-t border-slate-200 pt-2 mt-2">

@@ -8,6 +8,7 @@ import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
 import { parseDurationToMinutes, formatMinutes, weekKey } from '../lib/duration.js'
+import { parseWeekHours } from '../lib/weekDuration.js'
 import { localISODate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import Spinner from '../components/Spinner.jsx'
@@ -27,6 +28,18 @@ function weekdayLabel(dateStr) {
 function weekdayShort(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
   return d.toLocaleDateString('fr-CA', { weekday: 'short' })
+}
+// Lundi de la semaine contenant `dateStr` — clé du mode semaine.
+function weekStartOf(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00')
+  return shiftDate(dateStr, -((d.getDay() + 6) % 7))
+}
+function weekRangeLabel(dateStr) {
+  const start = weekStartOf(dateStr)
+  const end = shiftDate(start, 6)
+  const fmt = (s, withYear) => new Date(s + 'T00:00:00')
+    .toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', ...(withYear ? { year: 'numeric' } : {}) })
+  return `${fmt(start)} — ${fmt(end, true)}`
 }
 function timeToMin(t) {
   if (!t || typeof t !== 'string') return null
@@ -501,18 +514,33 @@ export default function FeuilleDeTemps() {
   const [savingField, setSavingField] = useState({})
   const [activityCodes, setActivityCodes] = useState([])
   const [history, setHistory] = useState([])
+  const [weekHistory, setWeekHistory] = useState([])
+  const [weekRec, setWeekRec] = useState(null)
+  const [weekLoad, setWeekLoad] = useState({ key: null, error: null })
+  const [weekReload, setWeekReload] = useState(0)
+  const weekRequest = useRef(0)
+  // Remonte le champ de la semaine à sa valeur enregistrée quand une saisie est refusée.
+  const [weekResetKey, setWeekResetKey] = useState(0)
   const [prefMode, setPrefMode] = useState('simple')
+  const [historyMode, setHistoryMode] = useState(null)
   const [focusEntryId, setFocusEntryId] = useState(null)
   const [selectedUserId, setSelectedUserId] = useState(user?.id)
+  const currentUserId = useRef(selectedUserId)
+  currentUserId.current = selectedUserId
   const [users, setUsers] = useState([])
   const isViewingSelf = selectedUserId === user?.id
   const confirm = useConfirm()
   const { addToast } = useToast()
 
-  // Préférences chargées une fois (toujours pour le user connecté).
+  // Mode de saisie : celui de l'employé CONSULTÉ (pas du gestionnaire qui regarde).
   useEffect(() => {
-    api.timesheets.getPreferences().then(p => setPrefMode(p.default_mode || 'simple')).catch(() => {})
-  }, [])
+    if (!selectedUserId) return
+    let alive = true
+    api.timesheets.getPreferences({ user_id: selectedUserId })
+      .then(p => { if (alive) setPrefMode(p.default_mode || 'simple') })
+      .catch(() => {})
+    return () => { alive = false }
+  }, [selectedUserId])
 
   // Codes d'activité : la liste dépend de l'user visualisé (filtre de visibilité).
   // - Si je vois ma propre feuille : appel sans for_user_id → filtré par req.user (moi).
@@ -535,6 +563,17 @@ export default function FeuilleDeTemps() {
     if (isViewingSelf) return user?.name
     return users.find(u => u.id === selectedUserId)?.name || '…'
   }, [isViewingSelf, selectedUserId, users, user])
+
+  // Le mode semaine est une façon de travailler (préférence de l'employé), pas
+  // une propriété d'une journée : il prime donc sur le mode de la journée ouverte.
+  const dailyMode = day?.mode || (prefMode === 'week' ? 'simple' : prefMode)
+  const effectiveMode = historyMode === 'day' ? dailyMode : (historyMode || (prefMode === 'week' ? 'week' : dailyMode))
+  const isWeekMode = effectiveMode === 'week'
+  const weekStart = weekStartOf(date)
+  const weekScope = `${selectedUserId}-${weekStart}`
+  const currentWeekScope = useRef(weekScope)
+  currentWeekScope.current = weekScope
+  const weekReady = weekLoad.key === weekScope && !weekLoad.error
 
   const loadDay = useCallback(async () => {
     if (!selectedUserId) return
@@ -566,11 +605,45 @@ export default function FeuilleDeTemps() {
   }, [selectedUserId])
   useEffect(() => { loadHistory() }, [loadHistory])
 
+  // Totaux hebdomadaires (mode semaine) — même fenêtre que l'historique.
+  const loadWeekHistory = useCallback(async () => {
+    if (!selectedUserId) return
+    const t = new Date()
+    const from = new Date(t.getFullYear(), t.getMonth() - 11, 1).toISOString().slice(0, 10)
+    const r = await api.timesheets.listWeeks({ from, user_id: selectedUserId })
+    if (currentUserId.current === selectedUserId) setWeekHistory(r.data || [])
+  }, [selectedUserId])
+  useEffect(() => { loadWeekHistory() }, [loadWeekHistory])
+
+  // La semaine affichée : chargée seulement quand le mode le demande.
+  useEffect(() => {
+    if (!selectedUserId || !isWeekMode) return
+    const request = ++weekRequest.current
+    // Vidé d'abord : sinon le total de la semaine précédente reste affiché le
+    // temps de l'aller-retour.
+    setWeekRec(null)
+    setWeekLoad({ key: null, error: null })
+    api.timesheets.getWeek({ date: weekStart, user_id: selectedUserId })
+      .then(w => {
+        if (request !== weekRequest.current) return
+        setWeekRec(w)
+        setWeekLoad({ key: weekScope, error: null })
+      })
+      .catch(e => {
+        if (request === weekRequest.current) setWeekLoad({ key: weekScope, error: e.message })
+      })
+    return () => { weekRequest.current = request + 1 }
+  }, [selectedUserId, weekStart, weekScope, isWeekMode, weekReload])
+
   // Sidebar : ne montrer que les 12 dernières semaines pour rester compact.
   const sidebarHistory = useMemo(() => {
     const cutoff = shiftDate(todayStr(), -84)
     return history.filter(d => d.date >= cutoff)
   }, [history])
+  const sidebarWeeks = useMemo(() => {
+    const cutoff = shiftDate(todayStr(), -84)
+    return weekHistory.filter(w => w.week_start >= cutoff)
+  }, [weekHistory])
 
   async function ensureDay(mode) {
     if (day) return day
@@ -578,6 +651,8 @@ export default function FeuilleDeTemps() {
     // utiliser la préférence du user cible (au lieu d'imposer celle de l'admin).
     let bodyMode = mode
     if (bodyMode === undefined) bodyMode = isViewingSelf ? prefMode : undefined
+    // 'week' n'est pas un mode de journée — laisser le backend choisir son défaut.
+    if (bodyMode === 'week') bodyMode = undefined
     const created = await api.timesheets.createDay({ date, mode: bodyMode, user_id: selectedUserId })
     setDay(created)
     return created
@@ -597,10 +672,49 @@ export default function FeuilleDeTemps() {
         setPrefMode(patch.mode)
       }
       loadHistory()
+      return true
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
+      return false
     } finally {
       setSavingField(s => ({ ...s, [k]: false }))
+    }
+  }
+
+  // Bascule du mode de saisie. « Semaine » ne crée aucune journée : il n'y a
+  // qu'un chiffre par semaine, stocké à part — seule la préférence change.
+  async function setMode(mode) {
+    if (mode === effectiveMode || savingField.mode) return
+    if (mode === 'week' || isWeekMode) {
+      setSavingField(s => ({ ...s, mode: true }))
+      try {
+        await api.timesheets.updatePreferences({ default_mode: mode, user_id: selectedUserId })
+        setPrefMode(mode)
+        setHistoryMode(null)
+      } catch (e) {
+        addToast({ message: e.message, type: 'error' })
+        return
+      } finally {
+        setSavingField(s => ({ ...s, mode: false }))
+      }
+      if (mode === 'week') return
+    }
+    if (await patchDay({ mode })) setHistoryMode(null)
+  }
+
+  async function saveWeekMinutes(minutes) {
+    if (!weekReady || savingField.week_minutes) return
+    const request = weekRequest.current
+    setSavingField(s => ({ ...s, week_minutes: true }))
+    try {
+      const saved = await api.timesheets.saveWeek({ date: weekStart, minutes, user_id: selectedUserId })
+      if (request === weekRequest.current && currentWeekScope.current === weekScope) setWeekRec(saved)
+      loadWeekHistory()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+      if (request === weekRequest.current && currentWeekScope.current === weekScope) setWeekResetKey(k => k + 1)
+    } finally {
+      setSavingField(s => ({ ...s, week_minutes: false }))
     }
   }
 
@@ -668,15 +782,19 @@ export default function FeuilleDeTemps() {
         return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || el.isContentEditable
       }
       if (isInteractive(e.target) || isInteractive(document.activeElement)) return
+      // En mode semaine les flèches déplacent d'une semaine, et il n'y a pas
+      // d'activité à ajouter.
+      const step = isWeekMode ? 7 : 1
       if (e.key === 'Enter') {
+        if (isWeekMode) return
         e.preventDefault()
         addEntry()
       } else if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        setDate(d => shiftDate(d, -1))
+        setDate(d => shiftDate(d, -step))
       } else if (e.key === 'ArrowRight') {
         e.preventDefault()
-        setDate(d => shiftDate(d, 1))
+        setDate(d => shiftDate(d, step))
       } else if (e.key.toLowerCase() === 'a') {
         e.preventDefault()
         setDate(todayStr())
@@ -687,7 +805,7 @@ export default function FeuilleDeTemps() {
     // addEntry est stable (closure sur day/prefMode), on le recalcule à chaque
     // render — pas besoin de le mettre en dépendance car la closure se renouvelle.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [day, prefMode])
+  }, [day, prefMode, isWeekMode])
 
   // Totaux — un entry ne compte que si le code d'activité est payable (payable !== 0).
   // Les entrées sans code d'activité comptent (par défaut on assume payable).
@@ -702,8 +820,10 @@ export default function FeuilleDeTemps() {
     const total = toMin(day.end_time) - toMin(day.start_time) - (Number(day.break_minutes) || 0)
     return Math.max(0, total)
   })()
-  const effectiveMode = day?.mode || prefMode
-  const dailyTotal = effectiveMode === 'detailed' ? detailedTotalMin : simpleTotalMin
+  const weekTotalMin = Number(weekRec?.minutes) || 0
+  const dailyTotal = isWeekMode
+    ? weekTotalMin
+    : (effectiveMode === 'detailed' ? detailedTotalMin : simpleTotalMin)
 
   return (
     <Layout>
@@ -718,7 +838,7 @@ export default function FeuilleDeTemps() {
                   value={selectedUserId}
                   items={users}
                   labelOf={u => u.name}
-                  onChange={(id) => setSelectedUserId(id || user.id)}
+                  onChange={(id) => { setHistoryMode(null); setSelectedUserId(id || user.id) }}
                 />
               </div>
             </div>
@@ -734,7 +854,7 @@ export default function FeuilleDeTemps() {
           >
             <span>Tu consultes la feuille de temps de <strong>{selectedUserName}</strong>. Toute modification sera enregistrée sur son compte.</span>
             <button
-              onClick={() => setSelectedUserId(user.id)}
+              onClick={() => { setHistoryMode(null); setSelectedUserId(user.id) }}
               className="text-xs px-2 py-1 border border-amber-300 rounded text-amber-900 hover:bg-amber-100 whitespace-nowrap"
             >Revenir à ma feuille</button>
           </div>
@@ -745,8 +865,11 @@ export default function FeuilleDeTemps() {
           <aside className="lg:w-72 lg:flex-shrink-0 order-2 lg:order-1">
             <HistoryTable
               history={sidebarHistory}
+              weeks={sidebarWeeks}
               currentDate={date}
-              onJump={d => { setDate(d); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
+              currentWeek={weekStart}
+              isWeekMode={isWeekMode}
+              onJump={(d, mode) => { setHistoryMode(mode); setDate(d); window.scrollTo({ top: 0, behavior: 'smooth' }) }}
             />
           </aside>
 
@@ -755,18 +878,20 @@ export default function FeuilleDeTemps() {
             {/* Date nav */}
             <div className="card p-4 mb-4 flex items-center justify-between gap-4 flex-wrap">
               <div className="flex items-center gap-2">
-                <button onClick={() => setDate(d => shiftDate(d, -1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Jour précédent">
+                <button onClick={() => setDate(d => shiftDate(d, isWeekMode ? -7 : -1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label={isWeekMode ? 'Semaine précédente' : 'Jour précédent'}>
                   <ChevronLeft size={18} />
                 </button>
-                <div className="text-sm font-medium text-slate-700 capitalize tabular-nums min-w-[14rem] text-center">{weekdayLabel(date)}</div>
-                <button onClick={() => setDate(d => shiftDate(d, 1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label="Jour suivant">
+                <div className="text-sm font-medium text-slate-700 capitalize tabular-nums min-w-[14rem] text-center" data-testid="period-label">
+                  {isWeekMode ? weekRangeLabel(date) : weekdayLabel(date)}
+                </div>
+                <button onClick={() => setDate(d => shiftDate(d, isWeekMode ? 7 : 1))} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg" aria-label={isWeekMode ? 'Semaine suivante' : 'Jour suivant'}>
                   <ChevronRight size={18} />
                 </button>
-                <button onClick={() => setDate(todayStr())} className="ml-1 text-xs text-brand-600 hover:underline">Aujourd'hui</button>
+                <button onClick={() => setDate(todayStr())} className="ml-1 text-xs link-record">{isWeekMode ? 'Cette semaine' : "Aujourd'hui"}</button>
               </div>
               <div className="text-right">
-                <div className="text-xs text-slate-400 uppercase tracking-wide">Total payable du jour</div>
-                <div className="text-xl font-semibold text-slate-900 tabular-nums">{formatMinutes(dailyTotal)}</div>
+                <div className="text-xs text-slate-400 uppercase tracking-wide">{isWeekMode ? 'Total payable de la semaine' : 'Total payable du jour'}</div>
+                <div className="text-xl font-semibold text-slate-900 tabular-nums">{isWeekMode && !weekReady ? '—' : formatMinutes(dailyTotal)}</div>
               </div>
             </div>
 
@@ -775,26 +900,47 @@ export default function FeuilleDeTemps() {
               <span className="text-sm font-medium text-slate-500">Mode :</span>
               <div className="flex rounded-lg border border-slate-200 overflow-hidden">
                 <button
-                  onClick={() => patchDay({ mode: 'simple' })}
-                  disabled={day?.mode === 'detailed' && entries.length > 0}
-                  title={day?.mode === 'detailed' && entries.length > 0 ? 'Supprimez d\'abord les activités détaillées pour revenir au mode simplifié.' : undefined}
+                  onClick={() => setMode('simple')}
+                  disabled={savingField.mode || (!isWeekMode && day?.mode === 'detailed' && entries.length > 0)}
+                  title={!isWeekMode && day?.mode === 'detailed' && entries.length > 0 ? 'Supprimez d\'abord les activités détaillées pour revenir au mode simplifié.' : undefined}
                   className={`px-3 py-1.5 text-sm ${effectiveMode === 'simple' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'} disabled:bg-slate-50 disabled:text-slate-300 disabled:cursor-not-allowed disabled:hover:bg-slate-50`}
                   aria-pressed={effectiveMode === 'simple'}
                 >Simplifié</button>
                 <button
-                  onClick={() => patchDay({ mode: 'detailed' })}
+                  onClick={() => setMode('detailed')}
+                  disabled={savingField.mode}
                   className={`px-3 py-1.5 text-sm border-l border-slate-200 ${effectiveMode === 'detailed' ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
                   aria-pressed={effectiveMode === 'detailed'}
                 >Détaillé</button>
+                <button
+                  onClick={() => setMode('week')}
+                  disabled={savingField.mode}
+                  className={`px-3 py-1.5 text-sm border-l border-slate-200 ${isWeekMode ? 'bg-brand-600 text-white' : 'bg-white text-slate-600 hover:bg-slate-50'}`}
+                  aria-pressed={isWeekMode}
+                >Semaine</button>
               </div>
-              {day?.mode === 'detailed' && entries.length > 0 && (
+              {!isWeekMode && day?.mode === 'detailed' && entries.length > 0 && (
                 <span className="text-xs text-slate-400">Mode verrouillé — {entries.length} activité{entries.length > 1 ? 's' : ''} présente{entries.length > 1 ? 's' : ''}</span>
               )}
               {savingField.mode && <span className="text-xs text-brand-500">enregistrement…</span>}
             </div>
 
             {/* Edit area */}
-            {loading ? (
+            {isWeekMode && weekLoad.key === weekScope && weekLoad.error ? (
+              <div className="card p-4" role="alert">
+                <p className="text-sm text-red-600">Impossible de charger cette semaine.</p>
+                <button className="text-sm link-record mt-2" onClick={() => setWeekReload(n => n + 1)}>Réessayer</button>
+              </div>
+            ) : isWeekMode && !weekReady ? (
+              <Spinner size="xs" label="Chargement de la semaine…" />
+            ) : isWeekMode ? (
+              <WeekForm
+                key={`${weekScope}-${weekResetKey}`}
+                minutes={weekTotalMin}
+                saving={savingField.week_minutes}
+                onCommit={saveWeekMinutes}
+              />
+            ) : loading ? (
               <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
             ) : effectiveMode === 'simple' ? (
               <SimpleDayForm day={day} date={date} saving={savingField} onPatch={patchDay} />
@@ -814,11 +960,53 @@ export default function FeuilleDeTemps() {
               />
             )}
 
-            <RsdeReport history={history} />
+            {/* Pas de rapport RSDE en mode semaine : il n'y a aucune activité à ventiler. */}
+            {!isWeekMode && <RsdeReport history={history} />}
           </main>
         </div>
       </div>
     </Layout>
+  )
+}
+
+// Mode semaine : un seul chiffre pour les sept jours. Rien d'autre à saisir —
+// c'est tout l'intérêt pour les employés qui ne détaillent pas leurs journées.
+function WeekForm({ minutes, saving, onCommit }) {
+  const [raw, setRaw] = useState(formatMinutes(minutes))
+  const [error, setError] = useState(null)
+  useEffect(() => { setRaw(formatMinutes(minutes)); setError(null) }, [minutes])
+
+  const commit = () => {
+    const parsed = parseWeekHours(raw)
+    if (parsed == null) {
+      setError('Saisissez de 0 à 168 h (ex. : 37,5 ou 37:30).')
+      return
+    }
+    setError(null)
+    setRaw(formatMinutes(parsed))
+    if (parsed !== minutes) onCommit(parsed)
+  }
+
+  return (
+    <div className="card p-5" data-testid="week-form">
+      <div className="max-w-xs">
+        <label className="label" htmlFor="week-hours">Heures de la semaine</label>
+        <input
+          id="week-hours"
+          className={inp + ' text-right w-28 tabular-nums'}
+          value={raw}
+          onChange={e => { setRaw(e.target.value); setError(null) }}
+          onBlur={commit}
+          onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+          disabled={saving}
+          aria-invalid={!!error}
+          aria-describedby={error ? 'week-hours-error' : 'week-hours-hint'}
+        />
+        <p id="week-hours-hint" className="text-xs text-slate-400 mt-2">Ex. : 40 ou 37:30</p>
+        {error && <p id="week-hours-error" className="text-xs text-red-600 mt-2" role="alert">{error}</p>}
+        {saving && <p className="text-xs text-brand-500 mt-2" role="status">Enregistrement…</p>}
+      </div>
+    </div>
   )
 }
 
@@ -930,7 +1118,7 @@ function DetailedDayForm({ day, entries, activityCodes, saving, onAddEntry, onPa
         </table>
       </div>
       <div className="mt-3">
-        <button onClick={onAddEntry} className="text-sm text-brand-600 hover:underline flex items-center gap-1">
+        <button onClick={onAddEntry} className="text-sm link-record flex items-center gap-1">
           <Plus size={14} /> Ajouter une activité
         </button>
       </div>
@@ -1059,25 +1247,28 @@ function RsdeReport({ history }) {
   )
 }
 
-function HistoryTable({ history, currentDate, onJump }) {
+function HistoryTable({ history, weeks, currentDate, currentWeek, isWeekMode, onJump }) {
   const grouped = useMemo(() => {
     const byWeek = new Map()
-    for (const d of history) {
-      const k = weekKey(d.date)
-      if (!byWeek.has(k)) byWeek.set(k, [])
-      byWeek.get(k).push(d)
+    const bucket = (k) => {
+      if (!byWeek.has(k)) byWeek.set(k, { days: [], week: null })
+      return byWeek.get(k)
     }
+    for (const d of history) bucket(weekKey(d.date)).days.push(d)
+    // Une semaine déclarée d'un seul chiffre n'a aucune journée : sans ça, elle
+    // n'apparaîtrait nulle part dans l'historique.
+    for (const w of weeks || []) if (w.minutes) bucket(weekKey(w.week_start)).week = w
     return Array.from(byWeek.entries()).sort((a, b) => a[0] < b[0] ? 1 : -1)
-  }, [history])
+  }, [history, weeks])
 
-  if (history.length === 0) return null
+  if (grouped.length === 0) return null
 
   return (
     <div>
       <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Historique</h2>
       <div className="space-y-4">
-        {grouped.map(([week, days]) => {
-          const weekTotal = days.reduce((s, d) => s + dayTotal(d), 0)
+        {grouped.map(([week, { days, week: weekRec }]) => {
+          const weekTotal = days.reduce((s, d) => s + dayTotal(d), 0) + (Number(weekRec?.minutes) || 0)
           return (
             <div key={week} className="card overflow-hidden">
               <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100">
@@ -1086,8 +1277,15 @@ function HistoryTable({ history, currentDate, onJump }) {
               </div>
               <table className="w-full text-sm">
                 <tbody>
+                  {weekRec && (
+                    <WeekRow
+                      week={weekRec}
+                      isActive={isWeekMode && weekRec.week_start === currentWeek}
+                      onJump={onJump}
+                    />
+                  )}
                   {days.map(d => (
-                    <DayRow key={d.id} day={d} isActive={d.date === currentDate} onJump={onJump} />
+                    <DayRow key={d.id} day={d} isActive={!isWeekMode && d.date === currentDate} onJump={onJump} />
                   ))}
                 </tbody>
               </table>
@@ -1112,6 +1310,27 @@ function dayTotal(d) {
   return 0
 }
 
+function WeekRow({ week, isActive, onJump }) {
+  const baseRow = isActive
+    ? 'bg-brand-50 border-l-2 border-brand-500'
+    : 'border-l-2 border-transparent hover:bg-slate-50'
+  return (
+    <tr
+      className={`border-t border-slate-100 cursor-pointer ${baseRow}`}
+      onClick={() => onJump(week.week_start, 'week')}
+      data-testid={`history-week-row-${week.week_start}`}
+      data-active={isActive ? 'true' : 'false'}
+    >
+      <td className={`pl-2.5 pr-2 py-1.5 tabular-nums ${isActive ? 'text-brand-700 font-semibold' : 'text-brand-600 font-medium'}`}>
+        <span className="text-slate-500 font-normal mr-1.5">sem.</span>
+        {week.week_start}
+        <span className="ml-1.5 text-[10px] text-slate-400 font-normal">H</span>
+      </td>
+      <td className="px-2 py-1.5 text-right tabular-nums text-slate-700">{formatMinutes(week.minutes)}</td>
+    </tr>
+  )
+}
+
 function DayRow({ day, isActive, onJump }) {
   const total = dayTotal(day)
   const date = day.date
@@ -1122,7 +1341,7 @@ function DayRow({ day, isActive, onJump }) {
   return (
     <tr
       className={`border-t border-slate-100 cursor-pointer ${baseRow}`}
-      onClick={() => onJump(date)}
+      onClick={() => onJump(date, 'day')}
       data-testid={`history-day-row-${date}`}
       data-active={isActive ? 'true' : 'false'}
     >

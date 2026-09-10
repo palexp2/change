@@ -27,6 +27,8 @@ import { useRecordLinks } from '../lib/useRecordLinks.js'
 //                produits ACTIFS du catalogue, et pas tout l'historique).
 //   linkIdentity identifiant à stocker : 'erp' (id Boréal) ou 'airtable'
 //                (recXXXX). Par défaut on suit ce que la colonne contient déjà.
+//   linkFilter   filtre du champ : seul ce sous-ensemble de la table cible est
+//                proposé (cf. server/src/services/linkFilter.js).
 //
 // La valeur commitée garde la forme canonique de la colonne : tableau JSON pour
 // un champ lien multi (comme l'écrit la sync Airtable, cf. convertValue), id nu
@@ -90,6 +92,7 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel }) {
 
   // Recherche des candidats. Liste de page → filtrage local ; sinon serveur,
   // débounce 200 ms (une frappe = pas un appel).
+  const filterKey = col.linkFilter?.length ? JSON.stringify(col.linkFilter) : ''
   useEffect(() => {
     const term = q.trim().toLowerCase()
     if (pageOptions) {
@@ -103,12 +106,12 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel }) {
     if (!target) { setResults([]); return }
     let alive = true
     const timer = setTimeout(() => {
-      api.recordLinks.search(target, q.trim(), 40)
+      api.recordLinks.search(target, q.trim(), 40, filterKey ? JSON.parse(filterKey) : null)
         .then(res => { if (alive) { setResults(res?.data || []); setCursor(0) } })
         .catch(() => { if (alive) setResults([]) })
     }, 200)
     return () => { alive = false; clearTimeout(timer) }
-  }, [q, target, pageOptions])
+  }, [q, target, pageOptions, filterKey])
 
   // Identifiant à stocker pour un candidat : celui qui a cours dans la colonne.
   // Un champ lien Airtable sans table cible garde ses recXXXX — y écrire un id
@@ -181,12 +184,12 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel }) {
             const label = rec === undefined ? '…' : (rec?.label || (key.length > 12 ? `${key.slice(0, 8)}…` : key))
             const title = rec?.sub ? `${rec.label} · ${rec.sub}` : label
             return (
-              <span key={key} className="inline-flex items-center gap-0.5 rounded bg-slate-100 pl-2 pr-0.5 py-0.5 text-[11px] text-slate-700 max-w-full">
+              <span key={key} className="inline-flex items-center gap-0.5 rounded bg-slate-100 pl-2 pr-0.5 py-0.5 text-xs text-slate-700 max-w-full">
                 {/* Dans une cellule éditable, le clic ne suit plus les liens
                     (il sélectionne la cellule) : c'est ici que la fiche visée
                     reste accessible d'un clic. */}
                 {rec?.url
-                  ? <Link to={rec.url} title={title} className="truncate text-brand-600 hover:underline">{label}</Link>
+                  ? <Link to={rec.url} title={title} className="truncate link-record">{label}</Link>
                   : <span className="truncate" title={title}>{label}</span>}
                 <button
                   type="button"

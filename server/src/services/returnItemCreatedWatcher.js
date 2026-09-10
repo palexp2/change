@@ -21,6 +21,7 @@ import { newRecordId } from '../utils/recordId.js'
 import { sendSlack } from './slack.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { createChangeLogWatcher } from './changeLogWatcher.js'
+import { returnCompanyId } from './returnCompany.js'
 
 const POLL_MS = 5000
 const BATCH = 200
@@ -28,7 +29,9 @@ const IMMEDIATE_REASON = 'Retour de garantie avec échange immédiat'
 const SLACK_ENV = 'SLACK_WEBHOOK_RETOURS'
 
 function createReplacementOrder(item) {
-  const companyId = item.company_id || db.prepare('SELECT company_id FROM returns WHERE id = ?').get(item.return_id)?.company_id
+  // Le retour ne porte plus l'entreprise (migration 037) : elle vient de la
+  // ligne, à défaut d'une autre ligne du même retour (services/returnCompany.js).
+  const companyId = item.company_id || returnCompanyId(item.return_id)
   if (!companyId) throw new Error(`Impossible de créer la commande de remplacement — aucune entreprise résolue pour l'item ${item.id}`)
 
   const orderId = newRecordId()
@@ -45,10 +48,16 @@ function createReplacementOrder(item) {
       `Remplacement automatique — retour ${item.return_id}`,
       item.return_shipping_label || null
     )
+    // Plus de produit sur la ligne : `return_items.product_send_id`
+    // (« Produit à envoyer ») a été droppée à la demande (migration 046). La
+    // ligne de remplacement naît donc sans produit — aucun repli n'était fiable
+    // (le « produit à recevoir » est vide sur 147 des 155 articles qui portaient
+    // un produit à envoyer, et celui du numéro de série en différait 65 fois
+    // sur 149).
     db.prepare(`
       INSERT INTO order_items (id, order_id, product_id, qty, item_type, document_type, return_id, replaced_serial)
-      VALUES (?, ?, ?, 1, 'Remplacement', 'Remplacement', ?, ?)
-    `).run(orderItemId, orderId, item.product_send_id || null, item.return_id, item.serial_id || null)
+      VALUES (?, ?, NULL, 1, 'Remplacement', 'Remplacement', ?, ?)
+    `).run(orderItemId, orderId, item.return_id, item.serial_id || null)
   })
   tx()
 

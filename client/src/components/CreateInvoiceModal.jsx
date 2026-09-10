@@ -525,7 +525,7 @@ function SuccessView({ result, onClose }) {
       {result.pay_url && (
         <div className="rounded-lg border border-slate-200 p-3 text-sm">
           <div className="label">Lien de paiement permanent</div>
-          <a href={result.pay_url} target="_blank" rel="noreferrer" className="text-brand-600 hover:underline break-all font-mono text-xs">{result.pay_url}</a>
+          <a href={result.pay_url} target="_blank" rel="noreferrer" className="link-record break-all font-mono text-xs">{result.pay_url}</a>
           <div className="text-xs text-slate-400 mt-1">Ce lien reste valide pour toujours — il génère une nouvelle session Stripe Checkout au besoin.</div>
         </div>
       )}

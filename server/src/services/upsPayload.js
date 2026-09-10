@@ -71,7 +71,8 @@ export function buildCustomerParty(ctx) {
   const city = asciiFold(ctx.address_city).slice(0, 30)
   const postal = String(ctx.address_postal_code || '').replace(/\s/g, '').toUpperCase()
   const state = String(ctx.address_province || '').trim().toUpperCase().slice(0, 5)
-  const phone = digits10(ctx.address_contact_phone, ctx.address_contact_mobile, ctx.company_phone)
+  // Plus de repli sur le téléphone de l'entreprise : colonne droppée (045).
+  const phone = digits10(ctx.address_contact_phone, ctx.address_contact_mobile)
   const email = ctx.address_contact_email || ctx.company_email || ''
 
   if (!line1) missing.push('adresse (rue)')

@@ -10,7 +10,8 @@ import ErrorBanner from './ErrorBanner.jsx'
 // Modale de composition unique pour TOUS les courriels partant de l'ERP
 // (instructions de retour, suivi d'un envoi, bon de commande au fournisseur…).
 // Il n'y a plus de bouton « Aperçu » séparé : « Envoyer » ouvre cette modale,
-// qui EST l'aperçu — destinataire, Cc, objet et corps modifiables, pièces
+// qui EST l'aperçu — destinataire, Cc (Cci si `allowBcc`), objet et corps
+// modifiables, pièces
 // jointes listées. Le bouton « Envoyer » ferme la modale et planifie l'envoi
 // avec la fenêtre d'annulation de 3 s (UndoSendProvider) : pas de confirmation
 // supplémentaire, l'action est réversible.
@@ -26,6 +27,7 @@ export default function EmailComposerModal({
   load,                 // async () => { to, cc, from, subject, bodyHtml, attachments, notice }
   draft: draftProp,     // brouillon fourni directement (quand la page l'a déjà)
   headerExtra = null,   // ex. sélecteur du compte expéditeur
+  allowBcc = false,     // ajoute un champ Cci (copie conforme invisible)
   sendLabel = 'Envoyer',
   undoMessage = to => `Envoi à ${to}…`,
   successMessage = to => `Courriel envoyé à ${to}`,
@@ -41,6 +43,8 @@ export default function EmailComposerModal({
   const [to, setTo] = useState('')
   const [cc, setCc] = useState('')
   const [showCc, setShowCc] = useState(false)
+  const [bcc, setBcc] = useState('')
+  const [showBcc, setShowBcc] = useState(false)
   const [subject, setSubject] = useState('')
   const [error, setError] = useState('')
   const bodyRef = useRef(null)
@@ -55,6 +59,8 @@ export default function EmailComposerModal({
       setTo(d?.to || '')
       setCc(d?.cc || '')
       setShowCc(Boolean(d?.cc))
+      setBcc(d?.bcc || '')
+      setShowBcc(Boolean(d?.bcc))
       setSubject(d?.subject || '')
     }
     if (load) {
@@ -85,6 +91,8 @@ export default function EmailComposerModal({
     if (!/.+@.+\..+/.test(cleanTo)) { setError('Adresse courriel invalide'); return }
     const cleanCc = String(cc || '').trim()
     if (cleanCc && !isValidEmailList(cleanCc)) { setError('Adresse en Cc invalide'); return }
+    const cleanBcc = allowBcc ? String(bcc || '').trim() : ''
+    if (cleanBcc && !isValidEmailList(cleanBcc)) { setError('Adresse en Cci invalide'); return }
     const cleanSubject = String(subject || '').trim()
     if (!cleanSubject) { setError('Objet requis'); return }
     setError('')
@@ -95,9 +103,9 @@ export default function EmailComposerModal({
       message: undoMessage(cleanTo),
       onRun: async () => {
         try {
-          const result = await onSend({ to: cleanTo, cc: cleanCc || undefined, subject: cleanSubject, bodyHtml })
+          const result = await onSend({ to: cleanTo, cc: cleanCc || undefined, bcc: cleanBcc || undefined, subject: cleanSubject, bodyHtml })
           addToast({ message: successMessage(cleanTo), type: 'success' })
-          onSent?.(result, { to: cleanTo, cc: cleanCc || undefined, subject: cleanSubject })
+          onSent?.(result, { to: cleanTo, cc: cleanCc || undefined, bcc: cleanBcc || undefined, subject: cleanSubject })
         } catch (e) {
           addToast({ message: e.message || "Erreur lors de l'envoi", type: 'error' })
         }
@@ -139,7 +147,7 @@ export default function EmailComposerModal({
               onChange={e => setTo(e.target.value)}
               data-testid="email-composer-to"
             />
-            {showCc ? (
+            {showCc && (
               <>
                 <label className="text-xs text-slate-500" htmlFor="email-composer-cc">Cc</label>
                 <input
@@ -150,10 +158,30 @@ export default function EmailComposerModal({
                   data-testid="email-composer-cc"
                 />
               </>
-            ) : (
+            )}
+            {allowBcc && showBcc && (
+              <>
+                <label className="text-xs text-slate-500" htmlFor="email-composer-bcc">Cci</label>
+                <input
+                  id="email-composer-bcc"
+                  className="input"
+                  value={bcc}
+                  onChange={e => setBcc(e.target.value)}
+                  data-testid="email-composer-bcc"
+                />
+              </>
+            )}
+            {(!showCc || (allowBcc && !showBcc)) && (
               <>
                 <span />
-                <button onClick={() => setShowCc(true)} className="text-xs text-brand-600 hover:underline w-fit" data-testid="email-composer-add-cc">+ Cc</button>
+                <div className="flex gap-3">
+                  {!showCc && (
+                    <button onClick={() => setShowCc(true)} className="text-xs link-record w-fit" data-testid="email-composer-add-cc">+ Cc</button>
+                  )}
+                  {allowBcc && !showBcc && (
+                    <button onClick={() => setShowBcc(true)} className="text-xs link-record w-fit" data-testid="email-composer-add-bcc">+ Cci</button>
+                  )}
+                </div>
               </>
             )}
             <label className="text-xs text-slate-500" htmlFor="email-composer-subject">Objet</label>
@@ -197,7 +225,7 @@ export default function EmailComposerModal({
                 const url = typeof a === 'string' ? null : a.url
                 const chip = <span className="inline-flex items-center gap-1"><Paperclip size={11} /> {name}</span>
                 return url ? (
-                  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-0.5 rounded-lg border border-slate-200 text-brand-600 hover:underline">{chip}</a>
+                  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-0.5 rounded-lg border border-slate-200 link-record">{chip}</a>
                 ) : (
                   <span key={i} className="text-xs px-2 py-0.5 rounded-lg border border-slate-200 text-slate-600">{chip}</span>
                 )

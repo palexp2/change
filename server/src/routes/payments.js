@@ -11,6 +11,7 @@ import { naiveLocalToUtcIso } from '../utils/datetime.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { parsePage } from '../utils/pagination.js'
+import { usdCadRateLookup } from '../services/fx.js'
 
 // Relation de lecture des paiements : la VUE `payments_v` si elle existe (elle
 // expose en plus les champs custom virtuels — formule/lookup/rollup), sinon la
@@ -30,6 +31,30 @@ const VALID_CURRENCIES = new Set(['CAD', 'USD'])
 // comptabilisé). Tenu synchrone avec QB_SKIP_REASONS côté client
 // (FacturePaymentsSection.jsx).
 const VALID_QB_SKIP_REASONS = new Set(['deja_poste_payout', 'saisi_manuellement_qb', 'hors_bande', 'autre'])
+
+// Complète « Montant (CAD) » sur les lignes de la liste. `payments.amount_cad`
+// n'est mémorisé qu'à la publication QuickBooks : la colonne restait donc vide
+// sur la grande majorité des lignes (paiements CAD saisis à la main, refunds USD,
+// et toutes les lignes Stripe synthétiques). On la dérive ici :
+//   - CAD  → identité, aucune conversion à faire ;
+//   - USD  → taux du paiement s'il en porte un crédible (1 = valeur par défaut,
+//            pas un vrai taux — même convention que postRefundJournalEntry),
+//            sinon taux Banque du Canada en cache au jour du paiement.
+// Les valeurs dérivées portent `amount_cad_estimated` pour que la page les
+// distingue d'une conversion réellement comptabilisée.
+function fillAmountCad(rows) {
+  const rateAt = usdCadRateLookup()
+  for (const r of rows) {
+    if (r.amount_cad != null || r.amount == null) continue
+    const currency = String(r.currency || 'CAD').toUpperCase()
+    if (currency === 'CAD') { r.amount_cad = Number(r.amount); continue }
+    const own = Number(r.exchange_rate)
+    const rate = own > 1 ? own : rateAt(r.received_at || r.created_at)
+    if (!rate) continue
+    r.amount_cad = Math.round(Number(r.amount) * rate * 100) / 100
+    r.amount_cad_estimated = 1
+  }
+}
 
 // GET /api/payments — liste centralisée de TOUS les paiements et remboursements
 // (page « Paiements »). Deux sources fusionnées :
@@ -84,6 +109,7 @@ router.get('/', (req, res) => {
 
   let merged = [...real, ...synthetic]
   for (const r of merged) r.qb_skipped = !!r.qb_skipped
+  fillAmountCad(merged)
   if (direction === 'in' || direction === 'out') merged = merged.filter(r => r.direction === direction)
   if (method) merged = merged.filter(r => r.method === method)
   merged.sort((a, b) => {

@@ -5,6 +5,7 @@ import db from '../db/database.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
 import { checkForeignKeys } from '../utils/fkExists.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
+import { listInteractionEmailAttachments, downloadInteractionEmailAttachment } from '../services/gmail.js'
 
 // Reuse the LIST query shape (lightweight, without heavy fields) so the
 // realtime payload matches what `Interactions.jsx` consumes in its table.
@@ -31,7 +32,10 @@ const INTERACTION_LIST_SELECT = `
   LEFT JOIN users u ON i.user_id = u.id
   LEFT JOIN calls ca ON i.type='call' AND ca.interaction_id = i.id
   LEFT JOIN emails e ON i.type='email' AND e.interaction_id = i.id
-  LEFT JOIN meetings m ON (i.type='meeting' OR i.type='note') AND m.interaction_id = i.id
+  -- Jointure non filtrée par type : un log manuel (appel, SMS…) range ses notes
+  -- dans meetings, seule table de détail qui en porte. Sans ligne meetings,
+  -- la jointure ne ramène rien — les autres types ne changent pas.
+  LEFT JOIN meetings m ON m.interaction_id = i.id
   WHERE i.id = ? AND i.deleted_at IS NULL
 `
 
@@ -96,9 +100,9 @@ router.get('/', requireAuth, (req, res) => {
     LEFT JOIN users u ON i.user_id = u.id
     LEFT JOIN calls ca ON i.type='call' AND ca.interaction_id = i.id
     LEFT JOIN emails e ON i.type='email' AND e.interaction_id = i.id
-    LEFT JOIN meetings m ON (i.type='meeting' OR i.type='note') AND m.interaction_id = i.id
+    LEFT JOIN meetings m ON m.interaction_id = i.id
     WHERE ${whereStr}
-    ORDER BY i.timestamp DESC
+    ORDER BY i.pinned DESC, i.timestamp DESC
     LIMIT ? OFFSET ?
   `).all(...params, limitVal, offsetVal)
 
@@ -133,7 +137,7 @@ router.get('/:id', requireAuth, (req, res) => {
     LEFT JOIN users u ON i.user_id = u.id
     LEFT JOIN calls ca ON i.type='call' AND ca.interaction_id = i.id
     LEFT JOIN emails e ON i.type='email' AND e.interaction_id = i.id
-    LEFT JOIN meetings m ON (i.type='meeting' OR i.type='note') AND m.interaction_id = i.id
+    LEFT JOIN meetings m ON m.interaction_id = i.id
     WHERE i.id=? AND i.deleted_at IS NULL
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
@@ -149,6 +153,30 @@ router.get('/:id/email-body', requireAuth, (req, res) => {
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+// GET /api/interactions/:id/attachments — pièces jointes du courriel synchronisé.
+// Les métadonnées sont listées auprès de Gmail au premier accès (le sync
+// n'importe que le corps), le contenu au clic sur le fichier.
+router.get('/:id/attachments', requireAuth, async (req, res) => {
+  const row = db.prepare(`SELECT id FROM interactions WHERE id=? AND deleted_at IS NULL`).get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  try {
+    res.json(await listInteractionEmailAttachments(req.params.id))
+  } catch (e) {
+    res.status(500).json({ error: e.message })
+  }
+})
+
+// GET /api/interactions/:id/attachments/:attId/download
+router.get('/:id/attachments/:attId/download', requireAuth, async (req, res) => {
+  try {
+    const { absPath, fileName, contentType } = await downloadInteractionEmailAttachment(req.params.id, req.params.attId)
+    if (contentType) res.type(contentType)
+    res.download(absPath, fileName || 'piece-jointe')
+  } catch (e) {
+    res.status(e.message === 'Not found' ? 404 : 400).json({ error: e.message })
+  }
 })
 
 // POST /api/interactions
@@ -168,7 +196,9 @@ router.post('/', requireAuth, (req, res) => {
     db.prepare('INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp) VALUES (?,?,?,?,?,?,?)')
       .run(id, contact_id || null, company_id || null, req.user.id, type, direction || null, ts)
 
-    if (type === 'meeting' || type === 'note') {
+    // La ligne de détail sert aussi aux logs manuels d'appel/SMS : dès qu'il y a
+    // un titre ou des notes à conserver, on l'écrit quel que soit le type.
+    if (type === 'meeting' || type === 'note' || title || notes) {
       db.prepare('INSERT INTO meetings (id, interaction_id, title, url, duration_minutes, notes, attendees) VALUES (?,?,?,?,?,?,?)')
         .run(newRecordId(), id, title || (type === 'note' ? 'Note' : null), url || null, duration_minutes || null, notes || null, attendees || null)
     }
@@ -178,6 +208,18 @@ router.post('/', requireAuth, (req, res) => {
   const created = db.prepare(INTERACTION_LIST_SELECT).get(id)
   if (created) emitEntity('interaction', 'created', id, created, req.user?.id)
   res.status(201).json({ id })
+})
+
+// PATCH /api/interactions/:id/pin — épingler/désépingler en haut du fil
+router.patch('/:id/pin', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT id FROM interactions WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  const pinned = req.body?.pinned ? 1 : 0
+  db.prepare('UPDATE interactions SET pinned=?, pinned_at=? WHERE id=?')
+    .run(pinned, pinned ? new Date().toISOString() : null, req.params.id)
+  const updated = db.prepare(INTERACTION_LIST_SELECT).get(req.params.id)
+  emitEntity('interaction', 'updated', req.params.id, updated, req.user?.id)
+  res.json(updated)
 })
 
 // DELETE /api/interactions/:id

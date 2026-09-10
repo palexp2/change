@@ -10,7 +10,7 @@ import assert from 'node:assert/strict'
 process.env.NODE_ENV = 'test'
 
 const { toE164, smsEnabled, sendSms } = await import('./sms.js')
-const { buildSmsText, CALLBACK_QUESTION_MIN_RATING, SURVEY_EXPIRY_DAYS } = await import('./ticketSurveys.js')
+const { buildSmsText, contactSurveyPhone, CALLBACK_QUESTION_MIN_RATING, SURVEY_EXPIRY_DAYS } = await import('./ticketSurveys.js')
 const { generateBase62Token } = await import('../utils/shortToken.js')
 
 test('toE164 — formats nord-américains courants', () => {
@@ -77,6 +77,22 @@ test('generateBase62Token — format Airtable, non biaisé, non répétitif', ()
   const seen = new Set()
   for (let i = 0; i < 500; i++) seen.add(generateBase62Token(14))
   assert.equal(seen.size, 500, 'aucune collision attendue sur 500 tirages')
+})
+
+test('contactSurveyPhone — le mobile passe avant le téléphone', () => {
+  assert.deepEqual(
+    contactSurveyPhone({ mobile: '514-555-1234', phone: '418-555-9999' }),
+    { phone: '514-555-1234', source: 'contact_mobile' }
+  )
+  assert.deepEqual(
+    contactSurveyPhone({ mobile: '', phone: '(418) 998-9189' }),
+    { phone: '(418) 998-9189', source: 'contact_phone' }
+  )
+  assert.deepEqual(
+    contactSurveyPhone({ mobile: '   ', phone: null }),
+    null
+  )
+  assert.equal(contactSurveyPhone(null), null)
 })
 
 test('constantes du parcours — le seuil de rappel vise les clients satisfaits', () => {

@@ -3,6 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { ChevronRight, ChevronDown, Trash2, Plus, Edit2, Layers, Filter, ArrowUp, ArrowDown, EyeOff, RotateCcw, Inbox, Sigma, Check, HelpCircle, GripVertical, Copy, ArrowLeftToLine, ArrowRightToLine, Maximize2, Plug } from 'lucide-react'
 import EmptyState from './EmptyState.jsx'
+import { Badge } from './Badge.jsx'
 import { useTableView } from '../lib/useTableView.js'
 import { applyFilter, applyFilterGroup, countFilterRules } from '../lib/tableFilters.js'
 import { ViewToolbar, ROW_COLOR_STYLES } from './ViewToolbar.jsx'
@@ -15,9 +16,9 @@ import { getUser } from '../lib/auth.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { CustomFieldModal } from './CustomFieldModal.jsx'
-import { FieldAirtableMapping } from './FieldAirtableMapping.jsx'
+import { FieldAirtableMapping, prefetchFieldConfig } from './FieldAirtableMapping.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue } from '../lib/customFieldDisplay.jsx'
+import { customFieldToColumn, CUSTOM_FIELD_TABLES, sqlTableForView, fieldKeyForView, isImageUrl, ImageValue, columnChoiceValues, parseSelectChoices, formatCurrency, currencySymbolOf, NO_COLOR } from '../lib/customFieldDisplay.jsx'
 import LinkCellEditor from './LinkCellEditor.jsx'
 import { LINKED_RECORD_TYPE_LABELS } from '../lib/tableDefs.js'
 import { summarizeDependents } from '../lib/customFieldDeps.js'
@@ -27,6 +28,14 @@ import { ResizeHandle } from './ResizeHandle.jsx'
 import { RecordOps } from '../lib/recordOps.js'
 import { useDecimalPrefs, formatDecimals } from '../lib/decimalPrefs.jsx'
 import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
+import { RatingStars, RatingInput } from './RatingStars.jsx'
+import { normalizeRating } from '../lib/rating.js'
+
+// Largeur (px) d'une colonne qui n'en déclare pas et n'en a pas d'enregistrée :
+// une valeur FIXE, pas une part d'espace libre. Une colonne qu'on rend visible
+// (ou un champ tout juste créé) arrive donc toujours à cette largeur, au lieu
+// de s'étaler sur tout l'espace restant. Redimensionnable par l'en-tête ensuite.
+const DEFAULT_COL_WIDTH = 125
 
 export function fmtPhone(val) {
   if (!val) return ''
@@ -45,7 +54,10 @@ function coerceCellValue(col, str) {
   const t = col?.type
   if (t === 'number' || t === 'currency') {
     if (s === '') return null
-    let cleaned = s.replace(/[\s$]/g, '')
+    // Le « % » d'un champ pourcentage (colonne de type 'number', cf.
+    // customFieldColumnType) est retiré comme le « $ » d'un montant : la
+    // colonne stocke le nombre de pourcents.
+    let cleaned = s.replace(/[\s\u00a0$%]/g, '')
     // « 1 234,56 » (fr-CA) → on traite la virgule comme séparateur décimal
     // quand il n'y a pas de point.
     if (cleaned.includes(',') && !cleaned.includes('.')) cleaned = cleaned.replace(',', '.')
@@ -58,6 +70,16 @@ function coerceCellValue(col, str) {
     if (s === '') return null
     const sec = parseDurationToSeconds(s)
     return sec == null ? undefined : sec
+  }
+  if (t === 'rating') {
+    // Note en étoiles : entier 0..5. « 4 étoiles », « 4/5 » ou « 4 » donnent 4 ;
+    // au-delà de l'échelle on borne plutôt que de refuser (un collage de « 7 »
+    // vaut la note maximale).
+    if (s === '') return null
+    const cleaned = s.split('/')[0].replace(/[^\d.,-]/g, '').replace(',', '.')
+    if (cleaned === '') return undefined
+    const n = Number(cleaned)
+    return Number.isFinite(n) ? normalizeRating(n) : undefined
   }
   if (t === 'boolean') {
     // Checkbox stockée en 0/1. Tolère les formes textuelles courantes au
@@ -85,7 +107,13 @@ function DynamicCell({ value, col, decimals }) {
   const type = col.type
 
   if (type === 'single_select') {
-    return <span className="inline-block text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-700">{value}</span>
+    // Une colonne peut déclarer ses choix avec une couleur (`options: [{ value,
+    // color }]` dans tableDefs.js) : la pastille la porte, sans qu'il faille
+    // enregistrer une personnalisation du champ. Sans couleur déclarée, gris.
+    const declared = Array.isArray(col.options)
+      ? col.options.find(o => o && typeof o === 'object' && o.color && String(o.value ?? o.label) === String(value))
+      : null
+    return <Badge color={declared ? declared.color : 'gray'} className="whitespace-nowrap">{value}</Badge>
   }
   if (type === 'multi_select') {
     let items = value
@@ -124,6 +152,9 @@ function DynamicCell({ value, col, decimals }) {
     if (!Number.isFinite(n)) return <span>{value}</span>
     return <span className="tabular-nums">{formatDurationSeconds(n, col.durationFormat)}</span>
   }
+  if (type === 'rating') {
+    return <RatingStars value={value} />
+  }
   if (type === 'phone') {
     return <span className="font-mono text-sm">{fmtPhone(value)}</span>
   }
@@ -153,9 +184,24 @@ const SELECT_DOT = {
 // vide). Multi : cases à cocher → commit un tableau JSON au « Terminé » ou au
 // clic en dehors.
 const choiceValue = c => (c?.value != null && c.value !== '' ? c.value : c?.label)
+// Choix déclarés en dur par la colonne (`options` de tableDefs.js), utilisés
+// quand aucune personnalisation du champ n'a été enregistrée : chaînes simples
+// ou objets { value, color }.
+function declaredChoices(col) {
+  const raw = Array.isArray(col?.options) ? col.options : []
+  return raw
+    .map(o => {
+      const obj = o && typeof o === 'object'
+      const v = obj ? String(o.value ?? o.label ?? '') : String(o ?? '')
+      return { id: v, value: v, label: obj ? String(o.label ?? v) : v, color: (obj && o.color) || 'gray' }
+    })
+    .filter(c => c.value !== '')
+}
 function SelectCellEditor({ col, value, onCommit, onCancel }) {
   const multi = col.type === 'multi_select'
-  const choices = Array.isArray(col.selectChoices) ? col.selectChoices : []
+  const choices = Array.isArray(col.selectChoices) && col.selectChoices.length
+    ? col.selectChoices
+    : declaredChoices(col)
   const initial = useMemo(() => {
     if (!multi) return value == null ? [] : [String(value)]
     if (Array.isArray(value)) return value.map(String)
@@ -222,7 +268,9 @@ function SelectCellEditor({ col, value, onCommit, onCancel }) {
             onClick={() => toggle(val)}
             className={`flex w-full items-center gap-2 px-3 py-1.5 text-sm hover:bg-slate-50 ${active ? 'bg-brand-50' : ''}`}
           >
-            <span className={`h-3 w-3 rounded-full ${SELECT_DOT[c.color] || SELECT_DOT.gray}`} />
+            {/* Champ réglé « sans couleur » : pas de pastille, la liste reste
+                du texte (cf. NO_COLOR, modale de champ). */}
+            {c.color !== NO_COLOR && <span className={`h-3 w-3 rounded-full ${SELECT_DOT[c.color] || SELECT_DOT.gray}`} />}
             <span className="flex-1 text-left truncate text-slate-700">{c.label}</span>
             {active && <Check size={14} className="text-brand-600" />}
           </button>
@@ -243,6 +291,33 @@ function SelectCellEditor({ col, value, onCommit, onCancel }) {
   )
 }
 
+// Éditeur inline (mode tableur) d'une cellule « Évaluation » : l'échelle
+// complète en étoiles, cliquables. Un clic commit la note (l'étoile courante la
+// retire) ; Échap annule ; les chiffres 0..5 posent la note au clavier.
+function RatingCellEditor({ value, onCommit, onCancel }) {
+  const rootRef = useRef(null)
+  useEffect(() => { rootRef.current?.focus() }, [])
+  return (
+    <div
+      ref={rootRef}
+      tabIndex={-1}
+      data-testid="datatable-rating-editor"
+      onMouseDown={e => e.stopPropagation()}
+      onClick={e => e.stopPropagation()}
+      onDoubleClick={e => e.stopPropagation()}
+      onKeyDown={e => {
+        e.stopPropagation()
+        if (e.key === 'Escape') { e.preventDefault(); onCancel(); return }
+        if (/^[0-9]$/.test(e.key)) { e.preventDefault(); onCommit(normalizeRating(e.key)) }
+      }}
+      onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) onCancel() }}
+      className="absolute z-30 left-0 top-1/2 -translate-y-1/2 rounded-lg border border-brand-500 bg-white shadow-lg px-2 py-1"
+    >
+      <RatingInput value={value} onChange={onCommit} />
+    </div>
+  )
+}
+
 // Rendu d'une cellule. Priorité au render() custom de la colonne. Sinon, pour
 // les colonnes dynamiques (Airtable) on délègue à DynamicCell, et pour les
 // colonnes standard type:'number' on applique le formatage décimal préféré de
@@ -254,9 +329,17 @@ function renderCell(col, item, decimals) {
   // (YYYY-MM-DD, cf. fmtDate) plutôt que l'ISO brut « 2025-11-14T00:00:00.000Z ».
   // Sans ça, toute colonne type:'date' dont la page n'a pas câblé de render
   // (ex. « Créé le » / « Modifié le » du Pipeline) affichait le timestamp brut.
-  if (col.dynamic || col.type === 'date') return <DynamicCell value={value} col={col} decimals={decimals} />
+  // Même règle pour une colonne « Évaluation » : des étoiles, jamais le nombre brut.
+  if (col.dynamic || col.type === 'date' || col.type === 'rating') return <DynamicCell value={value} col={col} decimals={decimals} />
   if (col.type === 'number' && decimals != null) {
     const formatted = formatDecimals(value, decimals)
+    if (formatted != null) return <span className="tabular-nums">{formatted}</span>
+  }
+  // Colonne devise sans render() de page : formatage monétaire (même helper que
+  // les champs personnalisés de type currency), sinon une colonne native
+  // type:'currency' (ex. products.price_cad) n'affichait qu'un nombre brut.
+  if (col.type === 'currency') {
+    const formatted = formatCurrency(value, decimals ?? col.decimals ?? 2, currencySymbolOf(col))
     if (formatted != null) return <span className="tabular-nums">{formatted}</span>
   }
   return value ?? '—'
@@ -277,7 +360,9 @@ const NUMERIC_AGGS = ['sum', 'avg', 'min', 'max', 'count', 'empty']
 const TEXT_AGGS = ['count', 'empty']
 
 function isNumericCol(col) {
-  return col?.type === 'number' || col?.type === 'currency'
+  // Une note en étoiles est un nombre : sa moyenne (« 4,2 ») est l'agrégat le
+  // plus utile d'une colonne de satisfaction.
+  return col?.type === 'number' || col?.type === 'currency' || col?.type === 'rating'
 }
 
 // Agrégations proposées dans le menu pour une colonne donnée.
@@ -396,6 +481,7 @@ export function DataTable({
   bulkActions = [],         // actions groupées custom : [{ key, label, icon, className, busyLabel, show?(rows), onClick(ids) }]
   bulkDeleteAlways = false, // affiche les cases de sélection sans dépendre du toggle admin de config
   manageViews = false,      // affiche le crayon « Gérer les vues » (admin) en bout de barre des vues
+  renameOnAddView = true,   // le « + » de la barre des vues ouvre aussitôt le renommage (nom provisoire présélectionné) — défaut partout
   disabledColumns = null, // Map<column_name, { airtable_field_name }> | null
   onAddCustomField,       // () => void — affiche le bouton "+" en bout de header
   customFieldsByColumn,   // Map<column_name, { id, name, type, decimals }> — pour right-click menu
@@ -413,6 +499,7 @@ export function DataTable({
   rowClassName,           // (item) => string — classes CSS additionnelles par ligne (ex. font-semibold pour un reçu non lu).
   recordOps,              // RecordOps | undefined — active le « deuxième type » de table : manipulable au niveau des données (clic droit sur une ligne = dupliquer/supprimer, « + » sous la dernière ligne = créer un enregistrement en ligne, sans formulaire). Voir lib/recordOps.js.
   onFieldsChanged,        // () => void — les pages qui gèrent elles-mêmes leurs champs (Pipeline, Factures) passent leur reload : le menu d'en-tête (duplication, masquage global) doit pouvoir rafraîchir leur liste.
+  sortIndicator = false,  // bool — variante d'en-tête : quand la vue trie, une flèche ↑/↓ apparaît sur la ou les colonnes triées (ordre de la flèche = sens du tri). Opt-in par page.
 }) {
   // `height="auto"` : la table s'affiche en entier (pas d'ascenseur propre,
   // c'est le conteneur — fiche, panneau latéral — qui défile). Les lignes sont
@@ -556,8 +643,8 @@ export function DataTable({
         : customFieldToColumn(f)))
     // Pour une colonne de page adossée à un champ custom (colonnes natives
     // converties en lookup/rollup, colonnes Airtable à rendu sur-mesure), le
-    // libellé vient du champ : c'est lui que le renommage d'en-tête met à jour
-    // (commitRename → api.customFields.update). Sans ça, renommer un champ
+    // libellé vient du champ : c'est lui que la modale « Modifier le champ »
+    // met à jour (api.customFields.update). Sans ça, renommer un champ
     // converti ne changerait jamais l'en-tête affiché.
     const cfByCol = new Map(ownCustomFields.map(f => [f.column_name, f]))
     const relabeled = columns.map(c => {
@@ -568,6 +655,15 @@ export function DataTable({
       // La description du champ (modale « Modifier le champ ») prime sur celle
       // codée dans tableDefs.js.
       if (f.description) next.description = f.description
+      // Champ à CHOIX porté par une colonne déclarée en dur (ex. `products.type`,
+      // listée dans tableDefs.js sans ses choix) : la colonne hérite des choix du
+      // champ, DANS LEUR ORDRE. Sans eux, le groupage et la liste de valeurs du
+      // filtre retombaient sur l'alphabétique, alors que le sélecteur du champ
+      // propose l'ordre défini sur le champ.
+      if ((f.type === 'single_select' || f.type === 'multi_select') && !next.options) {
+        const choices = parseSelectChoices(f)
+        if (choices.length) next.options = choices
+      }
       return next
     })
     return [...relabeled, ...autoCfCols]
@@ -593,7 +689,12 @@ export function DataTable({
     () => onAddCustomField || (selfManagedCF ? () => setOwnCfModal({ editing: null }) : null),
     [onAddCustomField, selfManagedCF]
   )
-  const editCustomField = onEditCustomField || (selfManagedCF ? (f) => setOwnCfModal({ editing: f }) : null)
+  // useMemo pour la même raison qu'`addCustomField` : identité stable, exigée
+  // ici par `openFieldEditor` qui en dépend.
+  const editCustomField = useMemo(
+    () => onEditCustomField || (selfManagedCF ? (f) => setOwnCfModal({ editing: f }) : null),
+    [onEditCustomField, selfManagedCF]
+  )
   const deleteCustomField = onDeleteCustomField || (!selfManagedCF ? null : async (field) => {
     // Rapport d'usage : liste les dépendances (champs calculés, automations,
     // vues, règles de visibilité) que la suppression va affecter, avant de les
@@ -710,23 +811,6 @@ export function DataTable({
   // Insérer à gauche / à droite : la position est une propriété de la VUE, donc
   // on mémorise l'ancre et le côté ; le champ créé s'y glisse (voir l'effet
   // d'auto-affichage, qui autrement l'ajouterait en fin de liste).
-  // Renommage EN LIGNE dans l'en-tête (double-clic), façon Airtable : pas de
-  // modale pour l'acte le plus fréquent. Autosave au blur / Entrée, Échap annule.
-  const [renamingCol, setRenamingCol] = useState(null) // { id, value } | null
-  const commitRename = useCallback(async (col, value) => {
-    const next = String(value || '').trim()
-    setRenamingCol(null)
-    if (!next || next === col.label) return
-    const field = cfByColumn?.get(col.field) || cfByColumn?.get(col.id)
-    try {
-      if (field) await api.customFields.update(field.id, { name: next })
-      else await api.fieldOverrides.save(fieldKey, col.id, { label: next })
-      await refreshFields()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    }
-  }, [cfByColumn, fieldKey, refreshFields, addToast])
-
   const insertFieldAt = useCallback((col, side) => {
     creationIntent.current = true
     pendingInsert.current = { anchorId: col.id, side }
@@ -750,12 +834,43 @@ export function DataTable({
     [columnsWithOwnCf, fieldOverrides]
   )
 
+  // Un champ est manipulable dès qu'on sait le rattacher à quelque chose : un
+  // champ perso/Airtable, ou une colonne native connue de la table. Les
+  // colonnes d'action (boutons de ligne) n'en sont pas.
+  const isFieldManageable = useCallback((col, customField) => !!customField
+    || (!!table && !col?.alwaysVisible && columnsWithOwnCf.some(x => x.id === col?.id)),
+  [table, columnsWithOwnCf])
+
+  // Ouvre la modale « Modifier le champ ». Un seul chemin, partagé par
+  // l'entrée du menu d'en-tête et par le double-clic sur l'en-tête (partout).
+  const openFieldEditor = useCallback((col, customField) => {
+    if (customField) { editCustomField?.(customField); return }
+    // La modale attend la définition D'ORIGINE (pré-override) pour afficher
+    // « nom/type d'origine » et détecter un reset.
+    const orig = columnsWithOwnCf.find(x => x.id === col.id) || col
+    setFieldOverrideModal({
+      col: orig.render && LINKED_RECORD_TYPE_LABELS[orig.id]
+        ? { ...orig, renderTypeLabel: LINKED_RECORD_TYPE_LABELS[orig.id] }
+        : orig,
+    })
+  }, [editCustomField, columnsWithOwnCf])
+
   const view = useTableView({ table, columns: columnsWithOverrides, data, searchFields, forceAllView })
   const { filteredData, configReady, allColumns, bulkDeleteEnabled, search, setSearch, filters, setFilters } = view
 
   useEffect(() => {
     if (typeof onFilteredDataChange === 'function') onFilteredDataChange(filteredData)
   }, [filteredData, onFilteredDataChange])
+  // Variante `sortIndicator` : sens du tri par champ trié (première occurrence
+  // gagne — un tri multi-niveaux fléchant chaque colonne concernée).
+  const sortDirByField = useMemo(() => {
+    const m = new Map()
+    if (!sortIndicator) return m
+    for (const s of (view.sorts || [])) {
+      if (s?.field && !m.has(s.field)) m.set(s.field, s.dir === 'desc' ? 'desc' : 'asc')
+    }
+    return m
+  }, [sortIndicator, view.sorts])
   const hasBulkActions = Array.isArray(bulkActions) && bulkActions.length > 0
   const selectionActive = (bulkDeleteEnabled || bulkDeleteAlways) && (typeof onBulkDelete === 'function' || hasBulkActions)
   // Use allColumns (hardcoded + dynamic Airtable fields) everywhere.
@@ -856,13 +971,10 @@ export function DataTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view.configReady, view.activeViewId])
 
-  // Rétrécir une colonne ne doit JAMAIS élargir celles de gauche. Les colonnes
-  // sans largeur explicite valent `minmax(120px, 1fr)` : elles se partagent
-  // l'espace restant, donc l'espace libéré par la colonne qu'on rétrécit
-  // repartait aussi vers la gauche. On fige donc, au tout début du drag, les
-  // colonnes fluides situées AVANT celle qu'on redimensionne, à leur largeur
-  // affichée (la mise en page ne bouge pas à cet instant). Celles de droite
-  // restent fluides et continuent de remplir la table.
+  // Rétrécir une colonne ne doit JAMAIS bouger celles de gauche : on fige, au
+  // tout début du drag, la largeur affichée des colonnes qui la précèdent (la
+  // mise en page ne change pas à cet instant). Toutes les pistes sont
+  // aujourd'hui en px, c'est donc surtout un garde-fou.
   function handleColResizeStart(colId) {
     const idx = visibleColumns.findIndex(c => c.id === colId)
     if (idx <= 0) return
@@ -878,21 +990,27 @@ export function DataTable({
     })
   }
 
+  // Persiste la carte des largeurs (debounce commun au drag et aux largeurs
+  // par défaut d'un champ neuf).
+  const persistColWidths = useCallback((next) => {
+    clearTimeout(saveWidthsTimer.current)
+    // Persiste sur la vue active (pill) ; fallback table-level uniquement quand
+    // aucune vue n'est sélectionnée (vue « Tous »/forceAllView).
+    const viewId = view.activeViewId
+    saveWidthsTimer.current = setTimeout(() => {
+      if (viewId) {
+        api.views.savePillColumnWidths(table, viewId, next).catch(() => {})
+        view.patchLocalView?.(viewId, { column_widths: next })
+      } else {
+        api.views.saveColumnWidths(table, next).catch(() => {})
+      }
+    }, 500)
+  }, [table, view])
+
   function handleColResize(colId, width) {
     setColWidths(prev => {
       const next = { ...prev, [colId]: width }
-      clearTimeout(saveWidthsTimer.current)
-      // Persiste sur la vue active (pill) ; fallback table-level uniquement quand
-      // aucune vue n'est sélectionnée (vue « Tous »/forceAllView).
-      const viewId = view.activeViewId
-      saveWidthsTimer.current = setTimeout(() => {
-        if (viewId) {
-          api.views.savePillColumnWidths(table, viewId, next).catch(() => {})
-          view.patchLocalView?.(viewId, { column_widths: next })
-        } else {
-          api.views.saveColumnWidths(table, next).catch(() => {})
-        }
-      }, 500)
+      persistColWidths(next)
       return next
     })
   }
@@ -1032,9 +1150,24 @@ export function DataTable({
           next.splice(insert.side === 'before' ? at : at + 1, 0, ...newOnes)
           return next
         })
+        // Largeur de départ : DEFAULT_COL_WIDTH, enregistrée d'emblée pour que
+        // le champ neuf garde cette largeur d'une session à l'autre — le drag
+        // de l'en-tête la change ensuite.
+        const widths = { ...colWidths }
+        let added = false
+        for (const id of newOnes) {
+          if (widths[id]) continue
+          widths[id] = DEFAULT_COL_WIDTH
+          added = true
+        }
+        if (added) {
+          setColWidths(widths)
+          persistColWidths(widths)
+        }
       }
     }
     prevCustomFieldKeys.current = currentKeys
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cfByColumn, cfLoaded, view.configReady])
 
   const visibleColumns = useMemo(
@@ -1164,11 +1297,11 @@ export function DataTable({
 
   const gridTemplate = useMemo(() => {
     // Largeur : préférence enregistrée d'abord, sinon la largeur naturelle que
-    // la colonne déclare (`width`), sinon une part égale du reste. Une date ou
-    // un montant n'a pas besoin d'occuper autant qu'un libellé.
+    // la colonne déclare (`width`), sinon DEFAULT_COL_WIDTH. Une date ou un
+    // montant n'a pas besoin d'occuper autant qu'un libellé.
     const cols = visibleColumns.map(c => {
-      const w = colWidths[c.id] || c.width
-      return w ? `${w}px` : 'minmax(120px, 1fr)'
+      const w = colWidths[c.id] || c.width || DEFAULT_COL_WIDTH
+      return `${w}px`
     }).join(' ')
     // Si on a un bouton d'ajout de champ, on réserve une colonne `auto` à la
     // fin pour le "+" — les rows de données auront simplement une cellule vide.
@@ -1387,20 +1520,21 @@ export function DataTable({
       }
 
       const groupCol = mergedColumns.find(c => c.field === field)
-      const hasOptions = Array.isArray(groupCol?.options) && groupCol.options.length > 0
+      // Champ à choix : l'ordre par défaut des groupes est celui des choix du
+      // champ (ou son inverse avec 'default_desc') — jamais l'alphabet, qui ne
+      // veut rien dire pour un statut ou une phase. Les valeurs hors liste
+      // (dont « (vide) ») restent en fin de liste dans les deux sens.
+      const optValues = columnChoiceValues(groupCol)
       let keys = [...groups.keys()]
       if (order === 'asc') {
         keys.sort(cmpAlpha)
       } else if (order === 'desc') {
         keys.sort(cmpAlpha).reverse()
-      } else if (hasOptions) {
-        const orderIdx = new Map(groupCol.options.map((o, i) => [String(o), i]))
-        keys.sort((a, b) => {
-          const ia = orderIdx.has(a) ? orderIdx.get(a) : Number.MAX_SAFE_INTEGER
-          const ib = orderIdx.has(b) ? orderIdx.get(b) : Number.MAX_SAFE_INTEGER
-          if (ia !== ib) return ia - ib
-          return cmpAlpha(a, b)
-        })
+      } else if (optValues.length > 0) {
+        const orderIdx = new Map(optValues.map((o, i) => [o, i]))
+        const known = keys.filter(k => orderIdx.has(k)).sort((a, b) => orderIdx.get(a) - orderIdx.get(b))
+        if (order === 'default_desc') known.reverse()
+        keys = [...known, ...keys.filter(k => !orderIdx.has(k)).sort(cmpAlpha)]
       } else {
         keys.sort(cmpAlpha)
       }
@@ -1542,6 +1676,15 @@ export function DataTable({
       setSel({ anchor: { rowId, colId }, focus: { rowId, colId } })
       const truthy = raw === 1 || raw === true || raw === '1' || raw === '1.0' || Number(raw) === 1
       applyCellChanges([{ row, col, value: truthy ? 0 : 1 }])
+      focusGrid()
+      return
+    }
+    // Évaluation : une frappe chiffrée pose directement la note (« 4 » = quatre
+    // étoiles) ; sinon on ouvre le sélecteur d'étoiles.
+    if (col.type === 'rating' && seed != null && /^[0-9]$/.test(String(seed))) {
+      setSel({ anchor: { rowId, colId }, focus: { rowId, colId } })
+      const next = normalizeRating(seed)
+      if (next !== (raw == null ? null : normalizeRating(raw))) applyCellChanges([{ row, col, value: next }])
       focusGrid()
       return
     }
@@ -1830,8 +1973,10 @@ export function DataTable({
         data={data}
         disabledColumns={disabledColumns}
         manageViews={manageViews}
+        renameOnAddView={renameOnAddView}
         manageViewsBulkDelete={typeof onBulkDelete === 'function' && !bulkDeleteAlways}
         onOpenFieldConfig={openFieldConfig}
+        onPrefetchFieldConfig={() => prefetchFieldConfig(fieldKey)}
         onApplyColumnWidths={setColWidths}
       />
 
@@ -1977,12 +2122,14 @@ export function DataTable({
                   data-testid={`col-header-${col.id}`}
                   data-col-selected={colSelected ? 'true' : undefined}
                   onDoubleClick={e => {
-                    // Renommage en ligne — seulement sur un champ manipulable.
+                    // Double-clic = « Modifier le champ » (même modale que le
+                    // menu d'en-tête), partout dans l'app. Seulement sur un
+                    // champ manipulable.
                     if (col.alwaysVisible) return
                     e.stopPropagation()
-                    setRenamingCol({ id: col.id, value: col.label || '' })
+                    if (isFieldManageable(col, customField)) openFieldEditor(col, customField)
                   }}
-                  draggable={renamingCol?.id !== col.id}
+                  draggable
                   onDragStart={e => handleColDragStart(e, col.id)}
                   onDragOver={e => handleColDragOver(e, col.id)}
                   onDrop={handleColDrop}
@@ -2004,50 +2151,45 @@ export function DataTable({
                   }}
                   className={`group/col relative px-4 py-2.5 text-xs font-semibold leading-tight break-words select-none cursor-grab active:cursor-grabbing ${colSelected ? 'bg-brand-100 text-brand-800' : 'text-slate-500'}`}
                 >
-                  {renamingCol?.id === col.id ? (
-                    <input
-                      autoFocus
-                      value={renamingCol.value}
-                      data-testid={`col-rename-${col.id}`}
-                      onChange={e => setRenamingCol({ id: col.id, value: e.target.value })}
-                      onBlur={e => commitRename(col, e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === 'Enter') { e.preventDefault(); commitRename(col, e.currentTarget.value) }
-                        else if (e.key === 'Escape') { e.preventDefault(); setRenamingCol(null) }
-                        e.stopPropagation()
-                      }}
-                      onClick={e => e.stopPropagation()}
-                      className="w-full bg-white border border-brand-400 rounded px-1 py-0.5 text-xs font-semibold text-slate-700 focus:outline-none"
-                    />
-                  ) : (
-                    <span className="inline-flex items-baseline gap-1 pr-4">
-                      {col.label}
-                      {col.description && <ColumnHelp description={col.description} />}
-                    </span>
-                  )}
+                  <span className="inline-flex items-baseline gap-1 pr-4">
+                    {col.label}
+                    {col.description && <ColumnHelp description={col.description} />}
+                    {(() => {
+                      const dir = sortDirByField.get(col.field)
+                      if (!dir) return null
+                      const Icon = dir === 'desc' ? ArrowDown : ArrowUp
+                      return (
+                        <Icon
+                          size={12}
+                          data-testid={`col-sort-${col.id}`}
+                          data-dir={dir}
+                          className="shrink-0 self-center text-brand-600"
+                          aria-label={dir === 'desc' ? 'Tri décroissant' : 'Tri croissant'}
+                        />
+                      )
+                    })()}
+                  </span>
                   {/* Chevron d'ouverture du menu de champ — visible au survol,
                       clic GAUCHE (le clic droit reste supporté). C'est le geste
                       Airtable : on n'a pas à deviner qu'un menu contextuel existe. */}
-                  {!renamingCol && (
-                    <button
-                      type="button"
-                      aria-label={`Menu du champ ${col.label}`}
-                      data-testid={`col-menu-btn-${col.id}`}
-                      onClick={e => {
-                        e.stopPropagation()
-                        const r = e.currentTarget.getBoundingClientRect()
-                        if (!selectedColIds.has(col.id)) clearColSelection()
-                        setColMenu({
-                          x: r.left, y: r.bottom + 2, col,
-                          source: customField ? (customField.source || 'native') : null,
-                          field: customField || null,
-                        })
-                      }}
-                      className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 opacity-0 group-hover/col:opacity-100 hover:bg-slate-200 hover:text-slate-700 transition-opacity"
-                    >
-                      <ChevronDown size={13} />
-                    </button>
-                  )}
+                  <button
+                    type="button"
+                    aria-label={`Menu du champ ${col.label}`}
+                    data-testid={`col-menu-btn-${col.id}`}
+                    onClick={e => {
+                      e.stopPropagation()
+                      const r = e.currentTarget.getBoundingClientRect()
+                      if (!selectedColIds.has(col.id)) clearColSelection()
+                      setColMenu({
+                        x: r.left, y: r.bottom + 2, col,
+                        source: customField ? (customField.source || 'native') : null,
+                        field: customField || null,
+                      })
+                    }}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-0.5 rounded text-slate-400 opacity-0 group-hover/col:opacity-100 hover:bg-slate-200 hover:text-slate-700 transition-opacity"
+                  >
+                    <ChevronDown size={13} />
+                  </button>
                   {dragOverCol === col.id && dragColRef.current && dragColRef.current !== col.id && (
                     <div
                       className={`absolute top-0 bottom-0 w-0.5 bg-brand-500 pointer-events-none ${dragOverSide === 'before' ? '-left-px' : '-right-px'}`}
@@ -2081,8 +2223,7 @@ export function DataTable({
             // chose : un champ perso/Airtable (colMenu.field), ou une colonne
             // native connue de la table. Les colonnes d'action (boutons de
             // ligne) n'en sont pas.
-            const isFieldManageable = !!colMenu.field
-              || (!!table && !c?.alwaysVisible && columnsWithOwnCf.some(x => x.id === c.id))
+            const fieldManageable = isFieldManageable(c, colMenu.field)
             const canGroup = c?.groupable !== false && c?.field
             const canSort = c?.sortable !== false && c?.field
             const canFilter = c?.filterable !== false && c?.field
@@ -2152,23 +2293,13 @@ export function DataTable({
                       une personnalisation, la modale perso édite le champ ;
                       « Supprimer » masque globalement le natif et soft-delete
                       le perso. L'utilisateur, lui, voit un seul type de champ. */}
-                  {isFieldManageable && (
+                  {fieldManageable && (
                     <>
                       <div className="my-1 border-t border-slate-100" />
                       <button
                         onClick={() => {
                           setColMenu(null)
-                          if (colMenu.field) editCustomField?.(colMenu.field)
-                          else {
-                            // La modale attend la définition D'ORIGINE (pré-override)
-                            // pour afficher « nom/type d'origine » et détecter un reset.
-                            const orig = columnsWithOwnCf.find(x => x.id === c.id) || c
-                            setFieldOverrideModal({
-                              col: orig.render && LINKED_RECORD_TYPE_LABELS[orig.id]
-                                ? { ...orig, renderTypeLabel: LINKED_RECORD_TYPE_LABELS[orig.id] }
-                                : orig,
-                            })
-                          }
+                          openFieldEditor(c, colMenu.field)
                         }}
                         className={itemCls}
                         data-testid={colMenu.field ? 'colmenu-edit-custom-field' : 'colmenu-edit-native-field'}
@@ -2554,6 +2685,16 @@ export function DataTable({
                                   onCancel={() => { setEditingCell(null); focusGrid() }}
                                 />
                               </>
+                            ) : col.type === 'rating' ? (
+                              <RatingCellEditor
+                                value={item[col.field]}
+                                onCommit={(val) => {
+                                  const cur = item[col.field] == null ? null : normalizeRating(item[col.field])
+                                  if (val !== cur) applyCellChanges([{ row: item, col, value: val }])
+                                  setEditingCell(null); focusGrid()
+                                }}
+                                onCancel={() => { setEditingCell(null); focusGrid() }}
+                              />
                             ) : (col.type === 'single_select' || col.type === 'multi_select') ? (
                               <>
                                 <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
@@ -2790,6 +2931,7 @@ export function DataTable({
           subtitle={resolvePeek('subtitle', peekItem)}
           to={resolvePeek('to', peekItem)}
           width={peek.width}
+          minWidth={peek.minWidth}
           peekKey={peek.key}
         >
           {peekItem && (

@@ -10,7 +10,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { describeCreateLabelFailure, extractTrackingNumber, buildRecipient } from './novoxpress.js'
+import { describeCreateLabelFailure, extractTrackingNumber, buildRecipient, normalizeNovoxpressId } from './novoxpress.js'
 
 // Erreur réelle observée en prod (logs erp-server-error.log, 2026-06-01)
 const REAL_CP_SCHEMA_ERROR = {
@@ -78,12 +78,10 @@ test('priorité tracking_pin avant tracking_id quand les deux sont présents', (
   assert.equal(extractTrackingNumber({ tracking_id: 'AAA', tracking_pin: 'BBB' }), 'BBB')
 })
 
-// ── buildRecipient : Novoxpress rejette désormais recipient.contact_name sur
-// tous ses endpoints (« ... contact_name is not allowed », 2026-06-09). On
-// vérifie le contrat actuel : le champ ne doit JAMAIS être émis, même quand un
-// contact est rattaché à l'adresse — le destinataire reste lisible via
-// company_name. (Les anciens tests vérifiaient l'inverse : contact_name
-// prénom+nom avec fallbacks — comportement retiré.)
+// ── buildRecipient : le nom de la personne voyage sous `attention_to` côté
+// destinataire (`contact_name` y est refusé par Novoxpress) et sous
+// `contact_name` côté expéditeur (`attention_to` y est refusé). Sans nom, on
+// bloque : le transporteur imprimerait « NA » sur l'étiquette.
 
 const baseShipment = {
   company_name: 'Ferme Soleil Inc.',
@@ -96,13 +94,60 @@ const baseShipment = {
   address_country: 'CA',
 }
 
-test('contact_name n\'est jamais émis, même avec un contact rattaché à l\'adresse', () => {
+test('destinataire : le nom part en attention_to, jamais en contact_name', () => {
   const r = buildRecipient({ ...baseShipment, address_contact_first_name: 'Marie', address_contact_last_name: 'Tremblay' })
-  assert.ok(!('contact_name' in r), 'recipient.contact_name est rejeté par Novoxpress — ne doit pas être émis')
+  assert.equal(r.attention_to, 'Marie Tremblay')
+  assert.ok(!('contact_name' in r), 'recipient.contact_name est rejeté par Novoxpress')
   assert.equal(r.company_name, 'Ferme Soleil Inc.')
 })
 
-test('contact_name absent aussi sans contact (pas de fallback réintroduit)', () => {
-  const r = buildRecipient({ ...baseShipment, address_contact_first_name: null, address_contact_last_name: null })
-  assert.ok(!('contact_name' in r))
+test('expéditeur (étiquette de retour) : le nom part en contact_name', () => {
+  const r = buildRecipient({ ...baseShipment, address_contact_first_name: 'Marie', address_contact_last_name: 'Tremblay' }, 'expéditeur')
+  assert.equal(r.contact_name, 'Marie Tremblay')
+  assert.ok(!('attention_to' in r), 'sender.attention_to est rejeté par Novoxpress')
+})
+
+test('sans nom de personne, la création est bloquée', () => {
+  assert.throws(
+    () => buildRecipient({ ...baseShipment, address_contact_first_name: null, address_contact_last_name: null }),
+    /nom de la personne/
+  )
+})
+
+test('un prénom seul suffit (pas de blocage abusif)', () => {
+  const r = buildRecipient({ ...baseShipment, address_contact_first_name: 'Marie', address_contact_last_name: null })
+  assert.equal(r.attention_to, 'Marie')
+})
+
+test('le nom est assaini comme les autres textes XML', () => {
+  const r = buildRecipient({ ...baseShipment, address_contact_first_name: 'L&C', address_contact_last_name: 'Charlebois' })
+  assert.equal(r.attention_to, 'L et C Charlebois')
+})
+
+// ── normalizeNovoxpressId : Novoxpress renvoie ses identifiants tantôt en
+// texte, tantôt en nombre JSON. Persisté tel quel, un nombre devient
+// « 9413689.0 » (REAL → affinité TEXT) et n'est plus reconnu par leur API :
+// print-label répond {"status":404} et create-pickup 400 « No shipment is exist
+// with this shipment ID » (incident du 2026-09-10, vérifié en prod).
+
+test('un identifiant numérique est toujours une chaîne sans décimale', () => {
+  assert.equal(normalizeNovoxpressId(9413689), '9413689')
+  assert.equal(normalizeNovoxpressId('9413689.0'), '9413689')
+  assert.equal(normalizeNovoxpressId('9413689.00'), '9413689')
+})
+
+test('un identifiant alphanumérique passe intact', () => {
+  assert.equal(normalizeNovoxpressId('1ZB799Y36837329590'), '1ZB799Y36837329590')
+  assert.equal(normalizeNovoxpressId('520730391460'), '520730391460')
+  assert.equal(normalizeNovoxpressId('  9413689  '), '9413689')
+})
+
+test('rien à normaliser → null (le code appelant sait déjà traiter l\'absence)', () => {
+  assert.equal(normalizeNovoxpressId(null), null)
+  assert.equal(normalizeNovoxpressId(undefined), null)
+  assert.equal(normalizeNovoxpressId(''), null)
+})
+
+test('une décimale significative n\'est pas tronquée', () => {
+  assert.equal(normalizeNovoxpressId('12.05'), '12.05')
 })

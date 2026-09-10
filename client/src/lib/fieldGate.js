@@ -140,9 +140,9 @@ function buildGate(table, rows, known) {
   const byId = new Map(rows.map(r => [r.field_id, r]))
 
   // La personnalisation est indexée par l'id de colonne du tableau, les fiches et
-  // formulaires par nom de colonne SQL : `full_name` (tableau) et `first_name`
-  // (fiche) peuvent désigner le même champ. On rapproche les deux via
-  // TABLE_COLUMN_META, dans les deux sens.
+  // formulaires par nom de colonne SQL : `company_name` (tableau, nom joint) et
+  // `company_id` (fiche, la FK) peuvent désigner le même champ. On rapproche les
+  // deux via TABLE_COLUMN_META, dans les deux sens.
   const alias = new Map()
   for (const c of (TABLE_COLUMN_META[table] || [])) {
     const id = c.id ?? c.field

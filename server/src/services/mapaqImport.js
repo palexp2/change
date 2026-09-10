@@ -477,10 +477,13 @@ export function createProspects(entries, userId) {
   const created = []
   const skipped = []
 
+  // `type`, `phone` et `website` ont été droppées (migration 045) : le
+  // téléphone et le site web du registre partent dans les notes plutôt que de
+  // se perdre.
   const insertCompany = db.prepare(`
-    INSERT INTO companies (id, name, type, lifecycle_phase, phone, email, website,
+    INSERT INTO companies (id, name, lifecycle_phase, email,
       address, city, province, country, notes, source, currency, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'MAPAQ', 'CAD', ${NOW}, ${NOW})
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'MAPAQ', 'CAD', ${NOW}, ${NOW})
   `)
   const insertProject = db.prepare(`
     INSERT INTO projects (id, name, company_id, type, status, probability, notes, creation, created_at, updated_at)
@@ -518,11 +521,12 @@ export function createProspects(entries, userId) {
     if (entry.production) notesLines.push(`Catégorie MAPAQ : ${entry.production}`)
     if (entry.region) notesLines.push(`Région : ${entry.region}`)
     if (entry.postal_code) notesLines.push(`Code postal : ${entry.postal_code}`)
+    if (entry.phone) notesLines.push(`Téléphone : ${entry.phone}`)
+    if (entry.website) notesLines.push(`Site web : ${entry.website}`)
 
     const tx = db.transaction(() => {
       insertCompany.run(
-        companyId, entry.name, 'Prospect', 'Lead',
-        entry.phone, entry.email, entry.website,
+        companyId, entry.name, 'Lead', entry.email,
         entry.address, entry.city, 'QC', 'Canada',
         notesLines.join('\n'),
       )

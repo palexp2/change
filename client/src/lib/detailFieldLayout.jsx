@@ -19,13 +19,21 @@ import api from './api.js'
 // Cache module + abonnés : plusieurs fiches de la même entité peuvent être
 // montées en même temps (page dessous, panneau dessus) ; elles doivent toutes
 // voir le même ordre sans re-fetch.
-const cache = new Map() // entityType -> { layout, loaded, promise }
+//
+// `allowDelete` (true | false | null) vient de la même ligne : c'est la case
+// « Autoriser la suppression de la fiche » du mode de personnalisation. null =
+// non réglé, la fiche garde son comportement d'origine.
+const cache = new Map() // entityType -> { layout, allowDelete, loaded, promise }
 const subs = new Map()  // entityType -> Set<fn>
 
 // Copie locale de la dernière disposition connue : sans elle, la fiche s'ouvre
 // dans l'ordre du code puis se réordonne quand la requête revient — les champs
 // sautent sous les yeux à chaque premier affichage.
 const lsKey = (entityType) => `erp_detail_layout_${entityType}`
+// Même raison pour la case « suppression » : sans copie locale, un bouton
+// Supprimer apparaîtrait (ou disparaîtrait) une fraction de seconde après
+// l'ouverture de la fiche, le temps de la requête.
+const lsDeleteKey = (entityType) => `erp_detail_allow_delete_${entityType}`
 
 function readLocal(entityType) {
   try { return normalize(JSON.parse(localStorage.getItem(lsKey(entityType)))) } catch { return null }
@@ -38,10 +46,24 @@ function writeLocal(entityType, layout) {
   } catch { /* quota / mode privé : la disposition reste servie par l'API */ }
 }
 
+function readLocalDelete(entityType) {
+  try {
+    const raw = localStorage.getItem(lsDeleteKey(entityType))
+    return raw === '1' ? true : raw === '0' ? false : null
+  } catch { return null }
+}
+
+function writeLocalDelete(entityType, allow) {
+  try {
+    if (allow === null || allow === undefined) localStorage.removeItem(lsDeleteKey(entityType))
+    else localStorage.setItem(lsDeleteKey(entityType), allow ? '1' : '0')
+  } catch { /* quota / mode privé */ }
+}
+
 function entryOf(cacheKey) {
   let entry = cache.get(cacheKey)
   if (!entry) {
-    entry = { layout: readLocal(cacheKey), loaded: false, promise: null }
+    entry = { layout: readLocal(cacheKey), allowDelete: readLocalDelete(cacheKey), loaded: false, promise: null }
     cache.set(cacheKey, entry)
   }
   return entry
@@ -52,7 +74,13 @@ function normalize(raw) {
   return raw
     .map(e => {
       if (typeof e === 'string') return { key: e, hidden: false }
-      if (e && typeof e.key === 'string') return { key: e.key, hidden: !!e.hidden }
+      if (e && typeof e.key === 'string') {
+        // Forme historique { key, visible } : un `visible:false` dit « masqué ».
+        // Sans ce repli, un champ retiré avant le passage à `hidden` revenait
+        // s'afficher tout seul (c'était le cas des notes d'une entreprise).
+        const hidden = 'hidden' in e ? !!e.hidden : e.visible === false
+        return { key: e.key, hidden }
+      }
       return null
     })
     .filter(Boolean)
@@ -69,6 +97,8 @@ function loadLayout(entityType) {
     .then(d => {
       entry.layout = normalize(d?.field_order)
       writeLocal(entityType, entry.layout)
+      entry.allowDelete = typeof d?.allow_delete === 'boolean' ? d.allow_delete : null
+      writeLocalDelete(entityType, entry.allowDelete)
     })
     .catch(() => { /* pas de disposition = ordre du code */ })
     .finally(() => { entry.loaded = true; entry.promise = null; notify(entityType) })
@@ -94,18 +124,10 @@ function mergeEntries(stored, fields) {
   return entries
 }
 
-/**
- * Disposition des champs d'une entité.
- *
- * `fields` : liste déclarée par la fiche ([{ key, label, … }]).
- * Retourne les champs visibles dans l'ordre choisi, les champs retirés (pour le
- * menu « Ajouter un champ ») et les mutations — chacune persiste immédiatement
- * (autosave : pas de bouton « Enregistrer »).
- *
- * Les champs retirés sont rangés en fin de liste : remettre un champ le fait
- * réapparaître à la fin, d'où on le déplace où on veut.
- */
-export function useDetailFieldLayout(entityType, fields) {
+// Abonnement à la configuration de fiche d'une entité (disposition + case
+// « suppression »), partagé par les deux hooks publics ci-dessous : une seule
+// requête, un seul cache, tout le monde re-rend au même moment.
+function useDetailConfig(entityType) {
   const [, force] = useState(0)
 
   useEffect(() => {
@@ -118,7 +140,23 @@ export function useDetailFieldLayout(entityType, fields) {
     return () => { set.delete(fn) }
   }, [entityType])
 
-  const stored = entityType ? (cache.get(entityType)?.layout || null) : null
+  return entityType ? (cache.get(entityType) || null) : null
+}
+
+/**
+ * Disposition des champs d'une entité.
+ *
+ * `fields` : liste déclarée par la fiche ([{ key, label, … }]).
+ * Retourne les champs visibles dans l'ordre choisi, les champs retirés (pour le
+ * menu « Ajouter un champ ») et les mutations — chacune persiste immédiatement
+ * (autosave : pas de bouton « Enregistrer »).
+ *
+ * Les champs retirés sont rangés en fin de liste : remettre un champ le fait
+ * réapparaître à la fin, d'où on le déplace où on veut.
+ */
+export function useDetailFieldLayout(entityType, fields) {
+  const entry = useDetailConfig(entityType)
+  const stored = entry?.layout || null
 
   const entries = useMemo(() => mergeEntries(stored, fields), [stored, fields])
 
@@ -165,6 +203,41 @@ export function useDetailFieldLayout(entityType, fields) {
   }, [entries, persist])
 
   return { fields: visible, hiddenFields: hidden, applyOrder, hide, show }
+}
+
+// ── « Autoriser la suppression de la fiche » ─────────────────────────────────
+//
+// Réglé dans le même mode de personnalisation que la disposition des champs, et
+// donc lui aussi PARTAGÉ : décoché, plus personne ne voit l'action de
+// suppression sur cette fiche — et le serveur refuse le DELETE
+// (server/src/middleware/recordDeleteGuard.js), pour que la case ne soit pas
+// qu'un bouton caché.
+//
+// `fallback` : ce que vaut la case quand personne ne l'a réglée. C'est le
+// comportement d'origine de la fiche (voir lib/recordDelete.js) : vrai pour une
+// fiche qui offrait déjà sa suppression, faux pour celles où l'action est
+// nouvelle.
+export function useRecordDeleteAllowed(entityType, fallback = true) {
+  const entry = useDetailConfig(entityType)
+  return typeof entry?.allowDelete === 'boolean' ? entry.allowDelete : fallback
+}
+
+// Même valeur, plus le réglage (réservé aux admins côté UI, comme la
+// disposition ; la route PUT l'est déjà côté serveur).
+export function useRecordDeletePolicy(entityType, fallback = true) {
+  const allowed = useRecordDeleteAllowed(entityType, fallback)
+
+  const setAllowed = useCallback((next) => {
+    if (!entityType) return
+    const entry = entryOf(entityType)
+    entry.allowDelete = next
+    writeLocalDelete(entityType, next)
+    notify(entityType)
+    api.views.setDetailDeleteAllowed(entityType, next)
+      .catch(err => console.error('[detailFieldLayout] échec sauvegarde suppression:', err))
+  }, [entityType])
+
+  return { allowed, setAllowed }
 }
 
 // ── Mode édition porté par le panneau latéral ────────────────────────────────

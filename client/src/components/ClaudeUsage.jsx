@@ -18,13 +18,28 @@
 //
 // Une seule source (`GET /api/agent/usage`), deux affichages voisins :
 //   • <ClaudeUsageStrip/> — une ligne discrète mais lisible (haut de Travaux) : ce
-//     qu'on MESURE, rien d'autre.
+//     qu'on MESURE, plus les seuils de marge sous lesquels la file s'arrête, un par
+//     plafond (le seul réglage admis dedans : il ne dit rien d'autre que « à partir
+//     d'où ces pourcentages nous arrêtent »).
 //   • <ClaudeModelControl/> — le choix du modèle de l'agent, à côté du bandeau et
 //     non dedans : c'est une commande, sa place est avec Pause et Réglages.
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
-import { Sparkles, Gauge, CalendarDays, Loader2, Cpu, AlertTriangle, Bot, ChevronDown, Check } from 'lucide-react'
+import { Sparkles, Gauge, CalendarDays, Loader2, Cpu, AlertTriangle, Bot, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
 import api from '../lib/api.js'
 import { useToast } from './ui/ToastProvider.jsx'
+
+// Fermeture d'un menu ouvert : clic dehors ou Échap. Partagé par les deux sélecteurs
+// du bandeau (modèle, seuil de pause).
+function useDismissOnOutside(open, setOpen, ref) {
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open, setOpen, ref])
+}
 
 // « Réinit. dans 3 h 12 » à partir d'un timestamp ISO de réinitialisation.
 export function formatResetIn(iso) {
@@ -64,6 +79,14 @@ export function formatAgo(iso) {
   return `${Math.floor(min / 60)} h ${min % 60} min`
 }
 
+// « dans 2 min » — attente avant la prochaine tentative de lecture des quotas.
+export function formatInDelay(iso) {
+  const ms = iso ? Date.parse(iso) - Date.now() : NaN
+  if (!Number.isFinite(ms) || ms <= 30_000) return 'd\'un instant à l\'autre'
+  const min = Math.round(ms / 60000)
+  return min < 1 ? 'dans moins d\'une minute' : `dans ${min} min`
+}
+
 // Date + heure complètes, pour les infobulles (aucune ambiguïté de jour ni de fuseau).
 export function formatResetFull(iso) {
   if (!iso) return null
@@ -78,7 +101,7 @@ export function formatResetFull(iso) {
 // (agent-settings.json, clé preferredModel). Le plafond hebdomadaire du modèle
 // préféré peut être épuisé alors que les autres jauges sont au vert : dans ce cas
 // l'agent continue sur le repli et revient au préféré à la réinitialisation.
-const MODEL_LABELS = { fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' }
+const MODEL_LABELS = { fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', codex: 'Codex' }
 export function modelLabel(m) { return MODEL_LABELS[m] || m || '—' }
 
 /**
@@ -95,14 +118,7 @@ export function ClaudeModelControl({ className = '' }) {
   const [pending, setPending] = useState(null)
   const ref = useRef(null)
 
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
-  }, [open])
+  useDismissOnOutside(open, setOpen, ref)
 
   const serverPreferred = state?.preferred
   useEffect(() => {
@@ -120,7 +136,7 @@ export function ClaudeModelControl({ className = '' }) {
     ? `Plafond hebdomadaire ${modelLabel(state.preferred)} épuisé : l'agent travaille sur ${modelLabel(active)}. `
       + `Retour à ${modelLabel(state.preferred)} ${formatResetIn(preferredResetAt) || 'à la réinitialisation'}.`
     : active || pending
-      ? `L'agent travaille sur ${modelLabel(shown)}. Si son plafond hebdomadaire s'épuise, il continue automatiquement sur le modèle de repli.`
+      ? `L'agent travaille sur ${modelLabel(shown)}.`
       : 'Tous les modèles sont au plafond : la file attend la réinitialisation.')
     + ' Cliquer pour changer de modèle.'
 
@@ -183,6 +199,144 @@ export function ClaudeModelControl({ className = '' }) {
   )
 }
 
+// ─── Seuils de pause du garde-fou de quota ────────────────────────────────────
+// La file s'arrête AVANT le mur : sous X % de marge restante, plus rien de nouveau ne
+// démarre et elle repart d'elle-même quand le quota remonte (server/src/services/
+// quotaGuard.js).
+//
+// X n'est plus un seuil unique mais UN SEUIL PAR PLAFOND, réglé ici : la fenêtre de
+// 5 h se rouvre en quelques heures (on peut la laisser descendre bas), la semaine met
+// des jours (on veut y garder plus de marge). Monter un seuil garde plus de marge pour
+// le travail à la main, le baisser laisse la file consommer davantage ; « jamais »
+// désarme le garde-fou pour ce plafond-là.
+const DEFAULT_FLOOR_CHOICES = [0, 5, 10, 20, 30, 40, 50, 60]
+const DEFAULT_FLOOR_KEYS = { session: 'quotaFloorSessionPct', week: 'quotaFloorWeekPct' }
+const FLOOR_SCOPES = [
+  { scope: 'session', label: 'Fenêtre 5 h', short: '5 h' },
+  { scope: 'week', label: 'Semaine', short: 'sem.' },
+]
+const floorLabel = (pct) => (pct > 0 ? `${pct} %` : 'jamais')
+
+function QuotaFloorControl() {
+  const { usage } = useClaudeUsage()
+  const toast = useToast()
+  const [open, setOpen] = useState(false)
+  const [pending, setPending] = useState({})   // choix affichés avant confirmation
+  const ref = useRef(null)
+  useDismissOnOutside(open, setOpen, ref)
+
+  const floor = usage?.quotaFloor
+  // Repli sur `pct` : une lecture gardée dans le navigateur avant ce changement ne
+  // porte que l'ancien seuil unique — mieux vaut l'afficher pour les deux que rien.
+  const served = (scope) => {
+    const v = Number.isFinite(floor?.[scope]) ? floor[scope] : floor?.pct
+    return Number.isFinite(v) ? v : null
+  }
+  const sessionPct = served('session')
+  const weekPct = served('week')
+  useEffect(() => {
+    setPending(p => {
+      const next = { ...p }
+      for (const [scope, v] of [['session', sessionPct], ['week', weekPct]]) {
+        if (next[scope] != null && next[scope] === v) delete next[scope]
+      }
+      return next
+    })
+  }, [sessionPct, weekPct])
+
+  if (sessionPct == null || weekPct == null) return null
+  const shown = {
+    session: pending.session != null ? pending.session : sessionPct,
+    week: pending.week != null ? pending.week : weekPct,
+  }
+  const choices = floor?.choices?.length ? floor.choices : DEFAULT_FLOOR_CHOICES
+  const dflt = Number.isFinite(floor?.default) ? floor.default : 30
+  const keys = floor?.keys || DEFAULT_FLOOR_KEYS
+
+  async function choose(scope, v) {
+    setOpen(false)
+    if (v === shown[scope]) return
+    setPending(p => ({ ...p, [scope]: v }))
+    try {
+      await api.agent.saveSettings({ [keys[scope] || DEFAULT_FLOOR_KEYS[scope]]: v })
+      fetchUsage()
+    } catch {
+      setPending(p => { const n = { ...p }; delete n[scope]; return n })
+      toast?.addToast?.({ message: 'Impossible de changer le seuil de pause — réessayez.', type: 'error' })
+    }
+  }
+
+  const title = FLOOR_SCOPES.map(({ scope, label }) => (shown[scope] > 0
+    ? `${label} : pause sous ${shown[scope]} % de marge`
+    : `${label} : garde-fou désarmé`)).join(' · ')
+    + '. La file repart dès que le quota remonte. Cliquer pour changer.'
+
+  return (
+    <div className="relative shrink-0" data-testid="usage-strip-floor" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-700"
+        data-testid="usage-strip-floor-value"
+        title={title}
+      >
+        <PauseCircle size={13} className="text-slate-400 shrink-0" />
+        Pause sous
+        {FLOOR_SCOPES.map(({ scope, short }, i) => (
+          <span key={scope} className="shrink-0">
+            {i > 0 && <span className="text-slate-300"> · </span>}
+            <span className="font-semibold tabular-nums">{floorLabel(shown[scope])}</span>
+            <span className="text-slate-400"> {short}</span>
+          </span>
+        ))}
+        <ChevronDown size={12} className="text-slate-400 shrink-0" />
+      </button>
+      {open && (
+        <div
+          className="absolute left-0 top-full mt-1.5 z-30 flex rounded-lg border border-slate-200 bg-white shadow-lg py-1"
+          data-testid="usage-strip-floor-menu"
+        >
+          {/* Une colonne par plafond : les deux réglages se lisent et se comparent
+              d'un coup d'œil, au lieu d'un menu qu'il faut rouvrir. */}
+          {FLOOR_SCOPES.map(({ scope, label }) => (
+            <div key={scope} className="w-32 border-slate-100 [&:not(:first-child)]:border-l">
+              <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold text-slate-400">{label}</p>
+              {choices.map(v => (
+                <button
+                  key={v}
+                  type="button"
+                  onClick={() => choose(scope, v)}
+                  className={`w-full flex items-center justify-between gap-1 px-3 py-1.5 text-xs text-left hover:bg-slate-50 ${v === shown[scope] ? 'text-brand-600 font-semibold' : 'text-slate-700'}`}
+                  data-testid={`usage-strip-floor-option-${scope}-${v}`}
+                >
+                  {floorLabel(v)}{v === dflt ? ' (déf.)' : ''}
+                  {v === shown[scope] && <Check size={12} className="shrink-0" />}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// Le compte Claude dont on montre les plafonds : sans lui, un pourcentage ne dit pas
+// de QUI il parle. Nom court à l'écran, courriel/organisation/forfait en infobulle.
+function AccountTag({ account }) {
+  if (!account) return null
+  const shown = account.name || account.email
+  if (!shown) return null
+  const title = ['Compte Claude de l\'agent', account.email, account.organization,
+    account.plan && `forfait ${account.plan}`].filter(Boolean).join(' · ')
+  return (
+    <span className="flex items-center gap-1.5 min-w-0 text-slate-500" data-testid="usage-strip-account" title={title}>
+      <UserRound size={13} className="text-slate-400 shrink-0" />
+      <span className="truncate">{shown}</span>
+    </span>
+  )
+}
+
 // Couleur de la jauge selon le niveau de consommation. `severity` est le niveau
 // d'alerte donné par Anthropic lui-même : quand il sort de « normal », il prime sur
 // notre seuil en pourcentage (c'est lui qui connaît la vraie marge restante).
@@ -205,7 +359,9 @@ export function usageTone(pct, severity = null) {
 //   • onglet en arrière-plan → on cesse d'interroger, et on rattrape au retour.
 const STORE_KEY = 'erp:claude-usage'
 const HYDRATE_MAX_AGE_MS = 30 * 60 * 1000  // au-delà, mieux vaut la roue qu'un chiffre faux
-const POLL_MS = 30_000
+// Le serveur cache la lecture 60 s : interroger plus souvent ne donnait rien de plus
+// frais et ajoutait des appels à un endpoint qu'Anthropic limite en fréquence.
+const POLL_MS = 60_000
 
 function readStored() {
   try {
@@ -367,17 +523,26 @@ function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
 /**
  * Bandeau discret pour le haut de la page Travaux : où en sont les trois plafonds de
  * l'abonnement et — quand ça arrive — le fait que la file soit arrêtée par un
- * plafond. Disparaît si l'API échoue (jamais bloquant).
+ * plafond.
  *
- * Sous le bandeau, une seule ligne peut apparaître : celle qui signale que les
- * pourcentages datent d'un moment (lecture des quotas momentanément indisponible).
+ * Sous le bandeau, une seule ligne peut apparaître : pourquoi les pourcentages sont
+ * absents ou datés, et quand on réessaie. Le bandeau ne disparaît plus en silence —
+ * des jauges évanouies sans un mot laissaient croire à une panne de la file.
  */
 export function ClaudeUsageStrip({ className = 'mb-5' }) {
   const { usage, error } = useClaudeUsage()
 
-  if (error) return null
-
   const scoped = usage?.weekScoped
+  const failure = usage?.subscriptionError || null
+  // Une ligne, jamais deux : soit on explique l'échec en cours (avec l'âge des
+  // chiffres s'ils sont encore là), soit rien.
+  const note = error
+    ? 'Quotas illisibles — le serveur ne répond pas. Nouvelle tentative dans 1 min.'
+    : failure
+      ? `Quotas illisibles (${failure.label})`
+        + (usage?.subscriptionStale ? ` — pourcentages datant de ${formatAgo(usage.subscriptionAt)}` : '')
+        + `. Nouvelle tentative ${formatInDelay(failure.retryAt)}.`
+      : null
   return (
     <div className={className} data-testid="claude-usage-strip">
       <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs">
@@ -385,8 +550,11 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
           <div className="flex items-center gap-1.5 shrink-0">
             <Sparkles size={13} className="text-brand-400" />
             <span className="font-semibold uppercase tracking-wider text-slate-500">Quotas Claude</span>
-            {!usage && <Loader2 size={11} className="text-slate-300 animate-spin" />}
+            {/* Roue seulement pendant une vraie attente : quand la ligne d'explication
+                est là, une roue tournerait dans le vide. */}
+            {!usage && !note && <Loader2 size={11} className="text-slate-300 animate-spin" />}
           </div>
+          <AccountTag account={usage?.account} />
           <StripLimit
             icon={Gauge} label="Fenêtre 5 h" bucket={usage?.session} testid="usage-strip-session"
             hint="Bloc glissant de 5 h : il s'ouvre au premier message et se referme 5 h plus tard. C'est le plafond qui coupe le plus souvent."
@@ -401,18 +569,41 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
               hint={`Plafond hebdomadaire propre au modèle ${scoped.label || ''} : il peut être atteint alors que les autres jauges sont au vert.`}
             />
           )}
+          {/* Seule commande admise dans le bandeau : elle porte sur les pourcentages
+              affichés juste à côté (à partir de quelle marge on s'arrête). */}
+          <QuotaFloorControl />
         </div>
 
-        {usage?.subscriptionStale && (
+        {note && (
           <p className="mt-1.5 text-[11px] leading-snug text-amber-600" data-testid="usage-strip-note">
-            Pourcentages datant de {formatAgo(usage.subscriptionAt)} — lecture des quotas momentanément indisponible.
+            {note}
           </p>
         )}
       </div>
 
+      <CodexUsageStrip className="mt-2" />
+
       {/* Alerte sous le bandeau : n'apparaît que quand le travail est vraiment arrêté
           ou sur le point de l'être. Le reste du temps, rien — on ne crie pas pour rien. */}
       <div className="[&>*]:mt-2"><LimitAlerts usage={usage} /></div>
+    </div>
+  )
+}
+
+export function CodexUsageStrip({ className = '' }) {
+  const { usage, error } = useClaudeUsage()
+  const codex = usage?.codex
+  const windows = codex?.windows || []
+  const blocked = windows.some(w => w.utilizationPct >= 100)
+  return (
+    <div className={`rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs ${className}`} data-testid="codex-usage-strip">
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+        <span className="font-semibold uppercase tracking-wider text-slate-500">Quotas Codex</span>
+        {windows.map(bucket => <StripLimit key={bucket.key} icon={Gauge} label={bucket.label} bucket={bucket} testid={`codex-usage-${bucket.key}`} />)}
+        {blocked && <span className="text-amber-700 font-medium">Limite atteinte</span>}
+        {!codex && !error && <span className="text-slate-400">Chargement…</span>}
+        {(error || codex?.error) && <span className="text-amber-700" role="status">{codex?.error || 'Quotas Codex indisponibles.'}</span>}
+      </div>
     </div>
   )
 }

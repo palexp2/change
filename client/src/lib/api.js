@@ -82,6 +82,12 @@ function invalidateForPath(path) {
     invalidate('/' + segments[1])
     invalidateStale(segments[1])
   }
+  // Créer / modifier / supprimer un champ change aussi les colonnes ERP servies
+  // par le mapping Airtable (/connectors/.../mapping-data). Sans cette purge, la
+  // cellule « Champ Airtable » d'un champ fraîchement créé restait vide jusqu'à
+  // expiration du cache (TTL 30 s) ou rechargement de la page — impossible de le
+  // mapper tout de suite.
+  if (resource === 'custom-fields') invalidate('/connectors')
   // API générique /records/<table>/... : invalider la ressource sous-jacente
   // (sinon les GET /<resource> servent le cache obsolète). Le nom de table SQL
   // utilise des underscores (activity_codes) alors que la route REST utilise
@@ -174,6 +180,23 @@ export async function apiBlob(path) {
   return res.blob()
 }
 
+// Idem, mais rend aussi le nom de fichier annoncé par le serveur
+// (Content-Disposition) : utile quand le nom ne se déduit pas de l'URL
+// (pièces jointes de courriel, dont l'URL ne porte qu'un id).
+export async function apiBlobNamed(path) {
+  const token = getToken()
+  const res = await fetch(`${BASE}${path}`, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    throw new Error(data.error || `HTTP ${res.status}`)
+  }
+  const cd = res.headers.get('content-disposition') || ''
+  const m = cd.match(/filename="?([^";]+)"?/i)
+  return { blob: await res.blob(), filename: m ? m[1] : 'piece-jointe' }
+}
+
 export const api = {
   // Auth
   auth: {
@@ -211,6 +234,8 @@ export const api = {
     addCompany: (id, data) => post(`/contacts/${id}/companies`, data),
     updateCompany: (id, linkId, data) => patch(`/contacts/${id}/companies/${linkId}`, data),
     removeCompany: (id, linkId) => del(`/contacts/${id}/companies/${linkId}`),
+    emailAttachments: (id) => get(`/contacts/${id}/email-attachments`),
+    downloadEmailAttachment: (id, attId) => apiBlobNamed(`/contacts/${id}/email-attachments/${attId}/download`),
   },
 
   // Projects
@@ -223,6 +248,8 @@ export const api = {
     delete: (id) => del(`/projects/${id}`),
     vendeurOptions: () => get('/projects/vendeur-options'),
     commissions: (id) => get(`/projects/${id}/commissions`),
+    commissionBeneficiaries: () => get('/projects/commission-beneficiaries'),
+    addCommission: (id, data) => post(`/projects/${id}/commissions`, data),
   },
 
   // Products
@@ -232,6 +259,11 @@ export const api = {
     create: (data) => post('/products', data),
     update: (id, data) => put(`/products/${id}`, data),
     adjustStock: (id, data) => post(`/products/${id}/stock`, data),
+    // Apprend un code-barre à la pièce (étiquette fournisseur scannée au
+    // prélèvement) — le scan de commande le reconnaîtra ensuite comme le SKU.
+    addScanCode: (id, code) => post(`/products/${id}/scan-codes`, { code }),
+    // Achats (PO Airtable) qui citent cette pièce — tableau « Achats » de la fiche.
+    purchases: (id) => get(`/products/${id}/purchases`),
     delete: (id) => del(`/products/${id}`),
     // Ce qui empêche la suppression (BOM, envois, achats liés) — sert à griser
     // le bouton avant même de tenter le DELETE (qui répond 409).
@@ -274,17 +306,21 @@ export const api = {
     duplicateItem: (orderId, itemId) => post(`/orders/${orderId}/items/${itemId}/duplicate`, {}),
     reorderItems: (orderId, order) => patch(`/orders/${orderId}/items/reorder`, order),
     deleteItem: (orderId, itemId) => del(`/orders/${orderId}/items/${itemId}`),
-    scan: (orderId, value, mode = 'add') => post(`/orders/${orderId}/scan`, { value, mode }),
+    scan: (orderId, value, mode = 'add', confirm = false) => post(`/orders/${orderId}/scan`, { value, mode, confirm }),
     // Recalcule et re-gèle le coût des lignes déjà envoyées (Pièces + valeur de
     // fabrication de chaque numéro de série).
     recomputeShippedCosts: (id) => post(`/orders/${id}/recompute-shipped-costs`, {}),
     delete: (id) => del(`/orders/${id}`),
     generateBonLivraison: (id) => post(`/orders/${id}/bon-livraison`, {}),
-    generateInstallationDocsBlob: async (id) => {
+    // lang : 'fr' | 'en' pour forcer la langue des documents ; sans valeur, le
+    // serveur prend celle du contact de l'adresse de livraison.
+    generateInstallationDocsBlob: async (id, lang) => {
       const token = localStorage.getItem('erp_token')
-      const headers = {}
+      const headers = { 'Content-Type': 'application/json' }
       if (token) headers['Authorization'] = `Bearer ${token}`
-      const res = await fetch(`${BASE}/orders/${id}/generate-installation-docs`, { method: 'POST', headers })
+      const res = await fetch(`${BASE}/orders/${id}/generate-installation-docs`, {
+        method: 'POST', headers, body: JSON.stringify(lang ? { lang } : {}),
+      })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
         const e = new Error(err.error || `HTTP ${res.status}`)
@@ -295,6 +331,7 @@ export const api = {
         blob: await res.blob(),
         included: parseInt(res.headers.get('X-Docs-Included') || '0', 10),
         skipped: parseInt(res.headers.get('X-Docs-Skipped') || '0', 10),
+        lang: res.headers.get('X-Docs-Lang') || null,
       }
     },
   },
@@ -318,7 +355,6 @@ export const api = {
 
   // Tickets
   tickets: {
-    meta: () => get('/tickets/meta'),
     list: (params = {}) => get('/tickets?' + new URLSearchParams(params)),
     ids: () => get('/tickets/ids'),
     // Options du champ « Mots clés » : valeurs distinctes déjà utilisées, les
@@ -327,12 +363,12 @@ export const api = {
     get: (id, signal) => signal ? getAbortable(`/tickets/${id}`, signal) : get(`/tickets/${id}`),
     create: (data) => post('/tickets', data),
     update: (id, data) => put(`/tickets/${id}`, data),
-    updateStatus: (id, status) => patch(`/tickets/${id}/status`, { status }),
     delete: (id) => del(`/tickets/${id}`),
-    // Sondage de satisfaction par SMS. `phone` (optionnel) envoie à un numéro
-    // ponctuel sans modifier la fiche du contact.
+    // Sondage de satisfaction par SMS. Numéro et langue se saisissent à l'envoi
+    // (un billet ne porte plus de contact) ; un renvoi peut les omettre.
     survey: (id) => get(`/tickets/${id}/survey`),
-    sendSurvey: (id, phone = null) => post(`/tickets/${id}/survey`, phone ? { phone } : {}),
+    sendSurvey: (id, { phone = null, language = null } = {}) =>
+      post(`/tickets/${id}/survey`, { ...(phone ? { phone } : {}), ...(language ? { language } : {}) }),
   },
 
   // Dashboard
@@ -417,6 +453,9 @@ export const api = {
     get: (id) => get(`/interactions/${id}`),
     create: (data) => post('/interactions', data),
     emailBody: (id) => get(`/interactions/${id}/email-body`),
+    attachments: (id) => get(`/interactions/${id}/attachments`),
+    downloadAttachment: (id, attId) => apiBlobNamed(`/interactions/${id}/attachments/${attId}/download`),
+    pin: (id, pinned) => patch(`/interactions/${id}/pin`, { pinned }),
     delete: (id) => del(`/interactions/${id}`),
   },
 
@@ -567,6 +606,10 @@ export const api = {
     // Table lue en direct dans Airtable (hors miroir) : son mapping fixé en code,
     // affiché en lecture seule sur /champs. `null` si la table n'en est pas une.
     directSource: (table) => get(`/connectors/airtable/direct-source/${table}`),
+    // Purge le cache serveur des métadonnées Airtable (60 s) : « Rafraîchir » au
+    // bas des sélecteurs de champ, pour voir un champ tout juste créé côté
+    // Airtable. À enchaîner avec un rechargement des données du picker.
+    refreshSchema: (module) => post('/connectors/airtable/schema-refresh', { module: module || null }),
     moduleMappingData: (module) => get(`/connectors/airtable/module-fields/${module}/mapping-data`),
     moduleAirtableFields: (module) => get(`/connectors/airtable/module-fields/${module}/airtable-fields`),
     setModuleFieldMapping: (module, data) =>
@@ -601,6 +644,12 @@ export const api = {
     update: (id, data) => put(`/custom-fields/${id}`, data),
     delete: (id) => del(`/custom-fields/${id}`),
     dependents: (id) => get(`/custom-fields/${id}/dependents`),
+    // Relit les choix de la Sélection Airtable qui alimente la colonne et
+    // complète la liste du champ (ajout seulement). Sert à l'ouverture de la
+    // modale de champ : une option ajoutée dans Airtable n'entrait dans la
+    // liste qu'au prochain sync complet.
+    airtableChoices: (erpTable, column) =>
+      post(`/custom-fields/${encodeURIComponent(erpTable)}/choices/${encodeURIComponent(column)}/from-airtable`, {}),
     lookupMeta: (erpTable) => get(`/custom-fields/_meta/${erpTable}`),
     // Adopte une colonne physique déjà existante (mapping Airtable, ou
     // orpheline) plutôt que d'en créer une nouvelle — pas d'ALTER TABLE.
@@ -643,6 +692,9 @@ export const api = {
     setBulkDeleteEnabled: (table, enabled) => patch(`/views/${table}/bulk-delete-enabled`, { enabled }),
     getDetailLayout: (entityType) => get(`/views/detail/${entityType}`),
     saveDetailLayout: (entityType, field_order) => put(`/views/detail/${entityType}`, { field_order }),
+    // « Autoriser la suppression de la fiche » (mode de personnalisation) :
+    // true/false, ou null pour revenir au comportement d'origine de la fiche.
+    setDetailDeleteAllowed: (entityType, allow_delete) => put(`/views/detail/${entityType}`, { allow_delete }),
   },
 
   // Purchases
@@ -658,6 +710,8 @@ export const api = {
   serials: {
     list: (params = {}) => get('/serials?' + new URLSearchParams(params)),
     get: (id) => get(`/serials/${id}`),
+    // N'accepte que `product_id` côté serveur (lier / délier le produit).
+    update: (id, data) => patch(`/serials/${id}`, data),
     history: (id) => get(`/serials/${id}/history`),
     stateChanges: (params = {}) => get('/serials/state-changes?' + new URLSearchParams(params)),
     accounting: {
@@ -687,6 +741,12 @@ export const api = {
     // Vérificateur d'adresses postales : état courant / relance d'une passe.
     check: () => get('/projets/adresses/check'),
     runCheck: () => post('/projets/adresses/check', {}),
+    // Revérifie une seule adresse et renvoie la ligne à jour.
+    recheck: (id) => post(`/projets/adresses/${id}/check`, {}),
+    // Confirmation auprès de l'API d'adresses (livraison / ferme).
+    // `confirmInput` porte une adresse SAISIE, avant enregistrement.
+    confirmInput: (data) => post('/projets/adresses/confirm', data),
+    reconfirm: (id) => post(`/projets/adresses/${id}/confirm`, {}),
   },
 
   // BOM
@@ -704,6 +764,7 @@ export const api = {
   assemblages: {
     list: (params = {}) => get('/projets/assemblages?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/assemblages/${id}`),
+    create: (data) => post('/projets/assemblages', data),
   },
 
   // Undo (restore soft-deleted records)
@@ -745,6 +806,11 @@ export const api = {
   retours: {
     list: (params = {}) => get('/projets/retours?' + new URLSearchParams(params)),
     get: (id) => get(`/projets/retours/${id}`),
+    // Édition d'un retour / d'un de ses articles : seuls les champs réglés en
+    // « Bidirectionnel » (ou sans import Airtable) sont acceptés — les autres
+    // reviennent en 400, leur valeur serait écrasée au prochain sync.
+    update: (id, data) => patch(`/projets/retours/${id}`, data),
+    updateItem: (itemId, data) => patch(`/projets/retours/items/${itemId}`, data),
     context: (id, addressId) => get(`/retours/${id}/return-context${addressId ? `?address_id=${addressId}` : ''}`),
     getRates: (id, data) => post(`/retours/${id}/return-rates`, data),
     createLabel: (id, data) => post(`/retours/${id}/return-label`, data),
@@ -799,11 +865,23 @@ export const api = {
     delete: (id) => del(`/vacations/${id}`),
   },
 
+  // Journal des problèmes d'opérations (/problemes-operations).
+  opsIssues: {
+    list: (params = {}) => get('/ops-issues?' + new URLSearchParams(params)),
+    get: (id) => get(`/ops-issues/${id}`),
+    create: (data) => post('/ops-issues', data),
+    update: (id, data) => patch(`/ops-issues/${id}`, data),
+    delete: (id) => del(`/ops-issues/${id}`),
+  },
+
   discoveryForms: {
     list: (params = {}) => get('/discovery-forms?' + new URLSearchParams(params)),
     get: (id) => get(`/discovery-forms/${id}`),
     create: (data) => post('/discovery-forms', data),
     delete: (id) => del(`/discovery-forms/${id}`),
+    equipmentPreview: (id) => get(`/discovery-forms/${id}/equipment-preview`),
+    saveVerification: (id, verification) => patch(`/discovery-forms/${id}/verification`, { verification }),
+    createOrder: (id) => post(`/discovery-forms/${id}/create-order`, {}),
     // Accès public au formulaire via short token (sans auth) — utilisé par la page client.
     getByToken: (token) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}`).then(r => r.json()),
     saveByToken: (token, body) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}/save`, {
@@ -812,6 +890,18 @@ export const api = {
     submitByToken: (token) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}/submit`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
     }).then(r => r.json()),
+  },
+
+  // Calque de surcharges du formulaire de découverte (éditeur System builder).
+  discoveryFormSchema: {
+    uploadImage: (file) => {
+      const data = new FormData()
+      data.append('file', file)
+      return uploadRequest('/discovery-form-schema/images', data)
+    },
+    get: () => get('/discovery-form-schema'),
+    save: (schema) => put('/discovery-form-schema', { schema }),
+    reset: () => del('/discovery-form-schema'),
   },
 
   qualificationCalls: {
@@ -850,8 +940,12 @@ export const api = {
     addEntry: (dayId, data) => post(`/timesheets/day/${dayId}/entries`, data),
     updateEntry: (id, data) => patch(`/timesheets/entries/${id}`, data),
     deleteEntry: (id) => del(`/timesheets/entries/${id}`),
-    getPreferences: () => get('/timesheets/preferences'),
+    getPreferences: (params = {}) => get('/timesheets/preferences?' + new URLSearchParams(params)),
     updatePreferences: (data) => patch('/timesheets/preferences', data),
+    // Mode semaine : un seul total par semaine (clé = lundi ISO, déduit de `date`)
+    getWeek: (params = {}) => get('/timesheets/week?' + new URLSearchParams(params)),
+    listWeeks: (params = {}) => get('/timesheets/weeks?' + new URLSearchParams(params)),
+    saveWeek: (data) => put('/timesheets/week', data),
   },
 
   activityCodes: {
@@ -889,14 +983,6 @@ export const api = {
     sync: () => post('/connectors/sync/paies'),
     syncItems: () => post('/connectors/sync/paie_items'),
     importTimesheets: (id) => post(`/paies/${id}/import-timesheets`, {}),
-  },
-
-  hourBank: {
-    list: () => get('/hour-bank'),
-    forEmployee: (employeeId) => get(`/hour-bank/${employeeId}`),
-    create: (data) => post('/hour-bank', data),
-    updateEntry: (id, data) => patch(`/hour-bank/entry/${id}`, data),
-    deleteEntry: (id) => del(`/hour-bank/entry/${id}`),
   },
 
   // Stock movements (mouvements d'inventaire)
@@ -1336,10 +1422,15 @@ export const api = {
     // Tables proposables comme cible d'un champ affiché « Lien vers … ».
     tables: () => getFresh('/record-links/tables'),
     // Candidats à une association (éditeur de lien d'une cellule de DataTable).
-    search: (table, q, limit) => getFresh(
+    // `filter` : filtre du champ lien — seul ce sous-ensemble est proposé
+    // (cf. server/src/services/linkFilter.js).
+    search: (table, q, limit, filter = null) => getFresh(
       `/record-links/search?table=${encodeURIComponent(table)}`
       + `${q ? `&q=${encodeURIComponent(q)}` : ''}${limit ? `&limit=${limit}` : ''}`
+      + (filter?.length ? `&filter=${encodeURIComponent(JSON.stringify(filter))}` : '')
     ),
+    // Colonnes de la table cible sur lesquelles ce filtre peut porter.
+    columns: (table) => getFresh(`/record-links/columns?table=${encodeURIComponent(table)}`),
   },
 
   // API de mutation générique (phase 1) — pilotée par un registre de schémas
@@ -1538,6 +1629,8 @@ export const api = {
     // QB du mois couvert (aucune comptabilisation).
     attachToMonthQb: (id, month) => post(`/sale-receipts/${id}/attach-to-month-qb`, { month }),
     reExtract: (id) => post(`/sale-receipts/${id}/re-extract`),
+    // Vérifie qu'un montant est bien celui imprimé sur le document (relecture du PDF).
+    amountCheck: (id, amount) => get(`/sale-receipts/${id}/amount-check?` + new URLSearchParams({ amount })),
     upload: (formData) => uploadRequest('/sale-receipts/upload', formData),
   },
 
@@ -1545,8 +1638,6 @@ export const api = {
   // Journal des nouveautés — état de la garde « toute modif est documentée »
   changelog: {
     status: () => get('/changelog/status'),
-    // { "<date>|<titre>": { name, source, requestTitle, requestDate } }
-    requesters: () => get('/changelog/requesters'),
   },
 
   anomalies: {

@@ -9,8 +9,30 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import AttachmentPreview from '../components/AttachmentPreview.jsx'
 
 const ROOT_LABEL = '— Racine —'
+
+// La colonne « Téléversé par » existait, cachée. La rendre visible par défaut
+// dans tableDefs ne suffit pas : la sélection de colonnes de la vue « Tous »
+// est mémorisée par navigateur (`erp_allView_cols_*`) et prime sur
+// `defaultVisible`. On l'insère donc une seule fois dans la liste mémorisée —
+// après quoi la masquer reste possible et le choix est respecté.
+const REVEAL_FLAG = 'erp_publicFiles_revealedUploadedBy'
+function revealUploadedByColumn() {
+  try {
+    if (localStorage.getItem(REVEAL_FLAG)) return
+    localStorage.setItem(REVEAL_FLAG, '1')
+    const key = 'erp_allView_cols_public_files'
+    const saved = JSON.parse(localStorage.getItem(key) || 'null')
+    if (!Array.isArray(saved) || saved.length === 0) return
+    if (saved.includes('uploaded_by_name')) return
+    const at = saved.indexOf('created_at')
+    const next = [...saved]
+    next.splice(at === -1 ? next.length : at, 0, 'uploaded_by_name')
+    localStorage.setItem(key, JSON.stringify(next))
+  } catch {}
+}
 
 function publicUrl(token) {
   return `${window.location.origin}/erp/p/${token}`
@@ -146,7 +168,7 @@ function CopyLinkButton({ token, label, dataTestid }) {
   return (
     <button
       onClick={handle}
-      className="inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700 hover:underline"
+      className="inline-flex items-center gap-1 text-xs link-record"
       data-testid={dataTestid}
     >
       <Copy size={12} />
@@ -241,27 +263,46 @@ function EditFileModal({ file, onClose, onChange }) {
     }
   }
 
+  // Le fichier est servi inline avec son type MIME sur son lien public : la
+  // vignette tape dessus directement. `stored_name` en cache-buster — le lien
+  // ne change pas au remplacement, mais il est mis en cache 1 h.
+  const previewUrl = `${publicUrl(file.token)}?v=${encodeURIComponent(file.stored_name || file.updated_at || '')}`
+
   return (
     <RecordPeekDrawer open onClose={onClose} title={originalName || 'Détails du fichier'} width={680} peekKey="public_files">
       <div className="space-y-4 px-5 py-4">
-        <div>
-          <label className="label">Nom</label>
-          <input
-            className="input"
-            value={originalName}
-            onChange={e => setOriginalName(e.target.value)}
-            data-testid="edit-original-name"
+        <div className="flex items-start gap-4">
+          <AttachmentPreview
+            url={previewUrl}
+            fileName={file.original_name}
+            contentType={file.mime_type}
+            downloadName={file.original_name}
+            size="md"
+            showFileName={false}
+            testId="file-preview"
+            className="flex-shrink-0"
           />
-        </div>
-        <div>
-          <label className="label">Dossier</label>
-          <input
-            className="input"
-            value={folder}
-            onChange={e => setFolder(e.target.value)}
-            data-testid="edit-folder"
-          />
-          <p className="text-xs text-slate-400 mt-1">Organise les fichiers sans affecter l'URL publique.</p>
+          <div className="flex-1 min-w-0 space-y-4">
+            <div>
+              <label className="label">Nom</label>
+              <input
+                className="input"
+                value={originalName}
+                onChange={e => setOriginalName(e.target.value)}
+                data-testid="edit-original-name"
+              />
+            </div>
+            <div>
+              <label className="label">Dossier</label>
+              <input
+                className="input"
+                value={folder}
+                onChange={e => setFolder(e.target.value)}
+                data-testid="edit-folder"
+              />
+              <p className="text-xs text-slate-400 mt-1">Organise les fichiers sans affecter l'URL publique.</p>
+            </div>
+          </div>
         </div>
         <div>
           <label className="label">Description</label>
@@ -280,6 +321,20 @@ function EditFileModal({ file, onClose, onChange }) {
             onChange={e => setTagsText(e.target.value)}
             data-testid="edit-tags"
           />
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div>
+            <label className="label">Téléversé par</label>
+            <div className="text-sm text-slate-700 py-1.5" data-testid="edit-uploaded-by">
+              {file.uploaded_by_name || <span className="text-slate-400">—</span>}
+            </div>
+          </div>
+          <div>
+            <label className="label">Téléversé le</label>
+            <div className="text-sm text-slate-700 py-1.5">
+              {file.created_at ? fmtDate(file.created_at) : <span className="text-slate-400">—</span>}
+            </div>
+          </div>
         </div>
         <div className="border-t border-slate-200 pt-3">
           <label className="label">Lien public</label>
@@ -337,6 +392,10 @@ function EditFileModal({ file, onClose, onChange }) {
 export default function PublicFiles() {
   const { addToast } = useToast()
   const confirm = useConfirm()
+  // Avant le premier rendu du DataTable — il lit la liste mémorisée pendant son
+  // propre rendu, donc la retouche doit être faite ici, pas dans un effet.
+  const revealedRef = useRef(false)
+  if (!revealedRef.current) { revealedRef.current = true; revealUploadedByColumn() }
   const [files, setFiles] = useState([])
   const [folders, setFolders] = useState([])
   const [currentFolder, setCurrentFolder] = useState(null) // null = tous
@@ -488,7 +547,7 @@ export default function PublicFiles() {
               data={files}
               loading={loading}
               onRowClick={(row) => setEditing(row)}
-              searchFields={['original_name', 'description', 'folder']}
+              searchFields={['original_name', 'description', 'folder', 'uploaded_by_name']}
               onBulkDelete={handleBulkDelete}
             />
           </div>

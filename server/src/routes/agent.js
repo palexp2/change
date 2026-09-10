@@ -7,7 +7,9 @@ import { fileURLToPath } from 'url'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import { getClaudeUsage } from '../services/claudeUsage.js'
+import { getCodexUsage } from '../services/codexUsage.js'
 import { KNOWN_MODELS } from '../services/agentModel.js'
+import { getQuotaFloors, QUOTA_FLOOR_CHOICES, QUOTA_FLOOR_KEYS, QUOTA_FLOOR_PCT, syncQuotaGuard } from '../services/quotaGuard.js'
 import {
   runNextTask, isRunnerBusy, getCurrentTaskId, getCurrentActivity, getStreamBuffer,
   getSettings, setSettings, readBacklog, addBacklogItem, deleteBacklogItem,
@@ -91,10 +93,28 @@ router.put('/settings', (req, res) => {
     }
     patch.preferredModel = model
   }
+  // Seuils du garde-fou de quota (sélecteurs du bandeau quotas) : marge restante sous
+  // laquelle la file se met en pause, UN SEUIL PAR PLAFOND (fenêtre de 5 h, semaine).
+  // 0 = garde-fou désarmé pour ce plafond. `quotaFloorPct` (ancienne clé unique) est
+  // encore acceptée et règle les deux d'un coup.
+  for (const key of ['quotaFloorPct', ...Object.values(QUOTA_FLOOR_KEYS)]) {
+    if (!(key in req.body)) continue
+    const pct = Math.round(Number(req.body[key]))
+    if (!Number.isFinite(pct) || !QUOTA_FLOOR_CHOICES.includes(pct)) {
+      return res.status(400).json({ error: `${key} invalide — choix possibles : ${QUOTA_FLOOR_CHOICES.join(', ')}` })
+    }
+    if (key === 'quotaFloorPct') {
+      for (const k of Object.values(QUOTA_FLOOR_KEYS)) patch[k] = pct
+    } else patch[key] = pct
+  }
   for (const key of ['generalPrompt', 'instantPrompt', 'conversationPrompt', 'executionPrompt', 'questionPrompt']) {
     if (key in req.body) patch[key] = String(req.body[key] ?? '')
   }
-  res.json(setSettings(patch))
+  const next = setSettings(patch)
+  // Nouveau seuil : on repasse le garde-fou tout de suite — baisser le seuil doit
+  // relancer la file séance tenante, le monter doit la couper sans attendre 2 min.
+  if (Object.values(QUOTA_FLOOR_KEYS).some(k => k in patch)) syncQuotaGuard().catch(() => {})
+  res.json(next)
 })
 
 // ─── Instructions projet (CLAUDE.md) ──────────────────────────────────────────
@@ -238,11 +258,21 @@ router.get('/usage', async (req, res) => {
   try {
     // Une page regarde les jauges : réponse immédiate (cache servi même périmé) et
     // cache entretenu en fond tant qu'on l'interroge — voir claudeUsage.js.
-    const usage = await getClaudeUsage({ keepWarm: true })
+    const [usage, codex] = await Promise.all([getClaudeUsage({ keepWarm: true }), getCodexUsage()])
     const at = getSessionLimitResetAt()
     res.json({
       ...usage,
+      codex,
       schedulerLimitResetAt: at > Date.now() ? new Date(at).toISOString() : null,
+      // Garde-fou de quota : un seuil par plafond (fenêtre 5 h, semaine) + les choix
+      // possibles, pour ses sélecteurs dans le bandeau (quotaGuard.js). `keys` dit au
+      // front quelle clé de réglage porte quel plafond.
+      quotaFloor: {
+        ...getQuotaFloors(),
+        choices: QUOTA_FLOOR_CHOICES,
+        default: QUOTA_FLOOR_PCT,
+        keys: QUOTA_FLOOR_KEYS,
+      },
       // Modèle de l'agent : le préféré (fable), celui réellement actif (opus quand le
       // plafond hebdomadaire de fable est épuisé) et les quotas par modèle en cours.
       agentModel: getAgentModelState(),

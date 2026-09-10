@@ -1,27 +1,25 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Trash2, ExternalLink, Plus, CheckCircle2, Circle, Clock, X, Star, MessageSquare, Phone, AlertTriangle, Copy } from 'lucide-react'
+import { Trash2, Plus, CheckCircle2, Circle, Clock, X, Star, MessageSquare, Phone, AlertTriangle, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useAuth } from '../lib/auth.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { Badge, ticketStatusColor } from '../components/Badge.jsx'
-import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import { Badge } from '../components/Badge.jsx'
 import Attachments from '../components/Attachments.jsx'
-import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { MultiSelectField } from '../components/MultiSelectField.jsx'
 import { InlineText, InlineTextarea, InlineUrl } from '../components/InlineFields.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { Modal } from '../components/Modal.jsx'
 import TaskForm from '../components/TaskForm.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import WeatherPanel from '../components/WeatherPanel.jsx'
+import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
-import { contactsForCompany } from '../lib/contactCompanies'
 import { fmtPhone as fmtPhoneBase } from '../utils/formatters.js'
-import { fmtDurationMinutes as fmtDuration } from '../lib/duration.js'
 
 
 // requestIdleCallback avec fallback setTimeout pour browsers qui ne le supportent pas.
@@ -36,24 +34,19 @@ const cancelIdle = (h) => (typeof cancelIdleCallback === 'function'
 // `onClose` ferme le drawer (utilisé après suppression du billet).
 export default function TicketDetail({ recordId, onClose }) {
   const id = recordId
+  // « Suppression permise » : case du mode de personnalisation de la fiche.
+  const canDelete = useRecordDeleteAllowed('tickets')
   const { user } = useAuth()
   const [ticket, setTicket] = useState(null)
   const [companies, setCompanies] = useState([])
   const [contacts, setContacts] = useState([])
   const [users, setUsers] = useState([])
-  const [meta, setMeta] = useState({ types: [], statuses: [] })
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(null)
   const [reloadKey, setReloadKey] = useState(0)
   const [surveyKey, setSurveyKey] = useState(0)
   const [fieldSaving, setFieldSaving] = useState({})
   const [keywordOptions, setKeywordOptions] = useState([])
-  const [linkedInteractions, setLinkedInteractions] = useState([])
-  const [interactionsTotal, setInteractionsTotal] = useState(0)
-  const [interactionsOffset, setInteractionsOffset] = useState(0)
-  const [loadingInteractions, setLoadingInteractions] = useState(false)
-  const [loadingMoreInteractions, setLoadingMoreInteractions] = useState(false)
-  const INTER_LIMIT = 30
   const [linkedTasks, setLinkedTasks] = useState([])
   const [loadingTasks, setLoadingTasks] = useState(false)
   const [showTaskModal, setShowTaskModal] = useState(false)
@@ -87,43 +80,15 @@ export default function TicketDetail({ recordId, onClose }) {
       .catch(() => {})
   }, [])
 
-  useEffect(() => {
-    if (!ticket?.company_id) {
-      setLinkedInteractions([])
-      setInteractionsTotal(0)
-      setInteractionsOffset(0)
-      return
-    }
-    const ac = new AbortController()
-    setLoadingInteractions(true)
-    // Idle scheduling : laisse le navigateur peindre le ticket avant de lancer
-    // la requête interactions (qui est la plus volumineuse de la page).
-    const handle = scheduleIdle(() => {
-      if (ac.signal.aborted) return
-      api.interactions.list({ company_id: ticket.company_id, limit: INTER_LIMIT, offset: 0, include: 'heavy' }, ac.signal)
-        .then(d => {
-          setLinkedInteractions(d.interactions || [])
-          setInteractionsTotal(d.total || 0)
-          setInteractionsOffset(INTER_LIMIT)
-        })
-        .catch(err => { if (err.name !== 'AbortError') setLinkedInteractions([]) })
-        .finally(() => { if (!ac.signal.aborted) setLoadingInteractions(false) })
-    })
-    return () => { cancelIdle(handle); ac.abort() }
-  }, [ticket?.company_id])
-
-  async function loadMoreInteractions() {
-    if (!ticket?.company_id) return
-    setLoadingMoreInteractions(true)
-    try {
-      const d = await api.interactions.list({ company_id: ticket.company_id, limit: INTER_LIMIT, offset: interactionsOffset, include: 'heavy' })
-      setLinkedInteractions(prev => [...prev, ...(d.interactions || [])])
-      setInteractionsOffset(o => o + INTER_LIMIT)
-    } finally {
-      setLoadingMoreInteractions(false)
-    }
-  }
-
+  // Entreprise et contact d'un billet : plus de colonne native depuis la 040,
+  // ce sont les deux champs LIEN venus d'Airtable (`cf_entreprise`,
+  // `cf_contact`). Ils sont déclarés en dur dans la carte pour être visibles
+  // d'office — une colonne de sync attend sinon dans « Ajouter un champ ».
+  const { fields: ticketFields } = useCustomFields('tickets')
+  const linkFields = useMemo(() => {
+    const by = new Map((ticketFields || []).map(f => [f.column_name, f]))
+    return { company: by.get('cf_entreprise') || null, contact: by.get('cf_contact') || null }
+  }, [ticketFields])
 
   // Modifié ailleurs (Airtable, un collègue) → la fiche suit sans rechargement.
   useRealtimeChannel(id ? `ticket:${id}` : null, (msg) => {
@@ -136,13 +101,9 @@ export default function TicketDetail({ recordId, onClose }) {
       setLoading(true)
       setLoadError(null)
       try {
-        const [t, m] = await Promise.all([
-          api.tickets.get(id, ac.signal),
-          api.tickets.meta(),
-        ])
+        const t = await api.tickets.get(id, ac.signal)
         if (ac.signal.aborted) return
         setTicket(t)
-        setMeta(m)
       } catch (err) {
         if (err.name === 'AbortError') return
         setLoadError(err?.message || 'Erreur de chargement')
@@ -158,10 +119,13 @@ export default function TicketDetail({ recordId, onClose }) {
     return () => ac.abort()
   }, [id, reloadKey])
 
+  // Patch d'UNE colonne : envoyer le billet entier repousserait toutes ses
+  // colonnes vers Airtable à chaque frappe, et le serveur refuse désormais en
+  // 400 un body qui contient un champ importé en sens « import » seul.
   async function saveField(key, value) {
     setFieldSaving(s => ({ ...s, [key]: true }))
     try {
-      const updated = await api.tickets.update(id, { ...ticket, [key]: value || null })
+      const updated = await api.tickets.update(id, { [key]: value ?? null })
       setTicket(updated)
     } catch (err) {
       addToast({ message: err.message, type: 'error' })
@@ -198,29 +162,6 @@ export default function TicketDetail({ recordId, onClose }) {
     loadTasks()
   }
 
-  const filteredContacts = contactsForCompany(contacts, ticket?.company_id)
-
-  // Seed pickers avec un placeholder dérivé du ticket joint pour que le label
-  // s'affiche immédiatement, avant l'arrivée des lookups en arrière-plan.
-  const companiesForPicker = useMemo(() => {
-    if (!ticket?.company_id) return companies
-    if (companies.some(c => c.id === ticket.company_id)) return companies
-    return [...companies, { id: ticket.company_id, name: ticket.company_name || '…' }]
-  }, [companies, ticket?.company_id, ticket?.company_name])
-
-  const contactsForPicker = useMemo(() => {
-    if (!ticket?.contact_id) return filteredContacts
-    if (filteredContacts.some(c => c.id === ticket.contact_id)) return filteredContacts
-    const [first, ...rest] = (ticket.contact_name || '').split(' ')
-    return [...filteredContacts, { id: ticket.contact_id, first_name: first || '…', last_name: rest.join(' '), company_id: ticket.company_id }]
-  }, [filteredContacts, ticket?.contact_id, ticket?.contact_name, ticket?.company_id])
-
-  const usersForPicker = useMemo(() => {
-    if (!ticket?.assigned_to) return users
-    if (users.some(u => u.id === ticket.assigned_to)) return users
-    return [...users, { id: ticket.assigned_to, name: ticket.assigned_name || '…' }]
-  }, [users, ticket?.assigned_to, ticket?.assigned_name])
-
   const pending = detailPending({ loading, loadError, onRetry: () => setReloadKey(k => k + 1), record: ticket, notFound: 'Billet introuvable.' })
   if (pending) return pending
 
@@ -228,19 +169,14 @@ export default function TicketDetail({ recordId, onClose }) {
     <>
       <DetailShell
         header={{
-          badge: (
-            <>
-              <Badge color={ticketStatusColor(ticket.status)}>{ticket.status}</Badge>
-              {ticket.type && <Badge color="gray">{ticket.type}</Badge>}
-              <OrishaLinks controllers={ticket.central_controllers} />
-            </>
-          ),
           actions: (
             <>
-              <SurveySection ticketId={id} contactId={ticket.contact_id} onSent={() => setSurveyKey(k => k + 1)} />
-              <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer">
-                <Trash2 size={16} />
-              </button>
+              <SurveySection ticketId={id} onSent={() => setSurveyKey(k => k + 1)} />
+              {canDelete && (
+                <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer">
+                  <Trash2 size={16} />
+                </button>
+              )}
             </>
           ),
         }}
@@ -250,79 +186,22 @@ export default function TicketDetail({ recordId, onClose }) {
         {/* Info card — la disposition des champs (ordre, champs retirés) est
             personnalisable : bouton « Personnaliser les champs » dans l'en-tête
             du panneau latéral, ou au survol de la carte sur la page pleine. */}
-        <DetailFieldGrid entityType="tickets" record={ticket}>
-            <DetailField id="title" label="Titre" span2 saving={fieldSaving.title}>
-              <InlineText value={ticket.title} saving={!!fieldSaving.title} onSave={v => saveField('title', v)} />
+        <DetailFieldGrid
+          entityType="tickets"
+          record={ticket}
+          onSaveCustom={saveField}
+          savingKeys={fieldSaving}
+          selectPills
+        >
+            {/* Entreprise / contact : pastille cliquable vers la fiche + picker
+                recherchable (règle « champs référence » du CLAUDE.md). Le lien
+                choisi repart vers Airtable — les deux colonnes sont déclarées
+                dans WRITEBACK_MODULES.billets. */}
+            <DetailField id="cf_entreprise" label="Entreprise" saving={fieldSaving.cf_entreprise}>
+              <TicketLink field={linkFields.company} value={ticket.cf_entreprise} saving={!!fieldSaving.cf_entreprise} onSave={saveField} />
             </DetailField>
-            <DetailField id="status" label="Statut" saving={fieldSaving.status}>
-              <SearchableSelect
-                value={ticket.status || ''}
-                options={(meta.statuses || []).map(s => ({ value: s, label: s }))}
-                emptyOption="—"
-                onChange={v => saveField('status', v)}
-                className="input text-sm w-full"
-                size="sm"
-                disabled={!!fieldSaving.status}
-                testId="ticket-field-status"
-              />
-            </DetailField>
-            <DetailField id="type" label="Type" saving={fieldSaving.type}>
-              <SearchableSelect
-                value={ticket.type || ''}
-                options={(meta.types || []).map(t => ({ value: t, label: t }))}
-                emptyOption="—"
-                onChange={v => saveField('type', v)}
-                className="input text-sm w-full"
-                size="sm"
-                disabled={!!fieldSaving.type}
-                testId="ticket-field-type"
-              />
-            </DetailField>
-            <DetailField id="company_id" label="Entreprise" saving={fieldSaving.company_id}>
-              <LinkedRecordField
-                name="company_id"
-                value={ticket.company_id}
-                options={companiesForPicker}
-                labelFn={c => c.name}
-                getHref={c => `/companies/${c.id}`}
-                saving={!!fieldSaving.company_id}
-                onChange={v => saveField('company_id', v)}
-              />
-            </DetailField>
-            <DetailField id="contact_id" label="Contact" saving={fieldSaving.contact_id}>
-              <LinkedRecordField
-                name="contact_id"
-                value={ticket.contact_id}
-                options={contactsForPicker}
-                labelFn={c => `${c.first_name} ${c.last_name}`}
-                getHref={c => `/contacts/${c.id}`}
-                saving={!!fieldSaving.contact_id}
-                onChange={v => saveField('contact_id', v)}
-              />
-            </DetailField>
-            <DetailField id="assigned_to" label="Assigne a" saving={fieldSaving.assigned_to}>
-              <LinkedRecordField
-                name="assigned_to"
-                value={ticket.assigned_to}
-                options={usersForPicker}
-                labelFn={u => u.name}
-                saving={!!fieldSaving.assigned_to}
-                onChange={v => saveField('assigned_to', v)}
-              />
-            </DetailField>
-            <DetailField id="duration_minutes" label="Duree" saving={fieldSaving.duration_minutes}>
-              <div className="flex items-center gap-2">
-                <input type="number" min="0" value={ticket.duration_minutes || 0}
-                  onChange={e => saveField('duration_minutes', parseInt(e.target.value) || 0)}
-                  className="input text-sm w-24" disabled={!!fieldSaving.duration_minutes} />
-                <span className="text-xs text-slate-400">{fmtDuration(ticket.duration_minutes)}</span>
-              </div>
-            </DetailField>
-            <DetailField id="description" label="Question" span2 saving={fieldSaving.description}>
-              <InlineTextarea value={ticket.description} saving={!!fieldSaving.description} onSave={v => saveField('description', v)} />
-            </DetailField>
-            <DetailField id="response" label="Réponse" span2 saving={fieldSaving.response}>
-              <InlineTextarea value={ticket.response} saving={!!fieldSaving.response} onSave={v => saveField('response', v)} />
+            <DetailField id="cf_contact" label="Contact" saving={fieldSaving.cf_contact}>
+              <TicketLink field={linkFields.contact} value={ticket.cf_contact} saving={!!fieldSaving.cf_contact} onSave={saveField} />
             </DetailField>
             <DetailField id="lien_issue_github" label="Lien GitHub" span2 saving={fieldSaving.lien_issue_github}>
               <InlineUrl value={ticket.lien_issue_github} saving={!!fieldSaving.lien_issue_github} onSave={v => saveField('lien_issue_github', v)} />
@@ -352,14 +231,8 @@ export default function TicketDetail({ recordId, onClose }) {
             </DetailField>
         </DetailFieldGrid>
 
-        {/* Météo au site — conditions à l'adresse du client autour de l'ouverture du billet */}
-        <div className="mb-6">
-          <WeatherPanel companyId={ticket.company_id} at={ticket.created_at} markerLabel="Ouverture du billet" />
-        </div>
-
         {/* Meta */}
         <div className="text-xs text-slate-400 flex gap-4">
-          <span>Cree: {fmtDateTime(ticket.created_at)}</span>
           {ticket.updated_at && <span>Modifie: {fmtDateTime(ticket.updated_at)}</span>}
         </div>
 
@@ -413,39 +286,15 @@ export default function TicketDetail({ recordId, onClose }) {
           )}
         </div>
 
-        {/* Interactions liées (toutes, même entreprise) */}
-        {ticket.company_id && (
-          <div className="mt-8">
-            <div className="flex items-baseline justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-700 uppercase tracking-wide">
-                Interactions liées
-              </h2>
-              <span className="text-xs text-slate-400">
-                Même entreprise
-              </span>
-            </div>
-            <InteractionTimeline
-              interactions={linkedInteractions}
-              loading={loadingInteractions}
-              total={interactionsTotal}
-              onLoadMore={interactionsOffset < interactionsTotal ? loadMoreInteractions : undefined}
-              loadingMore={loadingMoreInteractions}
-            />
-          </div>
-        )}
       </DetailShell>
 
       <Modal isOpen={showTaskModal} title="Nouvelle tâche" onClose={() => setShowTaskModal(false)}>
         <TaskForm
           companies={companies}
-          contacts={contactsForCompany(contacts, ticket?.company_id)}
+          contacts={contacts}
           users={users}
-          tickets={[{ id: ticket?.id, title: ticket?.title }]}
-          initial={{
-            company_id: ticket?.company_id || '',
-            contact_id: ticket?.contact_id || '',
-            ticket_id: ticket?.id || '',
-          }}
+          tickets={[{ id: ticket?.id }]}
+          initial={{ ticket_id: ticket?.id || '' }}
           defaultAssignedTo={user?.id || ''}
           onSave={handleCreateTask}
           onClose={() => setShowTaskModal(false)}
@@ -459,7 +308,7 @@ export default function TicketDetail({ recordId, onClose }) {
             companies={companies}
             contacts={contacts}
             users={users}
-            tickets={[{ id: ticket?.id, title: ticket?.title }]}
+            tickets={[{ id: ticket?.id }]}
             onSave={handleEditTask}
             onClose={() => setEditingTask(null)}
           />
@@ -474,6 +323,23 @@ export default function TicketDetail({ recordId, onClose }) {
         </Modal>
       )}
     </>
+  )
+}
+
+// Champ lien de la fiche billet (entreprise, contact). `field` est la ligne
+// custom_fields du champ : elle porte la table cible et l'identité des clés
+// écrites (record ids Airtable ici) — sans elle, aucun picker n'est possible,
+// d'où le tiret le temps que la liste des champs arrive.
+function TicketLink({ field, value, saving, onSave }) {
+  if (!field) return <span className="text-slate-400">—</span>
+  return (
+    <LinkedRecordsValue
+      field={field}
+      value={value}
+      detail
+      saving={saving}
+      onChange={field.writable === false ? null : v => onSave(field.column_name, v)}
+    />
   )
 }
 
@@ -505,12 +371,13 @@ const SEND_STATUS_LABEL = {
 
 // Bouton + modale + encart de résultat. Un seul composant : les trois vues
 // partagent le même état serveur, les séparer forcerait à le recharger deux fois.
-function SurveySection({ ticketId, contactId, onSent }) {
+function SurveySection({ ticketId, onSent }) {
   const { addToast } = useToast()
   const [state, setState] = useState(null)     // { eligibility, survey, survey_url }
   const [loading, setLoading] = useState(true)
   const [open, setOpen] = useState(false)
   const [phone, setPhone] = useState('')
+  const [language, setLanguage] = useState('French')
   const [sending, setSending] = useState(false)
   const [error, setError] = useState(null)
 
@@ -518,22 +385,19 @@ function SurveySection({ ticketId, contactId, onSent }) {
     try { setState(await api.tickets.survey(ticketId)) }
     catch { /* silencieux : le sondage n'est pas la raison d'être de la page */ }
     finally { setLoading(false) }
-    // L'éligibilité dépend du contact (numéro de téléphone) : la recharger
-    // quand le contact du billet change, sinon le bouton reste bloqué après
-    // l'ajout d'un contact tant que la page n'est pas rechargée.
-  }, [ticketId, contactId])
+  }, [ticketId])
 
   useEffect(() => { load() }, [load])
 
   const elig = state?.eligibility
   const survey = state?.survey
   const alreadySent = !!survey?.sent_at
-  // Un envoi précédemment échoué ne doit pas bloquer : c'est justement le cas
-  // où l'on veut corriger le numéro et réessayer.
-  const canSend = !!elig?.eligible || (!!elig && elig.reason === 'Aucun numéro de téléphone pour ce contact')
 
+  // Un billet ne porte plus ni contact ni langue (migration 040) : les deux se
+  // saisissent ici, pré-remplis par le sondage déjà parti le cas échéant.
   function openModal() {
     setPhone(survey?.phone || elig?.phone || '')
+    setLanguage(survey?.language || elig?.language || 'French')
     setError(null)
     setOpen(true)
   }
@@ -542,7 +406,7 @@ function SurveySection({ ticketId, contactId, onSent }) {
     setSending(true)
     setError(null)
     try {
-      const res = await api.tickets.sendSurvey(ticketId, phone || null)
+      const res = await api.tickets.sendSurvey(ticketId, { phone: phone || null, language })
       setState(s => ({ ...s, survey: res.survey, survey_url: res.survey_url }))
       setOpen(false)
       addToast({
@@ -565,11 +429,8 @@ function SurveySection({ ticketId, contactId, onSent }) {
     <>
       <button
         onClick={openModal}
-        disabled={!canSend}
-        title={canSend
-          ? (alreadySent ? 'Renvoyer le sondage de satisfaction par SMS' : 'Envoyer un sondage de satisfaction par SMS')
-          : elig?.reason || 'Envoi impossible'}
-        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded-lg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-slate-600 disabled:cursor-not-allowed"
+        title={alreadySent ? 'Renvoyer le sondage de satisfaction par SMS' : 'Envoyer un sondage de satisfaction par SMS'}
+        className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm text-slate-600 hover:text-brand-700 hover:bg-brand-50 rounded-lg"
         data-testid="ticket-survey-button"
       >
         <MessageSquare size={16} />
@@ -579,11 +440,6 @@ function SurveySection({ ticketId, contactId, onSent }) {
       {open && (
         <Modal isOpen title={alreadySent ? 'Renvoyer le sondage de satisfaction' : 'Sondage de satisfaction'} onClose={() => setOpen(false)}>
           <div className="space-y-4">
-            <p className="text-sm text-slate-600">
-              Un message texte sera envoyé à <strong>{elig?.contact_name || 'ce contact'}</strong> avec un lien
-              vers le sondage, en <strong>{elig?.language === 'English' ? 'anglais' : 'français'}</strong>.
-            </p>
-
             <div>
               <label className="label">Numéro de téléphone</label>
               <input
@@ -592,11 +448,18 @@ function SurveySection({ ticketId, contactId, onSent }) {
                 className="input w-full"
                 data-testid="ticket-survey-phone"
               />
-              <p className="text-xs text-slate-400 mt-1">
-                {elig?.phone_source === 'phone'
-                  ? "Aucun cellulaire au dossier — c'est le téléphone fixe qui est proposé."
-                  : 'Modifiable pour un envoi ponctuel : la fiche du contact n\'est pas touchée.'}
-              </p>
+            </div>
+
+            <div>
+              <label className="label">Langue</label>
+              <SearchableSelect
+                value={language}
+                options={[{ value: 'French', label: 'Français' }, { value: 'English', label: 'Anglais' }]}
+                onChange={setLanguage}
+                className="input text-sm w-full"
+                size="sm"
+                testId="ticket-survey-language"
+              />
             </div>
 
             {alreadySent && (
@@ -616,7 +479,7 @@ function SurveySection({ ticketId, contactId, onSent }) {
               {/* Action sortante irréversible (un SMS parti ne se rappelle pas) :
                   bouton explicite plutôt qu'autosave, conformément à l'exception
                   prévue par la règle « autosave partout ». */}
-              <button onClick={send} disabled={sending || !phone.trim()} className="btn-primary" data-testid="ticket-survey-send">
+              <button onClick={send} disabled={sending || !phone.trim() || !language} className="btn-primary" data-testid="ticket-survey-send">
                 {sending ? 'Envoi…' : alreadySent ? 'Renvoyer' : 'Envoyer'}
               </button>
             </div>
@@ -715,26 +578,3 @@ function TaskStatusIcon({ status }) {
   if (status === 'Annulé') return <X size={16} className="text-slate-400 flex-shrink-0" />
   return <Circle size={16} className="text-slate-400 flex-shrink-0" />
 }
-
-function OrishaLinks({ controllers }) {
-  if (!controllers?.length) return null
-  const single = controllers.length === 1
-  return (
-    <>
-      {controllers.map(cc => (
-        <a
-          key={cc.address}
-          href={`https://app.orisha.io/#admin/${encodeURIComponent(cc.address)}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          title={cc.serial ? `Contrôleur ${cc.serial} · adresse ${cc.address}` : `Adresse ${cc.address}`}
-          className="inline-flex items-center gap-1 text-sm text-brand-600 hover:underline"
-        >
-          <ExternalLink size={12} />
-          {single ? 'Ouvrir dans Orisha' : `Orisha ${cc.address}`}
-        </a>
-      ))}
-    </>
-  )
-}
-

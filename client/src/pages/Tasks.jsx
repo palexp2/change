@@ -59,16 +59,13 @@ const RENDERS = {
     )
   },
   company_name: (row) => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   contact_name: (row) => row.contact_id
-    ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.contact_name}</Link>
-    : <span className="text-slate-400">—</span>,
-  ticket_title: (row) => row.ticket_id
-    ? <Link to={`/tickets/${row.ticket_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.ticket_title}</Link>
+    ? <Link to={`/contacts/${row.contact_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.contact_name}</Link>
     : <span className="text-slate-400">—</span>,
   assigned_name: (row) => row.assigned_employee_id
-    ? <Link to={`/employees/${row.assigned_employee_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.assigned_name}</Link>
+    ? <Link to={`/employees/${row.assigned_employee_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.assigned_name}</Link>
     : (row.assigned_name || <span className="text-slate-400">—</span>),
   created_at: (row) => fmtDate(row.created_at),
 }
@@ -97,7 +94,7 @@ function taskFormFields({ companies, contacts, users, tickets, defaultAssignedTo
     { field: 'due_date', label: "Date d'échéance", type: 'date' },
     { field: 'company_id', label: 'Entreprise', input: linked('task_company_id', companies, c => c.name, c => `/companies/${c.id}`) },
     { field: 'contact_id', label: 'Contact', input: linked('task_contact_id', contacts, c => `${c.first_name || ''} ${c.last_name || ''}`.trim(), c => `/contacts/${c.id}`) },
-    { field: 'ticket_id', label: 'Billet', span: 2, input: linked('task_ticket_id', tickets, t => t.title || '(sans titre)', t => `/tickets/${t.id}`) },
+    { field: 'ticket_id', label: 'Billet', span: 2, input: linked('task_ticket_id', tickets, () => 'Billet', t => `/tickets/${t.id}`) },
     { field: 'assigned_to', label: 'Responsable', span: 2, defaultValue: defaultAssignedTo, input: linked('task_assigned_to', users, u => u.name) },
     {
       field: 'keywords', label: 'Mots-clés', span: 2, defaultValue: [],
@@ -123,7 +120,6 @@ export default function Tasks() {
     const ctById = new Map(contacts.map(c => [c.id, `${c.first_name || ''} ${c.last_name || ''}`.trim()]))
     const uById = new Map(users.map(u => [u.id, u.name]))
     const uEmpById = new Map(users.map(u => [u.id, u.employee_id]))
-    const tkById = new Map(tickets.map(t => [t.id, t.title]))
     const list = tasksRaw.filter(t => !t.deleted_at)
     return list.map(r => ({
       ...r,
@@ -131,9 +127,8 @@ export default function Tasks() {
       contact_name: ctById.get(r.contact_id) || r.contact_name,
       assigned_name: uById.get(r.assigned_to) || r.assigned_name,
       assigned_employee_id: uEmpById.get(r.assigned_to) || null,
-      ticket_title: tkById.get(r.ticket_id) || r.ticket_title,
     }))
-  }, [tasksRaw, companies, contacts, users, tickets])
+  }, [tasksRaw, companies, contacts, users])
 
   async function handleCreate(form) {
     await api.tasks.create(form)
@@ -175,7 +170,7 @@ export default function Tasks() {
         data={tasks}
         loading={loading}
         onRowClick={(row) => setEditing(row)}
-        searchFields={['title', 'company_name', 'contact_name', 'assigned_name', 'ticket_title']}
+        searchFields={['title', 'company_name', 'contact_name', 'assigned_name']}
         onBulkDelete={async (ids) => {
           await undoableDelete({
             table: 'tasks',

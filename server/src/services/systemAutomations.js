@@ -106,6 +106,14 @@ export const MANUAL_RUNNERS = {
     return { summary: out.summary, counts: out.counts, problems: out.problems.slice(0, 50) }
   },
 
+  // Confirmation des adresses de livraison / ferme auprès de Google.
+  // dry-run = liste les adresses qui seraient interrogées ; run-now = confirme
+  // celles dont le texte a changé depuis leur dernière confirmation.
+  sys_address_confirm: async ({ dryRun }) => {
+    const { runAddressConfirmSweep } = await import('./addressConfirm.js')
+    return runAddressConfirmSweep({ dryRun: !!dryRun })
+  },
+
   // Corbeille : dry-run = ce qui partirait, sans rien détruire ; run-now =
   // suppression définitive immédiate (même si l'automation est en pause).
   // `log: false` — la route run-now journalise déjà l'exécution.
@@ -115,14 +123,6 @@ export const MANUAL_RUNNERS = {
     // Pas de clé `details` : la route run-now la formate comme une liste
     // d'envois d'emails (`d.action.toUpperCase()`) et planterait dessus.
     return { summary: out.summary, retention_days: out.retention_days, tables: out.details, blocked: out.blocked_details }
-  },
-
-  // Vérificateur de prix des achats : dry-run = liste des prix suspects sans
-  // persister de verdict ni notifier ; run-now = passe complète.
-  sys_purchase_price_check: async ({ dryRun }) => {
-    const { runPurchasePriceCheck } = await import('./purchasePriceCheck.js')
-    const out = runPurchasePriceCheck({ trigger: 'manuel', apply: !dryRun, log: false })
-    return { summary: out.summary, counts: out.counts, problems: out.problems.slice(0, 50) }
   },
 
   sys_bank_trx_sheet: async ({ dryRun }) => {
@@ -867,6 +867,25 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_receipt_bank_match',
+    name: 'Rapprochement bancaire : apparier factures et sorties d’argent',
+    description:
+      "Rattache une facture de l'extracteur à la transaction bancaire qui porte son débit, DANS LES DEUX SENS. " +
+      "À l'arrivée de transactions par la connexion bancaire Plaid : chaque nouvelle sortie d'argent cherche le document déjà dans l'ERP (achat, reçu, payout Stripe). Ce passage manquait — le collage manuel et la sync TRX_Orisha appariaient depuis toujours, Plaid non : sur les comptes BNC, une facture déjà extraite restait « à traiter » jusqu'à un clic sur « Rapprocher ». " +
+      "À la fin d'une extraction : la facture qui vient d'être lue cherche à son tour le débit qui l'attendait au relevé — une facture arrivée par courriel ou déposée à la main APRÈS la sortie d'argent n'était jamais rattachée toute seule, l'import bancaire ne repassant pas sur une transaction déjà connue. " +
+      "AUCUNE écriture QuickBooks n'est publiée : la ligne passe de « à traiter » à « facture reçue », publier reste un geste humain. " +
+      "Rien n'est deviné : le libellé du relevé doit reconnaître le fournisseur (montant identique seul = refusé), la devise du compte doit être celle de la facture, deux candidats à égalité ⇒ rien n'est lié, et une transaction encore en attente à la banque est ignorée tant qu'elle n'est pas posée. " +
+      "Un lien posé à la main n'est jamais défait.",
+    trigger_config: {
+      kind: 'event',
+      source: 'services/plaidSync.js:importPlaidTransactions + services/saleReceiptExtraction.js:runExtractionAndUpdate',
+      summary: "À chaque lot de transactions Plaid posées, et à la fin de chaque extraction de facture",
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_plaid_qb_audit',
     name: 'Rapprochement bancaire : vérification QuickBooks des comptes Plaid',
     description:
@@ -1212,6 +1231,28 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_address_confirm',
+    name: "Confirmation des adresses de livraison et de ferme auprès de l'API d'adresses",
+    description:
+      "Toute adresse de LIVRAISON ou de FERME créée ou modifiée est confirmée auprès de Google (Places) : l'adresse existe-t-elle, et sous quelle écriture officielle ? C'est le complément du vérificateur de forme (sys_address_check), qui lui ne fait aucun appel réseau. Les adresses de facturation ne sont pas confirmées. " +
+      "À la création, le formulaire interroge l'API AVANT d'enregistrer : si Google propose une écriture différente, l'utilisateur choisit entre « Utiliser » (l'adresse normalisée remplace la saisie) et « Garder » (sa saisie est conservée telle quelle). Rien n'est jamais réécrit automatiquement. " +
+      "À la modification (autosave de la fiche ou de la modale, sync Airtable, formulaire client), la confirmation part en tâche de fond et le verdict s'affiche sur la fiche adresse, avec la proposition de Google et le bouton pour l'appliquer. " +
+      "Anti-rappel : une empreinte du texte confirmé est mémorisée, donc une adresse dont la rue, la ville, la province, le code postal, le pays et le type n'ont pas bougé ne repart pas chez Google — un sync complet ne déclenche aucun appel. Les appels sont sérialisés et espacés (le serveur est mono-thread). " +
+      "Verdicts : confirmée / à corriger (Google propose autre chose) / introuvable / incomplète (rue et ville requises) / vérification indisponible (clé ou API en erreur — jamais bloquant, l'enregistrement passe quand même). " +
+      "types règle les types d'adresse concernés (par défaut « Livraison,Ferme »). " +
+      "« Simuler » liste les adresses qui seraient interrogées ; « Exécuter » confirme celles dont le texte a changé depuis la dernière confirmation.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'routes/projets.js POST/PUT /adresses + change_log(adresses) → services/addressCheck.js (watcher) → scheduleAddressConfirm()',
+      summary: "Déclenché à chaque création / modification d'une adresse de livraison ou de ferme",
+    },
+    action_config: {
+      types: 'Livraison,Ferme',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_address_check',
     name: 'Vérification des adresses postales + notification des adresses fautives',
     description:
@@ -1232,31 +1273,6 @@ export const SYSTEM_AUTOMATIONS = [
     action_config: {
       require_postal_code: '1',
       fallback_roles: 'admin',
-      notify: '1',
-    },
-    configurable: true,
-    default_active: 1,
-  },
-  {
-    id: 'sys_purchase_price_check',
-    name: "Vérification des prix d'achats (inventaire) + alerte sur prix aberrant",
-    description:
-      "Chaque achat de pièce (table Achats, miroir de l'interface Inventaire → Achats d'Airtable) est contrôlé à l'écriture, quelle que soit l'origine (sync Airtable en tête) : un watcher lit le journal des mutations de la table. " +
-      "Contexte : dans Airtable, le prix unitaire d'un achat est CALCULÉ — total facturé des « Dépense Line item » liés ÷ quantité. Quand le match automatique Airtable lie par erreur la ligne d'une autre pièce, le prix devient absurde (cas réel du 2026-09-01 : Raspberry Pi 4 à 1 $ au lieu de 81,85 $) et fausse la valeur d'inventaire. " +
-      "Sont détectés : prix unitaire hors des bornes ratio_min/ratio_max par rapport à la référence de la pièce (médiane des autres achats, sinon coût de référence du produit) avec un écart d'au moins min_abs_diff $ ; et achat dont une dépense est liée mais dont le prix reste à 0 $. Un achat à 0 $ SANS dépense liée n'est PAS signalé : c'est l'état normal d'une commande pas encore facturée. " +
-      "Quand un prix devient suspect, une notification in-app part vers les destinataires listés dans fallback_roles — des rôles (admin, sales…) et/ou des emails de comptes précis, séparés par des virgules — avec le lien vers l'achat et la marche à suivre (corriger le lien « Dépense Line item » dans Airtable — le prix lui-même est un champ calculé, non modifiable). " +
-      "Anti-spam : un achat déjà signalé ne re-notifie pas tant que la nature du problème n'a pas changé, et une passe complète (« Exécuter » ici) ne notifie jamais — elle rafraîchit l'état. " +
-      "notify à 0 vérifie et affiche sans jamais notifier. Le bouton « Simuler » liste ce qui serait signalé sans rien écrire.",
-    trigger_config: {
-      kind: 'db_change',
-      source: 'change_log(purchases) → services/purchasePriceCheck.js (watcher, poll 5 s)',
-      summary: "Déclenché à chaque écriture DB d'un achat (sync Airtable, édition ERP, import DigiKey)",
-    },
-    action_config: {
-      ratio_min: '0.25',
-      ratio_max: '4',
-      min_abs_diff: '20',
-      fallback_roles: 'antoine.lambert96@gmail.com',
       notify: '1',
     },
     configurable: true,
@@ -1409,23 +1425,6 @@ export const SYSTEM_AUTOMATIONS = [
     },
   },
   {
-    id: 'sys_return_exchange_reminder',
-    name: 'Rappel retours avec échange immédiat (import Airtable #4)',
-    description:
-      "Relance quotidiennement (tant que le retour n'est pas facturé) les clients ayant un échange de garantie immédiat en " +
-      "cours dont au moins un item n'a pas encore été reçu — email bilingue avec le détail des items dus et un avertissement " +
-      "rouge « facturation à venir » passé 21 jours depuis la demande. Fidèle à l'original Airtable : ce n'est PAS un envoi " +
-      "one-shot, le rappel repart chaque jour tant que la condition tient. " +
-      "⚠️ Désactivé par défaut au premier déploiement — activer manuellement depuis cette page après vérification (impact client direct).",
-    trigger_config: {
-      kind: 'schedule',
-      source: 'index.js:scheduleReturnExchangeReminder',
-      cron: 'every 24h at 09:00',
-      summary: 'Scheduler interne — une fois par jour à 9h (local)',
-    },
-    default_active: 0,
-  },
-  {
     id: 'sys_trash_auto_cleanup',
     name: 'Corbeille : suppression définitive après 30 jours',
     description:
@@ -1488,7 +1487,17 @@ function mergeMissingKeys(storedJson, defaults) {
 // qu'elles disparaissent de la page Automations (le seed ne les recrée plus).
 // - sys_ctb_abonnements : miroir de l'onglet Abonnements du sheet CTB - Suivi,
 //   abandonné — la page Abonnements fournisseurs de l'ERP est la référence.
-const RETIRED_SYSTEM_AUTOMATION_IDS = ['sys_ctb_abonnements', 'sys_req_import', 'sys_weekly_review_slack']
+// `sys_purchase_price_check` retirée le 2026-09-06 : elle comparait
+// `purchases.unit_cost` aux autres achats du même `product_id`, deux colonnes
+// droppées sur demande (migration 035). Sans prix ni pièce, il n'y a plus rien
+// à vérifier.
+const RETIRED_SYSTEM_AUTOMATION_IDS = [
+  'sys_ctb_abonnements', 'sys_req_import', 'sys_weekly_review_slack', 'sys_purchase_price_check',
+  // Rappel « échange immédiat » : son éligibilité reposait entièrement sur
+  // `returns.billed_at` et sur le contact du retour, deux colonnes détruites
+  // par la migration 037. L'automatisation n'a jamais été activée.
+  'sys_return_exchange_reminder',
+]
 
 export function seedSystemAutomations() {
   // ON CONFLICT doesn't touch `active`, so user toggles persist across seeds.
@@ -1579,10 +1588,11 @@ export const SYSTEM_FIELD_RULES = [
     action_type: 'slack',
     action_config: {
       webhookEnv: 'SLACK_WEBHOOK_HARDWARE',
+      // Titre, entreprise, type et statut ont été droppés (migration 040) : le
+      // gabarit ne cite plus que ce que le billet porte encore.
       text:
-        '🔧 *Escalade Hardware* — {{title}}\n' +
-        'Entreprise : {{company_name}}\n' +
-        'Type : {{type}} | Statut : {{status}}\n' +
+        '🔧 *Escalade Hardware*\n' +
+        'Responsable : {{responsable}}\n' +
         '<{{app_url}}/erp/tickets/{{id}}|Voir le billet>',
     },
   },

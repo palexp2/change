@@ -10,8 +10,9 @@ import { mkdir, writeFile } from 'fs/promises'
 import db from '../db/database.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
-import { dynamicFieldDirection, writebackModuleForTable } from './airtableWriteback.js'
-import { syncSelectChoicesFromAirtable } from './airtableSelectChoices.js'
+import { dynamicFieldDirection, writebackModuleForTable, resetComputedKeyCache } from './airtableWriteback.js'
+import { rememberAirtableFieldTypes } from './airtableFieldTypes.js'
+import { syncSelectChoicesFromAirtable, syncChoicesForColumn } from './airtableSelectChoices.js'
 import { sameStored } from './airtableDiff.js'
 import { resolveRefValue } from './airtableNativeMappedColumns.js'
 import { emitMirrorWrite } from './realtimeEmitters.js'
@@ -515,7 +516,15 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
     return
   }
 
-  // 1 bis. Les CHOIX des Sélections Airtable entrent dans les champs ERP
+  // 1 bis. Le TYPE de chaque champ est mémorisé (formule, rollup, lookup…) :
+  // c'est lui qui dit si Airtable acceptera une écriture, et donc si le sens
+  // « Bidirectionnel » est proposable dans /champs/:table. Sans cette passe, la
+  // réponse dépendrait d'un appel réseau que les chemins concernés (sélecteur
+  // de sens, write-back) ne peuvent pas faire — cf. services/airtableFieldTypes.js.
+  rememberAirtableFieldTypes(airtableBaseId, airtableTableId, tableFields)
+  resetComputedKeyCache()
+
+  // 1 ter. Les CHOIX des Sélections Airtable entrent dans les champs ERP
   // correspondants (ajout seulement, cf. airtableSelectChoices.js) : sans ça,
   // une option ajoutée dans Airtable arrivait dans la donnée mais restait
   // inconnue du champ — ni pastille, ni entrée dans le sélecteur. Passe menée
@@ -664,9 +673,50 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
       return count
     })(records)
     if (populated > 0) console.log(`🔄 ${module}: ${populated} records enrichis avec champs dynamiques`)
+
+    // Colonne rendue en « Choix unique » alimentée par un champ Airtable qui
+    // n'est PAS une Sélection — typiquement une FORMULE (« Statut » calculé) :
+    // Airtable n'expose aucune liste de choix, donc syncSelectChoicesFromAirtable
+    // (qui lit les métadonnées) n'a rien à en tirer. Les choix s'apprennent alors
+    // des VALEURS importées, sans quoi la colonne affichait des pastilles grises
+    // absentes de son propre filtre et de son sélecteur.
+    // Ajout seulement, comme le reste du module.
+    try { learnSelectChoicesFromValues(erpTable, writable, records) }
+    catch (e) { console.error(`⚠️  Choix appris → ${erpTable} : ${e.message}`) }
   }
 
   if (updatedFields > 0) console.log(`🔄 ${module}: ${updatedFields} types de champs mis à jour`)
+}
+
+// Au-delà, ce n'est plus une liste de statuts mais du texte libre : on renonce
+// plutôt que de fabriquer un sélecteur de 200 entrées dans le dos de l'utilisateur.
+const LEARNED_CHOICES_CAP = 50
+
+// Choix d'une colonne « Choix unique » déduits des valeurs importées. Ne
+// concerne que les colonnes dont le champ Airtable source ne porte pas de liste
+// (fieldType 'text' ici = formule/rollup/lookup à résultat texte, texte simple) :
+// une vraie Sélection Airtable passe par ses métadonnées.
+function learnSelectChoicesFromValues(erpTable, writable, records) {
+  const textCols = writable.filter(f => f.fieldType === 'text').map(f => f.columnName)
+  if (!textCols.length || !records?.length) return
+  const selectCols = new Set(db.prepare(`
+    SELECT column_name FROM custom_fields
+    WHERE erp_table=? AND type='single_select' AND deleted_at IS NULL
+  `).all(erpTable).map(r => r.column_name))
+  for (const f of writable) {
+    if (f.fieldType !== 'text' || !selectCols.has(f.columnName)) continue
+    const seen = new Set()
+    for (const rec of records) {
+      const v = rec.fields[f.airtableFieldName]
+      if (typeof v !== 'string' && typeof v !== 'number') continue
+      const label = String(v).trim()
+      if (label) seen.add(label)
+      if (seen.size > LEARNED_CHOICES_CAP) break
+    }
+    if (!seen.size || seen.size > LEARNED_CHOICES_CAP) continue
+    const n = syncChoicesForColumn(erpTable, f.columnName, [...seen].sort((a, b) => a.localeCompare(b, 'fr')))
+    if (n) console.log(`🎨 ${erpTable}.${f.columnName} : ${n} choix appris des valeurs importées`)
+  }
 }
 
 // Même seuil que le moteur de miroir : au-delà, ce n'est plus « un champ a été

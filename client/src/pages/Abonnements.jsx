@@ -87,7 +87,7 @@ function RachatCell({ row, onChange }) {
 
 const RENDERS = {
   company_name: row => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.company_name}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.company_name}</Link>
     : <span className="text-slate-400">—</span>,
   status:     row => row.status
     ? <Badge color={STATUS_COLORS[row.status] || 'gray'}>{row.status}</Badge>

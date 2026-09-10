@@ -3,8 +3,9 @@ import { newRecordId } from '../utils/recordId.js'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
+import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
 import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
+import { normalizePercentDisplay } from '../services/percent.js'
 import { runRuleActionForRecord } from '../services/fieldRuleEngine.js'
 import { findLabelConflict, labelConflictError } from '../utils/fieldLabels.js'
 import { isColumnWritable } from '../services/customFieldWritability.js'
@@ -12,8 +13,13 @@ import { invalidateColumnsCache } from '../db/changeLog.js'
 import { erpTableForAirtableTableId } from '../services/airtableTableMap.js'
 import { writebackModuleForTable, PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
 import { purgedNativeFields, clearFieldTombstone } from '../services/fieldPurge.js'
-import { planTypeConversion, applyTypeConversion, convertSingleValue } from '../services/fieldTypeConvert.js'
+import { planTypeConversion, applyTypeConversion, convertSingleValue, sqlAffinityFor } from '../services/fieldTypeConvert.js'
+import { normalizeRating } from '../services/rating.js'
 import { LINKABLE_TABLES } from '../services/recordLinks.js'
+import { normalizeLinkFilter, parseLinkFilter } from '../services/linkFilter.js'
+import { getBaseTablesCached } from '../connectors/airtable.js'
+import { rememberAirtableFieldTypes } from '../services/airtableFieldTypes.js'
+import { syncChoicesForColumn } from '../services/airtableSelectChoices.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -50,6 +56,14 @@ const ALLOWED_TABLES = new Set([
   'payments',
   // Mouvements de numéros de série — champs créés depuis /airtable/fields/serial_changes.
   'serial_state_changes',
+  // Problèmes d'opérations : la route CRUD accepte les colonnes cf_ écrivables
+  // (accesseur `allowed` du registre), donc un champ ajouté ici se saisit.
+  'ops_issues',
+  // Mouvements d'inventaire — miroir Airtable. Les champs y servent à recevoir
+  // un champ Airtable de plus (le mapping exige une colonne ERP existante) :
+  // sans cette entrée, /champs/stock_movements montrait la colonne « Champ
+  // Airtable » sans pouvoir créer la colonne à alimenter.
+  'stock_movements',
 ])
 
 function slugify(s) {
@@ -95,7 +109,9 @@ function ensureUniqueVirtualColumnName(erpTable, base) {
 
 // Couleurs autorisées pour les choix d'un single_select (alignées sur la
 // palette de Badge.jsx côté client). Toute couleur hors liste retombe sur 'gray'.
-const SELECT_COLORS = new Set(['gray', 'slate', 'blue', 'indigo', 'green', 'yellow', 'orange', 'red', 'purple', 'pink', 'teal'])
+// 'none' = champ réglé « sans couleur » : ses valeurs s'affichent en texte nu,
+// sans pastille (bouton Sans couleur / Couleur de la modale de champ).
+const SELECT_COLORS = new Set(['none', 'gray', 'slate', 'blue', 'indigo', 'green', 'yellow', 'orange', 'red', 'purple', 'pink', 'teal'])
 
 // Normalise/valide la config d'un single_select OU multi_select.
 //   raw          : { choices:[{id?,label,color?}], default_id, default_ids, alphabetize }
@@ -226,14 +242,24 @@ function normalizeDurationOptions(raw) {
   return { json: JSON.stringify({ format }) }
 }
 
+// Normalise/valide la config d'un champ 'percent'. La config tient dans la
+// colonne `options` (JSON) : { display: 'percent' | 'bar' } — la valeur s'affiche
+// en « 45 % » ou en barre de progression remplie à 45 %. La donnée est la même
+// dans les deux cas (le nombre de pourcents). Retourne { json }.
+function normalizePercentOptions(raw) {
+  return { json: JSON.stringify({ display: normalizePercentDisplay(raw?.display) }) }
+}
+
 // Normalise/valide la config d'un champ 'currency'. La config tient dans la
-// colonne `options` (JSON) : { currency: code ISO 4217 à 3 lettres }. Défaut
-// CAD (rétro-compatible : les champs devise existants n'ont pas d'options).
+// colonne `options` (JSON) : { currency: symbole texte libre, ex. "$", "€" }.
+// Défaut "$" (rétro-compatible : les champs devise existants sans options, ou
+// avec un ancien code ISO, gardent leur valeur telle quelle).
 // Retourne { json } ou lève une Error (message clair pour la route).
 function normalizeCurrencyOptions(raw) {
-  const code = String(raw?.currency ?? 'CAD').trim().toUpperCase()
-  if (!/^[A-Z]{3}$/.test(code)) throw new Error('Devise doit être un code ISO 4217 à 3 lettres (ex: CAD, USD, EUR)')
-  return { json: JSON.stringify({ currency: code }) }
+  const symbol = String(raw?.currency ?? '$').trim()
+  if (!symbol) throw new Error('Symbole de devise requis')
+  if (symbol.length > 8) throw new Error('Symbole de devise trop long (8 caractères max)')
+  return { json: JSON.stringify({ currency: symbol }) }
 }
 
 // Normalise/valide la config d'un champ 'phone'. La config tient dans la colonne
@@ -244,6 +270,45 @@ function normalizeCurrencyOptions(raw) {
 function normalizePhoneOptions(raw) {
   const cc = raw?.country_code === 'show' ? 'show' : 'hide'
   return { json: JSON.stringify({ country_code: cc }) }
+}
+
+// Type « Lien » d'un champ de DONNÉE : la colonne porte l'identifiant d'un
+// enregistrement d'une autre table et s'affiche en pastille cliquable vers sa
+// fiche (même rendu que les champs lien importés d'Airtable). La cible se range
+// dans `options.link_display_target` — la colonne `link_target_table` désigne,
+// elle, une VRAIE relation ERP (kind='link', avec champ inverse).
+// Seules les tables qui ont une fiche à ouvrir sont acceptées.
+function normalizeLinkDisplayTarget(raw) {
+  if (raw == null || raw === '') return null
+  const t = String(raw).trim()
+  if (!LINKABLE_TABLES.includes(t)) throw fieldError(400, `Table cible « ${t} » : aucune fiche à ouvrir`)
+  return t
+}
+
+// Table dont un champ lien porte les identifiants — celle sur les colonnes de
+// laquelle son FILTRE peut porter. Quatre origines, dans l'ordre où le GET les
+// publie : une vraie liaison ERP, le type « Lien » posé à la main, un champ lien
+// importé d'Airtable (cible sur le mapping, sinon la table miroir de
+// `linked_table_id`), et enfin une colonne qui EST une clé étrangère.
+// `body` : la requête en cours peut poser la cible dans le même PUT.
+function linkFilterTargetOf(field, body = null) {
+  if (field.kind === 'link' && field.link_target_table) return field.link_target_table
+  if (body && body.link_display_target) {
+    try { return normalizeLinkDisplayTarget(body.link_display_target) } catch { return null }
+  }
+  let opts = null
+  try { opts = JSON.parse(field.options || 'null') } catch { opts = null }
+  if (opts?.link_display_target) return opts.link_display_target
+  if (opts?.airtable_link_hint) {
+    const m = db.prepare(
+      `SELECT options FROM airtable_field_mappings WHERE erp_table=? AND column_name=?`
+    ).get(field.erp_table, field.column_name)
+    let mopts = null
+    try { mopts = JSON.parse(m?.options || 'null') } catch { mopts = null }
+    return mopts?.link_target_table || erpTableForAirtableTableId(mopts?.linked_table_id) || null
+  }
+  if (field.kind === 'data') return recordLinkTargetOf(field.erp_table, field.column_name)?.table || null
+  return null
 }
 
 // Formats de date proposés à l'affichage — miroir de DATE_DISPLAY_FORMATS
@@ -262,7 +327,7 @@ function normalizeDateOptions(raw) {
 
 // Normalise/valide une valeur par défaut pour un champ kind='data'.
 //   raw  : valeur brute du body (string/number/null/undefined)
-//   type : 'text' | 'number' | 'currency' | 'url' | 'duration' | 'checkbox'
+//   type : 'text' | 'number' | 'currency' | 'url' | 'duration' | 'checkbox' | 'rating'
 // Retourne la valeur à stocker (string), ou null si vide/absente.
 // Lève une Error (message clair) si number/currency reçoit un non-nombre, ou si
 // une durée n'est pas parseable. La durée est stockée en SECONDES (entier).
@@ -273,9 +338,17 @@ function normalizeDefaultValue(raw, type) {
     return truthy ? '1' : null
   }
   if (raw === undefined || raw === null || String(raw).trim() === '') return null
-  if (type === 'number' || type === 'currency') {
-    const n = Number(raw)
+  if (type === 'number' || type === 'currency' || type === 'percent') {
+    // Pourcentage : la colonne porte le nombre de pourcents (45 = 45 %), on
+    // tolère donc le « % » de la saisie.
+    const n = Number(String(raw).replace('%', '').trim())
     if (!Number.isFinite(n)) throw new Error('Valeur par défaut doit être un nombre')
+    return String(n)
+  }
+  if (type === 'rating') {
+    // Note : entier 0..5. Hors échelle → borné (une note « 9 » vaut 5).
+    const n = normalizeRating(raw)
+    if (n == null) throw new Error('Valeur par défaut doit être une note de 0 à 5')
     return String(n)
   }
   if (type === 'duration') {
@@ -378,13 +451,21 @@ router.get('/:erpTable', (req, res) => {
       // renseigner réécrirait les valeurs stockées).
       if (!target) target = erpTableForAirtableTableId(mopts?.linked_table_id)
     }
+    // Type « Lien » choisi à la main dans la fiche du champ : la table visée est
+    // celle qu'on a désignée, et la colonne porte des ids Boréal (c'est ce que
+    // le picker de lien écrit).
+    else if (cfOpts?.link_display_target) {
+      recordLink = true
+      target = cfOpts.link_display_target
+      identity = 'erp'
+    }
     else if (row.kind === 'lookup' && row.lookup_target_table && row.lookup_target_column) {
       const hit = recordLinkTargetOf(row.lookup_target_table, row.lookup_target_column)
       if (hit) { recordLink = true; target = hit.table }
     }
-    // Champ `data` dont la COLONNE est une clé étrangère (ex. « Contact » des
-    // retours, ex-natif contact_id adopté par la migration 027) : la valeur est
-    // un id ERP, donc navigable. Sans ça un champ adossé à une FK s'affiche en
+    // Champ `data` dont la COLONNE est une clé étrangère (ex. une colonne
+    // `*_id` adoptée depuis Airtable) : la valeur est un id ERP, donc
+    // navigable. Sans ça un champ adossé à une FK s'affiche en
     // identifiant brut, alors que la règle « champs référence » du CLAUDE.md
     // veut un lien cliquable vers la fiche visée.
     else if (row.kind === 'data') {
@@ -406,6 +487,15 @@ router.get('/:erpTable', (req, res) => {
       record_link: recordLink,
       record_link_target: target,
       record_link_identity: identity,
+      // Un seul lien possible dans cette colonne (`link_single`) : le picker de
+      // la fiche remplace au lieu d'ajouter. Vrai pour un champ lien Airtable
+      // doublé d'une FK ERP mono — « Adresse de livraison » d'une commande, que
+      // `orders.address_id` porte aussi.
+      record_link_single: row.link_single === 1,
+      // Filtre du champ lien : les candidats proposés au moment de lier sont
+      // restreints à ce sous-ensemble (cf. services/linkFilter.js). Publié même
+      // vide — c'est ce que la modale de champ édite.
+      record_link_filter: recordLink ? parseLinkFilter(cfOpts?.link_filter) : [],
       writable: isColumnWritable(erpTable, { ...row, mapping_id, import_disabled }, wbModule),
     }
   })
@@ -431,7 +521,7 @@ const NATIVE_TABLE_RE = /^[a-z0-9_]{1,64}$/
 const NATIVE_FIELD_RE = /^[a-zA-Z0-9_]{1,80}$/
 // Types d'affichage supportés par applyFieldOverrides côté client. 'boolean'
 // reste accepté en entrée (ancien vocabulaire) mais est stocké 'checkbox'.
-const NATIVE_TYPES = new Set(['text', 'number', 'currency', 'date', 'checkbox', 'url', 'phone'])
+const NATIVE_TYPES = new Set(['text', 'number', 'currency', 'percent', 'rating', 'date', 'checkbox', 'url', 'phone'])
 // …plus la famille « lien vers une autre table » : `link:<table ERP>`. La cible
 // est portée par le type lui-même — un champ natif n'a pas d'autre endroit où
 // la ranger, et ça garde le réglage réversible d'un simple changement de type.
@@ -482,16 +572,35 @@ function normalizeNativeSelectOptions(raw) {
   return { choices }
 }
 
-// Fusionne la config de choix avec ce qui est déjà enregistré : `options` porte
-// parfois d'autres drapeaux sur un champ natif (ex. airtable_link_hint), qu'un
-// enregistrement des choix n'a aucune raison d'effacer.
-function mergeNativeOptions(existingJson, nextChoicesObj) {
+// Config d'AFFICHAGE d'un champ natif rangée dans `options` : les choix d'une
+// Sélection (ci-dessus) et le mode d'affichage d'un pourcentage
+// ({ display: 'percent' | 'bar' }). Retourne l'objet à enregistrer, ou null
+// (« pas de config »).
+function normalizeNativeOptions(raw) {
+  if (raw == null || raw === '') return null
+  let obj = raw
+  if (typeof obj === 'string') {
+    try { obj = JSON.parse(obj) } catch { throw new Error('Options invalides (JSON attendu)') }
+  }
+  if (!obj || typeof obj !== 'object') throw new Error('Options invalides')
+  const out = {}
+  const sel = normalizeNativeSelectOptions(obj)
+  if (sel) Object.assign(out, sel)
+  if (obj.display !== undefined) out.display = normalizePercentDisplay(obj.display)
+  return Object.keys(out).length ? out : null
+}
+
+// Fusionne la config d'affichage avec ce qui est déjà enregistré : `options`
+// porte parfois d'autres drapeaux sur un champ natif (ex. airtable_link_hint),
+// qu'un enregistrement des choix n'a aucune raison d'effacer.
+function mergeNativeOptions(existingJson, nextObj) {
   let base = null
   if (existingJson) { try { base = JSON.parse(existingJson) } catch { base = null } }
   const rest = (base && typeof base === 'object') ? { ...base } : {}
   delete rest.choices
-  if (!nextChoicesObj) return Object.keys(rest).length ? JSON.stringify(rest) : null
-  return JSON.stringify({ ...rest, ...nextChoicesObj })
+  delete rest.display
+  if (!nextObj) return Object.keys(rest).length ? JSON.stringify(rest) : null
+  return JSON.stringify({ ...rest, ...nextObj })
 }
 
 // Description libre d'un champ (infobulle « ? » de l'en-tête de colonne).
@@ -589,7 +698,7 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
   const hasOptions = has('options')
   let cleanOptions = null
   if (hasOptions) {
-    try { cleanOptions = normalizeNativeSelectOptions(req.body.options) }
+    try { cleanOptions = normalizeNativeOptions(req.body.options) }
     catch (e) { return res.status(400).json({ error: e.message }) }
   }
 
@@ -754,6 +863,62 @@ router.delete('/:erpTable/native/:fieldId', (req, res) => {
   res.json({ data: { field_id: p.fieldId, reset: true } })
 })
 
+// ── Choix d'une Sélection relus dans Airtable, à la demande ─────────────────
+//
+// Les choix d'une Sélection Airtable entrent dans le champ ERP au SYNC COMPLET
+// (services/airtableSelectChoices.js). Un sync déclenché par webhook — le cas
+// courant — n'apporte que les valeurs des enregistrements modifiés : une option
+// ajoutée dans Airtable arrivait donc dans la donnée sans jamais entrer dans la
+// liste du champ, et la modale de configuration ne la montrait pas.
+//
+// Cette route relit les métadonnées Airtable de la table (cache 60 s partagé
+// avec les sélecteurs de champ) et complète la liste. STRICTEMENT ADDITIF, comme
+// la passe de sync : rien n'est renommé, recoloré, réordonné ni retiré.
+//
+// POST /api/custom-fields/:erpTable/choices/:column/from-airtable
+router.post('/:erpTable/choices/:column/from-airtable', async (req, res) => {
+  const { erpTable, column } = req.params
+  if (!NATIVE_TABLE_RE.test(erpTable)) return res.status(400).json({ error: 'Table invalide' })
+  if (!NATIVE_FIELD_RE.test(column)) return res.status(400).json({ error: 'Colonne invalide' })
+
+  // Table Airtable miroitée par cette table ERP, via le registre des miroirs.
+  const mirror = db.prepare(
+    `SELECT base_id, table_id FROM airtable_mirrors
+     WHERE erp_table=? AND base_id IS NOT NULL AND table_id IS NOT NULL LIMIT 1`
+  ).get(erpTable)
+  if (!mirror) return res.json({ added: 0, source: null })
+
+  // Champ Airtable qui alimente la colonne (id d'abord — un renommage côté
+  // Airtable ne doit pas faire perdre la piste).
+  const def = db.prepare(
+    `SELECT airtable_field_id, airtable_field_name FROM airtable_field_mappings
+     WHERE erp_table=? AND column_name=? LIMIT 1`
+  ).get(erpTable, column)
+  if (!def) return res.json({ added: 0, source: null })
+
+  let tableMeta
+  try {
+    const data = await getBaseTablesCached(mirror.base_id)
+    tableMeta = (data.tables || []).find(t => t.id === mirror.table_id)
+  } catch (e) {
+    return res.status(502).json({ error: 'Métadonnées Airtable indisponibles : ' + e.message })
+  }
+  if (!tableMeta) return res.json({ added: 0, source: null })
+  rememberAirtableFieldTypes(mirror.base_id, mirror.table_id, tableMeta.fields || [])
+
+  const atField = (tableMeta.fields || []).find(f =>
+    f.id === def.airtable_field_id || f.name === def.airtable_field_name)
+  if (!atField || (atField.type !== 'singleSelect' && atField.type !== 'multipleSelects')) {
+    return res.json({ added: 0, source: null })
+  }
+  const names = (atField.options?.choices || []).map(c => c?.name).filter(Boolean)
+  const added = syncChoicesForColumn(erpTable, column, names)
+  const row = db.prepare(
+    `SELECT options FROM custom_fields WHERE erp_table=? AND column_name=? AND deleted_at IS NULL`
+  ).get(erpTable, column)
+  res.json({ added, source: atField.name, options: row?.options || null })
+})
+
 // Champs auto-remplis (parité Airtable), déclarés AVANT FIELD_KINDS qui les
 // parcourt à l'évaluation du module :
 //   - created_time       : date de création (colonne created_at)
@@ -787,8 +952,19 @@ const fieldError = (status, message) => new FieldError(status, message)
 // 'url' est un type d'AFFICHAGE : la valeur reste du texte (colonne/vue
 // inchangées), elle est simplement rendue en lien cliquable côté client quand
 // c'est une URL valide.
-const RESULT_TYPES = ['text', 'number', 'date', 'url']
-const RESULT_TYPE_ERROR = "result_type doit être 'text', 'number', 'date' ou 'url'"
+// 'percent' l'est aussi : la valeur reste un nombre (celui que calcule la
+// formule / le rollup), elle se rend en « 45 % » ou en barre de progression.
+const RESULT_TYPES = ['text', 'number', 'date', 'url', 'percent', 'rating']
+const RESULT_TYPE_ERROR = "result_type doit être 'text', 'number', 'date', 'url', 'percent' ou 'rating'"
+// Type de VALEUR d'un champ calculé selon son format d'affichage : un
+// pourcentage est un nombre (tri, filtre et agrégats numériques), il ne se
+// distingue que par son rendu.
+function typeForResultType(rt) {
+  // Une note en étoiles est un nombre elle aussi (une moyenne de rollup s'y rend
+  // en étoile partielle) : seul son rendu diffère.
+  return rt === 'number' || rt === 'percent' || rt === 'rating' ? 'number' : 'text'
+}
+
 function requireResultType(value, { fallback = null } = {}) {
   const rt = value || fallback
   if (!RESULT_TYPES.includes(rt)) {
@@ -812,26 +988,43 @@ const FIELD_KINDS = {
       if (type === 'single_select' || type === 'multi_select') options = normalizeSelectOptions(body?.options).json
       else if (type === 'duration') options = normalizeDurationOptions(body?.options).json
       else if (type === 'currency') options = normalizeCurrencyOptions(body?.options).json
+      else if (type === 'percent') options = normalizePercentOptions(body?.options).json
       else if (type === 'phone') options = normalizePhoneOptions(body?.options).json
       else if (type === 'date') options = normalizeDateOptions(body?.options).json
+      // Champ créé directement en « Lien » : la colonne est du texte (elle porte
+      // un identifiant), la table visée vit dans les options.
+      const linkTarget = normalizeLinkDisplayTarget(body?.link_display_target)
+      if (linkTarget) {
+        if (type !== 'text') return { error: 'Un champ « Lien » est de type texte (il porte un identifiant)' }
+        // Filtre facultatif : les candidats proposés au moment de lier ne sont
+        // qu'un sous-ensemble des fiches de la table visée.
+        const linkFilter = normalizeLinkFilter(body?.link_filter, linkTarget)
+        options = JSON.stringify({
+          link_display_target: linkTarget,
+          ...(linkFilter.length ? { link_filter: linkFilter } : {}),
+        })
+      }
 
       let decimals = null
-      if (type === 'number' || type === 'currency') {
+      if (type === 'number' || type === 'currency' || type === 'percent') {
         const raw = body?.decimals
-        decimals = (raw === undefined || raw === null || raw === '') && type === 'currency' ? 2 : parseInt(raw)
+        const blank = raw === undefined || raw === null || raw === ''
+        // Défauts par type quand rien n'est demandé : 2 pour une devise, 0 pour
+        // un pourcentage (« 45 % », pas « 45,00 % »).
+        decimals = blank && type === 'currency' ? 2 : (blank && type === 'percent' ? 0 : parseInt(raw))
         if (!Number.isInteger(decimals) || decimals < 0 || decimals > 5) {
           return { error: 'Décimales doit être entre 0 et 5' }
         }
       }
       let defaultValue = null
-      if (['text', 'number', 'currency', 'url', 'phone', 'duration', 'checkbox'].includes(type)) {
+      if (['text', 'number', 'currency', 'percent', 'url', 'phone', 'duration', 'checkbox', 'rating'].includes(type)) {
         defaultValue = normalizeDefaultValue(body?.default_value, type)
       }
-      // SQLite n'est pas typé strictement : number/currency/duration → REAL
-      // (duration en secondes), checkbox → INTEGER (0/1), le reste → TEXT.
-      const sqlType = (type === 'number' || type === 'currency' || type === 'duration')
-        ? 'REAL'
-        : (type === 'checkbox' ? 'INTEGER' : 'TEXT')
+      // Affinité SQLite du type : number/currency/percent/duration → REAL,
+      // checkbox (0/1) et rating (0..5) → INTEGER, le reste → TEXT. La règle est
+      // celle de fieldTypeConvert, qui décide aussi si un changement de type
+      // exige de reconstruire la colonne.
+      const sqlType = sqlAffinityFor(type)
       return { type, sqlType, columns: { decimals, options, default_value: defaultValue } }
     },
   },
@@ -846,7 +1039,7 @@ const FIELD_KINDS = {
       // plutôt que de créer un champ qui afficherait #ERROR.
       validateFormulaReferences(expr, erpTable)
       return {
-        type: resultType === 'number' ? 'number' : 'text',
+        type: typeForResultType(resultType),
         columns: { formula_expr: expr, result_type: resultType },
       }
     },
@@ -860,9 +1053,11 @@ const FIELD_KINDS = {
         lookup_target_table: body?.lookup_target_table,
         lookup_target_column: body?.lookup_target_column,
       }
-      const resultType = requireResultType(body?.result_type)
       validateLookup(lookup, erpTable)
-      return { type: resultType === 'number' ? 'number' : 'text', columns: { ...lookup, result_type: resultType } }
+      // Le format n'est pas demandé : un lookup recopie une valeur, donc il
+      // s'affiche comme le champ récupéré (`result_type` du corps est ignoré).
+      const resultType = inferLookupResultType(lookup.lookup_target_table, lookup.lookup_target_column)
+      return { type: typeForResultType(resultType), columns: { ...lookup, result_type: resultType } }
     },
   },
 
@@ -880,7 +1075,7 @@ const FIELD_KINDS = {
       const resultType = requireResultType(body?.result_type, { fallback: 'number' })
       validateRollup(rollup, erpTable)
       return {
-        type: resultType === 'number' ? 'number' : 'text',
+        type: typeForResultType(resultType),
         columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType },
       }
     },
@@ -1148,9 +1343,7 @@ router.post('/:erpTable/duplicate', (req, res) => {
     regenerateView(erpTable)
   } else {
     const columnName = ensureUniqueColumnName(erpTable, slugify(name))
-    const sqlType = (type === 'number' || type === 'currency' || type === 'duration')
-      ? 'REAL'
-      : (type === 'checkbox' ? 'INTEGER' : 'TEXT')
+    const sqlType = sqlAffinityFor(type)
     const tx = db.transaction(() => {
       db.exec(`ALTER TABLE ${erpTable} ADD COLUMN ${columnName} ${sqlType}`)
       if (withValues) db.exec(`UPDATE ${erpTable} SET ${columnName} = ${fieldId}`)
@@ -1319,7 +1512,14 @@ router.get('/link/:fieldId/options', (req, res) => {
 // 'attachment' : fichiers déposés (PDF, images…). La colonne TEXT porte un
 // tableau JSON de descripteurs ; les octets vivent sous uploads/attachments/
 // fields/ et s'écrivent par la route dédiée (routes/custom-field-files.js).
-const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'attachment'])
+// 'percent' : REAL portant le nombre de pourcents (45 = 45 %), affiché en
+// « 45 % » ou en barre de progression selon `options.display`.
+// 'rating' : note en étoiles, INTEGER de 0 à 5 (échelle fixe, cf. services/rating.js).
+const DATA_TYPES = new Set(['text', 'long_text', 'number', 'currency', 'percent', 'url', 'phone', 'duration', 'date', 'single_select', 'multi_select', 'checkbox', 'rating', 'attachment'])
+
+// Types qui acceptent un nombre de décimales (une durée a son propre format,
+// une note est un entier).
+const DECIMAL_TYPES = new Set(['number', 'currency', 'percent'])
 
 // Options propres à chaque type de donnée. Les options n'appartiennent jamais au
 // champ mais à son TYPE : des choix de sélection sous un champ devenu « Nombre »
@@ -1328,6 +1528,7 @@ function optionsJsonFor(type, raw) {
   if (type === 'single_select' || type === 'multi_select') return normalizeSelectOptions(raw).json
   if (type === 'duration') return normalizeDurationOptions(raw).json
   if (type === 'currency') return normalizeCurrencyOptions(raw).json
+  if (type === 'percent') return normalizePercentOptions(raw).json
   if (type === 'phone') return normalizePhoneOptions(raw).json
   if (type === 'date') return normalizeDateOptions(raw).json
   return null
@@ -1457,7 +1658,9 @@ router.put('/:id', (req, res) => {
     // dédié plus bas qui les écrit (une seule assignation par colonne).
     if (!('decimals' in (req.body || {}))) {
       updates.push('decimals=?')
-      values.push(toType === 'number' || toType === 'currency' ? (existing.decimals ?? 2) : null)
+      // Pourcentage : 0 décimale par défaut (« 45 % »), comme à la création.
+      const fallbackDecimals = toType === 'percent' ? 0 : 2
+      values.push(DECIMAL_TYPES.has(toType) ? (existing.decimals ?? fallbackDecimals) : null)
     }
     // La valeur par défaut suit le même chemin que les données : « Oui » sur une
     // case devient 1, un défaut intraduisible disparaît.
@@ -1475,7 +1678,7 @@ router.put('/:id', (req, res) => {
   if (!wantedKind && 'decimals' in (req.body || {})) {
     // Prend en compte un changement de type dans la même requête (ex: number → currency).
     const effectiveType = ('type' in (req.body || {})) ? req.body.type : existing.type
-    if (effectiveType !== 'number' && effectiveType !== 'currency') return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre ou devise' })
+    if (!DECIMAL_TYPES.has(effectiveType)) return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre, devise ou pourcentage' })
     const d = parseInt(req.body.decimals)
     if (!Number.isInteger(d) || d < 0 || d > 5) return res.status(400).json({ error: 'Décimales doit être entre 0 et 5' })
     updates.push('decimals=?'); values.push(d)
@@ -1493,6 +1696,9 @@ router.put('/:id', (req, res) => {
     updates.push('formula_expr=?'); values.push(expr)
     viewDirty = true
   }
+  // Format déjà posé par le bloc lookup ci-dessous (déduit du champ récupéré) :
+  // le bloc `result_type` ne doit pas écrire une seconde fois la colonne.
+  let lookupResultType = null
   if (!wantedKind && ('lookup_target_column' in (req.body || {}) || 'lookup_target_table' in (req.body || {}) || 'lookup_fk' in (req.body || {}))) {
     if (existing.kind !== 'lookup') return res.status(400).json({ error: 'Champs lookup uniquement' })
     const merged = {
@@ -1503,6 +1709,10 @@ router.put('/:id', (req, res) => {
     try { validateLookup(merged, existing.erp_table) } catch (e) { return res.status(400).json({ error: e.message }) }
     updates.push('lookup_fk=?', 'lookup_target_table=?', 'lookup_target_column=?')
     values.push(merged.lookup_fk, merged.lookup_target_table, merged.lookup_target_column)
+    // Le format suit la colonne récupérée (il ne se choisit pas, cf. build).
+    lookupResultType = inferLookupResultType(merged.lookup_target_table, merged.lookup_target_column)
+    updates.push('result_type=?', 'type=?')
+    values.push(lookupResultType, typeForResultType(lookupResultType))
     viewDirty = true
   }
   if (!wantedKind && ('rollup_target_table' in (req.body || {}) || 'rollup_target_fk' in (req.body || {}) ||
@@ -1525,10 +1735,18 @@ router.put('/:id', (req, res) => {
     viewDirty = true
   }
   // result_type pilote l'affichage / le type de colonne (texte, nombre, date, URL).
-  // Éditable sur les champs calculés ; notamment un rollup ARRAY/ARRAYUNIQUE
+  // Éditable sur une formule et un rollup ; notamment un rollup ARRAY/ARRAYUNIQUE
   // bascule en 'text' (liste de valeurs), un rollup numérique reste en 'number'.
-  if (!wantedKind && 'result_type' in (req.body || {})) {
-    if (!['formula', 'lookup', 'rollup'].includes(existing.kind)) {
+  // Un LOOKUP, lui, hérite du format du champ récupéré (rien à choisir).
+  if (!wantedKind && 'result_type' in (req.body || {}) && existing.kind === 'lookup') {
+    // Lookup : le format ne se choisit pas — il vient du champ récupéré. Un
+    // corps qui en propose un est donc réaligné sur la colonne cible.
+    if (lookupResultType == null) {
+      const rt = inferLookupResultType(existing.lookup_target_table, existing.lookup_target_column)
+      updates.push('result_type=?', 'type=?'); values.push(rt, typeForResultType(rt))
+    }
+  } else if (!wantedKind && 'result_type' in (req.body || {})) {
+    if (!['formula', 'rollup'].includes(existing.kind)) {
       return res.status(400).json({ error: 'result_type applicable seulement aux champs formule, lookup ou rollup' })
     }
     const rt = req.body.result_type
@@ -1551,7 +1769,7 @@ router.put('/:id', (req, res) => {
     // Duration : la seule option éditable est le format d'affichage.
     updates.push('options=?'); values.push(normalizeDurationOptions(req.body.options).json)
   } else if ('options' in (req.body || {}) && existing.type === 'currency') {
-    // Devise : la seule option éditable est le code de devise (ISO 4217).
+    // Devise : la seule option éditable est le symbole de devise (texte libre).
     let norm
     try { norm = normalizeCurrencyOptions(req.body.options) }
     catch (e) { return res.status(400).json({ error: e.message }) }
@@ -1562,6 +1780,10 @@ router.put('/:id', (req, res) => {
     try { norm = normalizeButtonOptions(req.body.options) }
     catch (e) { return res.status(400).json({ error: e.message }) }
     updates.push('options=?'); values.push(norm.json)
+  } else if ('options' in (req.body || {}) && (existing.type === 'percent' || existing.result_type === 'percent')) {
+    // Pourcentage (champ de donnée, ou calculé en result_type='percent') : la
+    // seule option éditable est le mode d'affichage (nombre ou barre).
+    updates.push('options=?'); values.push(normalizePercentOptions(req.body.options).json)
   } else if ('options' in (req.body || {}) && existing.type === 'phone') {
     // Téléphone : la seule option éditable est l'affichage de l'indicatif de pays.
     updates.push('options=?'); values.push(normalizePhoneOptions(req.body.options).json)
@@ -1570,7 +1792,7 @@ router.put('/:id', (req, res) => {
     // éditable est le format d'affichage (ISO/local, avec ou sans heure).
     updates.push('options=?'); values.push(normalizeDateOptions(req.body.options).json)
   } else if ('options' in (req.body || {})) {
-    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Téléphone, Date ou Bouton' })
+    if (existing.type !== 'single_select' && existing.type !== 'multi_select') return res.status(400).json({ error: 'options applicable seulement aux champs Sélection, Durée, Devise, Pourcentage, Téléphone, Date ou Bouton' })
     let prevIds = new Set()
     let prevById = new Map()
     try {
@@ -1597,6 +1819,48 @@ router.put('/:id', (req, res) => {
     try { dv = normalizeDefaultValue(req.body.default_value, existing.type) }
     catch (e) { return res.status(400).json({ error: e.message }) }
     updates.push('default_value=?'); values.push(dv)
+  }
+
+  // Type « Lien » : la table dont ce champ porte les identifiants. Elle se pose
+  // et se retire seule (`null`), sans toucher au reste des options — d'où la
+  // FUSION dans le JSON déjà mis à jour par cette requête (un changement de type
+  // dans le même PUT a pu le réécrire), à défaut celui en base.
+  if ('link_display_target' in (req.body || {})) {
+    if (existing.kind !== 'data' && !wantedKind) {
+      return res.status(400).json({ error: 'Type « Lien » applicable seulement à un champ de donnée' })
+    }
+    let target
+    try { target = normalizeLinkDisplayTarget(req.body.link_display_target) }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }) }
+    // Chaque entrée de `updates` porte exactement un `?` : les deux tableaux
+    // restent alignés (updated_at, sans placeholder, est ajouté après).
+    const i = updates.lastIndexOf('options=?')
+    let obj = {}
+    try { obj = JSON.parse((i >= 0 ? values[i] : existing.options) || '{}') || {} } catch { obj = {} }
+    if (target) obj.link_display_target = target
+    else delete obj.link_display_target
+    const json = Object.keys(obj).length ? JSON.stringify(obj) : null
+    if (i >= 0) values[i] = json
+    else { updates.push('options=?'); values.push(json) }
+  }
+
+  // Filtre du champ lien : le sous-ensemble de fiches proposé au moment de lier
+  // (cf. services/linkFilter.js). Même fusion dans les options que la table
+  // visée ci-dessus — une liste vide retire le filtre.
+  if ('link_filter' in (req.body || {})) {
+    const target = linkFilterTargetOf(existing, req.body)
+    if (!target) return res.status(400).json({ error: 'Filtre applicable seulement à un champ lien (table cible connue)' })
+    let filter
+    try { filter = normalizeLinkFilter(req.body.link_filter, target) }
+    catch (e) { return res.status(400).json({ error: e.message }) }
+    const i = updates.lastIndexOf('options=?')
+    let obj = {}
+    try { obj = JSON.parse((i >= 0 ? values[i] : existing.options) || '{}') || {} } catch { obj = {} }
+    if (filter.length) obj.link_filter = filter
+    else delete obj.link_filter
+    const json = Object.keys(obj).length ? JSON.stringify(obj) : null
+    if (i >= 0) values[i] = json
+    else { updates.push('options=?'); values.push(json) }
   }
 
   if (updates.length === 0) return res.json(existing)

@@ -87,7 +87,7 @@ export function RachatPicker({ event }) {
           to={`/orders/${local.rachat_order_id}`}
           onClick={e => e.stopPropagation()}
           data-testid={`rachat-order-link-${event.id}`}
-          className="text-xs text-brand-600 hover:underline tabular-nums"
+          className="text-xs link-record tabular-nums"
         >
           #{local.rachat_order_number}
         </Link>

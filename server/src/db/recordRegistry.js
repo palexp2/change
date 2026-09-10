@@ -10,8 +10,17 @@
 import db from './database.js'
 import { requireHROrAdmin, requireAdmin } from '../middleware/auth.js'
 import { toBool, toBoolDefaultTrue, trimOrNull } from '../utils/partialUpdate.js'
+import { readRelation } from '../services/customFieldsView.js'
+import { getWritableCustomColumns } from '../services/customFieldWritability.js'
 
-const toNumberOrNull = v => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v))
+// Colonnes natives d'un problème d'opérations. `resolved_at` est de la liste :
+// la table ne l'expose pas à la saisie, mais le hook de statut l'écrit.
+const OPS_ISSUE_COLUMNS = [
+  'occurred_at', 'title', 'area', 'severity', 'status',
+  'description', 'resolution', 'reported_by', 'resolved_at',
+]
+
+export const OPS_ISSUE_STATUSES = ['Ouvert', 'En cours', 'Résolu']
 
 export const RECORD_REGISTRY = {
   activity_codes: {
@@ -113,6 +122,46 @@ export const RECORD_REGISTRY = {
     }),
   },
 
+  // Journal des problèmes d'opérations (migration 047). Table ouverte aux
+  // champs personnalisés, donc `allowed` et `view` sont des accesseurs évalués
+  // à chaque requête : la liste des colonnes écrivables change dès qu'un champ
+  // est créé dans /champs/ops_issues, et la relation de lecture devient
+  // `ops_issues_v` dès qu'un champ calculé existe.
+  ops_issues: {
+    table: 'ops_issues',
+    idColumn: 'id',
+    entity: 'ops_issue',
+    softDelete: true,
+    touchUpdatedAt: true,
+    get view() { return readRelation('ops_issues') },
+    get allowed() {
+      return [...OPS_ISSUE_COLUMNS, ...getWritableCustomColumns('ops_issues').map(c => c.column_name)]
+    },
+    get insertable() { return this.allowed },
+    nonNullable: new Set(['title']),
+    coerce: { title: trimOrNull },
+    required: { title: 'Décris le problème' },
+    defaults: { status: 'Ouvert' },
+    filters: ['status', 'area', 'severity', 'reported_by'],
+    search: ['title', 'description', 'resolution'],
+    orderBy: `COALESCE(occurred_at, created_at) DESC, created_at DESC`,
+    messages: {
+      notFound: 'Problème introuvable',
+      empty: () => 'Le problème doit garder une description courte',
+    },
+    beforeCreate(body, req) {
+      if (!body.reported_by && req?.user?.id) body.reported_by = req.user.id
+      if (!body.occurred_at) body.occurred_at = new Date().toISOString().slice(0, 10)
+    },
+    // « Résolu » date la résolution ; en sortir l'efface. Sans ça, il faudrait
+    // saisir deux fois la même information — et un problème réouvert garderait
+    // une date de résolution qui n'a plus lieu d'être.
+    beforeUpdate(id, body) {
+      if (body.status === undefined) return
+      body.resolved_at = body.status === 'Résolu' ? new Date().toISOString() : null
+    },
+  },
+
   projects: {
     table: 'projects',
     idColumn: 'id',
@@ -124,19 +173,6 @@ export const RECORD_REGISTRY = {
     coerce: {},
     messages: { notFound: 'Project not found' },
     deleteResponse: { message: 'Deleted' },
-  },
-
-  hour_bank_entries: {
-    table: 'hour_bank_entries',
-    idColumn: 'id',
-    entity: 'hour_bank_entry',
-    softDelete: true,
-    touchUpdatedAt: true,
-    writeAuth: requireHROrAdmin,
-    allowed: ['hours', 'date', 'notes'],
-    nonNullable: new Set(['hours']),
-    coerce: { hours: toNumberOrNull },
-    messages: { empty: () => 'hours invalide' },
   },
 }
 

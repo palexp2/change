@@ -1,5 +1,5 @@
 import db from '../db/database.js'
-import { getAccessToken } from '../connectors/airtable.js'
+import { getAccessToken, airtablePost } from '../connectors/airtable.js'
 import { fetchAllRecords } from './airtable.js'
 import { resolveProjectVendeurRef } from './airtableNativeMappedColumns.js'
 
@@ -154,17 +154,35 @@ function toRow(rec) {
 }
 
 /**
- * @param {string|null} commissionsCell — contenu de `projects.commissions`
- *   (JSON d'un tableau de record IDs Airtable, tel qu'importé).
+ * Record IDs portés par `projects.commissions`. Deux formes coexistent : le
+ * JSON d'un tableau (écriture récente) et la chaîne « rec1, rec2 » produite par
+ * l'import Airtable — c'est celle des 694 projets de la base. Ne lire que le
+ * JSON revenait à n'afficher AUCUNE commission.
+ * @param {string|null} commissionsCell
+ * @returns {string[]}
+ */
+export function parseCommissionIds(commissionsCell) {
+  const raw = String(commissionsCell || '').trim()
+  if (!raw) return []
+  let values = []
+  if (raw.startsWith('[')) {
+    try { const p = JSON.parse(raw); values = Array.isArray(p) ? p : [] } catch { values = [] }
+  } else {
+    values = raw.split(',')
+  }
+  const ids = values
+    .map(v => (typeof v === 'string' ? v.trim() : ''))
+    .filter(v => v.startsWith('rec'))
+  return [...new Set(ids)]
+}
+
+/**
+ * @param {string|null} commissionsCell — contenu de `projects.commissions`.
  * @returns {Promise<Array>} lignes prêtes à afficher, triées par date de
  *   fermeture décroissante.
  */
 export async function fetchProjectCommissions(commissionsCell) {
-  let ids = []
-  try {
-    const parsed = JSON.parse(commissionsCell || '[]')
-    ids = (Array.isArray(parsed) ? parsed : []).filter(v => typeof v === 'string' && v.startsWith('rec'))
-  } catch { ids = [] }
+  const ids = parseCommissionIds(commissionsCell)
   if (!ids.length) return []
 
   const key = [...ids].sort().join(',')
@@ -185,4 +203,76 @@ export async function fetchProjectCommissions(commissionsCell) {
   if (cache.size > 500) cache.clear() // borne mémoire : le TTL est court, on repart à zéro
   cache.set(key, { at: Date.now(), data })
   return data
+}
+
+// ── Écriture : ajouter une commission ──────────────────────────────────────
+//
+// Seuls deux champs de la table Airtable sont saisissables : le bénéficiaire
+// (lien) et le taux. Tout le reste (montant, factures payées, date de
+// fermeture…) est calculé par Airtable à partir du projet lié.
+const COMMISSION_PROJECT_FIELD = 'Projet'
+const COMMISSION_BENEFICIARY_FIELD = 'Bénéficiaire'
+const COMMISSION_RATE_FIELD = 'Commission'
+// Champ « Actif » de la table des bénéficiaires : sert à trier le picker, pas
+// à filtrer — d'anciens bénéficiaires inactifs restent commissionnables.
+const PARTNER_ACTIVE_FIELD = 'Actif'
+
+let beneficiariesCache = null // { at, data }
+const BENEFICIARIES_TTL_MS = 5 * 60_000
+
+/**
+ * Bénéficiaires proposables pour une commission = enregistrements de la table
+ * Airtable « Employés et partenaires » (hors miroir, donc lus en direct).
+ * @returns {Promise<Array<{id: string, label: string, active: boolean}>>}
+ */
+export async function listCommissionBeneficiaries() {
+  if (beneficiariesCache && Date.now() - beneficiariesCache.at < BENEFICIARIES_TTL_MS) {
+    return beneficiariesCache.data
+  }
+  const { baseId } = linkedTableOf('commissions')
+  const { tableId } = linkedTableOf('vendeur')
+  const token = await getAccessToken()
+  const records = await fetchAllRecords(
+    baseId || FALLBACK_BASE_ID, tableId || FALLBACK_PARTNERS_TABLE_ID, token, null)
+
+  const data = records.map(rec => {
+    const f = rec.fields || {}
+    const label = PARTNER_NAME_FIELDS.map(k => firstStr(f[k])).find(Boolean) || null
+    partnerNames.set(rec.id, label) // le picker réchauffe le cache des noms
+    return { id: rec.id, label, active: !!f[PARTNER_ACTIVE_FIELD] }
+  })
+    .filter(b => b.label)
+    .sort((a, b) => (Number(b.active) - Number(a.active))
+      || a.label.localeCompare(b.label, 'fr', { sensitivity: 'base' }))
+
+  beneficiariesCache = { at: Date.now(), data }
+  return data
+}
+
+/**
+ * Crée une commission dans Airtable et renvoie son record ID. Le taux est une
+ * fraction (0,025 = 2,5 %), comme le champ « Commission » d'Airtable.
+ * @param {{ projectAirtableId: string, beneficiaryId: string, rate: number }} params
+ * @returns {Promise<string>} record ID de la commission créée
+ */
+export async function createProjectCommission({ projectAirtableId, beneficiaryId, rate }) {
+  const src = linkedTableOf('commissions')
+  const baseId = src.baseId || FALLBACK_BASE_ID
+  const tableId = src.tableId || FALLBACK_TABLE_ID
+  const token = await getAccessToken()
+  const created = await airtablePost(`/${baseId}/${tableId}`, token, {
+    records: [{
+      fields: {
+        [COMMISSION_PROJECT_FIELD]: [projectAirtableId],
+        [COMMISSION_BENEFICIARY_FIELD]: [beneficiaryId],
+        [COMMISSION_RATE_FIELD]: rate,
+      },
+    }],
+  })
+  const id = created?.records?.[0]?.id
+  if (!id) throw new Error('Airtable n’a pas renvoyé la commission créée')
+  // Les lignes affichées viennent du cache : sans purge, la nouvelle commission
+  // resterait invisible jusqu'à une minute.
+  cache.clear()
+  return id
 }

@@ -119,7 +119,6 @@ const MOUNTS = {
   'dashboard.js':               '/api/dashboard',
   'documents.js':               '/api/documents',
   'employees.js':               '/api/employees',
-  'hour-bank.js':               '/api/hour-bank',
   'installation-feedback.js':   '/api/public/installation-feedback',
   'interactions.js':            '/api/interactions',
   'journal-entries.js':         '/api/journal-entries',

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { Link } from 'react-router-dom'
 import { fmtDate } from '../lib/formatDate.js'
 import { ChevronRight, CheckCircle, Download, RefreshCw, Stethoscope, Mail, FileText, Sparkles, Truck } from 'lucide-react'
 import api from '../lib/api.js'
@@ -7,6 +8,7 @@ import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, addressOptionLabel } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import Spinner from './Spinner.jsx'
+import AttachmentPreview from './AttachmentPreview.jsx'
 
 const REASON_LABELS = {
   preferred: 'transporteur préféré',
@@ -59,6 +61,7 @@ export default function RetourActionsSection({ retour, onDone }) {
   const withToken = (url) => url ? `${url}?token=${localStorage.getItem('erp_token')}` : url
   const [memoStatus, setMemoStatus] = useState(retour.memo_pdf_path ? 'done' : 'idle')
   const [memoUrl, setMemoUrl] = useState(retour.memo_pdf_path ? withToken(`/erp/api/retours/memos/${retour.memo_pdf_path.split('/').pop()}`) : null)
+  const [memoMissing, setMemoMissing] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
 
   const loadContext = useCallback(() => {
@@ -223,7 +226,7 @@ export default function RetourActionsSection({ retour, onDone }) {
     setMemoStatus('loading')
     try {
       const res = await api.retours.generateMemo(retour.id)
-      setMemoUrl(withToken(res.memo_url)); setMemoStatus('done'); onDone?.()
+      setMemoMissing(false); setMemoUrl(withToken(res.memo_url)); setMemoStatus('done'); onDone?.()
     } catch (e) { setMemoStatus('error'); setError(e.message) }
   }
 
@@ -270,7 +273,9 @@ export default function RetourActionsSection({ retour, onDone }) {
               </>
             ) : (
               <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                Aucune adresse sur la fiche entreprise de ce retour.
+                {context?.company
+                  ? <>Aucune adresse sur la fiche <Link to={`/companies/${context.company.id}`} className="underline font-medium">{context.company.name}</Link>.</>
+                  : 'Aucune entreprise sur ce retour.'}
               </p>
             )}
             <button onClick={() => setStep('package')} disabled={!addressId} className="btn-primary text-sm flex items-center gap-1.5">
@@ -398,10 +403,20 @@ export default function RetourActionsSection({ retour, onDone }) {
         <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
           <FileText size={14} className="text-brand-500" /> Aide-mémoire
         </h3>
-        {memoUrl ? (
-          <a href={memoUrl} target="_blank" rel="noopener noreferrer" className="btn-secondary inline-flex items-center gap-2 text-sm">
-            <Download size={14} /> Voir l'aide-mémoire
-          </a>
+        {/* Vignette du PDF (champ « pièce jointe » partagé) plutôt qu'un lien :
+            l'aide-mémoire se voit sans quitter la fiche, un clic l'ouvre en
+            grand. Si le fichier a disparu du serveur, on retombe sur le bouton
+            de génération. */}
+        {memoUrl && !memoMissing ? (
+          <AttachmentPreview
+            url={memoUrl}
+            fileName={memoUrl.split('?')[0].split('/').pop()}
+            downloadName={`aide-memoire-${retour.id}.pdf`}
+            title="Aide-mémoire de retour"
+            kind="pdf"
+            testId="retour-memo-attachment"
+            onUnavailable={reason => { if (reason === 'missing') setMemoMissing(true) }}
+          />
         ) : (
           <button onClick={handleGenerateMemo} disabled={memoStatus === 'loading'} className="btn-secondary text-sm">
             {memoStatus === 'loading' ? 'Génération…' : 'Générer l\'aide-mémoire'}

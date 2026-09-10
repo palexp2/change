@@ -7,8 +7,7 @@ import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { fmtDate } from '../lib/formatDate.js'
-import { PenLine, PackageOpen, Truck, ShoppingBag, Wrench, ExternalLink, Clock, AlertTriangle, Plus, ChevronDown } from 'lucide-react'
-import { useToast } from '../contexts/ToastContext.jsx'
+import { PenLine, PackageOpen, Truck, ShoppingBag, Wrench, ExternalLink, Clock, ChevronDown } from 'lucide-react'
 import Spinner from '../components/Spinner.jsx'
 
 // ── URLs externes (lanceurs Airtable) ───────────────────────────────────────
@@ -19,8 +18,11 @@ const AIRTABLE_ACHATS_URL =
 const AIRTABLE_RETOUR_CLIENT_URL =
   'https://airtable.com/appB4Fehk9jYd4s4B/pagMJlhZxK69fulf5?MeTpM=sfsUhPqlbLR4ZFobG'
 
-// Achats internes considérés « ouverts » → la pièce est déjà traitée (étape 4).
-const OPEN_PURCHASE_STATUSES = new Set(['Commandé', 'Reçu partiellement'])
+// L'étape « Commande de pièces » ne sait plus quelles pièces ont déjà un achat en
+// cours : le lien achat → pièce et la date de réception ont été droppés sur
+// demande (migration 035). Elle liste donc les pièces sous leur seuil de stock,
+// sans exclure celles déjà commandées, et le report (snooze) reste le seul moyen
+// d'en écarter une.
 
 // Étape 3 — on réutilise telle quelle la vue « À envoyer » de la page Commandes
 // (un pill du DataTable orders) pour que les deux listes soient toujours identiques.
@@ -213,8 +215,8 @@ function EnvoiRow({ o }) {
   )
 }
 
-// Ligne de l'étape 4 — Commande de pièces (actions Commander / Reporter).
-function AchatRow({ p, snoozed, busy, snoozeOpen, onOpenOrder, onToggleSnooze, onSnooze, onCancelSnooze }) {
+// Ligne de l'étape 4 — Commande de pièces (action Reporter).
+function AchatRow({ p, snoozed, busy, snoozeOpen, onToggleSnooze, onSnooze, onCancelSnooze }) {
   return (
     <div data-testid="achat-row" className="flex items-center gap-4 py-4 border-b border-slate-100 last:border-0">
       {p.image_url
@@ -273,13 +275,6 @@ function AchatRow({ p, snoozed, busy, snoozeOpen, onOpenOrder, onToggleSnooze, o
       ) : (
         <div className="shrink-0 flex items-center gap-2">
           <button
-            data-testid="achat-commander"
-            onClick={() => onOpenOrder(p)}
-            className="inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold"
-          >
-            <Plus size={18} /> Commander
-          </button>
-          <button
             data-testid="achat-reporter"
             onClick={() => onToggleSnooze(p.id)}
             title="Reporter"
@@ -294,9 +289,7 @@ function AchatRow({ p, snoozed, busy, snoozeOpen, onOpenOrder, onToggleSnooze, o
 }
 
 export default function PrioriteAssemblage() {
-  const { addToast } = useToast()
   const [products, setProducts] = useState([])
-  const [openPurchaseIds, setOpenPurchaseIds] = useState(() => new Set())
   const [loading, setLoading] = useState(true)
 
   // Étape 3 — commandes « à envoyer ». Branché sur le MÊME cache que la page
@@ -312,10 +305,6 @@ export default function PrioriteAssemblage() {
   const [showReportes, setShowReportes] = useState(false)
   const [snoozeOpenId, setSnoozeOpenId] = useState(null)
   const [busyId, setBusyId] = useState(null)
-  const [orderProduct, setOrderProduct] = useState(null)
-  const [orderQty, setOrderQty] = useState('')
-  const [orderNote, setOrderNote] = useState('')
-  const [submitting, setSubmitting] = useState(false)
 
   // Aide / instructions (étape 1)
   const [helpStep1, setHelpStep1] = useState(false)
@@ -324,17 +313,8 @@ export default function PrioriteAssemblage() {
   const reload = useCallback(async () => {
     setLoading(true)
     try {
-      const [prodRes, purRes] = await Promise.all([
-        api.products.list({ limit: 'all' }),
-        api.purchases.list({ limit: 'all' }),
-      ])
+      const prodRes = await api.products.list({ limit: 'all' })
       setProducts(prodRes?.data || [])
-      const open = new Set(
-        (purRes?.data || [])
-          .filter(pu => OPEN_PURCHASE_STATUSES.has(pu.status))
-          .map(pu => pu.product_id),
-      )
-      setOpenPurchaseIds(open)
     } catch {
       setProducts([])
     } finally {
@@ -392,15 +372,14 @@ export default function PrioriteAssemblage() {
     .sort((a, b) => (a.assembly_status ?? Infinity) - (b.assembly_status ?? Infinity)),
   [products])
 
-  // Étape 4 — pièces Acheté bas-de-stock, sans achat ouvert. Séparées en
-  // « actives » (à traiter) et « reportées » (snooze dans le futur).
+  // Étape 4 — pièces Acheté bas-de-stock. Séparées en « actives » (à traiter) et
+  // « reportées » (snooze dans le futur).
   const { achatActive, achatSnoozed } = useMemo(() => {
     const now = new Date().toISOString()
     const base = products.filter(p =>
       p.procurement_type === 'Acheté' &&
       p.min_stock > 0 &&
-      p.stock_qty < p.min_stock && // strictement sous le seuil : une pièce pile au seuil (5/5) est correcte, ne pas l'afficher
-      !openPurchaseIds.has(p.id))
+      p.stock_qty < p.min_stock) // strictement sous le seuil : une pièce pile au seuil (5/5) est correcte, ne pas l'afficher
     const deficit = p => (p.stock_qty - p.min_stock) // plus négatif = manque le plus
     const active = base
       .filter(p => !p.purchase_snooze_until || p.purchase_snooze_until <= now)
@@ -409,28 +388,7 @@ export default function PrioriteAssemblage() {
       .filter(p => p.purchase_snooze_until && p.purchase_snooze_until > now)
       .sort((a, b) => (a.purchase_snooze_until < b.purchase_snooze_until ? -1 : 1))
     return { achatActive: active, achatSnoozed: snoozed }
-  }, [products, openPurchaseIds])
-
-  function openOrder(p) {
-    setOrderProduct(p)
-    setOrderQty(p.order_qty ? String(p.order_qty) : '')
-    setOrderNote('')
-  }
-
-  async function submitOrder() {
-    const qty = parseInt(orderQty, 10)
-    if (!Number.isFinite(qty) || qty <= 0) return
-    setSubmitting(true)
-    try {
-      await api.purchases.create({ product_id: orderProduct.id, qty_ordered: qty, notes: orderNote || undefined })
-      setOrderProduct(null)
-      await reload()
-    } catch (e) {
-      addToast({ message: 'Erreur lors de la création de l\'achat : ' + (e?.message || e), type: 'error' })
-    } finally {
-      setSubmitting(false)
-    }
-  }
+  }, [products])
 
   async function setSnooze(p, iso) {
     setBusyId(p.id)
@@ -515,7 +473,6 @@ export default function PrioriteAssemblage() {
                         p={p}
                         busy={busyId === p.id}
                         snoozeOpen={snoozeOpenId === p.id}
-                        onOpenOrder={openOrder}
                         onToggleSnooze={setSnoozeOpenId}
                         onSnooze={setSnooze}
                       />
@@ -606,67 +563,6 @@ export default function PrioriteAssemblage() {
         </div>
       )}
 
-      {/* Mini-formulaire « Commander » — création d'un achat INTERNE (side effect) */}
-      <Modal isOpen={!!orderProduct} onClose={() => !submitting && setOrderProduct(null)} title="Commander une pièce" size="md">
-        {orderProduct && (
-          <div data-testid="commander-modal" className="p-6 space-y-4">
-            <div className="flex items-center gap-3">
-              {orderProduct.image_url
-                ? <img src={orderProduct.image_url} alt="" className="w-14 h-14 rounded-xl object-cover bg-slate-100" />
-                : <div className="w-14 h-14 rounded-xl bg-slate-100" />}
-              <div className="min-w-0">
-                <div className="font-semibold text-slate-900 truncate">{orderProduct.name_fr}</div>
-                <div className="text-sm text-slate-400">{orderProduct.sku} {orderProduct.supplier ? `· ${orderProduct.supplier}` : ''}</div>
-              </div>
-            </div>
-
-            {/* Avertissement : achat interne ERP, PAS Airtable */}
-            <div data-testid="commander-warning" className="flex gap-3 p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-800 text-sm">
-              <AlertTriangle size={18} className="shrink-0 mt-0.5" />
-              <span>Cet achat est créé <strong>en interne dans l'ERP</strong>, PAS dans Airtable. Une référence <strong>LIA-ERP-…</strong> sera générée automatiquement.</span>
-            </div>
-
-            <label className="block">
-              <span className="block text-sm font-medium text-slate-600 mb-1">Quantité commandée</span>
-              <input
-                type="number" min="1"
-                value={orderQty}
-                onChange={e => setOrderQty(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none text-lg"
-                autoFocus
-              />
-            </label>
-
-            <label className="block">
-              <span className="block text-sm font-medium text-slate-600 mb-1">Note (optionnel)</span>
-              <textarea
-                rows={2}
-                value={orderNote}
-                onChange={e => setOrderNote(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border border-slate-300 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 outline-none"
-              />
-            </label>
-
-            <div className="flex justify-end gap-3 pt-2">
-              <button
-                onClick={() => setOrderProduct(null)}
-                disabled={submitting}
-                className="px-5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold disabled:opacity-50"
-              >
-                Annuler
-              </button>
-              <button
-                data-testid="commander-submit"
-                onClick={submitOrder}
-                disabled={submitting || !(parseInt(orderQty, 10) > 0)}
-                className="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-700 text-white font-semibold disabled:opacity-50"
-              >
-                {submitting ? 'Création…' : 'Créer'}
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
     </Layout>
   )
 }

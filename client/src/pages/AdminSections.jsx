@@ -311,7 +311,7 @@ function EmployeePicker({ value, onChange, disabled }) {
           <Link
             to="/employees"
             onClick={e => e.stopPropagation()}
-            className="text-brand-600 hover:underline"
+            className="link-record"
           >
             Voir la liste des employés →
           </Link>
@@ -479,7 +479,6 @@ export function UtilisateursContent({ currentUser }) {
   const hsOwners = hubspot?.owners || []
   const hsOwnerById = Object.fromEntries(hsOwners.map(o => [o.id, o]))
   const hsByUserId = Object.fromEntries((hubspot?.users || []).map(u => [u.id, u]))
-  const hsMappedCount = hsReady ? users.filter(u => hsByUserId[u.id]?.effective_owner_id).length : 0
 
   const rows = hsReady
     ? users.map(u => {
@@ -575,11 +574,6 @@ export function UtilisateursContent({ currentUser }) {
       <div className="flex items-center justify-between mb-4">
         <div>
           <h2 className="font-semibold text-slate-900">Utilisateurs ({users.length})</h2>
-          {hsReady && (
-            <p className="text-xs text-slate-500 mt-0.5" data-testid="hubspot-mapping-summary">
-              Owners HubSpot : {hsMappedCount}/{users.length} mappés · auto par email avec override manuel possible
-            </p>
-          )}
         </div>
         <button onClick={() => setShowModal(true)} className="btn-primary btn-sm">
           <Plus size={14} /> Nouvel utilisateur

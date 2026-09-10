@@ -81,7 +81,7 @@ function NeedRow({ need }) {
       <span className={`px-1.5 py-0.5 rounded border shrink-0 ${meta.cls}`}>{meta.label}</span>
       <span className="text-slate-600 truncate flex-1" title={need.label}>{need.label}</span>
       {need.sale_receipt_id && (
-        <Link to={`/sale-receipts/${need.sale_receipt_id}`} className="text-brand-600 hover:underline shrink-0 inline-flex items-center gap-1">
+        <Link to={`/sale-receipts/${need.sale_receipt_id}`} className="link-record shrink-0 inline-flex items-center gap-1">
           <Link2 size={12} /> reçu
         </Link>
       )}

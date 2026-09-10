@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react'
+import DiscoveryFormOptions from '../components/DiscoveryFormOptions.jsx'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, ExternalLink, Copy, Check } from 'lucide-react'
+import { Plus, ExternalLink, Copy, Check, Pencil } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { ListPage } from '../components/ListPage.jsx'
@@ -15,6 +16,9 @@ import { fmtDate } from '../lib/formatDate.js'
 
 function CopyLinkButton({ url }) {
   const [copied, setCopied] = useState(false)
+  const { addToast } = useToast()
+  const timer = useRef(null)
+  useEffect(() => () => clearTimeout(timer.current), [])
   if (!url) return <span className="text-slate-400">—</span>
   return (
     <div className="inline-flex items-center gap-1">
@@ -23,7 +27,7 @@ function CopyLinkButton({ url }) {
         target="_blank"
         rel="noopener noreferrer"
         onClick={(e) => e.stopPropagation()}
-        className="text-brand-600 hover:underline inline-flex items-center gap-1 text-sm"
+        className="link-record inline-flex items-center gap-1 text-sm"
       >
         <ExternalLink size={12} /> Ouvrir
       </a>
@@ -32,11 +36,13 @@ function CopyLinkButton({ url }) {
           e.stopPropagation()
           navigator.clipboard.writeText(url).then(() => {
             setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-          })
+            clearTimeout(timer.current)
+            timer.current = setTimeout(() => setCopied(false), 1500)
+          }).catch(() => addToast({ message: 'Copie impossible. Utilisez le lien Ouvrir.', type: 'error' }))
         }}
         className="text-slate-500 hover:text-slate-700 p-1 rounded"
-        title="Copier le lien"
+        title={copied ? 'Lien copié' : 'Copier le lien'}
+        aria-label={copied ? 'Lien copié' : 'Copier le lien du formulaire'}
       >
         {copied ? <Check size={12} className="text-green-600" /> : <Copy size={12} />}
       </button>
@@ -46,7 +52,7 @@ function CopyLinkButton({ url }) {
 
 const RENDERS = {
   company_name: (row) => row.company_id
-    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline text-sm">{row.company_name || row.company_id}</Link>
+    ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.company_name || row.company_id}</Link>
     : <span className="text-slate-400">—</span>,
   status: (row) => (
     <Badge color={row.status === 'submitted' ? 'green' : 'blue'} size="sm">
@@ -74,9 +80,10 @@ export default function DiscoveryForms() {
     api.companies.lookup().then(setCompanies).catch(() => {})
   }, [])
 
-  async function handleCreate({ company_id, helper_count, chief_count }) {
+  async function handleCreate({ company_id, helper_count, chief_count, form_options }) {
     const created = await api.discoveryForms.create({
       company_id,
+      form_options,
       helper_count: Number(helper_count) || 0,
       chief_count: Number(chief_count) || 0,
     })
@@ -96,9 +103,14 @@ export default function DiscoveryForms() {
         </p>
       }
       actions={
-        <button onClick={() => setShowModal(true)} className="btn-primary">
-          <Plus size={16} /> Nouveau système
-        </button>
+        <>
+          <Link to="/discovery-form-editor" className="btn-ghost" title="Éditeur du formulaire">
+            <Pencil size={16} /> Formulaire
+          </Link>
+          <button onClick={() => setShowModal(true)} className="btn-primary">
+            <Plus size={16} /> Nouveau formulaire
+          </button>
+        </>
       }
     >
       <DataTable
@@ -122,7 +134,7 @@ export default function DiscoveryForms() {
         }}
       />
 
-      <Modal isOpen={showModal} title="Nouveau système" onClose={() => setShowModal(false)}>
+      <Modal isOpen={showModal} title="Nouveau formulaire" onClose={() => setShowModal(false)}>
         <CreateForm companies={companies} onSave={handleCreate} onClose={() => setShowModal(false)} />
       </Modal>
     </ListPage>
@@ -132,6 +144,7 @@ export default function DiscoveryForms() {
 function CreateForm({ companies, onSave, onClose }) {
   const { addToast } = useToast()
   const [companyId, setCompanyId] = useState('')
+  const [options, setOptions] = useState({ sensors: {} })
   const [helperCount, setHelperCount] = useState(0)
   const [chiefCount, setChiefCount] = useState(0)
   const [saving, setSaving] = useState(false)
@@ -141,10 +154,10 @@ function CreateForm({ companies, onSave, onClose }) {
   async function handleSubmit(e) {
     e.preventDefault()
     if (!companyId) { addToast({ message: 'Entreprise requise', type: 'error' }); return }
-    if (total <= 0) { addToast({ message: 'Au moins une serre (Helper ou Chief) requise', type: 'error' }); return }
+    if (total <= 0) { addToast({ message: 'Au moins une serre (Helper ou Chef de culture) requise', type: 'error' }); return }
     setSaving(true)
     try {
-      await onSave({ company_id: companyId, helper_count: helperCount, chief_count: chiefCount })
+      await onSave({ company_id: companyId, helper_count: helperCount, chief_count: chiefCount, form_options: options })
     } catch (err) {
       addToast({ message: err.message || 'Erreur lors de la création', type: 'error' })
     } finally {
@@ -167,19 +180,19 @@ function CreateForm({ companies, onSave, onClose }) {
       </div>
       <div className="grid grid-cols-2 gap-4">
         <div>
-          <label className="label">Nombre de Chief Grower</label>
+          <label htmlFor="system-chief-count" className="label">Nombre de Chef de culture</label>
           <input
-            type="number" min={0} max={50}
+            id="system-chief-count" type="number" min={0} max={50} step={1}
             value={chiefCount}
             onChange={e => setChiefCount(e.target.value)}
             className="input"
           />
-          <p className="text-xs text-slate-500 mt-1">1 carte serre par Chief.</p>
+          <p className="text-xs text-slate-500 mt-1">1 carte serre par Chef de culture.</p>
         </div>
         <div>
-          <label className="label">Nombre de Helper</label>
+          <label htmlFor="system-helper-count" className="label">Nombre de Helper</label>
           <input
-            type="number" min={0} max={50}
+            id="system-helper-count" type="number" min={0} max={50} step={1}
             value={helperCount}
             onChange={e => setHelperCount(e.target.value)}
             className="input"
@@ -187,6 +200,7 @@ function CreateForm({ companies, onSave, onClose }) {
           <p className="text-xs text-slate-500 mt-1">1 carte serre par Helper.</p>
         </div>
       </div>
+      <DiscoveryFormOptions value={options} onChange={setOptions} disabled={saving} />
       <div className="text-sm text-slate-600 bg-slate-50 rounded-lg p-3">
         <strong>{total}</strong> carte{total !== 1 ? 's' : ''} de serre. Un lien public court sera
         généré et s'ouvrira dans un nouvel onglet.

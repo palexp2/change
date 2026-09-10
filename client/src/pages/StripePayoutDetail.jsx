@@ -9,7 +9,7 @@ import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 
 import { fmtMoney } from '../utils/formatters.js'
-import { Field } from '../components/Field.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 
 
 // Render a compact TPS/TVQ breakdown used in the transactions table.
@@ -50,14 +50,11 @@ function InfoField({ label, value }) {
   )
 }
 
-// Champ du payout lui-même : passe par <Field>, donc par le portier des champs
-// supprimés (il disparaît d'ici dès qu'on le supprime dans /champs/stripe_payouts).
-function PayoutField({ id, label, value }) {
-  return (
-    <Field table="stripe_payouts" id={id} label={label} labelClassName={INFO_LABEL_CLASS}>
-      <p className="text-sm text-slate-700 mt-0.5 break-words">{value ?? <span className="text-slate-300">—</span>}</p>
-    </Field>
-  )
+// Valeur d'un champ du payout. Le libellé, l'ordre et la présence du champ sont
+// rendus par la carte de champs commune (<DetailFieldGrid>), qui applique aussi
+// le portier des champs supprimés (/champs/stripe_payouts).
+function PayoutValue({ value }) {
+  return <p className="text-sm text-slate-700 break-words">{value ?? <span className="text-slate-300">—</span>}</p>
 }
 
 export default function StripePayoutDetail({ recordId: stripeId }) {
@@ -257,22 +254,27 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-4 border-t border-slate-100">
-            <PayoutField id="arrival_date" label="Date de dépôt" value={fmtDate(payout.arrival_date)} />
-            <PayoutField id="currency" label="Devise" value={payout.currency} />
-            <PayoutField id="method" label="Méthode" value={payout.method} />
-            <PayoutField id="type" label="Type" value={payout.type} />
-            <PayoutField id="bank" label="Banque" value={payout.bank_name ? `${payout.bank_name}${payout.bank_last4 ? ' …' + payout.bank_last4 : ''}` : null} />
-            <InfoField label="Automatique" value={payout.automatic ? 'Oui' : 'Non'} />
-            <PayoutField id="created_date" label="Créé le" value={fmtDate(payout.created_date)} />
-            <PayoutField id="qb_pushed_at" label="Envoyé à QB" value={payout.qb_pushed_at ? fmtDate(payout.qb_pushed_at) : null} />
-          </div>
-
-          {payout.description && (
-            <div className="mt-4 pt-4 border-t border-slate-100">
-              <PayoutField id="description" label="Description" value={payout.description} />
-            </div>
-          )}
+          {/* Carte de champs commune : ordre, retrait et ajout d'un champ de la
+              table se règlent depuis la fiche (bouton « Personnaliser les
+              champs »). */}
+          <DetailFieldGrid
+            entityType="stripe_payouts"
+            record={payout}
+            className="mt-5 pt-4 border-t border-slate-100"
+            testId="payout-fields"
+          >
+            <DetailField id="arrival_date" label="Date de dépôt"><PayoutValue value={fmtDate(payout.arrival_date)} /></DetailField>
+            <DetailField id="currency" label="Devise"><PayoutValue value={payout.currency} /></DetailField>
+            <DetailField id="method" label="Méthode"><PayoutValue value={payout.method} /></DetailField>
+            <DetailField id="type" label="Type"><PayoutValue value={payout.type} /></DetailField>
+            <DetailField id="bank" label="Banque">
+              <PayoutValue value={payout.bank_name ? `${payout.bank_name}${payout.bank_last4 ? ' …' + payout.bank_last4 : ''}` : null} />
+            </DetailField>
+            <DetailField id="automatic" label="Automatique"><PayoutValue value={payout.automatic ? 'Oui' : 'Non'} /></DetailField>
+            <DetailField id="created_date" label="Créé le"><PayoutValue value={fmtDate(payout.created_date)} /></DetailField>
+            <DetailField id="qb_pushed_at" label="Envoyé à QB"><PayoutValue value={payout.qb_pushed_at ? fmtDate(payout.qb_pushed_at) : null} /></DetailField>
+            <DetailField id="description" label="Description" span2><PayoutValue value={payout.description} /></DetailField>
+          </DetailFieldGrid>
 
           {payout.failure_message && (
             <div className="mt-4 flex items-start gap-2 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
@@ -505,7 +507,7 @@ function PreviewPanel({ preview, currency }) {
                         <button
                           type="button"
                           onClick={() => setFactureModalId(factureId)}
-                          className="text-brand-600 hover:text-brand-700 hover:underline text-left"
+                          className="link-record text-left"
                           data-testid="deposit-line-facture-link"
                           data-facture-id={factureId}
                         >

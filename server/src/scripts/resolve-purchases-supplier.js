@@ -4,14 +4,14 @@
 // Stratégie de match :
 //   1. Nom normalisé (accents retirés, ponctuation et suffixes « inc », « ltée »,
 //      « ltd », etc. strippés, casse ignorée).
-//   2. Si plusieurs candidats → privilégier ceux de type='Fournisseur'.
+//   2. Si plusieurs candidats → nom exact, puis le plus référencé.
 //   3. Si toujours ambigu → laissé non résolu et reporté.
 //
 // Usage :
 //   node server/src/scripts/resolve-purchases-supplier.js                  # dry run
 //   node server/src/scripts/resolve-purchases-supplier.js --apply          # écrit en DB
 //   node server/src/scripts/resolve-purchases-supplier.js --apply --create-missing
-//     crée les entreprises manquantes (type=Fournisseur) et les lie
+//     crée les entreprises manquantes et les lie
 //   node server/src/scripts/resolve-purchases-supplier.js --all
 //     retente aussi les records déjà liés (réécriture si meilleure correspondance)
 
@@ -56,7 +56,9 @@ for (const sql of refQueries) {
   } catch {}
 }
 
-const companies = db.prepare('SELECT id, name, type FROM companies').all()
+// `companies.type` a été droppée (migration 045) : plus de départage par
+// « Fournisseur », on s'en remet au nom puis au nombre de références.
+const companies = db.prepare('SELECT id, name FROM companies').all()
 const byNormalized = new Map()
 for (const c of companies) {
   const key = normalizeName(c.name)
@@ -69,8 +71,7 @@ function pickBest(candidates, rawName) {
   if (candidates.length === 0) return null
   if (candidates.length === 1) return candidates[0]
 
-  const fournisseurs = candidates.filter(c => c.type === 'Fournisseur')
-  const pool = fournisseurs.length > 0 ? fournisseurs : candidates
+  const pool = candidates
 
   const rawLower = rawName.trim().toLowerCase()
   const exact = pool.filter(c => c.name === rawName)
@@ -86,19 +87,20 @@ function pickBest(candidates, rawName) {
   return null
 }
 
+// `supplier` (texte libre) a été droppée (migration 032) : le nom à résoudre
+// vient désormais du fournisseur LIÉ d'Airtable, sinon du champ « Fournisseur ».
 const where = ALL
-  ? "(supplier IS NOT NULL AND TRIM(supplier) != '') OR (fournisseur IS NOT NULL AND TRIM(fournisseur) != '')"
-  : "supplier_company_id IS NULL AND ((supplier IS NOT NULL AND TRIM(supplier) != '') OR (fournisseur IS NOT NULL AND TRIM(fournisseur) != ''))"
+  ? "(supplier_vendor_name IS NOT NULL AND TRIM(supplier_vendor_name) != '') OR (fournisseur IS NOT NULL AND TRIM(fournisseur) != '')"
+  : "supplier_company_id IS NULL AND ((supplier_vendor_name IS NOT NULL AND TRIM(supplier_vendor_name) != '') OR (fournisseur IS NOT NULL AND TRIM(fournisseur) != ''))"
 
 const rows = db.prepare(`
-  SELECT id, supplier, fournisseur, supplier_company_id
+  SELECT id, supplier_vendor_name, fournisseur, supplier_company_id
   FROM purchases
   WHERE ${where}
 `).all()
 
-const fournCount = companies.filter(c => c.type === 'Fournisseur').length
 console.log(`📋 ${rows.length} achat(s) à traiter (${ALL ? 'TOUS' : 'non liés'})`)
-console.log(`   ${companies.length} entreprise(s) indexée(s), dont ${fournCount} fournisseur(s)`)
+console.log(`   ${companies.length} entreprise(s) indexée(s)`)
 console.log(`   Mode: ${APPLY ? 'APPLY (écriture DB)' : 'DRY RUN (lecture seule)'}${CREATE_MISSING ? ' + création des manquants' : ''}\n`)
 
 const stats = { matched: 0, alreadyLinked: 0, ambiguous: 0, unmatched: 0, created: 0, skipped: 0 }
@@ -107,12 +109,12 @@ const ambiguousMap = new Map()
 
 const update = db.prepare('UPDATE purchases SET supplier_company_id=?, updated_at=datetime(\'now\') WHERE id=?')
 const insertCompany = db.prepare(
-  "INSERT INTO companies (id, name, type, created_at, updated_at) VALUES (?, ?, 'Fournisseur', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
+  "INSERT INTO companies (id, name, created_at, updated_at) VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"
 )
 
 const run = db.transaction(() => {
   for (const row of rows) {
-    const rawName = (row.supplier || row.fournisseur || '').trim()
+    const rawName = (row.supplier_vendor_name || row.fournisseur || '').trim()
     if (!rawName) { stats.skipped++; continue }
 
     const key = normalizeName(rawName)
@@ -136,7 +138,7 @@ const run = db.transaction(() => {
         const newId = randomUUID()
         insertCompany.run(newId, rawName)
         update.run(newId, row.id)
-        byNormalized.set(key, [{ id: newId, name: rawName, type: 'Fournisseur' }])
+        byNormalized.set(key, [{ id: newId, name: rawName }])
         stats.created++
       } else {
         stats.unmatched++
@@ -166,7 +168,7 @@ if (ambiguousMap.size > 0) {
   console.log(`\nFournisseurs ambigus :`)
   for (const [name, n] of ambiguousMap) {
     const cands = byNormalized.get(normalizeName(name)) || []
-    console.log(`  ${n}× ${name} → ${cands.map(c => `${c.name} [${c.type || '—'}]`).join(' | ')}`)
+    console.log(`  ${n}× ${name} → ${cands.map(c => c.name).join(' | ')}`)
   }
 }
 

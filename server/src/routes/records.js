@@ -45,6 +45,7 @@ const HISTORY_ENTITY_MAP = {
   adresses: 'adresse',
   interactions: 'interaction',
   activity_codes: 'activity_code',
+  ops_issues: 'ops_issue',
 }
 
 // GET /api/records/:table/:id/history — timeline « qui a fait quoi, quand » pour

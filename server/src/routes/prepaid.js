@@ -54,9 +54,7 @@ router.put('/accounts/:id', (req, res) => {
   })
   if (error) return res.status(400).json({ error })
   if (setClause) {
-    // Changer le fournisseur QB visé invalide l'id résolu en cache.
-    const resetVendorId = 'qb_vendor_name' in req.body ? ', qb_vendor_id = NULL' : ''
-    db.prepare(`UPDATE prepaid_accounts SET ${setClause}${resetVendorId}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+    db.prepare(`UPDATE prepaid_accounts SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id)
   }
   const row = db.prepare('SELECT * FROM prepaid_accounts WHERE id = ?').get(req.params.id)

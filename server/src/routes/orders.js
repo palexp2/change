@@ -15,12 +15,18 @@ import { getCentralControllers } from '../utils/centralController.js';
 import { rescanRachatForCompany } from '../services/subscriptionEvents.js';
 import { logSync } from '../services/syncLog.js';
 import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js';
+import {
+  SHIPMENT_ITEMS_COLUMN,
+  refreshShipmentItemsMirror,
+  pushShipmentToAirtable,
+} from '../services/shipmentAirtableLink.js';
 import { parsePositiveInt, parseNonNegativeInt, parseNonNegativeNumber, validateNumericFields } from '../utils/validateNumbers.js';
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
 import { shippedCostSql, refreezeOrderShippedCosts } from '../services/shippedCost.js';
 import { logSystemRun } from '../services/systemAutomations.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { matchesScanCode } from '../utils/scanCodes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -48,6 +54,33 @@ const ORDER_COLUMN_COERCE = {
   cogs_override_cad: v => (v === '' || v == null ? null : Number(v)),
 };
 
+// ── Étagère de prélèvement (mode expédition) ─────────────────────────────────
+//
+// Deux compteurs dérivés des numéros de série du produit de la ligne, lus par
+// la fiche d'article à prélever pour dire à l'opérateur quelle étagère ouvrir :
+//   • refurb_serials_available : séries « Disponible - Location » en stock →
+//     s'il y en a, l'étagère des reconditionnés peut servir la ligne ;
+//   • product_serial_count : le produit est-il suivi par numéro de série ? Une
+//     pièce qui n'en a aucun ne peut pas être arbitrée par le compteur ci-dessus
+//     (l'opérateur regarde alors les reconditionnés d'abord, puis les neufs).
+// Le choix d'étagère ne se pose que sur une commande d'abonnement : le calcul
+// final vit côté client, ces colonnes ne portent que les faits.
+const SHELF_HINT_SQL = `
+    (SELECT COUNT(*) FROM serial_numbers sn_r
+      WHERE sn_r.product_id = oi.product_id AND sn_r.status = 'Disponible - Location') as refurb_serials_available,
+    (SELECT COUNT(*) FROM serial_numbers sn_t
+      WHERE sn_t.product_id = oi.product_id) as product_serial_count`;
+
+// Renvoie vers Airtable le rattachement d'un numéro de série à une ligne de
+// commande (champ « Items commande »), qui se pose ICI — au scan de prélèvement
+// ou d'ajout — et nulle part ailleurs. Best-effort et no-op tant que le sens du
+// champ reste « Airtable → Boréal » dans /champs/serial_numbers : le sens se
+// choisit champ par champ, ce write-back ne l'allume pas.
+function pushSerialOrderItem(serialId) {
+  writeBackRecord('serials', serialId, ['order_item_id'])
+    .catch(e => console.error('write-back serials:', e.message));
+}
+
 // SQLite ne sait pas lier un booléen : une case à cocher (champ perso ou champ
 // Airtable bidirectionnel) arrive en true/false et doit passer en 0/1.
 function bindable(v) {
@@ -66,6 +99,105 @@ function parseAirtableRecordIds(value) {
   const str = String(value);
   const matches = str.match(AIRTABLE_REC_RE) || [];
   return [...new Set(matches)];
+}
+
+// Première clé d'une valeur de colonne lien, quelle que soit sa forme (tableau
+// JSON, liste séparée par des virgules, identifiant nu). Contrairement à
+// parseAirtableRecordIds, accepte aussi un id Boréal.
+function firstLinkKey(value) {
+  if (value == null || value === '') return null;
+  let items = value;
+  if (typeof value === 'string') {
+    const s = value.trim();
+    if (s.startsWith('[')) { try { items = JSON.parse(s); } catch { items = s.split(','); } }
+    else items = s.split(',');
+  }
+  if (!Array.isArray(items)) items = [items];
+  return items.map(v => String(v ?? '').trim()).find(Boolean) || null;
+}
+
+// ── « Adresse de livraison » : deux colonnes, une seule réalité ──────────────
+//
+//   • `address_id`           — id Boréal ; c'est lui que lisent les envois ;
+//   • `adresse_de_livraison` — miroir du champ lien Airtable (record ids) ;
+//     c'est lui que la fiche affiche et que le write-back renvoie à Airtable.
+//
+// Selon l'endroit, l'une ou l'autre est saisie. On remplit la seconde dans la
+// foulée : sans ça, choisir l'adresse dans la fiche laissait les envois partir à
+// l'ancienne adresse, et l'inverse laissait Airtable sur l'ancienne.
+// Référent inconnu (ni id Boréal ni record id connu) : on ne touche à rien.
+// Exportée pour être testable sans passer par la route.
+export function alignAddressColumns(body) {
+  const has = k => Object.prototype.hasOwnProperty.call(body, k);
+  const fromMirror = has('adresse_de_livraison');
+  if (!fromMirror && !has('address_id')) return;
+  const key = fromMirror ? firstLinkKey(body.adresse_de_livraison) : (body.address_id || null);
+  const addr = key
+    ? db.prepare('SELECT id, airtable_id FROM adresses WHERE id = ? OR airtable_id = ?').get(key, key)
+    : null;
+  if (key && !addr) return;
+  body.address_id = addr?.id || null;
+  // Adresse née dans Boréal (sans jumeau Airtable) : la colonne miroir garde son
+  // id local — il s'affiche pareil, et le write-back saute alors le champ plutôt
+  // que de délier côté Airtable.
+  body.adresse_de_livraison = addr ? JSON.stringify([addr.airtable_id || addr.id]) : '';
+}
+
+// ── Langue des documents d'installation ─────────────────────────────────────
+//
+// Les PDF qu'on imprime avec la marchandise se lisent à la ferme : la langue
+// est celle du CONTACT de l'adresse de livraison, pas un réglage de commande.
+// Le lookup Airtable `langue_du_contact_a_la_ferme` ne reste qu'en dernier
+// recours — il est vide sur la grande majorité des commandes (l'adresse de la
+// ferme n'est pas toujours saisie), ce qui faisait tomber tout le monde en
+// français par défaut.
+// Ordre : contact de l'adresse → lookup de langue porté par l'adresse →
+// lookup de la commande → français.
+// L'opérateur peut toujours forcer 'fr'/'en' au moment de générer.
+function normalizeDocsLang(value) {
+  const s = String(value ?? '').trim().toLowerCase();
+  if (!s) return null;
+  if (s.startsWith('en') || s === 'anglais') return 'en';
+  if (s.startsWith('fr') || s === 'français' || s === 'francais') return 'fr';
+  return null;
+}
+
+export function resolveInstallationDocsLang(order) {
+  const addr = order?.address_id
+    ? db.prepare(
+        `SELECT a.id, a.contact_id, a.langue_du_contact, a.langue_de_correspondance,
+                c.first_name AS c_first, c.last_name AS c_last, c.langue AS c_langue
+         FROM adresses a
+         LEFT JOIN contacts c ON c.id = a.contact_id
+         WHERE a.id = ?`
+      ).get(order.address_id)
+    : null;
+
+  const chain = [
+    ['address_contact', addr?.c_langue],
+    ['address', addr?.langue_du_contact],
+    ['address', addr?.langue_de_correspondance],
+    ['order', order?.langue_du_contact_a_la_ferme],
+  ];
+  for (const [source, raw] of chain) {
+    const lang = normalizeDocsLang(raw);
+    if (lang) {
+      return {
+        lang,
+        source,
+        address_id: addr?.id || null,
+        contact_id: addr?.contact_id || null,
+        contact_name: [addr?.c_first, addr?.c_last].filter(Boolean).join(' ') || null,
+      };
+    }
+  }
+  return {
+    lang: 'fr',
+    source: 'default',
+    address_id: addr?.id || null,
+    contact_id: addr?.contact_id || null,
+    contact_name: [addr?.c_first, addr?.c_last].filter(Boolean).join(' ') || null,
+  };
 }
 
 const router = Router();
@@ -152,7 +284,8 @@ router.get('/:id', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const items = db.prepare(
-    `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location, pr.type as product_type
+    `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location, pr.type as product_type,
+     ${SHELF_HINT_SQL}
      FROM order_items oi
      LEFT JOIN products pr ON oi.product_id = pr.id
      WHERE oi.order_id = ?
@@ -264,7 +397,11 @@ router.get('/:id', (req, res) => {
     margin_pct: revenueEffective ? ((revenueEffective - cogsEffective) / revenueEffective) * 100 : null,
   };
 
-  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers, profitability });
+  // Langue par défaut des documents d'installation : la fiche l'affiche avant
+  // l'impression pour que l'opérateur voie ce qui sortira (et puisse forcer).
+  const docs_lang = resolveInstallationDocsLang(order);
+
+  res.json({ ...order, items: itemsWithSerials, shipments, factures, central_controllers, profitability, docs_lang });
 });
 
 // POST /api/orders
@@ -290,6 +427,8 @@ router.post('/', (req, res) => {
     { key: 'cogs_override_cad' },
   ]);
   if (numError) return res.status(400).json({ error: numError });
+
+  alignAddressColumns(req.body);
 
   // Un champ Airtable en import seul est refusé en 400 explicite plutôt
   // qu'ignoré en silence : la valeur saisie serait écrasée au prochain sync.
@@ -379,6 +518,8 @@ router.put('/:id', (req, res) => {
     { key: 'cogs_override_cad' },
   ]);
   if (numError) return res.status(400).json({ error: numError });
+
+  alignAddressColumns(req.body);
 
   // Un champ Airtable en import seul est refusé en 400 explicite (même règle
   // qu'au POST et que sur projects/payments) : l'écriture serait de toute façon
@@ -510,7 +651,9 @@ router.post('/:id/shipments', (req, res) => {
   // Création ERP → Airtable (2-way sync), même chemin que POST /api/shipments.
   // Asynchrone et non bloquant : l'envoi existe dans l'ERP même si Airtable est
   // indisponible, et le PATCH de rattrapage le poussera plus tard. Lancé APRÈS la
-  // transaction pour que les order_items assignés soient déjà liés (« items expédiés »).
+  // transaction pour que les order_items assignés soient déjà liés (« items expédiés »),
+  // et après le recalcul de la colonne miroir qui les transporte.
+  refreshShipmentItemsMirror(id);
   createInAirtable('envois', id).catch(e => {
     console.error(`erp-create envois ${id} (async):`, e.message);
     logSync('envois', 'erp-create', { status: 'error', error: `${id}: ${e.message}` });
@@ -585,7 +728,7 @@ router.post('/:id/items', (req, res) => {
   ).run(itemId, req.params.id, product_id || null, qty || 1, cost || 0, item_type || 'Facturable', notes || null);
 
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id);
-  const newItem = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId);
+  const newItem = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId);
   emitOrderItem('created', req.params.id, newItem, req.user?.id);
   res.status(201).json(newItem);
 });
@@ -627,6 +770,13 @@ router.patch('/:id/items/:itemId', (req, res) => {
     if (key in req.body) { updates.push(`${key}=?`); values.push(req.body[key]); }
   }
   if (updates.length === 0) return res.status(400).json({ error: 'No fields to update' });
+  // Envoi d'AVANT : « ajouter à un envoi » comme « retirer de l'envoi » changent la
+  // liste des articles expédiés des DEUX envois concernés, qu'il faut rafraîchir
+  // et repousser vers Airtable (cf. plus bas).
+  const prevShipmentId = 'shipment_id' in req.body
+    ? db.prepare('SELECT shipment_id FROM order_items WHERE id=? AND order_id=?')
+      .get(req.params.itemId, req.params.id)?.shipment_id || null
+    : null;
   db.prepare(`UPDATE order_items SET ${updates.join(', ')} WHERE id=? AND order_id=?`).run(...values, req.params.itemId, req.params.id);
 
   // Décochage en mode expédition : si on remet l'article à « À prélever » ou
@@ -635,11 +785,13 @@ router.patch('/:id/items/:itemId', (req, res) => {
   // picker scanne le mauvais SN, décoche, rescanne le bon.
   const isUnpicking = req.body.fulfillment_status === 'À prélever' || req.body.fulfilled_qty === 0
   if (isUnpicking) {
+    const detached = db.prepare('SELECT id FROM serial_numbers WHERE order_item_id = ?').all(req.params.itemId)
     db.prepare('UPDATE serial_numbers SET order_item_id = NULL WHERE order_item_id = ?').run(req.params.itemId)
+    for (const s of detached) pushSerialOrderItem(s.id)
   }
 
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
-  const item = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(req.params.itemId);
+  const item = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(req.params.itemId);
   // Inclure serials dans la réponse (et l'événement realtime) pour que le
   // client mette à jour ses badges sans refetch — le merge côté UI applique
   // `serials: []` quand on vient de détacher.
@@ -655,6 +807,19 @@ router.patch('/:id/items/:itemId', (req, res) => {
   writeBackRecord('order_items', req.params.itemId, allowed.filter(k => k in req.body))
     .catch(e => console.error('write-back order_items:', e.message));
 
+  // « items expédiés » côté Airtable suit order_items.shipment_id : ajouter ou
+  // retirer un article d'un envoi doit se voir sur la fiche envoi d'Airtable.
+  // `allowEmpty` sur l'envoi quitté — le vide y est une décision de l'utilisateur
+  // (dernier article retiré), pas une absence d'assignation locale.
+  if ('shipment_id' in req.body) {
+    const newShipmentId = req.body.shipment_id || null;
+    for (const [shipmentId, allowEmpty] of [[prevShipmentId, true], [newShipmentId, false]]) {
+      if (!shipmentId || (shipmentId === prevShipmentId && shipmentId === newShipmentId)) continue;
+      refreshShipmentItemsMirror(shipmentId, { allowEmpty });
+      pushShipmentToAirtable(shipmentId, [SHIPMENT_ITEMS_COLUMN]);
+    }
+  }
+
   res.json(itemWithSerials);
 });
 
@@ -668,7 +833,7 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?,?)')
     .run(newId, req.params.id, item.product_id, item.qty, item.unit_cost, item.item_type, item.notes, (item.sort_order || 0) + 1);
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
-  const dup = db.prepare('SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?').get(newId);
+  const dup = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(newId);
   emitOrderItem('created', req.params.id, dup, req.user?.id);
   res.status(201).json(dup);
 });
@@ -682,9 +847,81 @@ router.delete('/:id/items/:itemId', (req, res) => {
   res.json({ message: 'Item deleted' });
 });
 
-// POST /api/orders/:id/scan — barcode scanner (serial or SKU)
+// Pièce désignée par un code scanné : son SKU (insensible à la casse — un
+// lecteur peut renvoyer une autre casse que celle saisie dans la fiche), sinon
+// un de ses codes-barres additionnels (étiquette fournisseur/fabricant, cf.
+// utils/scanCodes.js). Les articles sans numéro de série n'ont que ça.
+function productForScannedCode(code) {
+  const bySku = db.prepare(
+    'SELECT * FROM products WHERE sku = ? COLLATE NOCASE AND deleted_at IS NULL'
+  ).get(code)
+  if (bySku) return bySku
+  // instr() dégrossit (peu de pièces portent des codes) ; le vrai test est
+  // l'égalité code par code, sinon « 1234 » matcherait « 12345 ».
+  const candidates = db.prepare(
+    `SELECT * FROM products
+     WHERE deleted_at IS NULL AND scan_codes IS NOT NULL AND scan_codes <> ''
+       AND instr(lower(scan_codes), lower(?)) > 0`
+  ).all(code)
+  return candidates.find(p => matchesScanCode(p.scan_codes, code)) || null
+}
+
+// Statuts d'un numéro de série prélevable : seules les séries en stock (vente
+// ou location) peuvent partir. Tout le reste — déjà chez un client, en retour,
+// à reconditionner, détruite, non construite — refuse le scan.
+const SERIAL_PICKABLE_STATUSES = ['Disponible - Vente', 'Disponible - Location']
+
+// Séries considérées « chez le client » pour la détection de collision
+// d'adresse : l'adresse (1–255) doit être unique par entreprise, sur ce qui est
+// déjà installé chez elle comme sur ce qui part dans la commande en cours.
+const SERIAL_AT_CLIENT_STATUSES = ['Opérationnel - Vendu', 'Opérationnel - Loué']
+
+// Ligne à servir pour un produit donné : la première non pleine, dans l'ordre
+// d'affichage. Une commande peut porter le même produit sur plusieurs lignes
+// (3 capteurs sur l'une, 2 sur l'autre) : on remplit la première jusqu'à sa
+// quantité, puis on passe à la suivante.
+function openLineForProduct(orderId, productId) {
+  if (!productId) return { lines: [], item: null }
+  const lines = db.prepare(
+    `SELECT * FROM order_items
+      WHERE order_id = ? AND product_id = ?
+        AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')
+      ORDER BY COALESCE(sort_order, 0), created_at`
+  ).all(orderId, productId)
+  return { lines, item: lines.find(l => (l.fulfilled_qty || 0) < (l.qty || 1)) || null }
+}
+
+// Collision d'adresse pour le client de la commande. Deux appareils de la même
+// entreprise ne peuvent pas porter la même adresse : on regarde ce qui est déjà
+// chez elle (séries opérationnelles) et ce qui est déjà prélevé sur la commande
+// en cours. Renvoie le conflit trouvé, sinon null.
+function serialAddressConflict(orderId, companyId, serial) {
+  const address = String(serial.address ?? '').trim()
+  if (!address) return null
+
+  if (companyId) {
+    const placeholders = SERIAL_AT_CLIENT_STATUSES.map(() => '?').join(', ')
+    const atClient = db.prepare(
+      `SELECT serial FROM serial_numbers
+        WHERE company_id = ? AND id <> ? AND trim(COALESCE(address, '')) = ?
+          AND status IN (${placeholders})`
+    ).get(companyId, serial.id, address, ...SERIAL_AT_CLIENT_STATUSES)
+    if (atClient) return { scope: 'client', address, serial: atClient.serial }
+  }
+
+  const inOrder = db.prepare(
+    `SELECT sn.serial FROM serial_numbers sn
+      JOIN order_items oi ON oi.id = sn.order_item_id
+      WHERE oi.order_id = ? AND sn.id <> ? AND trim(COALESCE(sn.address, '')) = ?`
+  ).get(orderId, serial.id, address)
+  if (inOrder) return { scope: 'order', address, serial: inOrder.serial }
+
+  return null
+}
+
+// POST /api/orders/:id/scan — barcode scanner (serial, SKU or product barcode)
 router.post('/:id/scan', (req, res) => {
-  const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id)
+  const order = db.prepare('SELECT id, company_id, is_subscription FROM orders WHERE id = ?').get(req.params.id)
   if (!order) return res.status(404).json({ error: 'Order not found' })
 
   const { value, mode } = req.body
@@ -698,7 +935,10 @@ router.post('/:id/scan', (req, res) => {
       const newQty = Math.min((item.fulfilled_qty || 0) + 1, item.qty)
       const newStatus = newQty >= item.qty ? 'Prélevé' : item.fulfillment_status || 'À prélever'
       db.prepare(`UPDATE order_items SET fulfilled_qty = ?, fulfillment_status = ? WHERE id = ?`).run(newQty, newStatus, item.id)
-      if (serialObj && !serialObj.order_item_id) db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serialObj.id)
+      if (serialObj) {
+        db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serialObj.id)
+        pushSerialOrderItem(serialObj.id)
+      }
       return db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
     }
 
@@ -709,21 +949,34 @@ router.post('/:id/scan', (req, res) => {
     ).get(v)
 
     if (serial) {
-      const item = db.prepare(
-        `SELECT * FROM order_items WHERE order_id = ? AND product_id = ? AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')`
-      ).get(req.params.id, serial.product_id)
-      if (!item) return res.json({ type: 'serial', action: 'not_in_order', serial })
+      // 1. La série doit être en stock.
+      if (!SERIAL_PICKABLE_STATUSES.includes(serial.status)) {
+        return res.json({ type: 'serial', action: 'not_available', serial })
+      }
+      // 2. Reconditionné (« Disponible - Location ») sur une commande d'achat :
+      //    faisable, mais pas idéal — l'opérateur confirme. L'inverse (neuf sur
+      //    un abonnement) passe sans rien demander.
+      if (!order.is_subscription && serial.status === 'Disponible - Location' && !req.body.confirm) {
+        return res.json({ type: 'serial', action: 'confirm_required', reason: 'refurb_on_purchase', serial })
+      }
+      // 3. Sa ligne : la première non pleine du produit.
+      const { lines, item } = openLineForProduct(req.params.id, serial.product_id)
+      if (!lines.length) return res.json({ type: 'serial', action: 'not_in_order', serial })
+      if (!item) return res.json({ type: 'serial', action: 'lines_full', serial })
+      // 4. Son adresse ne doit pas déjà exister chez ce client.
+      const conflict = serialAddressConflict(req.params.id, order.company_id, serial)
+      if (conflict) return res.json({ type: 'serial', action: 'address_conflict', serial, conflict })
+
       const updated = pickItem(item, serial)
       emitOrderItem('updated', req.params.id, updated, req.user?.id)
       return res.json({ type: 'serial', action: 'picked', serial, item: updated })
     }
 
-    const product = db.prepare('SELECT * FROM products WHERE sku = ?').get(v)
+    const product = productForScannedCode(v)
     if (product) {
-      const item = db.prepare(
-        `SELECT * FROM order_items WHERE order_id = ? AND product_id = ? AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')`
-      ).get(req.params.id, product.id)
-      if (!item) return res.json({ type: 'sku', action: 'not_in_order', product })
+      const { lines, item } = openLineForProduct(req.params.id, product.id)
+      if (!lines.length) return res.json({ type: 'sku', action: 'not_in_order', product })
+      if (!item) return res.json({ type: 'sku', action: 'lines_full', product })
       const updated = pickItem(item, null)
       emitOrderItem('updated', req.params.id, updated, req.user?.id)
       return res.json({ type: 'sku', action: 'picked', product, item: updated })
@@ -757,13 +1010,14 @@ router.post('/:id/scan', (req, res) => {
     }
 
     db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serial.id)
+    pushSerialOrderItem(serial.id)
     db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id)
     emitOrderItem(action === 'added' ? 'created' : 'updated', req.params.id, item, req.user?.id)
     return res.json({ type: 'serial', action, serial, item })
   }
 
-  // 2. Try SKU
-  const product = db.prepare('SELECT * FROM products WHERE sku = ?').get(v)
+  // 2. Try SKU / product barcode
+  const product = productForScannedCode(v)
 
   if (product) {
     let item = db.prepare('SELECT * FROM order_items WHERE order_id = ? AND product_id = ?').get(req.params.id, product.id)
@@ -793,7 +1047,8 @@ router.post('/:id/scan', (req, res) => {
 // Fusionne en un seul PDF les copies locales (uploads/products/docs/*) :
 //   - item_type='Remplacement' → lien_pdf_remplacement_<lang>_local
 //   - sinon                     → lien_pdf_installation_<lang>_local
-// où <lang> = fr|en selon orders.langue_du_contact_a_la_ferme.
+// où <lang> = fr|en selon resolveInstallationDocsLang (contact de l'adresse de
+// livraison en tête), sauf si l'opérateur force `lang` (body ou query).
 // Dedup par (product_id, doc_type) — un produit présent N fois ne génère qu'un doc.
 // Si un *_local est CSV (multi-URL), tous les fichiers sont inclus.
 // Les items dont le PDF local manque sont silencieusement ignorés.
@@ -811,7 +1066,10 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
     ORDER BY oi.created_at
   `).all(req.params.id);
 
-  const lang = (order.langue_du_contact_a_la_ferme || '').toLowerCase().startsWith('en') ? 'en' : 'fr';
+  const resolved = resolveInstallationDocsLang(order);
+  const override = normalizeDocsLang(req.body?.lang ?? req.query?.lang);
+  const lang = override || resolved.lang;
+  const langSource = override ? 'override' : resolved.source;
   const uploadsRoot = uploadsPath();
 
   const merged = await PDFLibDocument.create();
@@ -862,15 +1120,20 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
   }
 
   if (merged.getPageCount() === 0) {
-    return res.status(409).json({ error: 'Aucun document local disponible pour les items de cette commande.', included, skipped });
+    return res.status(409).json({
+      error: `Aucun document ${lang === 'en' ? 'anglais' : 'français'} disponible pour les items de cette commande.`,
+      lang, lang_source: langSource, included, skipped,
+    });
   }
 
   const out = await merged.save();
-  const filename = `documents-commande-${order.order_number}.pdf`;
+  const filename = `documents-commande-${order.order_number}-${lang}.pdf`;
   res.setHeader('Content-Type', 'application/pdf');
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   res.setHeader('X-Docs-Included', String(included.length));
   res.setHeader('X-Docs-Skipped', String(skipped.length));
+  res.setHeader('X-Docs-Lang', lang);
+  res.setHeader('X-Docs-Lang-Source', langSource);
   res.send(Buffer.from(out));
 });
 

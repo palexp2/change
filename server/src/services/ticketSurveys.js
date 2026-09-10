@@ -14,8 +14,12 @@
 //  • RÉPONSE MODIFIABLE jusqu'à expiration (30 jours). Un client qui reclique
 //    par curiosité ou change d'avis doit pouvoir le faire ; un changement
 //    déclenche sa propre alerte Slack.
-//  • LANGUE OBLIGATOIRE. Sans contacts.language, l'envoi est bloqué en amont —
-//    deviner la langue d'un client est plus coûteux qu'un champ à remplir.
+//  • LANGUE OBLIGATOIRE. Sans langue, l'envoi est bloqué en amont — deviner la
+//    langue d'un client est plus coûteux qu'un champ à remplir. Depuis la
+//    migration 040 (le billet n'a plus de colonne contact), langue et numéro se
+//    saisissent à l'envoi ; un renvoi reprend ceux du sondage déjà parti, et le
+//    numéro est proposé d'après le contact LIÉ au billet (mobile, puis
+//    téléphone) — proposé, donc corrigeable avant l'envoi.
 //  • SLACK PARCIMONIEUX. Seuls note ≤ 2, « oui je veux être appelé » et les
 //    changements de réponse alertent. Une note de 5 sans commentaire n'appelle
 //    aucune action, donc aucun message.
@@ -30,6 +34,9 @@ import { APP_URL } from '../config/appUrl.js'
 
 export const SURVEY_SLACK_AUTOMATION_ID = 'sys_ticket_survey_slack'
 export const SURVEY_EXPIRY_DAYS = 30
+
+// Valeurs acceptées par le CHECK de `ticket_surveys.language`.
+export const SURVEY_LANGUAGES = ['French', 'English']
 
 // Seuil de la question « accepteriez-vous d'être contacté par téléphone ? ».
 // Elle vise les clients SATISFAITS (logique témoignage / référence), pas la
@@ -77,44 +84,88 @@ function expiryIso(fromIso = null) {
 // Éligibilité
 // ---------------------------------------------------------------------------
 
+// Identifiants portés par le champ lien `cf_contact` : tableau JSON de clés
+// (forme écrite par la sync Airtable), liste séparée par des virgules, ou clé
+// seule. Le mapping du champ n'a pas de table cible, donc les clés sont des
+// record ids Airtable bruts — mais un id Boréal doit rester accepté au cas où
+// le mapping en gagnerait une (cf. link_target_table réécrit les valeurs).
+function linkKeys(raw) {
+  if (raw == null || raw === '') return []
+  let items = raw
+  if (typeof raw === 'string') {
+    const s = raw.trim()
+    if (s.startsWith('[')) { try { items = JSON.parse(s) } catch { items = s.split(',') } }
+    else items = s.split(',')
+  }
+  if (!Array.isArray(items)) items = [items]
+  return items.map(v => String(v ?? '').trim()).filter(Boolean)
+}
+
 /**
- * Décrit si un billet peut recevoir un sondage, et pourquoi pas le cas échéant.
- * La même fonction sert au front (bouton désactivé + infobulle) et à la route
- * d'envoi (refus serveur) : un seul endroit qui décide, jamais deux règles qui
- * divergent.
+ * Numéro à proposer pour un contact : le MOBILE d'abord — c'est un SMS, un
+ * numéro fixe ne le recevra jamais — puis le téléphone à défaut. Beaucoup de
+ * contacts n'ont que `phone`, et un numéro proposé se corrige dans la modale ;
+ * ne rien proposer obligeait à aller le chercher dans la fiche du contact.
+ * Retourne { phone, source } ou null.
+ */
+export function contactSurveyPhone(contact) {
+  const mobile = (contact?.mobile || '').trim()
+  if (mobile) return { phone: mobile, source: 'contact_mobile' }
+  const phone = (contact?.phone || '').trim()
+  if (phone) return { phone, source: 'contact_phone' }
+  return null
+}
+
+// Contact lié au billet — depuis la migration 040 ce n'est plus une colonne
+// native mais le champ LIEN `cf_contact` venu d'Airtable. Le premier lien
+// gagne : un billet n'en porte qu'un en pratique.
+function ticketContact(ticketId) {
+  let raw = null
+  try { raw = db.prepare('SELECT cf_contact FROM tickets WHERE id = ?').get(ticketId)?.cf_contact }
+  catch { return null }   // colonne absente (champ dé-mappé) : pas de contact, pas d'erreur
+  for (const key of linkKeys(raw)) {
+    const row = db.prepare(`
+      SELECT id, first_name, mobile, phone, language FROM contacts
+      WHERE airtable_id = ? OR id = ?
+    `).get(key, key)
+    if (row) return row
+  }
+  return null
+}
+
+/**
+ * Décrit ce qu'un billet propose à l'envoi d'un sondage. La même fonction sert
+ * au front (valeurs pré-remplies de la modale) et à la route d'envoi : un seul
+ * endroit qui décide, jamais deux règles qui divergent.
  *
- * Retourne { eligible, reason, phone, phone_source, language, contact_id, contact_name }.
+ * Ordre des replis pour le numéro :
+ *   1. le sondage DÉJÀ envoyé pour ce billet — un renvoi repart au numéro qui a
+ *      reçu le premier SMS, pas ailleurs ;
+ *   2. le mobile du contact lié au billet (`cf_contact`) ;
+ *   3. son téléphone.
+ * La langue, elle, reste celle du sondage déjà parti ou la saisie humaine : elle
+ * décide du texte envoyé au client, on ne la déduit pas.
+ *
+ * Retourne { eligible, reason, phone, phone_source, language, contact_id }.
  */
 export function surveyEligibility(ticketId) {
-  const row = db.prepare(`
-    SELECT t.id, t.contact_id,
-           ct.first_name, ct.last_name, ct.phone, ct.mobile, ct.language
-    FROM tickets t
-    LEFT JOIN contacts ct ON ct.id = t.contact_id
-    WHERE t.id = ?
-  `).get(ticketId)
+  const exists = db.prepare('SELECT id FROM tickets WHERE id = ?').get(ticketId)
+  if (!exists) return { eligible: false, reason: 'Billet introuvable' }
 
-  if (!row) return { eligible: false, reason: 'Billet introuvable' }
-  if (!row.contact_id) return { eligible: false, reason: 'Aucun contact sur ce billet' }
-
-  const contactName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim() || null
-
-  // Mobile prioritaire : un SMS vers un fixe est perdu sans erreur visible.
-  const mobile = toE164(row.mobile)
-  const landline = toE164(row.phone)
-  const phone = mobile || landline
-  const base = { contact_id: row.contact_id, contact_name: contactName, first_name: row.first_name || null }
-
-  if (!phone) return { ...base, eligible: false, reason: 'Aucun numéro de téléphone pour ce contact' }
-  if (!row.language) return { ...base, eligible: false, reason: 'Langue du contact non renseignée' }
-
+  const previous = getSurveyByTicket(ticketId)
+  const contact = previous?.phone ? null : ticketContact(ticketId)
+  const fromContact = contact ? contactSurveyPhone(contact) : null
   return {
-    ...base,
     eligible: true,
     reason: null,
-    phone,
-    phone_source: mobile ? 'mobile' : 'phone',
-    language: row.language,
+    contact_id: previous?.contact_id || null,
+    // Le prénom personnalise le SMS (« Bonjour Marie ») : il ne vient QUE du
+    // contact que l'envoi a lui-même enregistré, jamais d'un lien deviné — un
+    // billet mal lié saluerait le client par le nom de quelqu'un d'autre.
+    first_name: null,
+    phone: previous?.phone || fromContact?.phone || null,
+    phone_source: previous?.phone ? 'previous' : (fromContact?.source || null),
+    language: previous?.language || null,
   }
 }
 
@@ -154,24 +205,31 @@ export function getSurveyByToken(token) {
 
 /**
  * Envoie (ou renvoie) le sondage d'un billet.
- * `phoneOverride` permet d'envoyer à un numéro ponctuel sans toucher la fiche
- * contact (client qui donne un autre cellulaire au téléphone).
+ * `phoneOverride` et `language` viennent de la modale. Les deux peuvent être
+ * omis : le sondage déjà parti les porte (renvoi), et à défaut le numéro
+ * retombe sur le contact lié au billet (cf. surveyEligibility).
  *
  * Retourne { ok, survey, error }.
  */
-export async function sendTicketSurvey(ticketId, { userId = null, phoneOverride = null } = {}) {
+export async function sendTicketSurvey(ticketId, { userId = null, phoneOverride = null, language: languageInput = null } = {}) {
   const elig = surveyEligibility(ticketId)
-  // Un numéro fourni à la main lève l'exigence de numéro, jamais celle de langue.
+  if (!elig.eligible) return { ok: false, error: elig.reason }
+
   const overrideE164 = phoneOverride ? toE164(phoneOverride) : null
   if (phoneOverride && !overrideE164) {
     return { ok: false, error: `Numéro invalide : ${phoneOverride}` }
   }
-  if (!elig.eligible && !(overrideE164 && elig.reason === 'Aucun numéro de téléphone pour ce contact')) {
-    return { ok: false, error: elig.reason }
-  }
 
   const phone = overrideE164 || elig.phone
-  const language = elig.language
+  if (!phone) return { ok: false, error: 'Numéro de téléphone requis' }
+
+  // `ticket_surveys.language` porte un CHECK : une valeur libre ferait échouer
+  // l'INSERT après l'envoi du SMS — on refuse avant d'appeler Telnyx.
+  const language = languageInput || elig.language
+  if (!SURVEY_LANGUAGES.includes(language)) {
+    return { ok: false, error: 'Langue requise (français ou anglais)' }
+  }
+
   const existing = getSurveyByTicket(ticketId)
 
   // Renvoi : même jeton, expiration repoussée (le SMS qui part aujourd'hui doit
@@ -229,10 +287,11 @@ export function isExpired(survey) {
  * Ne fuit ni le numéro de téléphone, ni l'identité du contact, ni l'id interne.
  */
 export function publicSurveyView(survey) {
-  const ticket = db.prepare('SELECT title FROM tickets WHERE id = ?').get(survey.ticket_id)
   return {
     language: survey.language,
-    ticket_title: ticket?.title || null,
+    // `tickets.title` a été droppée (migration 040) : la page publique n'a plus
+    // de titre à rappeler, et n'en avait pas besoin pour noter le service.
+    ticket_title: null,
     expired: isExpired(survey),
     rating: survey.rating,
     accepts_call: survey.accepts_call === null ? null : !!survey.accepts_call,
@@ -308,14 +367,11 @@ export async function notifySurveyResponse(survey, previous = null) {
 
   if (!isLow && !wantsCall && !changed) return { skipped: 'not_actionable' }
 
-  const ticket = db.prepare(`
-    SELECT t.id, t.title, c.name AS company_name,
-           ct.first_name || ' ' || ct.last_name AS contact_name
-    FROM tickets t
-    LEFT JOIN companies c ON c.id = t.company_id
-    LEFT JOIN contacts ct ON ct.id = t.contact_id
-    WHERE t.id = ?
-  `).get(survey.ticket_id)
+  // Le billet n'a plus ni titre, ni entreprise, ni contact (migration 040) : le
+  // seul contact connu est celui que le sondage a lui-même enregistré à l'envoi.
+  const contact = survey.contact_id
+    ? db.prepare(`SELECT first_name || ' ' || last_name AS contact_name FROM contacts WHERE id = ?`).get(survey.contact_id)
+    : null
 
   const header = changed
     ? `:repeat: *Sondage modifié* — ${stars(previous.rating || 0)} → ${stars(survey.rating)}`
@@ -325,8 +381,8 @@ export async function notifySurveyResponse(survey, previous = null) {
 
   const lines = [
     header,
-    `Billet : ${ticket?.title || survey.ticket_id}`,
-    ticket?.company_name ? `Client : ${ticket.company_name}${ticket.contact_name ? ` (${ticket.contact_name})` : ''}` : null,
+    `Billet : ${survey.ticket_id}`,
+    contact?.contact_name ? `Client : ${contact.contact_name}` : null,
     wantsCall ? ':white_check_mark: A accepté d\'être contacté par téléphone' : null,
     survey.comment ? `Commentaire : « ${survey.comment} »` : null,
     `${appUrl()}/erp/tickets/${survey.ticket_id}`,

@@ -4,9 +4,9 @@ import db from '../db/database.js'
 const ALIASES = ['info@orisha.io', 'support@orisha.io', 'rescue@orisha.io']
 
 // Client Postmark partagé, mémoïsé par token. Le token par défaut vient de
-// l'environnement ; les services testables (installationFollowup,
-// returnExchangeReminder) peuvent injecter le leur — chaque token distinct a
-// son client. Lève si aucun token n'est disponible.
+// l'environnement ; les services testables (installationFollowup) peuvent
+// injecter le leur — chaque token distinct a son client. Lève si aucun token
+// n'est disponible.
 const _clients = new Map()
 export function getPostmarkClient(token = process.env.POSTMARK_API_KEY) {
   if (!token) throw new Error('POSTMARK_API_KEY manquant')

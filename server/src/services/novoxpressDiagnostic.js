@@ -67,6 +67,7 @@ export function isOpaqueNovoError(e) {
 // Destinataire témoin connu-bon (adresse Orisha, validé par spike sur /dev).
 const WITNESS = {
   company_name: 'Client Temoin',
+  attention_to: 'Marie Temoin',
   email_address: 'martin@orisha.io',
   street_address: '1535 ch. Ste-Foy',
   city: 'Québec',
@@ -95,9 +96,14 @@ function clone(obj) {
 const GROUPS = [
   {
     key: 'company_name',
-    label: "nom d'entreprise (recipient.company_name)",
-    extract: d => ({ company_name: d.recipient?.company_name }),
-    apply: d => { d.recipient.company_name = WITNESS.company_name },
+    // Les deux noms partent ensemble : un caractère spécial casse le XML de la
+    // même façon qu'il vienne de l'entreprise ou de la personne.
+    label: "noms (recipient.company_name / attention_to)",
+    extract: d => ({ company_name: d.recipient?.company_name, attention_to: d.recipient?.attention_to }),
+    apply: d => {
+      d.recipient.company_name = WITNESS.company_name
+      d.recipient.attention_to = WITNESS.attention_to
+    },
   },
   {
     key: 'street_address',
@@ -146,6 +152,7 @@ function buildWitnessDetails(realDetails) {
   const d = clone(realDetails)
   d.recipient = {
     company_name: WITNESS.company_name,
+    attention_to: WITNESS.attention_to,
     email_address: WITNESS.email_address,
     address: {
       street_address: WITNESS.street_address,
@@ -273,6 +280,26 @@ function witnessPickupDetails() {
   return p
 }
 
+// Le diagnostic n'a de valeur que si l'env dev nous répond. Jeton dev expiré
+// (401/403), dev injoignable ou en time-out : aucune tentative ne prouve quoi
+// que ce soit — surtout pas « Novoxpress est en panne », verdict qui envoyait
+// l'utilisateur créer son envoi à la main alors que la prod pouvait très bien
+// fonctionner (cas du 2026-09-10 : jeton dev refusé, vraie cause côté ERP).
+function isDevUnreachable(attempt) {
+  if (!attempt || attempt.ok) return false
+  const e = String(attempt.error || '')
+  return /\((401|403)\)/.test(e)
+    || /invalid authorization token|authentication credentials|unauthorized|forbidden/i.test(e)
+    || /appel dev impossible|timeouterror|fetch failed|abort/i.test(e)
+}
+
+function devUnreachableVerdict(attempt) {
+  return {
+    verdict: 'dev_unreachable',
+    message: `L'environnement dev Novoxpress ne nous répond pas (${attempt.error}) — le plus souvent un jeton dev expiré, à regénérer sur app.novoxpress.ca puis à recoller dans Connecteurs. Le diagnostic ne conclut donc RIEN : ni sur vos données, ni sur l'état de leur production. Fiez-vous au message d'erreur d'origine ci-dessus.`,
+  }
+}
+
 function buildClaudePrompt({ op, shipmentId, group, faultyValue, errorDetail }) {
   const today = new Date().toISOString().slice(0, 10)
   return (
@@ -341,6 +368,7 @@ export async function runDiagnostic(op, { details, serviceId, pickupDetails, shi
 
   // ── T1 — replay du payload réel en dev
   const t1 = await runAttempt('T1 · replay du payload réel en dev', details, pickupDetails)
+  if (isDevUnreachable(t1)) return finish(devUnreachableVerdict(t1))
   if (t1.ok) {
     return finish({
       verdict: 'novo_prod',
@@ -359,6 +387,7 @@ export async function runDiagnostic(op, { details, serviceId, pickupDetails, shi
     witnessDetails,
     op === 'pickup' ? witnessPickupDetails() : undefined
   )
+  if (isDevUnreachable(t2)) return finish(devUnreachableVerdict(t2))
   if (!t2.ok) {
     return finish({
       verdict: 'novo_down',

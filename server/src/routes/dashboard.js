@@ -66,10 +66,7 @@ router.get('/', (req, res) => {
     `SELECT COUNT(*) as count FROM products WHERE active = 1 AND min_stock > 0 AND stock_qty <= min_stock`
   ).get(), { count: 0 });
 
-  // Open tickets count
-  const openTickets = safe('support', () => db.prepare(
-    `SELECT COUNT(*) as count FROM tickets WHERE status != 'Fermé'`
-  ).get(), { count: 0 });
+  // Billets ouverts : retiré avec `tickets.status` (migration 040).
 
   // Monthly revenue (orders marked Envoyée this month)
   const monthlyRevenue = safe('orders', () => db.prepare(
@@ -141,34 +138,9 @@ router.get('/', (req, res) => {
     ORDER BY month, type
   `).all(), []);
 
-  // Tickets created by month — last 24 months (current year + previous year for YoY comparison).
-  // On retourne le compte de billets et la somme des durées (minutes) bucketés par mois UTC,
-  // pour permettre au front d'alterner entre les deux métriques sans seconde requête.
-  const ticketsByMonth = safe('ticketsByMonth', () => db.prepare(`
-    SELECT
-      strftime('%Y-%m', created_at) AS month,
-      COUNT(*) AS count,
-      COALESCE(SUM(CAST(duration_minutes AS INTEGER)), 0) AS minutes
-    FROM tickets
-    WHERE created_at IS NOT NULL
-      AND created_at >= date('now', 'start of month', '-24 months')
-    GROUP BY month
-    ORDER BY month ASC
-  `).all(), []);
-
-  // Weekly support quality stats (last 16 weeks, week starts Sunday)
-  const weeklySupportStats = safe('weeklySupportStats', () => db.prepare(`
-    SELECT
-      date(created_at, '-' || cast(strftime('%w', created_at) as integer) || ' days') as week_start,
-      COUNT(*) as total,
-      SUM(CASE WHEN escalade IN ('Software', 'Hardware') THEN 1 ELSE 0 END) as with_issue,
-      SUM(CASE WHEN CAST(duration_minutes AS INTEGER) > 15 THEN 1 ELSE 0 END) as over_15min,
-      SUM(CASE WHEN est_ce_que_le_probleme_a_ete_regle_grace_a_l_arbre IS NOT NULL AND est_ce_que_le_probleme_a_ete_regle_grace_a_l_arbre != '' THEN 1 ELSE 0 END) as with_arbre
-    FROM tickets
-    WHERE created_at >= date('now', '-112 days')
-    GROUP BY week_start
-    ORDER BY week_start DESC
-  `).all(), []);
+  // « Billets par mois » et « Billets par semaine » : retirés avec
+  // `tickets.created_at` et `tickets.duration_minutes` (migration 040). Un
+  // billet n'a plus de date propre — il n'y a plus rien à bucketer.
 
   // Geo clients — customers only, using the FIRST shipping address registered
   // (earliest adresses.created_at) per company. Excludes soft-deleted companies.
@@ -538,14 +510,9 @@ router.get('/', (req, res) => {
         serialsByStatus: serialInventoryByStatus,
       },
     },
-    support: {
-      openTickets: openTickets.count,
-    },
     closingByMonth,
     projectsCreatedByMonth,
-    ticketsByMonth,
     weeklyShipments,
-    weeklySupportStats,
     geoClients,
     geoClientsUnplaced,
     weeklyProfitability,
@@ -1310,14 +1277,30 @@ router.get('/subscription-events', (req, res) => {
   // pour couvrir les deux cas. On filtre `proration=0` pour ne garder que les
   // lignes de l'état récurrent (sans les crédits/charges de proration générés
   // au moment du changement, qui pollueraient le diff).
+  //
+  // Le rapprochement des deux formes de clé se fait EN JS, pas dans un `ON … OR …` :
+  // l'ancienne jointure (`f.subscription_id = s.id OR f.subscription_id = s.stripe_id`)
+  // interdisait tout index et relisait la table des factures une fois par
+  // abonnement — 1,1 s de boucle d'événements bloquée à chaque ouverture du
+  // tableau de bord, donc les neuf autres appels de la page en attente derrière
+  // (mesuré le 2026-09-07). Même résultat, 21 ms.
   const subIds = [...new Set(events.map(e => e.subscription_id).filter(Boolean))]
   const timelineBySubId = {}     // sub_id → [{ dateKey, factureId, items: [...] }] sorted asc
   const productsBySubId = {}     // sub_id → produits de la dernière facture (creation / churn)
   if (subIds.length > 0) {
     const placeholders = subIds.map(() => '?').join(',')
-    const invoiceItems = db.prepare(`
+    // Clé portée par la facture → abonnement ERP. Les deux formes (UUID et
+    // `sub_xxx`) pointent le même abonnement.
+    const keyToSubId = new Map()
+    for (const s of db.prepare(`SELECT id, stripe_id FROM subscriptions WHERE id IN (${placeholders})`).all(...subIds)) {
+      keyToSubId.set(s.id, s.id)
+      if (s.stripe_id) keyToSubId.set(s.stripe_id, s.id)
+    }
+    const keys = [...keyToSubId.keys()]
+    const keyPlaceholders = keys.map(() => '?').join(',')
+    const invoiceItems = (keys.length ? db.prepare(`
       SELECT
-        s.id AS erp_sub_id,
+        f.subscription_id AS sub_key,
         f.id AS facture_id,
         f.document_date,
         f.created_at AS facture_created_at,
@@ -1327,16 +1310,21 @@ router.get('/subscription-events', (req, res) => {
         sii.unit_amount,
         sii.amount,
         sii.rowid AS sii_rowid
-      FROM subscriptions s
-      JOIN factures f
-        ON f.subscription_id = s.id
-        OR (s.stripe_id IS NOT NULL AND f.subscription_id = s.stripe_id)
+      FROM factures f
       JOIN stripe_invoice_items sii ON sii.facture_id = f.id
       LEFT JOIN products p ON p.id = sii.product_id
-      WHERE s.id IN (${placeholders})
+      WHERE f.subscription_id IN (${keyPlaceholders})
         AND sii.proration = 0
-      ORDER BY s.id, COALESCE(f.document_date, f.created_at, '') ASC, sii.rowid
-    `).all(...subIds)
+    `).all(...keys) : [])
+      .map(row => ({ ...row, erp_sub_id: keyToSubId.get(row.sub_key) }))
+      // Une même facture peut arriver par l'UUID ou par le Stripe ID : le tri
+      // final remet TOUTES les factures d'un abonnement dans l'ordre du temps,
+      // quelle que soit la clé qui les y a rattachées.
+      .sort((a, b) =>
+        String(a.erp_sub_id).localeCompare(String(b.erp_sub_id))
+        || String(a.document_date || a.facture_created_at || '')
+          .localeCompare(String(b.document_date || b.facture_created_at || ''))
+        || a.sii_rowid - b.sii_rowid)
 
     // Construit la timeline : chaque facture devient un bucket d'items.
     for (const row of invoiceItems) {

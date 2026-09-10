@@ -64,7 +64,8 @@ function getQBConfig() {
 }
 
 // Recherche un fournisseur QB par nom, le crée si absent.
-// Synchronise aussi avec la table companies (type=Fournisseur).
+// Synchronise aussi avec la table companies (dont la colonne `type` a été
+// droppée — migration 045 : un fournisseur se reconnaît à quickbooks_vendor_id).
 // Retourne le QB Vendor ID (string).
 // Extrait l'Id du conflit d'un message d'erreur QB « Nom en double » (code 6240).
 // QB renvoie l'Id de l'entité qui occupe déjà le nom dans le Detail (« … : Id=425 »).
@@ -151,8 +152,8 @@ export async function findOrCreateVendor(vendorName, currency = 'CAD') {
     emitCompany('updated', existing.id, null)
   } else {
     db.prepare(`
-      INSERT OR IGNORE INTO companies (id, name, type, quickbooks_vendor_id, currency)
-      VALUES (?, ?, 'Fournisseur', ?, ?)
+      INSERT OR IGNORE INTO companies (id, name, quickbooks_vendor_id, currency)
+      VALUES (?, ?, ?, ?)
     `).run(newRecordId(), effectiveName, qbVendorId, currency || 'CAD')
   }
 
@@ -357,8 +358,8 @@ function upsertVendorCompany(qbVendorId, vendorName, currency) {
 
   const id = newRecordId()
   db.prepare(`
-    INSERT INTO companies (id, name, type, quickbooks_vendor_id, currency)
-    VALUES (?, ?, 'Fournisseur', ?, ?)
+    INSERT INTO companies (id, name, quickbooks_vendor_id, currency)
+    VALUES (?, ?, ?, ?)
   `).run(id, vendorName, qbVendorId, currency || 'CAD')
   emitCompany('created', id, null)
   return id

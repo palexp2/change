@@ -9,7 +9,6 @@ import { RECORD_REGISTRY } from '../db/recordRegistry.js'
 // et on ne purge que si l'utilisateur a tranché (?force=1).
 const DEPENDENTS = [
   { table: 'paie_items', one: 'ligne de paie', many: 'lignes de paie' },
-  { table: 'hour_bank_entries', one: 'entrée de banque d\'heures', many: 'entrées de banque d\'heures' },
   { table: 'vacations', one: 'vacance', many: 'vacances' },
   { table: 'rd_month_hours', one: 'mois de R&D', many: 'mois de R&D' },
 ]

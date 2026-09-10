@@ -11,9 +11,10 @@ import {
 // Ce module ne contient QUE des métadonnées (pas d'import de page) : il est lu
 // par navItems.js et par la palette de recherche, elle-même importée par
 // Layout — importer les pages ici créerait un cycle.
+// Le dashboard comptabilité n'a plus d'entrée ici : c'est la destination de
+// l'entrée « Espace finance » elle-même (un clic dessus y mène, le survol
+// continue d'ouvrir ce sous-menu).
 export const FINANCE_SECTIONS = [
-  { to: '/comptabilite',     label: 'Dashboard comptabilité',   icon: Landmark,       group: 'Pilotage' },
-
   { to: '/paiements-emis',   label: 'Paiements émis',           icon: Banknote,       group: 'Trésorerie' },
   { to: '/rapprochement',    label: 'Rapprochement bancaire',   icon: ArrowLeftRight, group: 'Trésorerie' },
   { to: '/stripe-payouts',   label: 'Stripe Payouts',           icon: CreditCard,     group: 'Trésorerie' },

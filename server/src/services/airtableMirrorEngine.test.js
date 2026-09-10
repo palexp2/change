@@ -169,46 +169,41 @@ test('text nettoie comme le sync historique', () => {
   assert.equal(TRANSFORMS.text({}, 'N'), null)
 })
 
-// ── Achats : les colonnes que le mapping champ-à-champ ne peut pas dire ─────
+// ── Achats : la seule colonne que le mapping champ-à-champ ne peut pas dire ──
 //
-// La table Airtable des achats n'a NI statut NI quantité reçue : les deux se
-// déduisent de la date de réception. C'est la règle métier la plus facile à
-// casser sans s'en apercevoir — un achat qui repasse « Commandé » ne lève
-// aucune erreur, il fausse juste les réceptions et le calcul de stock.
+// Le plan cœur des achats est VIDE depuis la migration 035 (« supprime tous les
+// champs Airtable gérés en code définitivement ») : product_id, reference,
+// order_date, received_date, qty_ordered, unit_cost et notes ont été droppées,
+// après supplier et status (032), et `qty_received` à son tour (036). Il ne
+// reste au `derive` qu'un travail : sortir DEUX colonnes (nom canonique
+// QuickBooks + Id vendor) d'un SEUL champ lié.
 
 const achatsDerive = (fields, opts) =>
-  CORE_PLANS.achats.derive(fields, { id: 'rec1', fields }, {
-    status: 'Statut', received_date: 'Date de réception complète',
-    qty_received: 'Qté reçue', supplier: 'Fournisseur - LEGACY',
-  }, opts)
+  CORE_PLANS.achats.derive(fields, { id: 'rec1', fields }, {}, opts)
 
-test('achats : une date de réception vaut « Reçu », son absence « Commandé »', () => {
-  assert.equal(achatsDerive({ 'Date de réception complète': '2026-08-01' }).status, 'Reçu')
-  assert.equal(achatsDerive({}).status, 'Commandé')
-  assert.equal(achatsDerive({ Statut: 'ANNULÉ' }).status, 'Annulé', 'un statut explicite prime')
+test('achats : le plan cœur ne mappe plus aucun champ', () => {
+  assert.deepEqual(CORE_PLANS.achats.fields, {})
 })
 
-test('achats : sans quantité reçue mappée, un achat reçu l’est en totalité', () => {
-  const recu = achatsDerive({ 'Date de réception complète': '2026-08-01' }, { values: { qty_ordered: 40 } })
-  assert.equal(recu.qty_received, 40)
-  const commande = achatsDerive({}, { values: { qty_ordered: 40 } })
-  assert.equal(commande.qty_received, 0, 'rien reçu tant qu’il n’y a pas de date')
-  const explicite = achatsDerive({ 'Qté reçue': '12' }, { values: { qty_ordered: 40 } })
-  assert.equal(explicite.qty_received, 12, 'la valeur mappée prime, même sur un achat reçu')
+test('achats : le derive n’écrit QUE les deux colonnes de fournisseur', () => {
+  // La quantité reçue est partie avec sa colonne (036) : plus aucun champ
+  // Airtable ne peut être écrit hors du fournisseur lié.
+  assert.deepEqual(
+    Object.keys(achatsDerive({ 'Qté reçue': '12' })),
+    ['supplier_vendor_name', 'supplier_qb_vendor_id'],
+  )
 })
 
-test('achats : le fournisseur lié fait foi, le single-select LEGACY est le repli', () => {
+test('achats : le fournisseur lié donne le nom canonique QB et son Id', () => {
   const ctx = { vendors: new Map([['recV1', { name: 'Mouser Electronics', qb_vendor_id: '42' }]]) }
   const lie = achatsDerive({ Fournisseur: ['recV1'] }, { ctx })
   assert.deepEqual(
-    [lie.supplier, lie.supplier_vendor_name, lie.supplier_qb_vendor_id],
-    ['Mouser Electronics', 'Mouser Electronics', '42'],
+    [lie.supplier_vendor_name, lie.supplier_qb_vendor_id],
+    ['Mouser Electronics', '42'],
   )
-  const legacy = achatsDerive({ 'Fournisseur - LEGACY': 'Takachi USD' }, { ctx })
-  assert.equal(legacy.supplier, 'Takachi USD')
-  assert.equal(legacy.supplier_vendor_name, null, 'aucun lien : les colonnes QB restent vides')
   const inconnu = achatsDerive({ Fournisseur: ['recINCONNU'] }, { ctx })
-  assert.equal(inconnu.supplier, null)
+  assert.equal(inconnu.supplier_vendor_name, null)
+  assert.equal(inconnu.supplier_qb_vendor_id, null)
 })
 
 test('intClean0 / floatClean0 nettoient le texte et retombent sur 0', () => {

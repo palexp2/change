@@ -209,7 +209,6 @@ export const ENTITY_BY_TABLE = {
   subscriptions: 'subscription',
   vacations: 'vacation',
   timesheets: 'timesheet',
-  hour_bank: 'hour_bank_entry',
   journal_entries: 'journal_entry',
   activity_codes: 'activity_code',
 }

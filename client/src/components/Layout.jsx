@@ -433,12 +433,12 @@ function GroupNavLink({ item }) {
 }
 
 // Routes couvertes par une entrée de nav. Une entrée à sous-menu flottant
-// (`flyoutGroups`, ex. Espace finance) n'a pas de page à elle : elle compte
-// comme active — et rend son groupe parent actif — dès qu'on est sur l'une de
-// ses sections. Sans ça, le groupe Comptabilité resterait replié et éteint
-// pendant qu'on travaille dans l'Espace finance.
+// (`flyoutGroups`, ex. Espace finance) compte comme active — et rend son groupe
+// parent actif — sur sa propre page comme sur l'une de ses sections. Sans ça,
+// le groupe Comptabilité resterait replié et éteint pendant qu'on travaille
+// dans l'Espace finance.
 function navItemPaths(item) {
-  if (item.flyoutGroups) return item.flyoutGroups.flatMap(g => g.items.map(s => s.to))
+  if (item.flyoutGroups) return [item.to, ...item.flyoutGroups.flatMap(g => g.items.map(s => s.to))]
   return [item.to]
 }
 
@@ -452,19 +452,22 @@ function navItemMatches(pathname, item) {
  * Utilisée par l'Espace finance (sections regroupées par famille), en
  * sous-section du groupe Comptabilité.
  *
- * Le clic sur la ligne épingle le panneau (ouvert jusqu'à Échap / clic
- * ailleurs) : c'est le seul chemin possible au doigt, où il n'y a pas de survol.
+ * La ligne est elle-même un lien : au clic elle mène à sa page (le dashboard
+ * comptabilité pour l'Espace finance). Au doigt il n'y a pas de survol — le tap
+ * épingle donc le panneau au lieu de naviguer, sinon le sous-menu deviendrait
+ * inatteignable.
  */
-function NavFlyoutItem({ icon: Icon, label, groups }) {
+function NavFlyoutItem({ icon: Icon, label, groups, to }) {
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const triggerRef = useRef(null)
   const panelRef = useRef(null)
+  const touchRef = useRef(false)
   const location = useLocation()
   const { chain, childRects } = useFlyoutChain(panelRef, open)
   const [pos, seedPos] = useFlyoutPosition(triggerRef, panelRef, open)
 
-  const isActive = navItemMatches(location.pathname, { flyoutGroups: groups })
+  const isActive = navItemMatches(location.pathname, { flyoutGroups: groups, to })
 
   function openMenu() {
     seedPos()
@@ -479,14 +482,17 @@ function NavFlyoutItem({ icon: Icon, label, groups }) {
 
   return (
     <>
-      <button
+      <NavLink
         ref={triggerRef}
-        type="button"
+        to={to}
         onMouseEnter={openMenu}
         onMouseMove={() => { if (!open) openMenu() }}
         onFocus={openMenu}
-        onClick={() => {
+        onPointerDown={(e) => { touchRef.current = e.pointerType === 'touch' }}
+        onClick={(e) => {
+          if (!touchRef.current) return // souris/clavier : on suit le lien
           // Au doigt il n'y a pas de survol : le tap ouvre puis referme.
+          e.preventDefault()
           if (open && pinned) { setOpen(false); setPinned(false); return }
           if (!open) openMenu()
           setPinned(true)
@@ -500,7 +506,7 @@ function NavFlyoutItem({ icon: Icon, label, groups }) {
         <Icon size={14} className="flex-shrink-0" />
         <span className="flex-1 text-left">{label}</span>
         <ChevronRight size={11} className={`flex-shrink-0 ${isActive ? 'text-brand-200' : 'text-slate-400'}`} />
-      </button>
+      </NavLink>
 
       {open && (
         <div
@@ -540,7 +546,12 @@ function NavFlyoutItem({ icon: Icon, label, groups }) {
 // sauvegardée automatiquement.
 const NavReorderContext = createContext(null)
 
-function NavReorderProvider({ items, order, setOrder, children }) {
+// Les signets sont un conteneur de plus pour la même mécanique : leur ordre ne
+// vit pas dans `nav_order` mais dans la liste `nav_bookmarks` elle-même, d'où
+// le cas particulier au moment du dépôt.
+const BOOKMARKS_CONTAINER = 'bookmarks'
+
+function NavReorderProvider({ items, order, setOrder, bookmarks = [], setBookmarks, children }) {
   const [drag, setDrag] = useState(null) // { container, key, targetKey, before }
   const stateRef = useRef(null)
 
@@ -555,6 +566,15 @@ function NavReorderProvider({ items, order, setOrder, children }) {
   // liste NON filtrée : sinon les entrées cachées par l'utilisateur tomberaient
   // silencieusement à la fin de l'ordre enregistré.
   const commit = (cur) => {
+    if (cur.container === BOOKMARKS_CONTAINER) {
+      const keys = bookmarks.map(b => b.to)
+      if (!keys.includes(cur.key) || !keys.includes(cur.targetKey)) return
+      const next = keys.filter(k => k !== cur.key)
+      next.splice(next.indexOf(cur.targetKey) + (cur.before ? 0 : 1), 0, cur.key)
+      if (next.join('\u0000') === keys.join('\u0000')) return
+      setBookmarks?.(next.map(k => bookmarks.find(b => b.to === k)))
+      return
+    }
     const list = cur.container === 'root'
       ? items
       : (items.find(i => navKey(i) === cur.container)?.items || [])
@@ -607,7 +627,7 @@ function NavReorderProvider({ items, order, setOrder, children }) {
       document.body.style.userSelect = prevSelect
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [drag, items, order])
+  }, [drag, items, order, bookmarks])
 
   const value = useMemo(() => ({ drag, start }), [drag])
   return <NavReorderContext.Provider value={value}>{children}</NavReorderContext.Provider>
@@ -895,12 +915,15 @@ function bookmarkLabelFor(location) {
   return currentPageTitle(key) || findNavEntry(location.pathname)?.label || key
 }
 
+// Les signets se réordonnent comme les sections du menu : même poignée
+// (NavSortable), qui n'apparaît qu'au survol de la ligne.
 function BookmarkRows({ bookmarks, here, onRemove, compact = false }) {
   return bookmarks.map(b => {
     const Icon = findNavEntry(b.to.split('?')[0])?.icon || Bookmark
     const isHere = b.to === here
     return (
-      <div key={b.to} className="relative group/bm">
+      <NavSortable key={b.to} container={BOOKMARKS_CONTAINER} itemKey={b.to}>
+      <div className="relative group/bm">
         <NavLink
           to={b.to}
           title={b.label}
@@ -921,6 +944,7 @@ function BookmarkRows({ bookmarks, here, onRemove, compact = false }) {
           <X size={12} />
         </button>
       </div>
+      </NavSortable>
     )
   })
 }
@@ -1177,7 +1201,7 @@ export function Layout({ children }) {
   const [showSearch, setShowSearch] = useState(false)
   const [showShortcuts, setShowShortcuts] = useState(false)
   const { user, logout } = useAuth()
-  const { isHidden, order, setOrder } = useNavPrefs()
+  const { isHidden, order, setOrder, bookmarks, setBookmarks } = useNavPrefs()
   // Compteur des files de travaux : la lecture temps réel vit déjà dans le
   // provider du panneau rapide (monté au-dessus des routes), on ne rajoute donc
   // aucun appel. Les DEUX files sont comptées — l'icône dit « il reste du
@@ -1390,7 +1414,7 @@ export function Layout({ children }) {
   )
 
   return (
-    <NavReorderProvider items={orderedNavItems} order={order} setOrder={setOrder}>
+    <NavReorderProvider items={orderedNavItems} order={order} setOrder={setOrder} bookmarks={bookmarks} setBookmarks={setBookmarks}>
     <div className="flex h-screen overflow-hidden bg-slate-50">
       {/* Sidebar desktop — rail d'icônes permanent, menus au survol */}
       <div

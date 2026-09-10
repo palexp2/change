@@ -4,10 +4,12 @@ import { ExternalLink, Check, Zap, Phone, ImageOff, Paperclip } from 'lucide-rea
 import { useRecordLinks } from './useRecordLinks.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
-import { fmtMoney, fmtNumber } from '../utils/formatters.js'
+import { fmtNumber } from '../utils/formatters.js'
 import { formatDurationSeconds, normalizeDurationFormat } from './duration.js'
+import { formatPercent, percentFill, normalizePercentDisplay } from './percent.js'
 import { formatDecimals } from './decimalPrefs.jsx'
 import { Badge } from '../components/Badge.jsx'
+import { RatingStars } from '../components/RatingStars.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import api from './api.js'
 
@@ -17,23 +19,24 @@ import api from './api.js'
 // et celles avec édition inline (Pipeline). Voir CLAUDE.md → « Champs
 // personnalisés » : Currency = nombre au format monétaire ; URL = lien cliquable.
 
-// Format monétaire fr-CA. `decimals` borné 0..5 (défaut 2), `currency` = code
-// ISO 4217 (défaut CAD — rétro-compatible avec les champs devise sans options).
-export function formatCurrency(value, decimals = 2, currency = 'CAD') {
+// Format monétaire fr-CA : nombre + symbole texte libre (ex. « 12,34 $ »).
+// `decimals` borné 0..5 (défaut 2), `symbol` par défaut « $ ».
+export function formatCurrency(value, decimals = 2, symbol = '$') {
   if (value === null || value === undefined || value === '') return null
   const n = Number(value)
   if (!Number.isFinite(n)) return null
   const d = Number.isInteger(decimals) ? Math.max(0, Math.min(5, decimals)) : 2
-  return fmtMoney(n, String(currency || 'CAD').trim(), { decimals: d })
+  return `${fmtNumber(n, { decimals: d })} ${String(symbol || '$').trim()}`
 }
 
-// Code de devise (ISO 4217) d'un champ de type currency, lu depuis sa config
-// `options` (JSON). Défaut CAD (champs créés avant le choix de devise).
-export function currencyCodeOf(field) {
+// Symbole de devise (texte libre, ex. « $ », « € ») d'un champ de type
+// currency, lu depuis sa config `options` (JSON). Défaut « $ » (champs créés
+// avant ce choix, ou options vides).
+export function currencySymbolOf(field) {
   let opts = field?.options
   if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
-  const code = String(opts?.currency || '').trim().toUpperCase()
-  return /^[A-Z]{3}$/.test(code) ? code : 'CAD'
+  const symbol = String(opts?.currency ?? '').trim()
+  return symbol || '$'
 }
 
 // Valide une URL http(s). On accepte aussi les URLs sans schéma (ex.
@@ -273,12 +276,52 @@ export function PhoneValue({ value, countryCode = 'auto' }) {
     <a
       href={href}
       onClick={e => e.stopPropagation()}
-      className="inline-flex items-center gap-1 text-brand-600 hover:text-brand-700 hover:underline truncate tabular-nums"
+      className="inline-flex items-center gap-1 link-record truncate tabular-nums"
       title={display}
     >
       <Phone size={12} className="shrink-0 opacity-70" />
       <span className="truncate">{display}</span>
     </a>
+  )
+}
+
+// ── Champs « Pourcentage » ──────────────────────────────────────────────────
+//
+// La colonne porte le nombre de pourcents (45 = 45 %, cf. lib/percent.js) et
+// deux modes d'affichage se partagent la même donnée :
+//   'percent' — « 45 % », aligné comme un nombre ;
+//   'bar'     — une barre de progression remplie à 45 %.
+// Un seul composant pour les deux : c'est lui que rendent les cellules de
+// tableau (champ perso ou champ natif affiché en pourcentage) et les fiches.
+
+// Mode d'affichage d'un champ pourcentage, lu depuis sa config `options`
+// (JSON) : { display: 'percent' | 'bar' }. Défaut 'percent'.
+export function percentDisplayOf(field) {
+  let opts = field?.options
+  if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { opts = null } }
+  return normalizePercentDisplay(opts?.display)
+}
+
+// `decimals` : décimales du champ (défaut 0 — « 45 % », pas « 45,00 % »).
+// La barre garde toujours le pourcentage exact en infobulle : une valeur hors
+// bornes (−10, 130) remplit 0 % ou 100 % sans mentir sur la donnée.
+export function PercentValue({ value, display = 'percent', decimals = 0 }) {
+  const label = formatPercent(value, decimals)
+  if (label == null) return <span className="text-slate-700">{value}</span>
+  if (normalizePercentDisplay(display) !== 'bar') {
+    return <span className="tabular-nums text-slate-700" data-testid="cf-percent">{label}</span>
+  }
+  const fill = percentFill(value) ?? 0
+  return (
+    <span className="flex items-center gap-1.5 min-w-0" title={label} data-testid="cf-percent-bar">
+      <span className="h-1.5 flex-1 min-w-[2rem] max-w-[8rem] rounded-full bg-slate-200 overflow-hidden">
+        <span
+          className="block h-full rounded-full bg-brand-500"
+          style={{ width: `${fill}%` }}
+          data-fill={String(fill)}
+        />
+      </span>
+    </span>
   )
 }
 
@@ -293,7 +336,7 @@ export function UrlValue({ value }) {
       target="_blank"
       rel="noopener noreferrer"
       onClick={e => e.stopPropagation()}
-      className="inline-flex items-center gap-1 text-brand-600 hover:text-brand-700 hover:underline truncate"
+      className="inline-flex items-center gap-1 link-record truncate"
       title={href}
     >
       <span className="truncate">{String(value)}</span>
@@ -330,6 +373,21 @@ export function isAirtableLinkField(field) {
   let opts = field?.options
   if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { return false } }
   return !!opts?.airtable_link_hint
+}
+
+// Table visée par un champ de donnée à qui on a donné le type « Lien » dans sa
+// fiche (`options.link_display_target`) : sa colonne porte l'identifiant d'un
+// enregistrement de cette table. `null` si ce n'en est pas un.
+export function linkDisplayTargetOf(field) {
+  let opts = field?.options
+  if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { return null } }
+  return opts?.link_display_target || null
+}
+
+// Le champ s'affiche-t-il en lien vers la fiche d'un enregistrement ? Deux
+// origines : importé d'Airtable, ou type « Lien » choisi à la main.
+export function isRecordLinkField(field) {
+  return isAirtableLinkField(field) || !!linkDisplayTargetOf(field)
 }
 
 // ── Champs lien Airtable ────────────────────────────────────────────────────
@@ -371,11 +429,70 @@ export function parseLinkedKeys(value, { splitCommas = true } = {}) {
 // `byLabel` : la colonne porte le NOM de la fiche visée et non son identifiant
 // (cas d'un champ natif qu'on a demandé à afficher en « Lien vers … »). Le
 // serveur cherche alors aussi par libellé dans la table cible.
-export function LinkedRecordsValue({ field, value, byLabel = false, detail = false }) {
+// `onChange(valeur)` : rend le champ MODIFIABLE dans une fiche (`detail`) — un
+// picker recherchable par lien, comme n'importe quel champ référence (cf.
+// CLAUDE.md, « champs référence »). La valeur commitée garde la forme de la
+// colonne : tableau JSON pour un champ lien Airtable (plusieurs liens), id nu ou
+// null pour une FK.
+// `navigable = false` : la pastille cesse d'être un lien. Pour un FORMULAIRE de
+// création, où ouvrir la fiche visée démonterait la modale et perdrait la saisie
+// en cours — le picker suffit, la navigation n'y a rien à apporter.
+export function LinkedRecordsValue({ field, value, byLabel = false, detail = false, onChange = null, saving = false, navigable = true }) {
   const keys = useMemo(() => parseLinkedKeys(value, { splitCommas: !byLabel }), [value, byLabel])
-  const resolved = useRecordLinks(keys, field?.record_link_target || null, byLabel)
-  if (!keys.length) return <span className="text-slate-400">—</span>
+  const target = field?.record_link_target || null
+  const resolved = useRecordLinks(keys, target, byLabel)
+  // Sans table cible (table Airtable non miroitée) aucune liste de candidats
+  // n'est possible : la pastille reste en lecture seule.
+  const editable = !!onChange && detail && !!target && !byLabel
+  if (!keys.length && !editable) return <span className="text-slate-400">—</span>
   const title = resolved.map((r, i) => (r ? [r.label, r.sub].filter(Boolean).join(' · ') : keys[i])).join(', ')
+  const chipLabel = (rec, key) => (rec === undefined
+    ? '…'
+    : (rec?.label || (byLabel || key.length <= 12 ? key : `${key.slice(0, 8)}…`)))
+
+  if (editable) {
+    // Forme de la colonne : un champ lien Airtable stocke un TABLEAU JSON (comme
+    // l'écrit la sync), une FK un id nu. Indépendamment, `record_link_single` dit
+    // qu'un seul lien est permis — choisir remplace, pas de « + ». C'est le cas
+    // d'un champ lien qui double une FK ERP mono : l'adresse d'une commande.
+    const asArray = isAirtableLinkField(field)
+    const multi = asArray && !field?.record_link_single
+    const identity = field?.record_link_identity || null
+    // Filtre du champ : la liste ne propose que le sous-ensemble voulu. Les
+    // liens DÉJÀ posés restent affichés, même hors filtre.
+    const filter = field?.record_link_filter || null
+    const commit = next => onChange(asArray ? JSON.stringify(next) : (next[0] ?? null))
+    return (
+      <div className="flex flex-wrap items-center gap-1.5" data-testid="cf-linked-records">
+        {keys.map((key, i) => (
+          <LinkedRecordField
+            key={`${key}-${i}`}
+            value={key}
+            options={[{ id: key, name: chipLabel(resolved[i], key) }]}
+            labelFn={o => o.name}
+            getHref={navigable && resolved[i]?.url ? () => resolved[i].url : undefined}
+            searchTarget={target}
+            searchFilter={filter}
+            identity={identity}
+            saving={saving}
+            onChange={v => commit(v
+              ? keys.map((k, j) => (j === i ? String(v) : k))
+              : keys.filter((_, j) => j !== i))}
+          />
+        ))}
+        {(multi || keys.length === 0) && (
+          <LinkedRecordField
+            value=""
+            searchTarget={target}
+            searchFilter={filter}
+            identity={identity}
+            saving={saving}
+            onChange={v => v && commit([...keys, String(v)])}
+          />
+        )}
+      </div>
+    )
+  }
   // Dans une FICHE, un champ lien s'affiche comme le lien d'entreprise en haut de
   // la fiche commande : la même pastille, celle de <LinkedRecordField>, en
   // lecture seule. Un seul rendu de lien pour toutes les fiches — avant, un champ
@@ -383,25 +500,25 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
   // taille, dans la même carte. La cellule de tableau, elle, garde sa pastille
   // compacte : sa hauteur de ligne est fixe (lignes virtualisées).
   if (detail) {
+    // Pourquoi cette pastille ne s'ouvre pas en picker : le champ est alimenté
+    // par Airtable en sens import, toute saisie serait écrasée au prochain sync
+    // (même règle que le toast des cellules de tableau).
+    const why = field?.writable === false
+      ? "Importé d'Airtable — modifiable une fois le sens de sync passé en bidirectionnel"
+      : null
     return (
-      <div className="flex flex-wrap items-center gap-1.5" title={title} data-testid="cf-linked-records">
-        {keys.map((key, i) => {
-          const rec = resolved[i]
-          const label = rec === undefined
-            ? '…'
-            : (rec?.label || (byLabel || key.length <= 12 ? key : `${key.slice(0, 8)}…`))
-          return (
-            <LinkedRecordField
-              key={key}
-              value={key}
-              options={[{ id: key, name: label }]}
-              labelFn={o => o.name}
-              getHref={rec?.url ? () => rec.url : undefined}
-              disabled
-              allowClear={false}
-            />
-          )
-        })}
+      <div className="flex flex-wrap items-center gap-1.5" title={why || title} data-testid="cf-linked-records">
+        {keys.map((key, i) => (
+          <LinkedRecordField
+            key={`${key}-${i}`}
+            value={key}
+            options={[{ id: key, name: chipLabel(resolved[i], key) }]}
+            labelFn={o => o.name}
+            getHref={navigable && resolved[i]?.url ? () => resolved[i].url : undefined}
+            disabled
+            allowClear={false}
+          />
+        ))}
       </div>
     )
   }
@@ -414,7 +531,7 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
         if (rec === undefined) {
           // Résolution en cours — placeholder de la largeur d'une pastille.
           return (
-            <span key={key} className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-400">
+            <span key={key} className="chip-record text-slate-400">
               …
             </span>
           )
@@ -430,28 +547,26 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
                 ? `${key} — aucune fiche de cette table ne porte ce nom`
                 : `${key} — aucune fiche trouvée derrière cet identifiant`}
               className={byLabel
-                ? 'truncate text-slate-600'
-                : 'shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500 whitespace-nowrap'}
+                ? 'truncate text-slate-700'
+                : 'chip-record'}
             >
               {byLabel || key.length <= 12 ? key : `${key.slice(0, 8)}…`}
             </span>
           )
         }
-        const chip = (
-          <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] whitespace-nowrap">
-            {rec.label}
-          </span>
-        )
-        if (!rec.url) return <span key={key} className="shrink-0 text-slate-600">{chip}</span>
+        // Pastille : neutre si rien à ouvrir, teintée marque si elle mène à une
+        // fiche (cf. `.chip-record`). Le libellé était en 11 px vert 600 sur
+        // fond crème — la combinaison la moins lisible de l'app.
+        if (!rec.url) return <span key={key} className="chip-record">{rec.label}</span>
         return (
           <Link
             key={key}
             to={rec.url}
             onClick={e => e.stopPropagation()}
             data-testid="cf-linked-record-link"
-            className="shrink-0 text-brand-600 hover:underline"
+            className="chip-record"
           >
-            {chip}
+            {rec.label}
           </Link>
         )
       })}
@@ -569,7 +684,26 @@ export function parseSelectChoices(field) {
   if (typeof opts === 'string') {
     try { opts = JSON.parse(opts) } catch { return [] }
   }
-  return Array.isArray(opts?.choices) ? opts.choices : []
+  if (!Array.isArray(opts?.choices)) return []
+  // Choix écrits en chaînes brutes par l'import Airtable : on les normalise à la
+  // forme { id, label, color } attendue partout (pastilles, éditeur de cellule).
+  return opts.choices.map(c => (typeof c === 'string' ? { id: c, label: c, color: 'gray' } : c))
+}
+
+// Valeurs affichables des choix d'une COLONNE de tableau, DANS L'ORDRE du champ.
+// Deux formes cohabitent : colonnes déclarées en dur (tableDefs.js) → tableau de
+// chaînes ; champs custom / Airtable → tableau d'objets { id, label, color }
+// (ou objet `{ choices: [...] }` pas encore déplié). Sans cette normalisation,
+// tout code qui compare `String(option)` obtenait « [object Object] » — c'est ce
+// qui faisait retomber le groupage sur l'ordre alphabétique.
+export function columnChoiceValues(col) {
+  let opts = col?.options
+  if (typeof opts === 'string') { try { opts = JSON.parse(opts) } catch { return [] } }
+  if (!Array.isArray(opts)) opts = Array.isArray(opts?.choices) ? opts.choices : []
+  return opts
+    .map(o => (o && typeof o === 'object') ? (o.label ?? o.value ?? o.name ?? o.id ?? '') : o)
+    .map(v => (v == null ? '' : String(v)))
+    .filter(v => v !== '')
 }
 
 // Valeurs d'un champ multi_select, quelle que soit la forme stockée : tableau
@@ -608,9 +742,23 @@ export function dateFormatOf(field) {
 
 // Couleur (palette Badge) associée à un label de choix. Défaut 'gray' si le
 // label ne correspond à aucun choix configuré (ex: valeur héritée hors-liste).
-function colorForChoice(choices, label) {
+export function colorForChoice(choices, label) {
   const c = choices.find(ch => ch.label === label)
   return c?.color || 'gray'
+}
+
+// Couleur sentinelle « sans couleur » : la valeur s'écrit en texte simple, sans
+// pastille. Posée sur TOUS les choix d'un champ Sélection par le bouton
+// « Sans couleur / Couleur » de la modale de champ.
+export const NO_COLOR = 'none'
+
+// Rendu d'une valeur de Sélection : pastille colorée, ou texte nu si le champ
+// est réglé « sans couleur ».
+export function ChoiceBadge({ color, className = '', children }) {
+  if (color === NO_COLOR) {
+    return <span className={`text-slate-700${className ? ` ${className}` : ''}`}>{children}</span>
+  }
+  return <Badge color={color || 'gray'} className={className}>{children}</Badge>
 }
 
 // Miroir client de ALLOWED_TABLES (server/src/routes/custom-fields.js) : tables
@@ -627,6 +775,12 @@ export const CUSTOM_FIELD_TABLES = new Set([
   'order_items', 'subscriptions', 'return_items', 'adresses',
   'soumissions', 'assemblages', 'paies', 'paie_items', 'bom_items',
   'payments', 'serial_state_changes',
+  // Mouvements d'inventaire — miroir Airtable : un champ y sert de colonne
+  // d'accueil pour un champ Airtable de plus (cf. ALLOWED_TABLES serveur).
+  'stock_movements',
+  // Problèmes d'opérations (/problemes-operations) : champs perso acceptés par
+  // la route CRUD, donc saisissables sur la fiche comme dans le tableau.
+  'ops_issues',
 ])
 
 // Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom.
@@ -674,8 +828,8 @@ export function sqlTableForView(viewKey) {
 const VIEW_KEY_TO_FIELD_KEY = {
   // Fiche entreprise
   company_contacts:    'contacts',
+  company_projects:    'projects',
   company_orders:      'orders',
-  company_tickets:     'tickets',
   company_factures:    'factures',
   company_abonnements: 'abonnements',
   company_envois:      'shipments',
@@ -688,8 +842,6 @@ const VIEW_KEY_TO_FIELD_KEY = {
   project_soumissions: 'soumissions',
   // Fiche contact
   contact_tasks:       'tasks',
-  // Fiche produit (pièce)
-  product_achats:      'purchases',
   // Fiches commande / adresse / envoi
   order_envois:        'shipments',
   adresse_envois:      'shipments',
@@ -699,6 +851,13 @@ const VIEW_KEY_TO_FIELD_KEY = {
   // voulue : les 46 champs Airtable de la table sont PROPOSÉS dans le sélecteur
   // de champs sans s'afficher d'office (cf. columnsWithOwnCf, DataTable.jsx).
   retour_items:        'return_items',
+  // Mouvements de stock d'une fiche produit : ce sont des `stock_movements`,
+  // avec des colonnes réduites (pas de colonne produit). Leurs CHAMPS sont ceux
+  // de la table mère — dont la colonne « Champ Airtable » du miroir.
+  product_movements:   'stock_movements',
+  // Achats d'une fiche pièce : ce sont des `purchases`, avec des colonnes
+  // réduites. Leurs CHAMPS sont ceux de la table mère (/champs/purchases).
+  product_purchases:   'purchases',
 }
 export function fieldKeyForView(viewKey) {
   return VIEW_KEY_TO_FIELD_KEY[viewKey] || viewKey
@@ -720,7 +879,7 @@ export function customFieldToColumn(f) {
     // il pilote filtre/tri/édition et ne doit pas changer.
     // Champ lien Airtable : son type stocké est 'text' (la colonne porte des
     // identifiants), mais c'est un lien — icône et libellé doivent le dire.
-    fieldType: isAirtableLinkField(f) ? 'link' : (f.kind && f.kind !== 'data' ? f.kind : f.type),
+    fieldType: isRecordLinkField(f) ? 'link' : (f.kind && f.kind !== 'data' ? f.kind : f.type),
     // Champ lien : la cellule ne s'édite pas au clavier mais par associations /
     // dissociations — pastilles avec « × » + liste recherchable de la table
     // cible (cf. components/LinkCellEditor.jsx). `record_link_target` peut rester
@@ -733,6 +892,9 @@ export function customFieldToColumn(f) {
         linkMulti: isAirtableLinkField(f),
         linkTarget: f.record_link_target || null,
         linkIdentity: f.record_link_identity || null,
+        // Filtre du champ : la liste de candidats de l'éditeur de cellule est
+        // restreinte au même sous-ensemble que dans la fiche.
+        linkFilter: f.record_link_filter?.length ? f.record_link_filter : null,
       }
       : {}),
     // Select : on expose les choix au filtre (FilterRow) et à l'éditeur inline.
@@ -741,6 +903,9 @@ export function customFieldToColumn(f) {
       : {}),
     // Durée : format d'affichage (h:mm / h:mm:ss) pour DynamicCell.
     ...(f.type === 'duration' ? { durationFormat: durationFormatOf(f) } : {}),
+    // Pourcentage : mode d'affichage (nombre ou barre) — le type de colonne
+    // reste 'number' (tri, filtre et somme d'un nombre), seul le rendu change.
+    ...((f.type === 'percent' || f.result_type === 'percent') ? { percentDisplay: percentDisplayOf(f) } : {}),
     // Nombre : décimales du champ → la barre de totaux (somme, moyenne…) suit le
     // même réglage que les cellules.
     ...(Number.isInteger(f.decimals) ? { decimals: f.decimals } : {}),
@@ -777,12 +942,23 @@ export function customFieldColumnType(f) {
   // Attachement : type dédié, ni triable ni filtrable — la cellule liste des
   // fichiers, pas une valeur comparable.
   if (f.type === 'attachment') return 'attachment'
-  if (f.result_type === 'date') return 'date'
+  // Date : le champ DATA (`type`) autant que la formule/lookup/rollup qui rend une
+  // date (`result_type`). Sans le premier cas, une colonne de date tombait en
+  // 'text' — le configurateur de filtre proposait « Contient »/« Commence par »
+  // au lieu des opérateurs temporels, et le tri comparait des chaînes.
+  if (f.type === 'date' || f.result_type === 'date') return 'date'
   if (f.type === 'duration') return 'duration'
+  // Évaluation : type de colonne dédié (rendu en étoiles, éditeur en étoiles),
+  // mais qui se trie, se filtre et s'agrège comme un nombre — cf. FilterRow et
+  // isNumericCol (DataTable).
+  if (f.type === 'rating' || f.result_type === 'rating') return 'rating'
   // Checkbox → 'boolean' : aligne le filtre (opérateurs is_true/is_false) et
   // l'éditeur inline (toggle) déjà câblés pour ce type de colonne.
   if (f.type === 'checkbox') return 'boolean'
-  if (f.result_type === 'number' || f.type === 'number' || f.type === 'currency') return 'number'
+  // Pourcentage = un nombre du point de vue du tri, du filtre et des totaux :
+  // seul son rendu diffère (« 45 % » ou barre de progression).
+  if (f.result_type === 'number' || f.type === 'number' || f.type === 'currency'
+      || f.type === 'percent' || f.result_type === 'percent') return 'number'
   if (f.type === 'single_select') return 'single_select'
   if (f.type === 'multi_select') return 'multi_select'
   return 'text'
@@ -899,7 +1075,7 @@ export function renderCustomFieldValue(field, value, row, { detail = false } = {
     // comme Airtable. Le titre au survol donne la liste complète.
     return (
       <div className="flex items-center gap-1 overflow-hidden" title={items.join(', ')}>
-        {items.map((v, i) => <Badge key={i} color={colorForChoice(choices, v)} className="shrink-0 whitespace-nowrap">{v}</Badge>)}
+        {items.map((v, i) => <ChoiceBadge key={i} color={colorForChoice(choices, v)} className="shrink-0 whitespace-nowrap">{v}</ChoiceBadge>)}
       </div>
     )
   }
@@ -916,16 +1092,33 @@ export function renderCustomFieldValue(field, value, row, { detail = false } = {
     if (!Number.isFinite(n)) return <span className="text-slate-400">—</span>
     return <span className="tabular-nums text-slate-700">{formatDurationSeconds(n, durationFormatOf(field))}</span>
   }
+  // Évaluation : étoiles gagnées (0 → « — »). Vaut aussi pour un champ calculé
+  // dont le format d'affichage est « Évaluation » (moyenne d'un rollup, rendue
+  // avec une étoile partielle).
+  if (field.type === 'rating' || field.result_type === 'rating') {
+    return <RatingStars value={value} />
+  }
   if (field.type === 'single_select') {
     const choices = parseSelectChoices(field)
-    return <Badge color={colorForChoice(choices, value)}>{value}</Badge>
+    return <ChoiceBadge color={colorForChoice(choices, value)}>{value}</ChoiceBadge>
   }
   if (field.type === 'date' || field.result_type === 'date') {
     return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(field))}</span>
   }
   if (field.type === 'currency') {
-    const formatted = formatCurrency(value, field.decimals ?? 2, currencyCodeOf(field))
+    const formatted = formatCurrency(value, field.decimals ?? 2, currencySymbolOf(field))
     return <span className="tabular-nums text-slate-700">{formatted != null ? formatted : value}</span>
+  }
+  // Pourcentage : champ de donnée, ou champ calculé dont le format d'affichage
+  // est « Pourcentage » (une formule qui rend un ratio, un rollup de moyenne…).
+  if (field.type === 'percent' || field.result_type === 'percent') {
+    return (
+      <PercentValue
+        value={value}
+        display={percentDisplayOf(field)}
+        decimals={Number.isInteger(field.decimals) ? field.decimals : 0}
+      />
+    )
   }
   // Nombre : nombre de décimales FIXE, celui du champ (réglage du modal de champ,
   // ou précision Airtable publiée par le serveur). Un champ nombre sans réglage

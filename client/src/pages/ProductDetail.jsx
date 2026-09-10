@@ -1,14 +1,15 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeftRight, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, ShoppingCart, ImagePlus, X, Trash2, Plus } from 'lucide-react'
+import { ArrowLeftRight, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, ImagePlus, X, Trash2, SlidersHorizontal, ShoppingCart } from 'lucide-react'
 import api from '../lib/api.js'
 import Spinner from '../components/Spinner.jsx'
-import { Badge, stockStatusColor, stockStatusLabel, PURCHASE_STATUS_COLORS } from '../components/Badge.jsx'
+import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { Section } from '../components/SectionNav.jsx'
 import { useSectionNav } from '../lib/useSectionNav.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
+import PurchaseDetail from './PurchaseDetail.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
@@ -16,22 +17,28 @@ import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
-import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
-import { formatBytes, fmtCad, fmtMoney } from '../utils/formatters.js'
-import PurchaseDetail from './PurchaseDetail.jsx'
+import { fmtDateTime } from '../lib/formatDate.js'
+import { formatBytes, fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
-import { useDetailFields } from '../lib/useDetailFields.jsx'
+import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { columnChoiceValues } from '../lib/customFieldDisplay.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { AttachmentField } from '../components/AttachmentField.jsx'
 
 
 const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
 const PRODUCT_FIELDS = [
   { key: 'sku',                label: 'SKU',                type: 'text' },
-  { key: 'type',               label: 'Type',               type: 'text' },
+  // Sélection : les choix ne sont pas codés ici, ils viennent du registre des
+  // champs (/champs/products) — ajouter un type là-bas suffit.
+  { key: 'type',               label: 'Type',               type: 'select' },
+  // Codes-barres du fournisseur/fabricant collés sur l'article (UPC, EAN, ASIN…),
+  // séparés par des virgules : le scan d'une commande les accepte comme le SKU.
+  { key: 'scan_codes',         label: 'Codes-barres',       type: 'text', span2: true },
   { key: 'name_fr',            label: 'Nom (FR)',           type: 'text', span2: true },
   { key: 'name_en',            label: 'Nom (EN)',           type: 'text', span2: true },
   { key: 'unit_cost',          label: 'Coût unitaire (CAD)',type: 'number', step: '0.01' },
@@ -54,6 +61,17 @@ const PRODUCT_FIELDS = [
   { key: 'is_sellable',        label: 'Vendable',           type: 'checkbox' },
   { key: 'active',             label: 'Produit actif',      type: 'checkbox' },
 ]
+// Colonnes rendues AILLEURS que dans la carte de champs (image de l'en-tête,
+// section Documents) : sans ça, elles reviendraient en double dans la liste des
+// champs de la table proposée par « Ajouter un champ ».
+const TAKEN_ELSEWHERE = [
+  'image_url',
+  'lien_pdf_installation_fr', 'lien_pdf_installation_fr_local',
+  'lien_pdf_installation_en', 'lien_pdf_installation_en_local',
+  'lien_pdf_remplacement_fr', 'lien_pdf_remplacement_fr_local',
+  'lien_pdf_remplacement_en', 'lien_pdf_remplacement_en_local',
+]
+
 const movTypeColor = { in: 'green', out: 'red', adjustment: 'blue' }
 const movTypeLabel = { in: 'Entrée', out: 'Sortie', adjustment: 'Ajustement' }
 
@@ -66,9 +84,11 @@ const BOM_RENDERS = {
       <div className="h-7 w-7 rounded border border-dashed border-slate-200" />
     )
   ),
+  // Composant : lien standard vers la fiche du produit (classe `.link-record`,
+  // celle de tous les liens de fiche de l'app), pas un bleu maison.
   component_name: row => (
     row.component_id ? (
-      <Link to={`/products/${row.component_id}`} className="font-medium text-blue-600 hover:underline">
+      <Link to={`/products/${row.component_id}`} onClick={e => e.stopPropagation()} className="link-record">
         {row.component_name || '—'}
       </Link>
     ) : <span className="font-medium text-slate-900">{row.component_name || '—'}</span>
@@ -90,7 +110,7 @@ const BOM_RENDERS = {
   ref_des: row => <span className="text-slate-500 text-xs">{row.ref_des || '—'}</span>,
   product_name: row => (
     row.product_id ? (
-      <Link to={`/products/${row.product_id}`} className="text-blue-600 hover:underline">
+      <Link to={`/products/${row.product_id}`} onClick={e => e.stopPropagation()} className="link-record">
         {row.product_name || '—'}
       </Link>
     ) : <span>{row.product_name || '—'}</span>
@@ -177,11 +197,10 @@ const money = n => fmtMoney(n, 'CAD', { fallback: <span className="text-slate-30
 const MOVEMENT_RENDERS = {
   created_at:     m => <span className="text-slate-500 text-xs">{fmtDateTime(m.created_at)}</span>,
   type:           m => <Badge color={movTypeColor[m.type] || 'gray'}>{movTypeLabel[m.type] || m.type}</Badge>,
-  qty:            m => (
-    <span className={`font-bold ${m.type === 'in' ? 'text-green-600' : m.type === 'out' ? 'text-red-600' : 'text-blue-600'}`}>
-      {m.type === 'in' ? '+' : m.type === 'out' ? '-' : '='}{m.qty}
-    </span>
-  ),
+  // Nombre rendu comme partout ailleurs (cf. la colonne « Qté » de
+  // /mouvements-inventaire) : format fr-CA, tabular-nums, pas de signe ni de
+  // couleur — le sens du mouvement est déjà porté par la colonne « Type ».
+  qty:            m => <span className="tabular-nums">{fmtNumber(m.qty, { fallback: <span className="text-slate-300">—</span> })}</span>,
   reason:         m => <span className="text-slate-600">{m.reason || '—'}</span>,
   user_name:      m => <span className="text-slate-500 text-xs">{m.user_name || '—'}</span>,
   unit_cost:      m => money(m.unit_cost),
@@ -189,26 +208,27 @@ const MOVEMENT_RENDERS = {
 }
 const MOVEMENT_COLUMNS = TABLE_COLUMN_META.product_movements.map(meta => ({ ...meta, render: MOVEMENT_RENDERS[meta.id] }))
 
-// Achats de la pièce : les lignes de /purchases filtrées sur ce produit.
-const ACHAT_RENDERS = {
-  reference: row => <span className="font-mono text-slate-900">{row.reference || '—'}</span>,
-  supplier: row => (
-    row.supplier_company_id
-      ? (
-        <Link to={`/companies/${row.supplier_company_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">
-          {row.supplier_company_name || row.supplier || '—'}
-        </Link>
-      )
-      : <span className="text-slate-500">{row.supplier || '—'}</span>
+// Sous-tableau « Achats » : `purchases.product_id` a été droppée (migration 035),
+// le rattachement passe désormais par le champ lien `nom_de_la_piece` — c'est le
+// serveur qui le résout (GET /products/:id/purchases).
+const PURCHASE_RENDERS = {
+  at_id: p => (
+    <Link to={`/purchases/${p.id}`} onClick={e => e.stopPropagation()} className="link-record font-mono text-xs">
+      {p.at_id || '—'}
+    </Link>
   ),
-  status: row => <Badge color={PURCHASE_STATUS_COLORS[row.status] || 'gray'}>{row.status || '—'}</Badge>,
-  qty_ordered: row => <span className="text-slate-700">{row.qty_ordered ?? '—'}</span>,
-  qty_received: row => <span className="text-slate-700">{row.qty_received ?? '—'}</span>,
-  unit_cost: row => <span className="text-slate-500">{row.unit_cost ? fmtCad(row.unit_cost) : '—'}</span>,
-  order_date: row => <span className="text-slate-500">{fmtDate(row.order_date)}</span>,
-  received_date: row => <span className="text-slate-500">{fmtDate(row.received_date)}</span>,
+  quantite_commande: p => <span className="tabular-nums">{fmtNumber(p.quantite_commande, { fallback: <span className="text-slate-300">—</span> })}</span>,
+  // Règle FK : le fournisseur s'ouvre si une entreprise est liée. Le miroir
+  // Airtable ne remplit souvent que le nom (source de vérité = champ lié).
+  supplier: p => (
+    p.supplier_company_id ? (
+      <Link to={`/companies/${p.supplier_company_id}`} onClick={e => e.stopPropagation()} className="link-record">
+        {p.supplier_company_name || p.supplier_vendor_name || '—'}
+      </Link>
+    ) : <span className="text-slate-600">{p.supplier_company_name || p.supplier_vendor_name || '—'}</span>
+  ),
 }
-const ACHAT_COLUMNS = TABLE_COLUMN_META.product_achats.map(meta => ({ ...meta, render: ACHAT_RENDERS[meta.id] }))
+const PURCHASE_COLUMNS = TABLE_COLUMN_META.product_purchases.map(meta => ({ ...meta, render: PURCHASE_RENDERS[meta.id] }))
 
 function Field({ label, children, span2 = false }) {
   return (
@@ -225,6 +245,53 @@ const SECTION_LABELS = {
   achats: 'Achats',
   bom: 'BOM',
   docs: 'Documents',
+}
+
+// Formulaire d'ajustement d'inventaire — écrit via POST /products/:id/stock
+// (stock_movements + stock_qty), même route que l'ancien modal orphelin de
+// la liste Produits.
+function StockAdjustForm({ product, onSaved, onClose }) {
+  const [form, setForm] = useState({ type: 'adjustment', qty: product.stock_qty ?? 0, reason: '' })
+  const [saving, setSaving] = useState(false)
+
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      await onSaved({ ...form, qty: parseInt(form.qty, 10) })
+      onClose()
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="bg-slate-50 rounded-lg p-3 text-sm">
+        Stock actuel : <strong>{product.stock_qty}</strong>
+      </div>
+      <div>
+        <label className="label">Type de mouvement</label>
+        <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="select">
+          <option value="in">Entrée (+)</option>
+          <option value="out">Sortie (-)</option>
+          <option value="adjustment">Ajustement (= valeur exacte)</option>
+        </select>
+      </div>
+      <div>
+        <label className="label">Quantité *</label>
+        <input type="number" min="0" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className="input" required />
+      </div>
+      <div>
+        <label className="label">Raison</label>
+        <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} className="input" />
+      </div>
+      <div className="flex justify-end gap-3 pt-2">
+        <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
+        <button type="submit" disabled={saving} className="btn-primary">{saving ? '...' : 'Enregistrer'}</button>
+      </div>
+    </form>
+  )
 }
 
 // Les sous-tableaux étant empilés, chacun est borné en hauteur selon son nombre
@@ -289,22 +356,20 @@ function ProductImageSlot({ src, alt, size, onPick, onRemove, busy }) {
 
 export default function ProductDetail({ recordId, onClose }) {
   const id = recordId
+  // « Suppression permise » : case du mode de personnalisation de la fiche.
+  const canDelete = useRecordDeleteAllowed('products')
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
-  const [achats, setAchats] = useState([])
+  const [purchases, setPurchases] = useState([])
   const [companies, setCompanies] = useState([])
   const [showPoModal, setShowPoModal] = useState(false)
-  // Achat éclair : le serveur déduit fournisseur, coût et référence du produit,
-  // il ne reste que la quantité à saisir.
-  const [showAchatModal, setShowAchatModal] = useState(false)
-  const [achatQty, setAchatQty] = useState('')
-  const [achatSaving, setAchatSaving] = useState(false)
+  const [showStockAdjust, setShowStockAdjust] = useState(false)
   const [showRefreshDocsModal, setShowRefreshDocsModal] = useState(false)
   const [refreshingDocs, setRefreshingDocs] = useState(false)
   const [refreshDocsResult, setRefreshDocsResult] = useState(null)
   const saveTimer = useRef(null)
   const [imageBusy, setImageBusy] = useState(false)
-  // Suppression : autorisée seulement si aucun BOM / envoi / achat ne cite la
+  // Suppression : autorisée seulement si aucun BOM / envoi ne cite la
   // pièce. Le serveur tranche (409) ; on charge son verdict pour griser le
   // bouton et dire pourquoi avant même le clic.
   const [deleteCheck, setDeleteCheck] = useState(null)
@@ -312,10 +377,20 @@ export default function ProductDetail({ recordId, onClose }) {
   const undoableDelete = useUndoableDelete()
   const { addToast } = useToast()
   const { status: saveState, save } = useSaveStatus()
-  // Registre commun des champs de fiche : libellés, suppressions ET champs
-  // personnalisés viennent de la même source que le tableau /champs/products.
-  const baseFields = useMemo(() => PRODUCT_FIELDS.filter(f => f.defaultVisible !== false), [])
-  const { fields: visibleFields, customFields } = useDetailFields('products', baseFields)
+  // Libellés, suppressions et champs personnalisés viennent de la même source
+  // que le tableau /champs/products — c'est <DetailFieldGrid> qui les applique.
+  // Choix des sélections dont la liste vit dans le registre plutôt que dans le
+  // code (`type`) : mêmes valeurs que la colonne du tableau et que le sync
+  // Airtable, sans doublon à maintenir ici.
+  const { fields: registryFields } = useCustomFields('products')
+  const registryChoices = useMemo(() => {
+    const map = {}
+    for (const f of registryFields || []) {
+      const choices = columnChoiceValues({ options: f.options })
+      if (choices.length) map[f.column_name] = choices
+    }
+    return map
+  }, [registryFields])
   const bomSummary = useMemo(() => computeBuildable(bom), [bom])
 
   const { record: product, setRecord: setProduct, loading, loadError, reload: load } =
@@ -326,6 +401,7 @@ export default function ProductDetail({ recordId, onClose }) {
         name_fr: data.name_fr || '',
         name_en: data.name_en || '',
         type: data.type || '',
+        scan_codes: data.scan_codes || '',
         unit_cost: data.unit_cost ?? 0,
         price_cad: data.price_cad ?? 0,
         price_usd: data.price_usd ?? 0,
@@ -354,17 +430,13 @@ export default function ProductDetail({ recordId, onClose }) {
     else if (msg.type === 'product:deleted') onClose?.()
   })
 
-  const loadAchats = useMemo(() => () =>
-    api.purchases.list({ product_id: id, limit: 'all' }).then(r => setAchats(r.data || [])).catch(() => {}),
-  [id])
-
   // Toutes les sections étant visibles simultanément, la nomenclature est
   // chargée au montage (plus de chargement paresseux à la sélection d'un onglet).
   useEffect(() => {
     api.bom.list({ product_id: id, limit: 'all' }).then(r => setBom(r.data || [])).catch(() => {})
-    loadAchats()
+    api.products.purchases(id).then(r => setPurchases(r.data || [])).catch(() => setPurchases([]))
     api.products.deleteCheck(id).then(setDeleteCheck).catch(() => setDeleteCheck(null))
-  }, [id, loadAchats])
+  }, [id])
 
   // Liste des entreprises pour le champ « Fournisseur » (LinkedRecordField).
   useEffect(() => {
@@ -417,7 +489,7 @@ export default function ProductDetail({ recordId, onClose }) {
       })
       leaveRecord()
     } catch (e) {
-      // 409 = BOM / envoi / achat lié : on rafraîchit le verdict pour griser le bouton.
+      // 409 = BOM / envoi lié : on rafraîchit le verdict pour griser le bouton.
       api.products.deleteCheck(id).then(setDeleteCheck).catch(() => {})
       addToast({ type: 'error', message: e.message || 'Suppression impossible', duration: 6000 })
     } finally {
@@ -432,26 +504,6 @@ export default function ProductDetail({ recordId, onClose }) {
       setProduct(p => (p ? { ...p, ...updated } : updated))
     })
     setImageBusy(false)
-  }
-
-  // Création d'un achat depuis la fiche : seule la quantité est demandée, le
-  // serveur (POST /purchases) complète fournisseur, coût unitaire, date et
-  // référence LIA-ERP-n à partir du produit.
-  async function submitAchat(e) {
-    e?.preventDefault()
-    const qty = parseInt(achatQty, 10)
-    if (!Number.isFinite(qty) || qty <= 0) return
-    setAchatSaving(true)
-    try {
-      await api.purchases.create({ product_id: id, qty_ordered: qty })
-      setShowAchatModal(false)
-      setAchatQty('')
-      await loadAchats()
-    } catch (err) {
-      addToast({ message: 'Achat non créé : ' + (err?.message || err), type: 'error' })
-    } finally {
-      setAchatSaving(false)
-    }
   }
 
   const sections = useMemo(() => ['info', 'mouvements', 'achats', 'bom', 'docs'], [])
@@ -482,9 +534,79 @@ export default function ProductDetail({ recordId, onClose }) {
 
   const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
+  // Commande de saisie d'un champ de la carte. Le libellé, la place et la
+  // présence du champ sont rendus par <DetailFieldGrid> : la fiche ne fournit
+  // plus que l'éditeur.
+  function fieldEditor(field) {
+    if (field.type === 'readonly') {
+      return <div className={`${inp} bg-slate-50 cursor-default`}>{product[field.key] ?? 0}</div>
+    }
+    if (field.type === 'checkbox') {
+      return (
+        <input
+          type="checkbox" className="rounded" checked={!!form[field.key]}
+          onChange={e => change(field.key, e.target.checked)}
+          data-testid={`product-field-${field.key}`}
+        />
+      )
+    }
+    if (field.type === 'vendor') {
+      // Champ référence : même composante que partout ailleurs dans l'app
+      // (LinkedRecordField) — le fournisseur s'affiche comme un lien cliquable
+      // vers sa fiche, avec la liste recherchable pour relier ailleurs.
+      return (
+        <LinkedRecordField
+          name="supplier_company_id"
+          value={form.supplier_company_id}
+          options={vendorOptions}
+          labelFn={c => c.name}
+          getHref={c => `/companies/${c.id}`}
+          saving={saveState === 'saving'}
+          onChange={changeSupplier}
+        />
+      )
+    }
+    if (field.type === 'select') {
+      // Choix codés sur le champ, sinon ceux du registre. La valeur en place
+      // s'ajoute si elle n'y figure pas (donnée héritée du sync) : sans ça le
+      // champ s'afficherait vide et l'effacerait à la première sauvegarde.
+      const declared = field.options || registryChoices[field.key] || []
+      const current = form[field.key] || ''
+      const options = current && !declared.includes(current) ? [current, ...declared] : declared
+      // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
+      return options.length > 10 ? (
+        <SearchableSelect
+          value={current}
+          options={options.map(o => ({ value: o, label: o }))}
+          emptyOption="—"
+          onChange={v => change(field.key, v)}
+          className={inp}
+          size="sm"
+          testId={`product-field-${field.key}`}
+        />
+      ) : (
+        <select className={inp} value={current} onChange={e => change(field.key, e.target.value)}
+          data-testid={`product-field-${field.key}`}>
+          <option value="">—</option>
+          {options.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+      )
+    }
+    if (field.type === 'textarea') {
+      return <textarea className={inp} rows={3} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
+    }
+    if (field.type === 'number') {
+      return (
+        <input type="number" min="0" step={field.step || '1'} className={inp}
+          value={form[field.key] ?? ''} onChange={e => change(field.key, parseFloat(e.target.value) || 0)} />
+      )
+    }
+    return <input className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
+  }
+
   const sectionCounts = {
     mouvements: product?.movements?.length || undefined,
-    achats: achats.length || undefined,
+    achats: purchases.length || undefined,
     bom: bom.length || undefined,
   }
 
@@ -528,106 +650,44 @@ export default function ProductDetail({ recordId, onClose }) {
         <div className="min-w-0">
 
         <Section id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
-          <div className="card p-6">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {visibleFields.map(field => {
-                if (field.type === 'readonly') {
-                  return (
-                    <Field key={field.key} label={field.label} span2={field.span2}>
-                      <div className={`${inp} bg-slate-50 cursor-default`}>{product[field.key] ?? 0}</div>
-                    </Field>
-                  )
-                }
-                if (field.type === 'checkbox') {
-                  return (
-                    <div key={field.key} className="flex items-center">
-                      <label className="flex items-center gap-2 cursor-pointer select-none">
-                        <input type="checkbox" className="rounded" checked={!!form[field.key]} onChange={e => change(field.key, e.target.checked)} />
-                        <span className="text-sm text-slate-700">{field.label}</span>
-                      </label>
-                    </div>
-                  )
-                }
-                if (field.type === 'vendor') {
-                  // Champ référence : même composante que partout ailleurs dans
-                  // l'app (LinkedRecordField) — le fournisseur s'affiche comme un
-                  // lien cliquable vers sa fiche, avec la liste recherchable pour
-                  // relier ailleurs. Plus de « Ouvrir la fiche » collé au libellé.
-                  return (
-                    <Field key={field.key} label={field.label} span2={field.span2}>
-                      <LinkedRecordField
-                        name="supplier_company_id"
-                        value={form.supplier_company_id}
-                        options={vendorOptions}
-                        labelFn={c => c.name}
-                        getHref={c => `/companies/${c.id}`}
-                        saving={saveState === 'saving'}
-                        onChange={changeSupplier}
-                      />
-                    </Field>
-                  )
-                }
-                if (field.type === 'select') {
-                  // Règle CLAUDE.md : tout dropdown > 10 options doit offrir une recherche.
-                  return (
-                    <Field key={field.key} label={field.label} span2={field.span2}>
-                      {(field.options || []).length > 10 ? (
-                        <SearchableSelect
-                          value={form[field.key] || ''}
-                          options={(field.options || []).map(o => ({ value: o, label: o }))}
-                          emptyOption="—"
-                          onChange={v => change(field.key, v)}
-                          className={inp}
-                          size="sm"
-                          testId={`product-field-${field.key}`}
-                        />
-                      ) : (
-                        <select className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)}>
-                          <option value="">—</option>
-                          {(field.options || []).map(o => <option key={o} value={o}>{o}</option>)}
-                        </select>
-                      )}
-                    </Field>
-                  )
-                }
-                if (field.type === 'textarea') {
-                  return (
-                    <Field key={field.key} label={field.label} span2={field.span2}>
-                      <textarea className={inp} rows={3} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
-                    </Field>
-                  )
-                }
-                if (field.type === 'number') {
-                  return (
-                    <Field key={field.key} label={field.label} span2={field.span2}>
-                      <input type="number" min="0" step={field.step || '1'} className={inp}
-                        value={form[field.key] ?? ''} onChange={e => change(field.key, parseFloat(e.target.value) || 0)} />
-                    </Field>
-                  )
-                }
-                return (
-                  <Field key={field.key} label={field.label} span2={field.span2}>
-                    <input className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
-                  </Field>
-                )
-              })}
-              {/* Champs personnalisés de la table : ils apparaissent sans qu'on
-                  touche au code de la fiche. Lecture seule — sauf le champ
-                  Attachement, qui écrit sa cellule lui-même au dépôt. */}
-              {customFields.map(field => (
-                <Field key={field.key} label={field.label}>
-                  <div className="text-sm text-slate-700 py-1.5" data-testid={`detail-cf-${field.key}`}>
-                    {field.type === 'attachment'
-                      ? <AttachmentField field={field.field} recordId={product.id} value={product[field.key]} readOnly={!field.writable} />
-                      : field.render(product[field.key])}
-                  </div>
-                </Field>
-              ))}
-            </div>
-          </div>
+          {/* Carte de champs commune : le panneau y gagne son bouton
+              « Personnaliser les champs » (ordre, retrait, ajout d'un champ de
+              la table, modification du champ par clic droit). Les champs
+              personnalisés de la table s'y posent seuls — d'où `record`. */}
+          <DetailFieldGrid
+            entityType="products"
+            record={product}
+            taken={TAKEN_ELSEWHERE}
+            className="card p-6"
+            testId="product-fields"
+          >
+            {PRODUCT_FIELDS.map(field => (
+              <DetailField
+                key={field.key}
+                id={field.key}
+                label={field.label}
+                span2={field.span2}
+                // Champs secondaires : ils attendent dans « Ajouter un champ »
+                // plutôt que de charger la carte d'office.
+                defaultHidden={field.defaultVisible === false}
+              >
+                {fieldEditor(field)}
+              </DetailField>
+            ))}
+          </DetailFieldGrid>
         </Section>
 
-        <Section id="mouvements" label={SECTION_LABELS.mouvements} count={sectionCounts.mouvements} registerRef={registerSection('mouvements')}>
+        <Section
+          id="mouvements"
+          label={SECTION_LABELS.mouvements}
+          count={sectionCounts.mouvements}
+          registerRef={registerSection('mouvements')}
+          action={
+            <button onClick={() => setShowStockAdjust(true)} className="btn-secondary btn-sm flex items-center gap-1.5">
+              <SlidersHorizontal size={14} /> Ajuster l'inventaire
+            </button>
+          }
+        >
           <DataTable
             table="product_movements"
             columns={MOVEMENT_COLUMNS}
@@ -638,36 +698,21 @@ export default function ProductDetail({ recordId, onClose }) {
           />
         </Section>
 
-        <Section
-          id="achats"
-          label={SECTION_LABELS.achats}
-          count={sectionCounts.achats}
-          registerRef={registerSection('achats')}
-          action={(
-            <button
-              type="button"
-              onClick={() => { setAchatQty(form.order_qty ? String(form.order_qty) : ''); setShowAchatModal(true) }}
-              className="btn-secondary flex items-center gap-1.5 text-sm"
-              data-testid="product-add-achat"
-            >
-              <Plus size={14} /> Achat
-            </button>
-          )}
-        >
+        <Section id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}>
           <DataTable
-            table="product_achats"
-            columns={ACHAT_COLUMNS}
-            data={achats}
-            searchFields={['reference', 'supplier', 'supplier_company_name', 'status']}
-            height={stackedTableHeight(achats.length)}
+            table="product_purchases"
+            columns={PURCHASE_COLUMNS}
+            data={purchases}
+            searchFields={['at_id', 'supplier_company_name', 'supplier_vendor_name', 'emplacement']}
+            height={stackedTableHeight(purchases.length)}
             peek={{
-              title: row => row.reference || `Achat #${row.id}`,
-              subtitle: row => row.supplier_company_name || row.supplier || '',
+              title: row => row.at_id || 'Achat',
+              subtitle: row => row.supplier_company_name || row.supplier_vendor_name || '',
               to: row => `/purchases/${row.id}`,
               width: 680,
               render: (row, { close }) => <PurchaseDetail recordId={row.id} embedded onClose={close} />,
             }}
-            emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucun achat n'est enregistré pour cette pièce." }}
+            emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucun achat ne cite cette pièce." }}
           />
         </Section>
 
@@ -728,7 +773,7 @@ export default function ProductDetail({ recordId, onClose }) {
                                   href={url}
                                   target="_blank"
                                   rel="noopener noreferrer"
-                                  className={`${inp} inline-flex items-center gap-1.5 text-brand-600 hover:underline truncate`}
+                                  className={`${inp} inline-flex items-center gap-1.5 link-record truncate`}
                                   title={url}
                                 >
                                   <ExternalLink size={14} className="shrink-0" />
@@ -763,7 +808,8 @@ export default function ProductDetail({ recordId, onClose }) {
 
         </div>
 
-        {/* Suppression — barrée tant qu'un BOM, un envoi ou un achat cite la pièce. */}
+        {/* Suppression — barrée tant qu'un BOM ou un envoi cite la pièce. */}
+        {canDelete && (
         <div className="mt-6">
           <button
             type="button"
@@ -780,6 +826,7 @@ export default function ProductDetail({ recordId, onClose }) {
             <div className="mt-1 text-xs text-slate-400">{deleteCheck.reason}</div>
           )}
         </div>
+        )}
 
       <PurchaseOrderModal
         productId={id}
@@ -787,34 +834,20 @@ export default function ProductDetail({ recordId, onClose }) {
         onClose={() => setShowPoModal(false)}
       />
 
-      <Modal isOpen={showAchatModal} onClose={() => setShowAchatModal(false)} title="Nouvel achat" size="sm">
-        <form onSubmit={submitAchat} className="space-y-4">
-          <div>
-            <label className="block text-xs font-medium text-slate-400 uppercase tracking-wide mb-1" htmlFor="achat-qty">Quantité</label>
-            <input
-              id="achat-qty"
-              type="number"
-              min="1"
-              step="1"
-              value={achatQty}
-              onChange={e => setAchatQty(e.target.value)}
-              className={inp}
-              data-testid="product-achat-qty"
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <button type="button" className="btn-secondary text-sm" onClick={() => setShowAchatModal(false)}>Annuler</button>
-            <button
-              type="submit"
-              className="btn-primary text-sm"
-              disabled={achatSaving || !(parseInt(achatQty, 10) > 0)}
-              data-testid="product-achat-submit"
-            >
-              {achatSaving ? 'Création…' : 'Créer'}
-            </button>
-          </div>
-        </form>
+      <Modal isOpen={showStockAdjust} onClose={() => setShowStockAdjust(false)} title="Ajustement de stock" size="sm">
+        {product && (
+          <StockAdjustForm
+            product={product}
+            onSaved={async (data) => {
+              await api.products.adjustStock(id, data)
+              await load()
+              addToast({ message: 'Inventaire ajusté', type: 'success', duration: 3000 })
+            }}
+            onClose={() => setShowStockAdjust(false)}
+          />
+        )}
       </Modal>
+
 
       {showRefreshDocsModal && (() => {
         const docFields = [

@@ -5,7 +5,7 @@
 // réglages) et le panneau rapide accessible depuis n'importe quelle page
 // (TravauxQuickPanel). Tout ce qui est ici doit rester utilisable sans la page.
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Loader2, HelpCircle, Send, ChevronsDown, ChevronsUp } from 'lucide-react'
+import { Loader2, HelpCircle, Send, ChevronsDown, ChevronsUp, Zap, Moon, Clock } from 'lucide-react'
 import api from './api.js'
 
 export const inputCls = 'px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
@@ -21,6 +21,9 @@ export const STATUS_STYLES = {
   waiting: 'bg-slate-100 text-slate-600',
   queued: 'bg-slate-100 text-slate-600',
   paused: 'bg-amber-50 text-amber-700',
+  // Départ différé demandé au dépôt (« ce soir, 19 h ») : en file, mais l'heure
+  // n'est pas venue.
+  scheduled: 'bg-indigo-50 text-indigo-700',
   done: 'bg-emerald-50 text-emerald-700',
   blocked: 'bg-rose-50 text-rose-700',
   // Arrêt volontaire (bouton « Arrêter ») : même famille que « Bloqué » côté
@@ -32,6 +35,7 @@ export const STATUS_STYLES = {
 export const STATUS_LABELS = {
   asking: 'À répondre',
   running: 'En cours', waiting: 'En file', queued: 'En file', paused: 'De côté',
+  scheduled: 'Programmé',
   done: 'Terminé', blocked: 'Bloqué', stopped: 'Arrêté', cancelled: 'Annulé',
 }
 
@@ -46,8 +50,26 @@ export function isAsking(p) {
  * (serveur) tranche entre les deux — sans lui, deux réponses envoyées coup sur
  * coup affichaient deux « En cours ».
  */
+/** Départ différé encore à venir : l'item est en file, mais son heure n'est pas là. */
+export function isScheduled(p) {
+  return p.status === 'queued' && !!p.start_at && Date.parse(p.start_at) > Date.now()
+}
+
+/** Heure d'un départ différé, courte (« 19 h », « demain 19 h »). */
+export function startAtLabel(iso) {
+  const t = Date.parse(iso)
+  if (Number.isNaN(t)) return ''
+  const d = new Date(t)
+  const hm = d.toLocaleTimeString('fr-CA', { hour: 'numeric', minute: '2-digit' })
+  const sameDay = d.toDateString() === new Date().toDateString()
+  return sameDay ? hm : `${d.toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })} ${hm}`
+}
+
 export function pillStateOf(p) {
   if (p.status === 'running') return p.run_state === 'executing' ? 'running' : 'waiting'
+  // Programmé : rien ne partira avant l'heure demandée — « En file » laisserait
+  // croire que la carte attend juste un poste libre.
+  if (isScheduled(p)) return 'scheduled'
   // « Terminé » serait faux : la tâche a rendu la main faute d'une décision qui
   // n'appartenait qu'à l'utilisateur, et reprendra dès qu'il aura répondu.
   if (isAsking(p)) return 'asking'
@@ -77,8 +99,12 @@ export function shortDate(iso) {
 export function StatusPill({ p }) {
   const state = pillStateOf(p)
   const rank = p.wait_rank
-  const suffix = (state === 'waiting' || state === 'queued') && rank ? ` · ${ordinal(rank)}` : ''
-  const title = state === 'waiting'
+  const suffix = state === 'scheduled'
+    ? ` · ${startAtLabel(p.start_at)}`
+    : (state === 'waiting' || state === 'queued') && rank ? ` · ${ordinal(rank)}` : ''
+  const title = state === 'scheduled'
+    ? "Départ programmé : les tâches du soir partent l'une après l'autre, dans une seule file. « Passer en premier » la lance tout de suite."
+    : state === 'waiting'
     ? "Remis à l'agent, mais son tour n'est pas venu : sa file avance une tâche à la fois (elles sont quatre en parallèle)."
     : state === 'running' ? "Claude travaille sur cette tâche en ce moment."
       : state === 'asking' ? "Claude attend ta réponse : le travail reprend dès que tu choisis."
@@ -87,6 +113,7 @@ export function StatusPill({ p }) {
     <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${STATUS_STYLES[state] || 'bg-slate-100 text-slate-600'}`} title={title}>
       {state === 'running' && <Loader2 size={11} className="inline animate-spin mr-1" />}
       {state === 'asking' && <HelpCircle size={11} className="inline mr-1" />}
+      {state === 'scheduled' && <Clock size={11} className="inline mr-1" />}
       {STATUS_LABELS[state] || state}{suffix}
     </span>
   )
@@ -237,6 +264,56 @@ export function PlacementToggle({ value, onChange, testId = 'travaux-placement',
     >
       {first ? <ChevronsUp size={12} /> : <ChevronsDown size={12} />}
       {first ? 'Au début de la file' : 'À la fin de la file'}
+    </button>
+  )
+}
+
+/** Heure de départ « ce soir, 19 h » — le soir suivant si 19 h est déjà passé. */
+export const EVENING_HOUR = 19
+
+export function eveningStart() {
+  const d = new Date()
+  d.setHours(EVENING_HOUR, 0, 0, 0)
+  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1)
+  return d.toISOString()
+}
+
+/** Vrai si « ce soir 19 h » tombe déjà demain (19 h passé) — l'étiquette le dit. */
+function eveningIsTomorrow() {
+  const d = new Date()
+  d.setHours(EVENING_HOUR, 0, 0, 0)
+  return d.getTime() <= Date.now()
+}
+
+/**
+ * Quand la tâche qu'on dépose doit-elle DÉMARRER : tout de suite (dès qu'un poste
+ * est libre) ou en soirée, à 19 h. Même forme que PlacementToggle — le bouton dit
+ * l'état courant, cliquer le bascule — et même vocabulaire partout : le placement
+ * dit OÙ dans la file, celui-ci dit QUAND.
+ *
+ * Défaut : maintenant, le comportement d'origine. Programmer sert à laisser la
+ * journée tranquille : l'agent redéploie le frontend et redémarre le serveur en
+ * travaillant, ce qui se voit quand on est en train d'utiliser l'ERP.
+ */
+export function StartToggle({ value, onChange, testId = 'travaux-start', className = '' }) {
+  const evening = value === 'evening'
+  const label = evening ? (eveningIsTomorrow() ? `Demain ${EVENING_HOUR} h` : `Ce soir ${EVENING_HOUR} h`) : 'Maintenant'
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      data-start={evening ? 'evening' : 'now'}
+      aria-pressed={evening}
+      onClick={() => onChange(evening ? 'now' : 'evening')}
+      title={evening
+        ? `Démarrera à ${EVENING_HOUR} h, à la suite des autres tâches programmées — cliquer pour la lancer tout de suite`
+        : `Part tout de suite, en parallèle des autres demandes du moment — cliquer pour la programmer à ${EVENING_HOUR} h`}
+      className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
+        evening ? 'text-indigo-600 hover:text-indigo-700' : 'text-slate-400 hover:text-slate-600'
+      } ${className}`}
+    >
+      {evening ? <Moon size={12} /> : <Zap size={12} />}
+      {label}
     </button>
   )
 }

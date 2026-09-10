@@ -7,6 +7,8 @@ import { useFieldGate } from '../lib/fieldGate.js'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import Spinner from './Spinner.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
+import { RatingInput } from './RatingStars.jsx'
 
 // Formulaire d'ajout de record, configurable par l'utilisateur.
 //
@@ -25,14 +27,16 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 // (GET /api/form-configs/:table/fields → services/formFieldCatalog.js) : tous les
 // autres champs saisissables de la table — champs perso ERP et colonnes adoptées
 // d'Airtable — moins ceux qui n'ont pas de saisie manuelle (formule, lookup,
-// rollup, autonuméro, pièce jointe, champ lien). À n'activer que sur une page
-// dont la route de création accepte ces colonnes (aujourd'hui /orders).
+// rollup, autonuméro, pièce jointe, champ lien sans table cible). À n'activer
+// que sur une page dont la route de création accepte ces colonnes.
 //
 // Spec d'un champ :
 //   field         — clé dans le payload de création (obligatoire, unique)
 //   label         — libellé FR (surchargé par la personnalisation de champ)
 //   type          — 'text' | 'textarea' | 'number' | 'currency' | 'date'
-//                   | 'email' | 'url' | 'select' | 'checkbox' (défaut 'text')
+//                   | 'email' | 'url' | 'select' | 'checkbox' | 'rating'
+//                   | 'record_link'
+//                   (défaut 'text')
 //   options       — pour 'select' : [{ value, label }] ou string[]
 //   rows, min, step
 //   span          — 2 pour occuper toute la largeur d'une grille 2 colonnes
@@ -41,6 +45,9 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 //   required      — défaut d'obligation (défaut false)
 //   locked        — champ non masquable et non dé-obligeable (ex. le nom)
 //   input         — rendu custom ({ value, onChange, values, setValues, id }) => JSX
+//   catalog       — true : la définition du champ vient du CATALOGUE du registre
+//                   (`includeAllFields`), la page n'en surcharge que les clés
+//                   qu'elle donne — typiquement `visible: true`
 //   trim          — true pour trimmer la valeur texte au submit (défaut true
 //                   pour text/textarea)
 
@@ -129,24 +136,46 @@ export function useFormFieldCatalog(table) {
   return { catalog, loaded }
 }
 
+// Spec de formulaire dérivée d'une entrée du catalogue du registre.
+function catalogSpec(c) {
+  return {
+    field: c.field,
+    label: c.label,
+    type: c.type,
+    options: c.options,
+    decimals: c.decimals,
+    // Champ lien : table visée et identité stockée, que le picker a besoin de
+    // connaître (cf. GenericInput, type 'record_link').
+    record_link_target: c.record_link_target,
+    record_link_identity: c.record_link_identity,
+    record_link_array: c.record_link_array,
+    record_link_single: c.record_link_single,
+    ...(c.writable === false ? { readOnly: true, readOnlyReason: c.readonly_reason } : {}),
+  }
+}
+
 // Specs de la page + champs du catalogue qu'elle ne déclare pas. La page reste
 // prioritaire : son libellé, son rendu custom et ses défauts l'emportent sur la
 // définition générique du registre.
+//
+// Cas particulier, `catalog: true` : la page ne fait que RÉGLER un champ du
+// registre (typiquement le poser visible par défaut) sans le redéfinir — sa
+// nature vient du catalogue, la page n'en surcharge que les clés qu'elle donne.
+// Sans ça, déclarer un champ du registre en perdrait le type : un champ lien
+// retomberait en zone de texte. Un tel champ disparaît du formulaire s'il n'est
+// plus au catalogue (champ supprimé) : mieux vaut un champ en moins qu'une
+// saisie qui ne s'enregistre pas.
 export function mergeCatalogFields(fields, catalog) {
-  if (!catalog?.length) return fields
+  const byField = new Map((catalog || []).map(c => [c.field, c]))
+  const base = fields
+    .filter(f => !f.catalog || byField.has(f.field))
+    .map(f => (f.catalog ? { ...catalogSpec(byField.get(f.field)), ...f } : f))
+  if (!catalog?.length) return base
   const declared = new Set(fields.map(f => f.field))
   const extra = catalog
     .filter(c => !declared.has(c.field))
-    .map(c => ({
-      field: c.field,
-      label: c.label,
-      type: c.type,
-      options: c.options,
-      decimals: c.decimals,
-      visible: false,
-      ...(c.writable === false ? { readOnly: true, readOnlyReason: c.readonly_reason } : {}),
-    }))
-  return extra.length ? [...fields, ...extra] : fields
+    .map(c => ({ ...catalogSpec(c), visible: false }))
+  return extra.length ? [...base, ...extra] : base
 }
 
 function GenericInput({ spec, value, onChange, id }) {
@@ -173,6 +202,27 @@ function GenericInput({ spec, value, onChange, id }) {
         className="rounded border-slate-300 text-brand-600 focus:ring-brand-500"
       />
     )
+  }
+  // Évaluation : une note de 0 à 5 se donne en étoiles, pas au clavier.
+  if (spec.type === 'rating') {
+    return <RatingInput value={value} onChange={onChange} testId={spec.testId} />
+  }
+  // Champ lien (colonne portant des identifiants d'enregistrement) : même
+  // picker recherchable que la fiche, avec le lien vers la fiche visée — règle
+  // CLAUDE.md des champs référence. La valeur commitée garde la forme de la
+  // colonne (tableau JSON pour un champ lien Airtable).
+  if (spec.type === 'record_link') {
+    const field = {
+      record_link_target: spec.record_link_target,
+      record_link_identity: spec.record_link_identity,
+      record_link_single: spec.record_link_single,
+      options: spec.record_link_array ? { airtable_link_hint: true } : null,
+    }
+    // Tout délier renvoie un tableau vide (`[]`) : la colonne doit rester VIDE,
+    // sans quoi un champ qu'on a vidé compterait comme rempli (obligatoire) et
+    // partirait en base sous la forme d'un tableau sans élément.
+    const commit = v => onChange(v == null || v === '[]' ? '' : v)
+    return <LinkedRecordsValue field={field} value={value} detail navigable={false} onChange={commit} />
   }
   if (spec.type === 'select') {
     const options = normalizeOptions(spec.options)

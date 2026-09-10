@@ -5,7 +5,8 @@
 // occurrence utilisée pour le sheet (fragile face aux modifications).
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { runPostImportHooks } from './bankReconciliation.js'
+import { runPostImportHooks, autoMatchAccount, RECEIPT_BANK_MATCH_AUTOMATION_ID } from './bankReconciliation.js'
+import { isSystemAutomationActive } from './systemAutomations.js'
 import { syncItemTransactions, listItems, itemHealth } from '../connectors/plaid.js'
 import { logSync } from './syncLog.js'
 import { TREASURY_BANK_ACCOUNT, recordBalance, checkBalanceVariance } from './treasury.js'
@@ -87,7 +88,17 @@ export function importPlaidTransactions(accountsByPlaidId, { added, modified, re
     }
   })
   tx()
+  // Appariement aux documents de l'ERP. Le collage manuel et la sync
+  // TRX_Orisha le déclenchaient déjà, jamais Plaid : sur les comptes branchés,
+  // une facture pourtant déjà extraite restait « à traiter » jusqu'à un clic
+  // sur « Rapprocher ». Les transactions en attente sont exclues plus haut —
+  // leur montant peut encore bouger avant de se poser.
+  const matching = isSystemAutomationActive(RECEIPT_BANK_MATCH_AUTOMATION_ID)
   for (const accountId of touchedAccounts) {
+    if (matching) {
+      try { autoMatchAccount(accountId) }
+      catch (e) { console.error('plaidSync.autoMatchAccount:', e.message) }
+    }
     runPostImportHooks(accountId, { source: 'plaid' })
   }
   return { inserted, touchedAccounts: [...touchedAccounts] }

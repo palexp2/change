@@ -95,13 +95,13 @@ export default function DirectDepositsSection() {
                     >
                       <td className="px-5 py-2 text-slate-500 whitespace-nowrap">{fmtDate(c.paid_at)}</td>
                       <td className="py-2">
-                        <Link to={`/factures/${c.id}`} onClick={stop} className="font-mono text-xs text-brand-600 hover:underline">
+                        <Link to={`/factures/${c.id}`} onClick={stop} className="font-mono text-xs link-record">
                           {c.document_number || c.id.slice(0, 8)}
                         </Link>
                       </td>
                       <td className="py-2 text-slate-700">
                         {c.company_id
-                          ? <Link to={`/companies/${c.company_id}`} onClick={stop} className="text-brand-600 hover:underline">{c.company_name}</Link>
+                          ? <Link to={`/companies/${c.company_id}`} onClick={stop} className="link-record">{c.company_name}</Link>
                           : <span className="text-slate-400">—</span>}
                       </td>
                       <td className="py-2">
@@ -144,13 +144,13 @@ export default function DirectDepositsSection() {
                     >
                       <td className="px-5 py-2 text-slate-500 whitespace-nowrap">{fmtDate(p.received_at)}</td>
                       <td className="py-2">
-                        <Link to={`/factures/${p.facture_id}`} onClick={stop} className="font-mono text-xs text-brand-600 hover:underline">
+                        <Link to={`/factures/${p.facture_id}`} onClick={stop} className="font-mono text-xs link-record">
                           {p.document_number || p.facture_id.slice(0, 8)}
                         </Link>
                       </td>
                       <td className="py-2 text-slate-700">
                         {p.company_id
-                          ? <Link to={`/companies/${p.company_id}`} onClick={stop} className="text-brand-600 hover:underline">{p.company_name}</Link>
+                          ? <Link to={`/companies/${p.company_id}`} onClick={stop} className="link-record">{p.company_name}</Link>
                           : <span className="text-slate-400">—</span>}
                       </td>
                       <td className="py-2 text-slate-600">{METHOD_LABELS[p.method] || p.method}</td>

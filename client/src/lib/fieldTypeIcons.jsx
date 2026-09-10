@@ -1,7 +1,7 @@
 import {
   Type, AlignLeft, Hash, DollarSign, Timer, Calendar, CalendarClock, Clock,
-  Link2, Table2, Phone, CheckSquare, CircleChevronDown, Tags, Search, Sigma,
-  SquareFunction, MousePointerClick, User, UserCog, Paperclip,
+  Link2, Table2, Phone, CheckSquare, CircleChevronDown, Tags, Search, Sigma, Percent,
+  SquareFunction, MousePointerClick, User, UserCog, Paperclip, Star,
 } from 'lucide-react'
 
 // Icônes des types de champ — un pictogramme par type, partagé partout où un
@@ -20,7 +20,10 @@ const ICONS = {
   long_text:          AlignLeft,
   number:             Hash,
   currency:           DollarSign,
+  percent:            Percent,
   duration:           Timer,
+  // Évaluation : note de 0 à 5 étoiles (cf. lib/rating.js).
+  rating:             Star,
   date:               Calendar,
   datetime:           CalendarClock,
   // 'boolean' = même chose que 'checkbox' sous l'ancien nom (cf. normalizeFieldType).
@@ -34,9 +37,10 @@ const ICONS = {
   user:               User,
   // Lien vers une autre table (champ perso kind='link', type Airtable 'link').
   link:               Table2,
-  // Champ lien importé d'Airtable : même pictogramme, c'est le même objet vu
-  // par l'utilisateur (la colonne porte l'id du record lié).
-  airtable_link:      Table2,
+  // Champ de donnée affiché en lien vers la fiche d'une autre table (type
+  // « Lien » de la modale de champ, ou champ lien importé d'Airtable) : même
+  // pictogramme, c'est le même objet vu par l'utilisateur.
+  record_link:        Table2,
   // Champs virtuels
   formula:            SquareFunction,
   lookup:             Search,

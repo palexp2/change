@@ -2,12 +2,13 @@ import { lazy } from 'react'
 import api from './api.js'
 import { fmtAddress } from '../utils/formatters.js'
 import { shipmentTitle, shipmentSubtitle } from './shipmentLabel.js'
+import { interactionTitle, interactionSubtitle } from './interactionLabel.js'
 
 // Registre des fiches ouvrables en side-peek à partir d'un lien.
 //
-// C'est LE registre des enregistrements de l'app : une fiche ne s'affiche
-// jamais en pleine page, toujours dans un panneau latéral. Il sert deux
-// chemins d'ouverture, qui aboutissent au même panneau :
+// C'est LE registre des enregistrements ouverts en panneau latéral (les
+// ressources qui n'y figurent pas ont une vraie route pleine page). Il sert
+// deux chemins d'ouverture, qui aboutissent au même panneau :
 //  1. Un lien cliqué DEPUIS un panneau (le produit d'une ligne de commande…) :
 //     on n'a pas la ligne du tableau sous la main, seule l'URL est connue →
 //     `matchPeekRoute` fait le pont URL → fiche embarquée.
@@ -32,16 +33,6 @@ import { shipmentTitle, shipmentSubtitle } from './shipmentLabel.js'
 //  - idPattern : forme des id de la table, si elle sort de l'ordinaire
 //                (défaut : entier ou UUID — voir `matchPeekRoute`).
 export const PEEK_ROUTES = {
-  orders: {
-    label: 'Commande',
-    width: 900,
-    list: '/orders',
-    Component: lazy(() => import('../pages/OrderDetail.jsx')),
-    load: id => api.orders.get(id),
-    // Pas de sous-titre : l'entreprise est déjà dans la fiche, en chip
-    // cliquable et modifiable — l'écrire ici la ferait apparaître deux fois.
-    title: r => (r.order_number ? `Commande #${r.order_number}` : `Commande #${r.id}`),
-  },
   products: {
     label: 'Produit',
     width: 720,
@@ -51,24 +42,13 @@ export const PEEK_ROUTES = {
     title: r => r.name_fr || r.name_en || r.name || 'Produit',
     subtitle: r => [r.sku, r.type].filter(Boolean).join(' · '),
   },
-  companies: {
-    label: 'Entreprise',
-    width: 720,
-    list: '/companies',
-    Component: lazy(() => import('../pages/CompanyDetail.jsx')),
-    load: id => api.companies.get(id),
-    title: r => r.name || 'Entreprise',
-    subtitle: r => [r.type, r.city].filter(Boolean).join(' · '),
-  },
-  contacts: {
-    label: 'Contact',
-    width: 560,
-    list: '/contacts',
-    Component: lazy(() => import('../pages/ContactDetail.jsx')),
-    load: id => api.contacts.get(id),
-    title: r => `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Contact',
-    subtitle: r => r.company_name || r.email || '',
-  },
+  // Commandes, entreprises et contacts ne sont plus dans ce registre : leur
+  // fiche s'ouvre en pleine page (/orders/:id, /companies/:id, /contacts/:id —
+  // routes réelles dans App.jsx, pages/OrderDetailPage.jsx,
+  // CompanyDetailPage.jsx et ContactDetailPage.jsx), pas dans ce panneau. Les
+  // aperçus imbriqués (contacts et commandes d'une entreprise, entreprise
+  // d'une facture) gardent leur propre side-peek local, indépendant de ce
+  // registre — voir CompanyDetail.jsx et Factures.jsx.
   projects: {
     label: 'Projet',
     width: 720,
@@ -120,8 +100,9 @@ export const PEEK_ROUTES = {
     list: '/retours',
     Component: lazy(() => import('../pages/RetourDetail.jsx')),
     load: id => api.retours.get(id),
-    title: r => r.n_de_retour || 'Retour',
-    subtitle: r => r.company_name || '',
+    // Ni n° RMA ni entreprise sur un retour depuis la migration serveur 037,
+    // ni statut depuis la 041 : plus rien à mettre en sous-titre.
+    title: () => 'Retour',
   },
   purchases: {
     label: 'Achat',
@@ -129,8 +110,8 @@ export const PEEK_ROUTES = {
     list: '/purchases',
     Component: lazy(() => import('../pages/PurchaseDetail.jsx')),
     load: id => api.purchases.get(id),
-    title: r => r.product_name || r.reference || 'Achat',
-    subtitle: r => r.supplier_company_name || r.supplier || '',
+    title: r => r.nom_de_la_piece || r.at_id || 'Achat',
+    subtitle: r => r.supplier_company_name || r.supplier_vendor_name || '',
   },
   tickets: {
     label: 'Billet',
@@ -138,8 +119,9 @@ export const PEEK_ROUTES = {
     list: '/tickets',
     Component: lazy(() => import('../pages/TicketDetail.jsx')),
     load: id => api.tickets.get(id),
-    title: r => r.title || 'Billet',
-    subtitle: r => r.company_name || r.contact_name || '',
+    // Titre, entreprise et contact ont été droppés (migration 040) : un billet
+    // n'a plus de libellé propre.
+    title: () => 'Billet',
   },
   soumissions: {
     label: 'Soumission',
@@ -187,6 +169,24 @@ export const PEEK_ROUTES = {
     load: id => api.discoveryForms.get(id),
     title: r => r.company_name || 'System builder',
     subtitle: r => (r.status === 'submitted' ? 'Soumis' : 'En cours'),
+  },
+  interactions: {
+    label: 'Interaction',
+    width: 720,
+    list: '/interactions',
+    Component: lazy(() => import('../pages/InteractionDetail.jsx')),
+    load: id => api.interactions.get(id),
+    title: r => interactionTitle(r),
+    subtitle: r => interactionSubtitle(r),
+  },
+  'problemes-operations': {
+    label: 'Problème',
+    width: 720,
+    list: '/problemes-operations',
+    Component: lazy(() => import('../pages/OpsIssueDetail.jsx')),
+    load: id => api.opsIssues.get(id),
+    title: r => r.title || 'Problème',
+    subtitle: r => [r.area, r.status].filter(Boolean).join(' · '),
   },
   employees: {
     label: 'Employé',

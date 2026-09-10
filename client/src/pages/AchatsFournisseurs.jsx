@@ -20,6 +20,17 @@ import Spinner from '../components/Spinner.jsx'
 
 const NO_TAX = '__none__'
 
+// The Letter EM facture toujours au 1er du mois suivant la période réelle :
+// ctb doit tomber le dernier jour du mois précédent (voir vendor_profiles.particularites).
+function isLetterEmVendor(name) {
+  return (name || '').trim().toLowerCase() === 'the letter em'
+}
+function lastDayOfPrevMonth(dateStr) {
+  const d = new Date(`${dateStr}T00:00:00`)
+  d.setDate(0) // recule au dernier jour du mois précédent
+  return d.toISOString().slice(0, 10)
+}
+
 const STATUS_COLORS = {
   'Brouillon': 'gray',
   'Soumis': 'blue',
@@ -44,7 +55,7 @@ const RENDERS = {
     ? <Badge color="indigo">Facture</Badge>
     : <Badge color="slate">Dépense</Badge>,
   vendor: row => row.vendor_id
-    ? <Link to={`/companies/${row.vendor_id}`} onClick={e => e.stopPropagation()} className="text-brand-600 hover:underline">{row.vendor}</Link>
+    ? <Link to={`/companies/${row.vendor_id}`} onClick={e => e.stopPropagation()} className="link-record">{row.vendor}</Link>
     : <span>{row.vendor || <span className="text-slate-400">—</span>}</span>,
   date_achat: row => <span className="text-slate-500">{fmtDate(row.date_achat)}</span>,
   due_date: row => {
@@ -61,7 +72,7 @@ const RENDERS = {
   },
   qb: row => row.qb_url
     ? <a href={row.qb_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()}
-        className="inline-flex items-center gap-1 text-brand-600 hover:underline" title="Ouvrir dans QuickBooks">
+        className="inline-flex items-center gap-1 link-record" title="Ouvrir dans QuickBooks">
         <ExternalLink size={12} /> #{row.quickbooks_id}
       </a>
     : <span className="text-slate-400">—</span>,
@@ -76,7 +87,8 @@ function emptyForm(type) {
     : { type: 'purchase', date_achat: today, vendor: '', vendor_id: null, reference: '', description: '', category: '', payment_method: '', amount_cad: '', tax_cad: '', status: 'Brouillon', notes: '' }
 }
 
-function AchatModal({ achat, initialType, onClose, onSaved }) {
+// Exporté : la fiche Entreprise ouvre le même panneau depuis son onglet « Achats fourn. ».
+export function AchatModal({ achat, initialType, onClose, onSaved }) {
   const isEdit = !!achat?.id
   const [form, setForm] = useState(achat
     ? { ...achat, amount_cad: achat.amount_cad ?? '', tax_cad: achat.tax_cad ?? '', amount_paid_cad: achat.amount_paid_cad ?? '' }
@@ -204,6 +216,25 @@ function AchatModal({ achat, initialType, onClose, onSaved }) {
           </div>
         )}
       </div>
+
+      {isLetterEmVendor(form.vendor) && form.date_achat?.endsWith('-01') && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-sm flex items-center justify-between gap-3">
+          <span className="text-amber-800">
+            The Letter EM facture au 1er — à comptabiliser le dernier jour du mois précédent ({fmtDate(lastDayOfPrevMonth(form.date_achat))}).
+          </span>
+          <button
+            type="button"
+            className="btn-secondary shrink-0"
+            onClick={() => {
+              const corrected = lastDayOfPrevMonth(form.date_achat)
+              setForm(p => ({ ...p, date_achat: corrected }))
+              if (isEdit) saveField({ date_achat: corrected })
+            }}
+          >
+            Corriger
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         <div>
@@ -561,7 +592,7 @@ function QBAttachmentsSection({ achatId }) {
                   <button
                     type="button"
                     onClick={() => handleOpen(it.id)}
-                    className="text-brand-600 hover:underline truncate block text-left"
+                    className="link-record truncate block text-left"
                   >
                     {it.file_name}
                   </button>

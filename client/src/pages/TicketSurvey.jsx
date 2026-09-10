@@ -248,9 +248,7 @@ export default function TicketSurvey() {
       </div>
 
       <h1 className="text-lg font-semibold text-slate-900 text-center leading-snug">{t.question}</h1>
-      {data?.ticket_title && (
-        <p className="text-xs text-slate-400 text-center mt-1.5">{t.about} {data.ticket_title}</p>
-      )}
+      {/* Le rappel du billet a disparu avec `tickets.title` (migration 040). */}
 
       <div className="mt-6">
         <StarRating

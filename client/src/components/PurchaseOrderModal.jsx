@@ -197,7 +197,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
                   <span className="font-medium text-slate-700">{createdCount} achat{createdCount > 1 ? 's' : ''}</span>
                   {' '}créé{createdCount > 1 ? 's' : ''} pour la référence{' '}
                   <span className="font-medium text-slate-700">{po.po_number}</span> —{' '}
-                  <Link to="/purchases" onClick={onClose} className="text-brand-600 hover:underline">voir les achats</Link>
+                  <Link to="/purchases" onClick={onClose} className="link-record">voir les achats</Link>
                 </p>
               ) : (
                 <p>Aucun achat créé : les lignes du bon de commande ne pointent vers aucun produit du catalogue.</p>
@@ -268,7 +268,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
                   existingIds={new Set((po.items || []).map(it => it.product_id).filter(Boolean))}
                   onPick={addSupplierProduct}
                 />
-                <button onClick={addItem} className="text-xs text-brand-600 hover:underline flex items-center gap-1">
+                <button onClick={addItem} className="text-xs link-record flex items-center gap-1">
                   <Plus size={12} /> Ligne vide
                 </button>
               </div>
@@ -416,7 +416,7 @@ function SupplierProductPicker({ products, existingIds, onPick }) {
     <div className="relative" ref={rootRef}>
       <button
         onClick={() => setOpen(o => !o)}
-        className="text-xs text-brand-600 hover:underline flex items-center gap-1"
+        className="text-xs link-record flex items-center gap-1"
         type="button"
       >
         <Plus size={12} /> Ajouter une pièce du fournisseur

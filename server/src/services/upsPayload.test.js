@@ -105,7 +105,7 @@ test('étiquette de retour : sans compte UPS, on refuse avant tout appel réseau
 
 test('étiquette de retour : coordonnées client incomplètes → message actionnable', () => {
   assert.throws(
-    () => buildReturnShipmentRequest({ ...CLIENT_CA, address_contact_phone: null, company_phone: null }, {
+    () => buildReturnShipmentRequest({ ...CLIENT_CA, address_contact_phone: null }, {
       accountNumber: 'A1B2C3', packages: PACKAGES,
     }),
     /téléphone/

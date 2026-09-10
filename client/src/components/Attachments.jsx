@@ -141,7 +141,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
             <div className="min-w-0 flex-1">
               <button
                 onClick={() => handleDownload(att)}
-                className="text-sm text-slate-800 hover:text-brand-600 hover:underline truncate block max-w-full text-left"
+                className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
                 title={att.file_name}
               >
                 {att.file_name}

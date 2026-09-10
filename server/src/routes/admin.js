@@ -14,6 +14,7 @@ import { invalidateColumnsCache } from '../db/changeLog.js';
 import { getStripeKey } from '../services/stripe.js'
 import { parseLimit } from '../utils/pagination.js'
 import { listTrash, purgeTrash, TRASH_TABLE_KEYS } from '../services/trash.js'
+import { regenerateView } from '../services/customFieldsView.js'
 import { PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
 
 const router = Router();
@@ -656,6 +657,15 @@ router.post('/trash/:table/:id/restore', (req, res) => {
     db.prepare(
       'UPDATE airtable_field_mappings SET import_disabled=0 WHERE erp_table=? AND column_name=?'
     ).run(field.erp_table, field.column_name)
+  }
+  // Champ CALCULÉ (lookup, rollup, formule, link…) : supprimer un tel champ
+  // retire sa colonne virtuelle de la vue `<table>_v` (routes/custom-fields.js).
+  // Le restaurer doit la RECONSTRUIRE, sinon le champ revient dans les listes
+  // mais sa valeur n'est calculée nulle part : colonne vide dans le tableau,
+  // dans le snapshot du cache et dans l'API — seul un redémarrage du serveur
+  // (regenerateAllViews au boot) la faisait réapparaître.
+  if (field?.erp_table && field.kind && field.kind !== 'data' && field.kind !== 'native') {
+    regenerateView(field.erp_table)
   }
   // Un champ restauré doit revenir dans le snapshot client (il en avait été
   // retiré à la suppression — voir droppedFieldColumns).

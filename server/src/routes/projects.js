@@ -10,7 +10,12 @@ import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_E
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { writeBackRecord } from '../services/airtableWriteback.js';
 import { readRelation } from '../services/customFieldsView.js';
-import { fetchProjectCommissions } from '../services/projectCommissions.js';
+import {
+  fetchProjectCommissions,
+  listCommissionBeneficiaries,
+  createProjectCommission,
+  parseCommissionIds,
+} from '../services/projectCommissions.js';
 import { parsePage } from '../utils/pagination.js';
 import { mountCrud } from '../utils/crudRouter.js';
 import { RECORD_REGISTRY } from '../db/recordRegistry.js';
@@ -64,6 +69,17 @@ router.get('/vendeur-options', (req, res) => {
   }
   res.json({ data })
 })
+
+// GET /api/projects/commission-beneficiaries — bénéficiaires proposables au
+// moment d'ajouter une commission (table Airtable « Employés et partenaires »,
+// hors miroir). Déclarée avant `/:id` sinon Express la prendrait pour un id.
+router.get('/commission-beneficiaries', async (req, res) => {
+  try {
+    res.json({ data: await listCommissionBeneficiaries() });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
 
 // GET /api/projects
 // ?lite=1 → renvoie seulement les colonnes affichées par défaut dans la liste,
@@ -186,6 +202,44 @@ router.get('/:id/commissions', async (req, res) => {
   try {
     const data = await fetchProjectCommissions(project.commissions);
     res.json({ data });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+// POST /api/projects/:id/commissions — ajoute une commission (bénéficiaire +
+// taux). La ligne est créée dans Airtable, seule source de cette table ; on
+// recopie ensuite son record ID dans `projects.commissions` pour que la fiche
+// la retrouve sans attendre la prochaine synchro du miroir.
+router.post('/:id/commissions', async (req, res) => {
+  const project = db.prepare('SELECT id, airtable_id, commissions FROM projects WHERE id = ?').get(req.params.id);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  if (!project.airtable_id) {
+    return res.status(400).json({ error: 'Ce projet n’existe pas dans Airtable : impossible d’y ajouter une commission.' });
+  }
+
+  const beneficiaryId = String(req.body?.beneficiary_id || '').trim();
+  if (!beneficiaryId.startsWith('rec')) return res.status(400).json({ error: 'Bénéficiaire requis' });
+
+  // Le taux est saisi en pourcentage (2,5) et stocké en fraction (0,025), comme
+  // le champ « Commission » d'Airtable.
+  const ratePercent = parseFloat(req.body?.rate_percent);
+  if (!Number.isFinite(ratePercent) || ratePercent < 0 || ratePercent > 100) {
+    return res.status(400).json({ error: 'Taux invalide (0 à 100 %)' });
+  }
+
+  try {
+    const recordId = await createProjectCommission({
+      projectAirtableId: project.airtable_id,
+      beneficiaryId,
+      rate: ratePercent / 100,
+    });
+    const ids = [...parseCommissionIds(project.commissions), recordId];
+    // Même forme que l'import Airtable (« rec1, rec2 »), pour ne pas mélanger
+    // deux écritures du même champ.
+    db.prepare('UPDATE projects SET commissions = ? WHERE id = ?').run(ids.join(', '), project.id);
+    const data = await fetchProjectCommissions(ids.join(', '));
+    res.status(201).json({ id: recordId, data });
   } catch (e) {
     res.status(502).json({ error: e.message });
   }

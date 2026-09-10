@@ -24,6 +24,7 @@ import {
   runDiagnostic,
 } from '../services/novoxpressDiagnostic.js'
 import { uploadsPath } from '../config/uploads.js'
+import { createInAirtable } from '../services/airtableWriteback.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
@@ -37,11 +38,10 @@ function getReturnAutomationConfig(id) {
 }
 
 function getReturnWithItems(returnId) {
-  // `company_name` vient de la VUE : c'est un champ perso (lookup sur
-  // company_id) depuis la conversion du natif — plus de LEFT JOIN recopié ici,
-  // et la colonne n'est jamais nommée dans le SQL (l'utilisateur peut supprimer
-  // le champ). Le contexte d'étiquette, lui, lit `companies` en direct
-  // (services/returnContext.js) : il a besoin du nom même sans le champ.
+  // `SELECT r.*` sans jamais nommer de colonne : la table n'a plus de champ
+  // Airtable géré en code (migration 037), tout ce qu'elle porte vient de la
+  // vue et peut être supprimé depuis /champs/retours. L'entreprise, elle, se
+  // déduit des articles (services/returnContext.js).
   const row = db.prepare(`
     SELECT r.*
     FROM ${readRelation('returns')} r
@@ -68,8 +68,12 @@ router.get('/:id/return-context', (req, res) => {
   const ret = getReturnWithItems(req.params.id)
   if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
 
-  const { address, candidates, ctx } = buildReturnPartyContext(req.params.id, req.query.address_id || null)
-  res.json({ return: ret, address, candidates, party_ctx: ctx })
+  const built = buildReturnPartyContext(req.params.id, req.query.address_id || null)
+  const { address, candidates, ctx } = built
+  // L'entreprise est publiée pour que l'état vide sache dire lequel des deux
+  // manque : le client du retour, ou une adresse sur sa fiche.
+  const company = built.ret?.company_id ? { id: built.ret.company_id, name: built.ret.company_name } : null
+  res.json({ return: ret, company, address, candidates, party_ctx: ctx })
 })
 
 // POST /api/retours/:id/return-rates — tarifs + tarif recommandé
@@ -255,18 +259,17 @@ router.post('/:id/memo', async (req, res) => {
   const ret = getReturnWithItems(req.params.id)
   if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
 
-  // `ret.contact` : champ personnalisé « Contact » (ex-natif contact_id,
-  // converti par la migration 027) — il porte l'id du contact ERP.
-  const contact = ret.contact
-    ? db.prepare('SELECT langue FROM contacts WHERE id = ?').get(ret.contact)
-    : null
+  // Le retour n'a plus de contact à lui (colonne droppée, migration 037) : la
+  // langue des documents vient du contact de l'adresse de retour.
+  const { ctx } = buildReturnPartyContext(req.params.id, req.body?.address_id || null) || {}
+  const langue = ctx?.address_contact_langue || null
   const items = (ret.items || []).map(it => ({
-    produit: (contact?.langue === 'English' ? it.poduit_a_recevoir_en_for_email_display : it.poduit_a_recevoir_fr_for_email_display) || it.product_name,
+    produit: (langue === 'English' ? it.poduit_a_recevoir_en_for_email_display : it.poduit_a_recevoir_fr_for_email_display) || it.product_name,
     adresse: it.adresse_lora,
     image: loadAttachmentBuffer(it.image_from_numero_de_serie) || loadAttachmentBuffer(it.image_from_produit_a_recevoir),
     transfo: loadAttachmentBuffer(it.transfo_a_recevoir_from_numero_de_serie) || loadAttachmentBuffer(it.transfo_a_recevoir_from_produit_a_recevoir),
   }))
-  const pdfBuffer = await buildReturnMemoPdf({ langue: contact?.langue, items })
+  const pdfBuffer = await buildReturnMemoPdf({ langue, items })
   const filename = `memo-${req.params.id}.pdf`
   fs.mkdirSync(MEMOS_DIR, { recursive: true })
   fs.writeFileSync(path.join(MEMOS_DIR, filename), pdfBuffer)
@@ -294,7 +297,12 @@ function loadInstructionsEmailContext(returnId) {
   if (!ret) return { error: { status: 404, message: 'Retour introuvable' } }
 
   const { ctx } = buildReturnPartyContext(returnId, null)
-  const contact = ret.contact ? db.prepare('SELECT first_name, langue, email FROM contacts WHERE id = ?').get(ret.contact) : null
+  // Destinataire : le contact de l'adresse de retour (le retour lui-même n'a
+  // plus de contact depuis la migration 037), à défaut le courriel de
+  // l'entreprise.
+  const contact = ctx?.address_contact_email || ctx?.address_contact_first_name
+    ? { first_name: ctx.address_contact_first_name, langue: ctx.address_contact_langue, email: ctx.address_contact_email }
+    : null
   // Un retour peut avoir plusieurs items avec des raisons différentes — on
   // retient la 1ère raison présente, fidèle à l'hypothèse implicite de
   // l'automatisation Airtable d'origine (un retour = une raison dominante).
@@ -322,11 +330,11 @@ function instructionsAttachments(ret, returnId) {
   const out = []
   if (ret.return_label_pdf_path) {
     const labelPath = uploadsPath('labels', path.basename(ret.return_label_pdf_path))
-    if (fs.existsSync(labelPath)) out.push({ name: `etiquette-retour-${ret.n_de_retour || returnId}.pdf`, path: labelPath })
+    if (fs.existsSync(labelPath)) out.push({ name: `etiquette-retour-${returnId}.pdf`, path: labelPath })
   }
   if (ret.memo_pdf_path) {
     const memoPath = path.join(MEMOS_DIR, path.basename(ret.memo_pdf_path))
-    if (fs.existsSync(memoPath)) out.push({ name: `aide-memoire-${ret.n_de_retour || returnId}.pdf`, path: memoPath })
+    if (fs.existsSync(memoPath)) out.push({ name: `aide-memoire-${returnId}.pdf`, path: memoPath })
   }
   return out
 }
@@ -359,7 +367,7 @@ router.post('/:id/send-instructions', async (req, res) => {
 
   const emailCtx = loadInstructionsEmailContext(req.params.id)
   if (emailCtx.error) return res.status(emailCtx.error.status).json({ error: emailCtx.error.message })
-  const { ret } = emailCtx
+  const { ret, ctx } = emailCtx
   const finalSubject = (subject && String(subject).trim()) || emailCtx.subject
   const html = (body_html && String(body_html).trim()) || emailCtx.html
 
@@ -387,7 +395,7 @@ router.post('/:id/send-instructions', async (req, res) => {
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
         VALUES (?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(interactionId, ret.contact || null, ret.company_id || null)
+      `).run(interactionId, ctx?.address_contact_id || null, ctx?.company_id || null)
       db.prepare(`
         INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, automated)
         VALUES (?, ?, ?, ?, ?, ?, ?, 1)
@@ -420,6 +428,27 @@ router.post('/:id/send-instructions', async (req, res) => {
   }
 })
 
+// Miroir Airtable d'un retour NÉ dans Boréal : le retour d'abord, ses articles
+// ensuite (ils se lient à lui par record id, il doit donc exister avant).
+//
+// Rien ne part tant qu'aucun champ des retours n'est réglé sur « Bidirectionnel »
+// ou « Boréal → Airtable » dans /champs/retours : createInAirtable n'a alors
+// aucun champ à pousser et saute la création. Les articles ne sont tentés que si
+// le retour a bien obtenu son record Airtable — sinon ils y naîtraient orphelins,
+// et le sync entrant ignore un article sans retour lié.
+//
+// Asynchrone et non bloquant : le retour existe dans Boréal même si Airtable est
+// indisponible ; les échecs sont tracés dans sync_log par createInAirtable.
+async function mirrorNewReturn(returnId, itemIds) {
+  try {
+    const res = await createInAirtable('retours', returnId)
+    if (!res?.ok) return
+    for (const itemId of itemIds) await createInAirtable('retour_items', itemId)
+  } catch (e) {
+    console.error('Retours miroir Airtable (async):', e.message)
+  }
+}
+
 // POST /api/retours/bulk-from-serials — « Retourner tous les numéros de série »
 // (import de l'automatisation Airtable #3, bouton en masse sur la fiche
 // entreprise). Contrairement à l'original (qui refiltre lui-même les numéros
@@ -434,11 +463,16 @@ router.post('/bulk-from-serials', (req, res) => {
 
   try {
     const returnId = newRecordId()
+    const itemIds = []
     const tx = db.transaction(() => {
+      // Le retour ne porte plus l'entreprise (colonne droppée, migration 037) :
+      // ce sont ses ARTICLES qui la portent (`return_items.company_id`
+      // ci-dessous), et c'est de là qu'elle est relue partout. Plus de statut
+      // non plus (migration 041).
       db.prepare(`
-        INSERT INTO returns (id, company_id, status, created_at, updated_at)
-        VALUES (?, ?, 'Ouvert', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-      `).run(returnId, company_id)
+        INSERT INTO returns (id, created_at, updated_at)
+        VALUES (?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      `).run(returnId)
 
       const insertItem = db.prepare(`
         INSERT INTO return_items (id, return_id, serial_id, company_id, return_reason, creassion_massive, created_at)
@@ -447,11 +481,15 @@ router.post('/bulk-from-serials', (req, res) => {
       const updateSerial = db.prepare(`UPDATE serial_numbers SET status = 'En retour', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
 
       for (const serialId of serial_ids) {
-        insertItem.run(newRecordId(), returnId, serialId, company_id, reason)
+        const itemId = newRecordId()
+        itemIds.push(itemId)
+        insertItem.run(itemId, returnId, serialId, company_id, reason)
         updateSerial.run(serialId)
       }
     })
     tx()
+
+    mirrorNewReturn(returnId, itemIds)
 
     logSystemRun('sys_return_bulk_by_company', {
       status: 'success',

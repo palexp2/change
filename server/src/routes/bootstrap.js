@@ -34,13 +34,20 @@ const router = Router()
 // le streaming du bootstrap. On renvoie 410 et le client re-bootstrape.
 const MAX_DELTA_RECORDS = 20_000
 
-// Empreinte de la FORME du snapshot (tables + colonnes envoyées). Le client la
-// mémorise et refait un bootstrap complet dès qu'elle change : sinon, un champ
-// custom ajouté (nouvelle colonne de la vue <table>_v) n'apparaîtrait que sur
-// les records touchés par un delta, les autres restant vides indéfiniment.
+// Empreinte de la FORME du snapshot (tables + colonnes envoyées, et DÉFINITION
+// des champs calculés). Le client la mémorise et refait un bootstrap complet dès
+// qu'elle change : sinon, un champ custom ajouté (nouvelle colonne de la vue
+// <table>_v) n'apparaîtrait que sur les records touchés par un delta, les autres
+// restant vides indéfiniment.
+//
+// `computedSignature` couvre le cas où le NOM des colonnes ne bouge pas mais où
+// leurs valeurs changent pour toutes les lignes d'un coup : convertir un champ
+// de donnée en rollup, corriger une formule, repointer un lookup. Aucun record
+// n'est touché, donc le delta est vide — sans cette empreinte, le cache du
+// navigateur gardait les anciennes valeurs (typiquement vides) indéfiniment.
 function columnsSignature(specs) {
   const parts = Object.keys(specs).sort()
-    .map(t => `${t}:${specs[t].columns.join(',')}`)
+    .map(t => `${t}:${specs[t].columns.join(',')}#${specs[t].computedSignature || ''}`)
     .join(';')
   return createHash('sha1').update(parts).digest('hex').slice(0, 16)
 }

@@ -10,6 +10,17 @@ import api from './api.js'
 // « champs pas encore chargés » (Map vide transitoire) de « chargé, 0 champ » —
 // sans quoi l'auto-affichage des nouveaux champs dans DataTable prend le vide
 // initial pour une baseline et ré-ajoute tous les champs masqués au chargement.
+// Abonnés par table : modifier un champ depuis un endroit (la modale « Modifier
+// le champ » ouverte sur une fiche) doit rafraîchir toutes les listes déjà
+// montées ailleurs (le tableau dessous, la carte de champs du panneau). Sans ça
+// le nouveau nom n'apparaissait qu'au prochain chargement de la page.
+const subs = new Map() // erpTable -> Set<reload>
+
+/** Recharge toutes les listes de champs custom montées pour cette table. */
+export function refreshCustomFields(erpTable) {
+  for (const fn of subs.get(erpTable) || []) fn()
+}
+
 export function useCustomFields(erpTable) {
   const [fields, setFields] = useState([])
   const [loaded, setLoaded] = useState(false)
@@ -21,5 +32,12 @@ export function useCustomFields(erpTable) {
       .finally(() => setLoaded(true))
   }, [erpTable])
   useEffect(() => { reload() }, [reload])
+  useEffect(() => {
+    if (!erpTable) return
+    let set = subs.get(erpTable)
+    if (!set) { set = new Set(); subs.set(erpTable, set) }
+    set.add(reload)
+    return () => { set.delete(reload) }
+  }, [erpTable, reload])
   return { fields, loaded, reload, setFields }
 }

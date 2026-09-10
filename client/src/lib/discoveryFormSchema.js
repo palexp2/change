@@ -1,0 +1,554 @@
+import { normalizeQuestionImage } from './discoveryQuestionImages.js'
+// Schéma éditable du formulaire de découverte technique (System builder).
+//
+// Le formulaire public (pages/CustomerPostPayment.jsx) ne porte plus ses
+// libellés en dur : il les lit ici. L'éditeur (pages/DiscoveryFormEditor.jsx)
+// écrit un *calque de surcharges* persisté par /api/discovery-form-schema, que
+// la page publique reçoit dans son payload (champ `form_schema`).
+//
+// Invariant : la valeur (`value`) d'un choix livré par le code — type de
+// commande, accès réseau, type de tuyau… — n'est jamais réécrite : le code
+// s'appuie dessus, et les réponses déjà enregistrées la portent. En revanche
+// un tel choix peut être **retiré** de la liste (marqueur `{ value, removed }`
+// dans le calque) et de **nouveaux** choix peuvent être ajoutés (entrées dont
+// la valeur n'existe pas dans les defaults, ajoutées après ceux-ci).
+// Le calque est fusionné par valeur : une option ajoutée plus tard dans le code
+// apparaît même si un calque existe déjà.
+//
+// Ce que l'utilisateur peut faire sans toucher au code :
+//   - réécrire n'importe quel titre, question, aide ou libellé de choix ;
+//   - ajouter / retirer des choix de réponse à une question ;
+//   - masquer les questions facultatives (marquées `hideable`) ;
+//   - gérer la liste marques/modèles de fournaises ;
+//   - ajouter ses propres questions dans n'importe quelle section.
+
+export const DEFAULT_TEXTS = {
+  'header.title': 'Formulaire technique',
+  'header.intro': 'Ces informations nous permettent de pré-programmer votre contrôleur et de préparer votre installation.',
+
+  'order_type.title': 'Type de commande',
+  'order_type.prompt': 'Cette commande est pour :',
+  'controller_distance.title': 'Contrôleur central existant',
+  'controller_distance.prompt': 'Est-ce que la/les serres à automatiser seront situées à 250 pi ou moins du contrôleur central ?',
+  'controller_distance.near': 'Aucun nouveau contrôleur central à fournir.',
+  'controller_distance.far': 'Un nouveau contrôleur central sera fourni. Vos contrôleurs centraux devront être programmés en mode multi-contrôleurs.',
+
+  'farm.title': 'Adresse de la ferme',
+  'farm.help': 'Cette adresse sert à pré-programmer le contrôleur central avec les coordonnées géographiques de votre ferme.',
+
+  'shipping.title': 'Adresse de livraison',
+  'shipping.prompt_new': "L'adresse de livraison est-elle la même que celle de la ferme ?",
+  'shipping.same_yes': 'Oui, même adresse',
+  'shipping.same_no': 'Non, différente',
+  'shipping.prompt_existing': "Confirmez l'adresse de livraison :",
+
+  'network.title': 'Accès réseau',
+  'network.prompt': 'Aurez-vous accès à un câble Ethernet ou un Wi-Fi à moins de 250 pi de la serre, avec une ligne de vue directe ?',
+  'network.mobile_title': 'Contrôleur Internet mobile',
+  'network.mobile_needed_text': 'Votre connexion Ethernet ou Wi-Fi ne permet pas un branchement adéquat. Un contrôleur Internet mobile est à prévoir, sous réserve d’une couverture cellulaire suffisante.',
+  'network.mobile_text': "Le contrôleur internet mobile est inclus dans votre commande — vous n'avez besoin d'aucun Wi-Fi local. Assurez-vous que l'endroit où sera installé le contrôleur central a une bonne couverture cellulaire.",
+  'network.wifi_prompt': 'Pour pré-programmer le contrôleur central, fournissez les infos Wi-Fi (optionnel mais recommandé) :',
+  'network.wifi_ssid_label': 'Nom du Wi-Fi (SSID)',
+  'network.wifi_password_label': 'Mot de passe',
+
+  'greenhouses.count_title': 'Serres à automatiser',
+  'greenhouses.count_label': 'Combien de serres voulez-vous automatiser avec Orisha ?',
+
+  'greenhouse.length_label': 'Longueur de la serre (pi)',
+  'greenhouse.side_vents_label': 'Cette serre a-t-elle des côtés ouvrants à automatiser ?',
+  'greenhouse.side_vent_height_label': 'Hauteur des côtés ouvrants (pi)',
+  'greenhouse.side_pipe_type_label': 'Type de tuyau de côté',
+  'greenhouse.guide_pipes_label': 'Tuyaux guides',
+  'greenhouse.diameter_other_label': 'Diamètre externe exact',
+
+  'louvers.title': 'Louvres',
+  'louvers.present': 'Cette serre a-t-elle des louvres à automatiser ?',
+  'louvers.count': 'Nombre de louvres',
+  'louvers.voltage': 'Voltage de la louvre',
+  'louvers.voltage_other': 'Précisez le voltage',
+  'louvers.type': 'Type de commande',
+  'louvers.fan': 'Un ventilateur est-il associé à cette louvre ?',
+  'louvers.fan_unavailable': 'Orisha ne propose pas de contrôle séparé pour ce ventilateur. Configuration à vérifier.',
+  'humidity.title': 'Conservation de l’humidité',
+  'humidity.valve': 'Souhaitez-vous ajouter une valve pour la conservation de l’humidité ?',
+  'humidity.haf': 'Souhaitez-vous ajouter des ventilateurs HAF ?',
+  'humidity.haf_count': 'Nombre de HAF à fournir',
+  'chief.furnaces_heading': 'Fournaises',
+  'chief.has_furnaces_label': 'Cette serre a-t-elle des fournaises à automatiser ?',
+  'chief.num_furnaces_label': 'Nombre de fournaises dans cette serre',
+  'chief.irrigation_heading': 'Irrigation',
+  'chief.irrigation_zones_label': "Combien de zones d'irrigation pour cette serre ?",
+  'chief.orisha_valves_label': "Souhaitez-vous qu'Orisha fournisse les valves 1 po ?",
+
+  'furnace.brand_label': 'Marque',
+  'furnace.model_label': 'Modèle',
+  'furnace.model_other_label': 'Précisez le modèle',
+  'furnace.wire_label': 'Filage de contrôle requis ? (pieds)',
+  'furnace.wire_help': 'Pensez à inclure les longueurs verticales (monter, traverser une porte, redescendre) — pas seulement la distance horizontale.',
+  'furnace.wire_feet_label': 'Nombre de pieds nécessaires',
+  'furnace.thermostat_label': 'Thermostat de secours requis ? (gratuit)',
+
+  'submit.label': 'Soumettre',
+  'submit.incomplete': 'Complétez les champs obligatoires pour continuer',
+  'submitted.title': 'Informations enregistrées',
+  'submitted.text': 'Merci, nous avons bien reçu vos informations. Notre équipe va les utiliser pour préparer votre installation.',
+}
+
+export const DEFAULT_CHOICES = {
+  'louvers.voltages': [{ value: '110', label: '110 V' }, { value: '24', label: '24 V' }, { value: '12', label: '12 V' }, { value: 'other', label: 'Autre (préciser)' }],
+  'louvers.types': [{ value: 'spring_loaded', label: 'Spring loaded (rappel à ressort)' }, { value: 'open_close', label: 'Open/close signal (signaux ouvrir/fermer)' }, { value: 'other', label: 'Autre / Je ne sais pas' }],
+
+  'order_type.options': [
+    { value: 'new', label: 'Un nouveau site de production avec Orisha' },
+    { value: 'add_to_existing', label: 'Ajouter à un site de production existant qui a déjà Orisha' },
+  ],
+  'network.options': [
+    { value: 'ethernet', label: 'Oui — câble Ethernet à moins de 250 pi' },
+    { value: 'wifi_250', label: 'Oui — Wi-Fi à moins de 250 pi avec ligne de vue' },
+    { value: 'wifi_350_coax', label: 'Non, mais 350 pi est possible — fournissez le câble coaxial', help: 'Nous fournirons un câble coaxial pour monter l’antenne en hauteur (+100 pi de portée).' },
+    { value: 'mobile_controller', label: "Aucune des options ci-dessus — j'ai besoin d'un contrôleur internet mobile", help: "Nous l'ajouterons aux extras à la fin. Nécessite une bonne couverture cellulaire à l'endroit du contrôleur central." },
+  ],
+  'greenhouse.side_vents_options': [
+    { value: 'yes', label: 'Oui, il y a des côtés ouvrants' },
+    { value: 'no', label: 'Non, pas de côtés ouvrants' },
+  ],
+  'greenhouse.side_pipe_type_options': [
+    { value: 'aluminum_C', label: 'Aluminium extrudé (profil C)' },
+    { value: 'steel_O', label: 'Acier (profil rond / O)' },
+  ],
+  'greenhouse.guide_pipes_options': [
+    { value: 'present', label: 'Déjà présents' },
+    { value: 'needed', label: 'À fournir' },
+  ],
+  'chief.has_furnaces_options': [
+    { value: 'yes', label: 'Oui, il y a des fournaises' },
+    { value: 'no', label: 'Non, pas de fournaises' },
+  ],
+  'chief.orisha_valves_options': [
+    { value: 'yes', label: 'Oui, fournir les valves 1 po' },
+    { value: 'no', label: "Non, j'ai déjà mes valves" },
+  ],
+  'furnace.wire_options': [
+    { value: '25', label: '25 pi' },
+    { value: '50', label: '50 pi' },
+    { value: '75', label: '75 pi' },
+    { value: '100', label: '100 pi' },
+    { value: 'over_100', label: 'Plus de 100 pi' },
+  ],
+  'furnace.thermostat_options': [
+    { value: 'yes', label: 'Oui, fournir un thermostat de secours' },
+    { value: 'no', label: 'Non merci' },
+  ],
+}
+
+// Liste marques → modèles des fournaises. Librement éditable (ajout/retrait).
+export const DEFAULT_BRANDS = [
+  { brand: 'Modine', models: ['PDP', 'PTC', 'PTS', 'PV', 'PA', 'BT', 'BTV', 'BG', 'EF', 'HD'] },
+  { brand: 'Reznor', models: ['F', 'UDAP', 'UDAS', 'UEAS', 'UEZ', 'V3', 'X', 'XL', 'P7', 'CF'] },
+  { brand: 'Sterling', models: ['GG', 'TF', 'XF', 'QVF', 'HS', 'GFH', 'GFP', 'NEMA'] },
+  { brand: 'Roberts Gordon', models: ['CoRayVac', 'Vantage', 'GORDONray', 'Blackheat', 'CTHN', 'CTH2'] },
+  { brand: 'Lennox', models: ['LB-LF24', 'LF24', 'LF25', 'EL296V', 'SL280V'] },
+  { brand: 'L.B. White', models: ['Therma Grow', 'Guardian', 'Premier 350', 'Premier 170', 'AD-100', 'AW250'] },
+]
+
+// Sections où l'utilisateur peut déposer ses propres questions.
+// `greenhouse` se répète sur chaque carte de serre, `greenhouse_chief` seulement
+// sur les cartes Chef de culture.
+export const CUSTOM_SECTIONS = [
+  { id: 'intro', label: 'Tout en haut' },
+  { id: 'order_type', label: 'Type de commande' },
+  { id: 'farm_address', label: 'Adresse de la ferme' },
+  { id: 'shipping_address', label: 'Adresse de livraison' },
+  { id: 'network', label: 'Accès réseau' },
+  { id: 'greenhouse', label: 'Chaque serre' },
+  { id: 'greenhouse_chief', label: 'Serres Chef de culture seulement' },
+  { id: 'end', label: 'Avant le bouton Soumettre' },
+]
+
+// Sections dont les réponses vivent sur la carte de serre (et non à la racine
+// du formulaire) : une question qui y vit lit ses conditions dans la serre.
+export const GREENHOUSE_SECTIONS = ['greenhouse', 'greenhouse_chief']
+
+export function sectionScope(section) {
+  return GREENHOUSE_SECTIONS.includes(section) ? 'greenhouse' : 'form'
+}
+
+// Réponses du formulaire qui peuvent piloter l'affichage d'une question.
+// `scope` dit où lire la réponse : racine du formulaire, ou carte de serre.
+export const CONDITION_SOURCES = [
+  { field: 'is_new_site', scope: 'form', label: 'Type de commande', choices: 'order_type.options' },
+  { field: 'within_central_controller_range', scope: 'form', label: 'Serres à 250 pi ou moins du contrôleur central', bool: true },
+  { field: 'shipping_same_as_farm', scope: 'form', label: 'Livraison = ferme', bool: true },
+  { field: 'network_access', scope: 'form', label: 'Accès réseau', choices: 'network.options' },
+  { field: 'num_greenhouses', scope: 'form', label: 'Nombre de serres', number: true },
+  { field: 'length', scope: 'greenhouse', label: 'Longueur de la serre', number: true },
+  { field: 'has_side_vents', scope: 'greenhouse', label: 'Côtés ouvrants', bool: true },
+  { field: 'side_pipe_type', scope: 'greenhouse', label: 'Type de tuyau de côté', choices: 'greenhouse.side_pipe_type_options' },
+  { field: 'guide_pipes_state', scope: 'greenhouse', label: 'Tuyaux guides', choices: 'greenhouse.guide_pipes_options' },
+  { field: 'has_furnaces', scope: 'greenhouse', label: 'Fournaises', bool: true },
+  { field: 'num_furnaces', scope: 'greenhouse', label: 'Nombre de fournaises', number: true },
+  { field: 'irrigation_zones', scope: 'greenhouse', label: 'Zones d’irrigation', number: true },
+  { field: 'needs_orisha_valves', scope: 'greenhouse', label: 'Valves Orisha', bool: true },
+]
+
+export const CONDITION_OPS = [
+  { value: 'eq', label: 'est' },
+  { value: 'ne', label: 'n’est pas' },
+  { value: 'filled', label: 'est rempli', noValue: true },
+  { value: 'empty', label: 'est vide', noValue: true },
+  { value: 'gt', label: '>', numeric: true },
+  { value: 'lt', label: '<', numeric: true },
+]
+
+export const YESNO_OPTIONS = [{ value: 'yes', label: 'Oui' }, { value: 'no', label: 'Non' }]
+
+export const CUSTOM_TYPES = [
+  { value: 'text', label: 'Texte court' },
+  { value: 'textarea', label: 'Texte long' },
+  { value: 'number', label: 'Nombre' },
+  { value: 'select', label: 'Liste de choix' },
+  { value: 'radio', label: 'Boutons radio' },
+  { value: 'yesno', label: 'Oui / Non' },
+  { value: 'checkbox', label: 'Case à cocher' },
+]
+
+// Descripteurs pour l'éditeur : quoi montrer, dans quel ordre, sous quel titre
+// (`short` : libellé de la barre de sections).
+// `kind` : text | textarea | choices | brands | group. `fixedValues` : les
+// valeurs des choix sont portées par le code (renommer/retirer/ajouter, jamais
+// renuméroter). `hideable` (kind group) : le bloc peut être retiré du
+// formulaire sans casser la validation ; les items qui suivent jusqu'au
+// prochain changement de sujet lui appartiennent, `under` étend ce lien.
+export const SCHEMA_GROUPS = [
+  {
+    id: 'header', title: 'En-tête', short: 'En-tête', section: 'intro',
+    items: [
+      { id: 'header.title', kind: 'text', label: 'Titre' },
+      { id: 'header.intro', kind: 'textarea', label: 'Intro' },
+    ],
+  },
+  {
+    id: 'order_type', title: 'Type de commande', short: 'Commande', section: 'order_type',
+    items: [
+      { id: 'order_type.title', kind: 'text', label: 'Titre' },
+      { id: 'order_type.prompt', kind: 'text', label: 'Question' },
+      { id: 'order_type.options', kind: 'choices', label: 'Choix', fixedValues: true },
+      { id: 'controller_distance.title', kind: 'text', label: 'Titre (contrôleur existant)' },
+      { id: 'controller_distance.prompt', kind: 'text', label: 'Question (distance du contrôleur)' },
+      { id: 'controller_distance.near', kind: 'text', label: 'Réponse à 250 pi ou moins' },
+      { id: 'controller_distance.far', kind: 'textarea', label: 'Réponse au-delà de 250 pi' },
+    ],
+  },
+  {
+    id: 'farm', title: 'Adresse de la ferme', short: 'Ferme', section: 'farm_address',
+    items: [
+      { id: 'farm.title', kind: 'text', label: 'Titre' },
+      { id: 'farm.help', kind: 'textarea', label: 'Aide' },
+    ],
+  },
+  {
+    id: 'shipping', title: 'Adresse de livraison', short: 'Livraison', section: 'shipping_address',
+    items: [
+      { id: 'shipping.title', kind: 'text', label: 'Titre' },
+      { id: 'shipping.prompt_new', kind: 'text', label: 'Question (nouveau site)' },
+      { id: 'shipping.same_yes', kind: 'text', label: 'Choix « même »' },
+      { id: 'shipping.same_no', kind: 'text', label: 'Choix « différente »' },
+      { id: 'shipping.prompt_existing', kind: 'text', label: 'Question (site existant)' },
+    ],
+  },
+  {
+    id: 'network', title: 'Accès réseau', short: 'Réseau', section: 'network',
+    items: [
+      { id: 'network.title', kind: 'text', label: 'Titre' },
+      { id: 'network.prompt', kind: 'text', label: 'Question' },
+      { id: 'network.options', kind: 'choices', label: 'Choix', fixedValues: true },
+      { id: 'network.mobile_title', kind: 'text', label: 'Titre (contrôleur mobile inclus)' },
+      { id: 'network.mobile_text', kind: 'textarea', label: 'Texte (contrôleur mobile inclus)' },
+      { id: 'network.mobile_needed_text', kind: 'textarea', label: 'Texte (connexion locale inadéquate)' },
+      { id: 'network.wifi', kind: 'group', label: 'Bloc identifiants Wi-Fi', hideable: true },
+      { id: 'network.wifi_prompt', kind: 'text', label: 'Intro Wi-Fi' },
+      { id: 'network.wifi_ssid_label', kind: 'text', label: 'Libellé SSID' },
+      { id: 'network.wifi_password_label', kind: 'text', label: 'Libellé mot de passe' },
+    ],
+  },
+  {
+    id: 'greenhouses', title: 'Serres', short: 'Serres', section: 'greenhouse',
+    items: [
+      { id: 'greenhouses.count_title', kind: 'text', label: 'Titre (nombre de serres)' },
+      { id: 'greenhouses.count_label', kind: 'text', label: 'Question (nombre de serres)' },
+      { id: 'greenhouse.length', kind: 'group', label: 'Question longueur', hideable: true },
+      { id: 'greenhouse.length_label', kind: 'text', label: 'Libellé longueur' },
+      { id: 'greenhouse.side_vents', kind: 'group', label: 'Bloc côtés ouvrants', hideable: true },
+      { id: 'greenhouse.side_vents_label', kind: 'text', label: 'Question côtés ouvrants' },
+      { id: 'greenhouse.side_vents_options', kind: 'choices', label: 'Choix côtés ouvrants', fixedValues: true },
+      // `under` : ces questions ne paraissent que si le bloc masquable nommé est
+      // affiché (l'éditeur les atténue quand il est masqué).
+      { id: 'greenhouse.side_vent_height_label', kind: 'text', label: 'Libellé hauteur', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.side_pipe_type_label', kind: 'text', label: 'Libellé type de tuyau', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.side_pipe_type_options', kind: 'choices', label: 'Choix type de tuyau', fixedValues: true, under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.guide_pipes_label', kind: 'text', label: 'Libellé tuyaux guides', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.guide_pipes_options', kind: 'choices', label: 'Choix tuyaux guides', fixedValues: true, under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.diameter_other_label', kind: 'text', label: 'Libellé diamètre externe exact', under: 'greenhouse.side_vents' },
+    ],
+  },
+  {
+    id: 'louvers', title: 'Louvres et ventilateurs', short: 'Louvres', section: null,
+    items: ['title', 'present', 'count', 'voltage', 'voltage_other', 'type', 'fan', 'fan_unavailable'].map(key => ({ id: `louvers.${key}`, kind: key === 'fan_unavailable' ? 'textarea' : 'text', label: { title: 'Titre', present: 'Question louvres', count: 'Nombre', voltage: 'Voltage', voltage_other: 'Autre voltage', type: 'Type de commande', fan: 'Ventilateur associé', fan_unavailable: 'Ventilateur non pris en charge' }[key] })),
+  },
+  {
+    id: 'humidity', title: 'Conservation de l’humidité', short: 'Humidité', section: null,
+    items: ['title', 'valve', 'haf', 'haf_count'].map(key => ({ id: `humidity.${key}`, kind: 'text', label: { title: 'Titre', valve: 'Question valve', haf: 'Question HAF', haf_count: 'Nombre de HAF' }[key] })),
+  },
+  {
+    id: 'chief', title: 'Serres Chef de culture', short: 'Chef de culture', section: 'greenhouse_chief',
+    items: [
+      { id: 'chief.furnaces', kind: 'group', label: 'Bloc fournaises', hideable: true },
+      { id: 'chief.furnaces_heading', kind: 'text', label: 'Sous-titre fournaises' },
+      { id: 'chief.has_furnaces_label', kind: 'text', label: 'Question fournaises' },
+      { id: 'chief.has_furnaces_options', kind: 'choices', label: 'Choix fournaises', fixedValues: true },
+      { id: 'chief.num_furnaces_label', kind: 'text', label: 'Libellé nombre de fournaises' },
+      { id: 'chief.irrigation_heading', kind: 'text', label: 'Sous-titre irrigation' },
+      { id: 'chief.irrigation_zones_label', kind: 'text', label: 'Question zones' },
+      { id: 'chief.orisha_valves_label', kind: 'text', label: 'Question valves' },
+      { id: 'chief.orisha_valves_options', kind: 'choices', label: 'Choix valves', fixedValues: true },
+    ],
+  },
+  {
+    id: 'furnace', title: 'Fournaise', short: 'Fournaise', section: null,
+    items: [
+      { id: 'furnace.brand_label', kind: 'text', label: 'Libellé marque' },
+      { id: 'furnace.model_label', kind: 'text', label: 'Libellé modèle' },
+      { id: 'furnace.model_other_label', kind: 'text', label: 'Libellé « autre modèle »' },
+      { id: 'furnace.wire_label', kind: 'text', label: 'Libellé filage' },
+      { id: 'furnace.wire_options', kind: 'choices', label: 'Choix filage', fixedValues: true },
+      { id: 'furnace.wire_help', kind: 'textarea', label: 'Aide filage' },
+      { id: 'furnace.wire_feet_label', kind: 'text', label: 'Libellé nombre de pieds' },
+      { id: 'furnace.thermostat_label', kind: 'text', label: 'Libellé thermostat' },
+      { id: 'furnace.thermostat_options', kind: 'choices', label: 'Choix thermostat', fixedValues: true },
+      { id: 'furnace.brands', kind: 'brands', label: 'Marques et modèles' },
+    ],
+  },
+  {
+    id: 'submit', title: 'Fin du formulaire', short: 'Fin', section: 'end',
+    items: [
+      { id: 'submit.label', kind: 'text', label: 'Bouton' },
+      { id: 'submit.incomplete', kind: 'text', label: 'Message « incomplet »' },
+      { id: 'submitted.title', kind: 'text', label: 'Titre après envoi' },
+      { id: 'submitted.text', kind: 'textarea', label: 'Texte après envoi' },
+    ],
+  },
+]
+
+const FIXED_CHOICE_IDS = new Set([
+  'louvers.types',
+  ...SCHEMA_GROUPS.flatMap(g => g.items.filter(i => i.kind === 'choices' && i.fixedValues).map(i => i.id)),
+])
+
+export const HIDEABLE_IDS = SCHEMA_GROUPS.flatMap(g => g.items.filter(i => i.hideable).map(i => i.id))
+
+function mergeChoiceList(id, defaults, override) {
+  if (!Array.isArray(override) || override.length === 0) return defaults
+  const entries = override.filter(o => o && o.value != null && String(o.value) !== '')
+  if (!FIXED_CHOICE_IDS.has(id)) return entries.filter(o => !o.removed && o.label)
+  // Liste pilotée par le code : on garde les valeurs et l'ordre des defaults,
+  // on n'emprunte au calque que le libellé et l'aide. Le calque peut en retirer
+  // (`removed`) et en ajouter (valeurs inconnues des defaults, mises à la suite).
+  const byValue = new Map(entries.map(o => [String(o.value), o]))
+  const kept = defaults
+    .filter(d => !byValue.get(d.value)?.removed)
+    .map(d => {
+      const ov = byValue.get(d.value)
+      if (!ov) return d
+      return { value: d.value, label: ov.label || d.label, help: ov.help ?? d.help }
+    })
+  const known = new Set(defaults.map(d => d.value))
+  const added = entries
+    .filter(o => !o.removed && o.label && !known.has(String(o.value)))
+    .map(o => ({ value: String(o.value), label: String(o.label), ...(o.help ? { help: String(o.help) } : {}) }))
+  const merged = [...kept, ...added]
+  // Une liste vidée de tout choix bloquerait la question : on retombe alors
+  // sur les defaults plutôt que d'afficher une question sans réponse possible.
+  return merged.length ? merged : defaults
+}
+
+/**
+ * Valeur stable d'un choix ajouté : dérivée du libellé (lisible dans la fiche
+ * de réponse), unique dans la liste. Elle est figée à la création — renommer le
+ * choix plus tard ne doit pas orpheliner les réponses déjà enregistrées.
+ */
+export function slugChoiceValue(label, taken = []) {
+  const base = String(label || '')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'choix'
+  let v = base
+  let i = 2
+  while (taken.includes(v)) v = `${base}_${i++}`
+  return v
+}
+
+function normalizeBrands(list) {
+  if (!Array.isArray(list)) return null
+  const out = list
+    .map(b => ({
+      brand: String(b?.brand || '').trim(),
+      models: Array.isArray(b?.models) ? b.models.map(m => String(m).trim()).filter(Boolean) : [],
+    }))
+    .filter(b => b.brand)
+  return out.length ? out : null
+}
+
+// ─── Affichage conditionnel ───────────────────────────────────────────────
+//
+// Une question ajoutée peut ne s'afficher que si d'autres réponses remplissent
+// une condition : `visibleIf = { match: 'all'|'any', rules: [{field, op, value}] }`.
+// `field` est soit le nom d'une réponse du formulaire (CONDITION_SOURCES), soit
+// `custom:<id>` pour une autre question ajoutée. L'évaluation n'est pas
+// récursive : on lit la réponse brute du champ pilote, jamais sa visibilité —
+// deux questions qui se pointent l'une l'autre ne bouclent donc pas.
+
+function normalizeVisibleIf(v) {
+  const rules = (Array.isArray(v?.rules) ? v.rules : [])
+    .filter(r => r && typeof r.field === 'string' && r.field.trim() !== '')
+    .map(r => ({
+      field: String(r.field),
+      op: CONDITION_OPS.some(o => o.value === r.op) ? r.op : 'eq',
+      value: r.value == null ? '' : String(r.value),
+    }))
+  if (!rules.length) return null
+  return { match: v.match === 'any' ? 'any' : 'all', rules }
+}
+
+function normAnswer(v) {
+  if (v === true) return 'yes'
+  if (v === false) return 'no'
+  if (v == null) return ''
+  return String(v).trim()
+}
+
+function sameAnswer(a, b) {
+  const alias = { true: 'yes', false: 'no', oui: 'yes', non: 'no' }
+  const na = normAnswer(a), nb = normAnswer(b)
+  return (alias[na.toLowerCase()] || na) === (alias[nb.toLowerCase()] || nb)
+}
+
+function isFilledAnswer(v) {
+  if (v === false) return true
+  return normAnswer(v) !== ''
+}
+
+// `ctx` : { record, custom } au niveau de la question, plus { root, rootCustom }
+// quand la question vit dans une serre et pointe une réponse du formulaire.
+function readConditionField(field, ctx) {
+  if (field.startsWith('custom:')) {
+    const id = field.slice(7)
+    const own = ctx.custom || {}
+    if (id in own) return own[id]
+    return (ctx.rootCustom || {})[id]
+  }
+  const src = CONDITION_SOURCES.find(s => s.field === field)
+  if (src?.scope === 'form' && ctx.root) return ctx.root[field]
+  return (ctx.record || {})[field]
+}
+
+/** `true` si la question doit s'afficher, d'après les réponses de `ctx`. */
+export function isQuestionVisible(q, ctx) {
+  const cond = q?.visibleIf
+  if (!cond?.rules?.length) return true
+  const c = ctx || {}
+  const test = (r) => {
+    const raw = readConditionField(r.field, c)
+    switch (r.op) {
+      case 'filled': return isFilledAnswer(raw)
+      case 'empty': return !isFilledAnswer(raw)
+      case 'gt': return Number(raw) > Number(r.value)
+      case 'lt': return Number(raw) < Number(r.value)
+      case 'ne': return !sameAnswer(raw, r.value)
+      default: return sameAnswer(raw, r.value)
+    }
+  }
+  return cond.match === 'any' ? cond.rules.some(test) : cond.rules.every(test)
+}
+
+/** Champs pilotes proposés dans l'éditeur pour une question d'une section. */
+export function conditionSources(section, allCustom, selfId) {
+  const scope = sectionScope(section)
+  const builtin = CONDITION_SOURCES.filter(s => scope === 'greenhouse' || s.scope === 'form')
+  const questions = (allCustom || [])
+    .filter(q => q.id !== selfId && q.label && (scope === 'greenhouse' || sectionScope(q.section) === 'form'))
+    .map(q => ({ field: `custom:${q.id}`, label: q.label, question: q }))
+  return [...builtin, ...questions]
+}
+
+/** Choix proposés comme valeur de comparaison, ou `null` pour une saisie libre. */
+export function conditionValueOptions(source, form) {
+  if (!source) return null
+  const q = source.question
+  if (q) {
+    if (q.type === 'select' || q.type === 'radio') return q.options || []
+    if (q.type === 'yesno' || q.type === 'checkbox') return YESNO_OPTIONS
+    return null
+  }
+  if (source.choices) return form ? form.opts(source.choices) : (DEFAULT_CHOICES[source.choices] || [])
+  if (source.bool) return YESNO_OPTIONS
+  return null
+}
+
+export function conditionIsNumeric(source) {
+  return !!(source?.number || source?.question?.type === 'number')
+}
+
+/**
+ * Fusionne un calque de surcharges avec les valeurs par défaut et renvoie
+ * l'accesseur utilisé par le formulaire public.
+ */
+export function buildForm(overrides) {
+  const o = overrides && typeof overrides === 'object' ? overrides : {}
+  const texts = { ...DEFAULT_TEXTS }
+  for (const [k, v] of Object.entries(o.texts || {})) {
+    if (k in DEFAULT_TEXTS && typeof v === 'string' && v.trim() !== '') texts[k] = v
+  }
+  const choices = {}
+  for (const [k, def] of Object.entries(DEFAULT_CHOICES)) {
+    choices[k] = mergeChoiceList(k, def, o.choices?.[k])
+  }
+  const brands = normalizeBrands(o.brands) || DEFAULT_BRANDS
+  const hidden = {}
+  for (const id of HIDEABLE_IDS) if (o.hidden?.[id]) hidden[id] = true
+  const custom = (Array.isArray(o.custom) ? o.custom : [])
+    .filter(q => q && q.id && q.label)
+    .map(q => ({
+      id: String(q.id),
+      section: CUSTOM_SECTIONS.some(s => s.id === q.section) ? q.section : 'end',
+      type: CUSTOM_TYPES.some(t => t.value === q.type) ? q.type : 'text',
+      label: String(q.label),
+      help: q.help ? String(q.help) : '',
+      required: !!q.required,
+      options: Array.isArray(q.options) ? q.options.filter(x => x && x.label).map(x => ({ value: String(x.value ?? x.label), label: String(x.label) })) : [],
+      visibleIf: normalizeVisibleIf(q.visibleIf),
+      image: normalizeQuestionImage(q.image),
+    }))
+
+  return {
+    t: (id) => texts[id] ?? '',
+    image: (id) => normalizeQuestionImage(o.images?.[id]),
+    opts: (id) => choices[id] || [],
+    brands,
+    isHidden: (id) => !!hidden[id],
+    // Sans `ctx`, toutes les questions de la section (fiche interne, éditeur) ;
+    // avec, seules celles que les réponses courantes rendent visibles.
+    custom: (section, ctx) => custom.filter(q => q.section === section && (ctx === undefined || isQuestionVisible(q, ctx))),
+    allCustom: custom,
+  }
+}
+
+/** Calque vide — point de départ de l'éditeur. */
+export function emptyOverrides() {
+  return { images: {}, texts: {}, choices: {}, brands: null, hidden: {}, custom: [], equipment: { products: {} } }
+}
+
+/** `true` si la réponse à une question personnalisée est considérée remplie. */
+export function customAnswered(q, value) {
+  if (q.type === 'checkbox') return value === true
+  if (q.type === 'yesno') return value === true || value === false
+  return value != null && String(value).trim() !== ''
+}

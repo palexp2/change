@@ -21,7 +21,7 @@ export const SETTINGS_SECTIONS = [
   { key: 'systeme',     label: 'Système',        icon: Server,   group: 'Administration', adminOnly: true },
   { key: 'utilisateurs', label: 'Utilisateurs',  icon: Users,    group: 'Administration', adminOnly: true, full: true },
   { key: 'connecteurs', label: 'Connecteurs',    icon: Plug,     group: 'Administration', adminOnly: true },
-  { key: 'activite',    label: 'Activité',       icon: Activity, group: 'Administration', adminOnly: true },
+  { key: 'activite',    label: 'Activité',       icon: Activity, group: 'Administration', adminOnly: true, full: true },
   { key: 'architecture', label: 'Architecture',  icon: Network,  group: 'Administration', adminOnly: true },
   { key: 'corbeille',   label: 'Corbeille',      icon: Trash2,   group: 'Administration', adminOnly: true },
 ]

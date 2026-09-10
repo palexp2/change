@@ -10,7 +10,12 @@ import { emitCompany, emitOrder } from './realtimeEmitters.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 import { consumeWritebackEcho, fieldMapDirection, dynamicFieldDirection } from './airtableWriteback.js'
-import { ENVOIS_FIELD_MAP_PLAN, fieldMapFromUi } from './airtableUiFieldMap.js'
+import {
+  ENVOIS_FIELD_MAP_PLAN, ASSEMBLAGES_FIELD_MAP_PLAN, PIECES_FIELD_MAP_PLAN, fieldMapFromUi,
+  PAIES_FIELD_MAP_PLAN, PAIES_UNMAPPED_AIRTABLE_FIELDS, CONTACTS_FIELD_MAP_PLAN,
+  COMPANIES_FIELD_MAP_PLAN, COMPANY_PHASES, PROJETS_FIELD_MAP_PLAN,
+  RETOUR_ITEMS_FIELD_MAP_PLAN, SERIALS_FIELD_MAP_PLAN,
+} from './airtableUiFieldMap.js'
 import { reconcileFacturesForOrder } from './quickbooks.js'
 import { logSystemRun } from './systemAutomations.js'
 import { uploadsPath } from '../config/uploads.js'
@@ -137,8 +142,9 @@ export function purgeOrphans(table, records) {
 // Table Airtable « Fournisseurs » (liée depuis Achats). Son champ primaire porte le nom
 // EXACT du fournisseur QuickBooks (« Takachi USD », « Mouser Electronics »…) et « ID »
 // contient l'Id du vendor QB — c'est la source de vérité pour savoir de quel fournisseur
-// vient un achat LIA. Le single-select « Fournisseur - LEGACY » auquel purchases.supplier
-// est mappé est gelé depuis 2026 : il est vide sur tous les achats récents.
+// vient un achat LIA. Le single-select « Fournisseur - LEGACY », gelé depuis 2026, n'est
+// plus importé du tout : sa dernière colonne ERP (`purchases.supplier`) a été droppée
+// (migration 032).
 const AIRTABLE_VENDORS_TABLE = 'tblsJKllughNYKSuR'
 // Champ lié « Fournisseur » de la table Achats (≠ « Fournisseur - LEGACY »).
 export const ACHATS_VENDOR_LINK_FIELD = 'Fournisseur'
@@ -240,44 +246,37 @@ export async function syncCompanies(changes = null) {
     if (!changes || _companyIds?.length) {
     try {
       const records = await fetchAllRecords(config.base_id, config.companies_table_id, accessToken, 'airtable', _companyIds)
-      let fieldMap = config.field_map_companies ? JSON.parse(config.field_map_companies) : null
+      // Les entreprises n'ont plus de field_map « cœur » : le mapping des
+      // 2 champs qui restaient (« Entreprise » → le nom, « Phase du cycle de
+      // vie ») se règle exclusivement dans /champs/companies et se relit ici
+      // sous la même forme (cf. services/airtableUiFieldMap.js). Plus
+      // d'auto-détection par nom de champ non plus : elle aurait reconstruit un
+      // field_map dans le dos de l'utilisateur au premier passage, et réimporté
+      // un champ qu'il vient de démapper.
+      const fieldMap = fieldMapFromUi('companies', COMPANIES_FIELD_MAP_PLAN)
       let companiesImported = 0
 
       db.transaction((recs) => {
         for (const rec of recs) {
-          if (!fieldMap && rec.fields) {
-            fieldMap = {
-              name:             autoMapField(rec.fields, 'name', 'nom', 'company') || Object.keys(rec.fields)[0],
-              phone:            autoMapField(rec.fields, 'phone', 'telephone', 'téléphone'),
-              email:            autoMapField(rec.fields, 'email', 'courriel'),
-              website:          autoMapField(rec.fields, 'website', 'site web', 'url', 'domain'),
-              address:          autoMapField(rec.fields, 'address', 'adresse'),
-              city:             autoMapField(rec.fields, 'city', 'ville'),
-              province:         autoMapField(rec.fields, 'province', 'state', 'région'),
-              country:          autoMapField(rec.fields, 'country', 'pays'),
-              type:             autoMapField(rec.fields, 'type', 'catégorie'),
-              lifecycle_phase:  autoMapField(rec.fields, 'lifecycle phase', 'phase', 'cycle de vie', 'lifecycle'),
-              notes:            autoMapField(rec.fields, 'notes', 'commentaires'),
-            }
-          }
           const name = getVal(rec.fields, fieldMap?.name)
           if (!name) continue
 
-          const typeRaw = getVal(rec.fields, fieldMap?.type)
-          const type = typeRaw ? (fieldMap?.type_choices?.[typeRaw] || typeRaw) : null
-
-          const phaseRaw = getVal(rec.fields, fieldMap?.lifecycle_phase)
-          const lifecycle_phase = phaseRaw ? (fieldMap?.phase_choices?.[phaseRaw] || phaseRaw) : null
+          // Même normalisation que le moteur unique : orthographe canonique de
+          // l'ERP à la casse près, valeur inconnue telle quelle.
+          const phaseRaw = fieldMap?.lifecycle_phase ? getVal(rec.fields, fieldMap.lifecycle_phase) : null
+          const lifecycle_phase = phaseRaw
+            ? (COMPANY_PHASES.find(p => p.toLowerCase() === String(phaseRaw).trim().toLowerCase()) || phaseRaw)
+            : null
 
           const existing = db.prepare('SELECT id FROM companies WHERE airtable_id=?').get(rec.id)
           if (existing) {
-            db.prepare(`UPDATE companies SET name=?, phone=COALESCE(?,phone), email=COALESCE(?,email), website=COALESCE(?,website), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), type=COALESCE(?,type), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-              .run(name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
+            db.prepare(`UPDATE companies SET name=?, email=COALESCE(?,email), address=COALESCE(?,address), city=COALESCE(?,city), province=COALESCE(?,province), country=COALESCE(?,country), lifecycle_phase=COALESCE(?,lifecycle_phase), notes=COALESCE(?,notes), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+              .run(name, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), lifecycle_phase, getVal(rec.fields, fieldMap?.notes), existing.id)
             emitCompany('updated', existing.id, null)
           } else {
             const newId = newRecordId()
-            db.prepare('INSERT INTO companies (id, name, phone, email, website, address, city, province, country, type, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-              .run(newId, name, getVal(rec.fields, fieldMap?.phone), getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.website), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), type, lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
+            db.prepare('INSERT INTO companies (id, name, email, address, city, province, country, lifecycle_phase, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?,?,?)')
+              .run(newId, name, getVal(rec.fields, fieldMap?.email), getVal(rec.fields, fieldMap?.address), getVal(rec.fields, fieldMap?.city), getVal(rec.fields, fieldMap?.province), getVal(rec.fields, fieldMap?.country), lifecycle_phase, getVal(rec.fields, fieldMap?.notes), rec.id)
             emitCompany('created', newId, null)
             companiesImported++
           }
@@ -312,23 +311,18 @@ export async function syncContacts(changes = null) {
     if (!changes || _contactIds?.length) {
     try {
       const records = await fetchAllRecords(config.base_id, config.contacts_table_id, accessToken, 'airtable', _contactIds)
-      let fieldMap = config.field_map_contacts ? JSON.parse(config.field_map_contacts) : null
+      // Les contacts n'ont plus de field_map « cœur » : le mapping des 6 champs
+      // (Prénom, Nom, Email, Phone number, Entreprise, Langue) se règle
+      // exclusivement dans /champs/contacts et se relit ici sous la même forme
+      // (cf. services/airtableUiFieldMap.js). Plus d'auto-détection par nom de
+      // champ non plus : elle aurait reconstruit un field_map dans le dos de
+      // l'utilisateur au premier passage, et réimporté un champ qu'il vient de
+      // démapper.
+      const fieldMap = fieldMapFromUi('contacts', CONTACTS_FIELD_MAP_PLAN)
       let contactsImported = 0
 
       db.transaction((recs) => {
         for (const rec of recs) {
-          if (!fieldMap && rec.fields) {
-            fieldMap = {
-              first_name: autoMapField(rec.fields, 'first name', 'prénom', 'prenom') || Object.keys(rec.fields)[0],
-              last_name:  autoMapField(rec.fields, 'last name', 'nom de famille', 'surname'),
-              email:      autoMapField(rec.fields, 'email', 'courriel'),
-              phone:      autoMapField(rec.fields, 'phone', 'telephone', 'téléphone'),
-              mobile:     autoMapField(rec.fields, 'mobile', 'cell', 'cellulaire'),
-              company:    autoMapField(rec.fields, 'company', 'entreprise', 'organization'),
-              language:   autoMapField(rec.fields, 'language', 'langue', 'lang'),
-              notes:      autoMapField(rec.fields, 'notes', 'commentaires'),
-            }
-          }
           const lastName = getVal(rec.fields, fieldMap?.last_name) || getVal(rec.fields, fieldMap?.first_name) || 'Inconnu'
 
           const companyId = lookupCompany(rec.fields, fieldMap?.company)
@@ -691,7 +685,13 @@ export async function syncPieces(changes = null) {
 
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'pieces', _recordIds)
-    let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
+    // Les produits n'ont plus de field_map « cœur » : le mapping se règle
+    // exclusivement dans /champs/products (airtable_field_mappings) et se relit
+    // ici sous la même forme (cf. services/airtableUiFieldMap.js). Plus
+    // d'auto-détection par nom de champ non plus : elle ne servait qu'au tout
+    // premier sync, et la laisser aurait reconstruit — puis re-persisté — un
+    // field_map cœur dans le dos de l'utilisateur au premier passage.
+    const fieldMap = fieldMapFromUi('products', PIECES_FIELD_MAP_PLAN)
     let imported = 0, updated = 0
 
     // Pre-compute image URLs (async downloads must happen before the sync transaction)
@@ -700,41 +700,6 @@ export async function syncPieces(changes = null) {
       "SELECT airtable_id FROM products WHERE airtable_id IS NOT NULL AND image_url LIKE '/erp/api/product-images/local-%'"
     ).all().map(r => r.airtable_id))
     for (const rec of records) {
-      if (!fieldMap && rec.fields) {
-        fieldMap = {
-          name_fr:          autoMapField(rec.fields, 'nom', 'name fr', 'nom français', 'name_fr') || Object.keys(rec.fields)[0],
-          name_en:          autoMapField(rec.fields, 'name', 'name en', 'nom anglais', 'name_en'),
-          sku:              autoMapField(rec.fields, 'sku', 'code', 'référence', 'ref', 'numéro'),
-          type:             autoMapField(rec.fields, 'type', 'catégorie', 'categorie', 'category'),
-          unit_cost:        autoMapField(rec.fields, 'coût unitaire', 'cout', 'unit cost', 'cost'),
-          price_cad:        autoMapField(rec.fields, 'prix', 'price', 'prix cad'),
-          stock_qty:        autoMapField(rec.fields, 'stock', 'quantité', 'qty', 'quantity'),
-          min_stock:        autoMapField(rec.fields, 'stock min', 'min stock', 'seuil', 'minimum'),
-          supplier:         autoMapField(rec.fields, 'fournisseur', 'supplier', 'vendor'),
-          procurement_type: autoMapField(rec.fields, 'approvisionnement', 'procurement', 'type achat'),
-          weight_lbs:       autoMapField(rec.fields, 'poids', 'weight', 'poids lbs'),
-          image:            autoMapField(rec.fields, 'image', 'photo', 'images', 'photos', 'picture'),
-          // Étape 5 « Priorité d'assemblage » — champs produits finis (one-way Airtable → ERP)
-          assembly_status:          autoMapField(rec.fields, "status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status'),
-          finished_min_stock:       autoMapField(rec.fields, 'seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis'),
-          projected_available_qty:  autoMapField(rec.fields, 'quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée'),
-          producible_qty:           autoMapField(rec.fields, 'nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible'),
-          // Étape 4 « Priorité d'assemblage » — lien fournisseur (bouton externe)
-          supplier_link:            autoMapField(rec.fields, 'lien fournisseur', "lien d'achat", 'url fournisseur', 'lien'),
-        }
-      }
-      // Backfill des 4 champs étape 5 même si le field_map est déjà figé en DB
-      // (l'auto-map initial ci-dessus ne s'exécute qu'au tout 1er sync). On reprobe
-      // tant que non trouvé, car Airtable omet les champs vides : un champ peut
-      // n'apparaître que dans un record plus loin. Idempotent.
-      if (fieldMap && rec.fields) {
-        const probe = (key, ...cands) => { if (!fieldMap[key]) { const m = autoMapField(rec.fields, ...cands); if (m) fieldMap[key] = m } }
-        probe('assembly_status', "status d'assemblage", 'status assemblage', "statut d'assemblage", 'statut assemblage', 'assembly status')
-        probe('finished_min_stock', 'seuil min. produits finis', 'seuil min produits finis', 'seuil min produits fini', 'seuil minimum produits finis')
-        probe('projected_available_qty', 'quantité sera disponible', 'quantite sera disponible', 'qté sera disponible', 'quantité disponible projetée')
-        probe('producible_qty', 'nombre de produit possible', 'nombre de produits possible', 'nombre de produits possibles', 'nb produit possible', 'produit possible')
-        probe('supplier_link', 'lien fournisseur', "lien d'achat", 'url fournisseur', 'lien')
-      }
       // Mêmes garde-fous que le moteur miroir (piecesPrepareImages) : on saute
       // les produits dont l'image a été déposée à la main dans l'ERP, on ignore
       // les pièces jointes qui ne sont pas des images (fiche technique PDF) et
@@ -814,9 +779,10 @@ export async function syncPieces(changes = null) {
           imported++
         }
       }
-      // Persiste le field_map (incl. les 4 clés étape 5 backfillées) pour qu'il soit durable
-      // et visible dans la config — évite tout UPDATE manuel de la DB.
-      db.prepare(`UPDATE airtable_module_config SET field_map=?, last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='pieces'`).run(fieldMap ? JSON.stringify(fieldMap) : null)
+      // Le field_map n'est plus persisté : il n'existe plus (le mapping vit dans
+      // /champs/products). Réécrire ce blob ressusciterait le mapping cœur et
+      // re-verrouillerait les champs qu'on vient d'ouvrir à l'utilisateur.
+      db.prepare(`UPDATE airtable_module_config SET last_synced_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE module='pieces'`).run()
     })(records)
     console.log(`🔩 Pièces: ${imported} importées, ${updated} mises à jour`)
     if (!changes) {
@@ -846,7 +812,9 @@ export async function syncAchats(changes = null) {
 
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'achats', _recordIds)
-    let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
+    // Field map désormais VIDE côté cœur : il ne sert plus qu'à dire aux defs
+    // dynamiques quels champs Airtable sont déjà pris (aucun).
+    const fieldMap = config.field_map ? JSON.parse(config.field_map) : null
 
     // Fournisseur lié (table Fournisseurs) — cache rafraîchi sur sync complète, ou sur
     // sync incrémentale dès qu'un achat pointe vers un fournisseur encore inconnu.
@@ -861,33 +829,13 @@ export async function syncAchats(changes = null) {
       vendors = vendorLinkMap()
     }
 
-    // Field map computed from the UNION of keys across all fetched records, not a
-    // single sample. Airtable omits empty fields per-record, so auto-detecting from
-    // the first record alone made fields (notably "Date de réception complète")
-    // appear/disappear between syncs depending on which record landed first in the
-    // batch. On a full sync the union is complete → persist it so later incremental
-    // syncs (small batches that may not contain every field) reuse a stable map.
-    if (!fieldMap && records.length) {
-      const union = {}
-      for (const rec of records) if (rec.fields) Object.assign(union, rec.fields)
-      fieldMap = {
-        product:        autoMapField(union, 'nom de la pièce', 'nom de la piece', 'produit', 'pièce', 'piece', 'product', 'item'),
-        supplier:       autoMapField(union, 'fournisseur - legacy', 'fournisseur legacy', 'fournisseur', 'supplier', 'vendor'),
-        reference:      autoMapField(union, 'numéro de commande', 'numero de commande', 'référence', 'reference', 'ref', 'po', 'numéro'),
-        order_date:     autoMapField(union, 'date de commande', 'date commande', 'date achat', 'order date', 'date'),
-        // Pas de `expected_date` : le champ « Date prévue » a été supprimé côté
-        // ERP (migration 029). L'auto-détection remettrait la clé dans le
-        // field_map persisté à chaque sync complet.
-        received_date:  autoMapField(union, 'date de réception complète', 'date de réception', 'date réception', 'date reception', 'received date', 'reçu le'),
-        qty_ordered:    autoMapField(union, 'quantité commandé', 'quantite commande', 'qté commandée', 'qty ordered', 'quantité commandée', 'qte commandee'),
-        qty_received:   autoMapField(union, 'qté reçue', 'qty received', 'quantité reçue', 'qte recue'),
-        unit_cost:      autoMapField(union, 'prix unitaire ($ cad)', 'prix unitaire', 'coût unitaire', 'cout unitaire', 'unit cost'),
-        status:         autoMapField(union, 'statut', 'status', 'état'),
-        notes:          autoMapField(union, 'notes', 'commentaires', 'remarks'),
-      }
-      // Persist only on full sync — an incremental batch's union may be partial.
-      if (!changes) db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='achats'").run(JSON.stringify(fieldMap))
-    }
+    // Plus AUCUNE clé cœur à auto-détecter : les sept colonnes de 035 (product,
+    // reference, order_date, received_date, qty_ordered, unit_cost, notes) puis
+    // `qty_received` (036) ont toutes été droppées sur demande. L'auto-détection
+    // qui vivait ici les remettrait dans le field_map persisté à chaque sync
+    // complet (le piège de 029), et elles réapparaîtraient dans la note
+    // « champs gérés en code » de /champs/purchases. Ces champs Airtable se
+    // mappent désormais un par un depuis cette page (defs dynamiques).
     let imported = 0, updated = 0
 
     let echoed = 0
@@ -897,56 +845,8 @@ export async function syncAchats(changes = null) {
         // (mêmes valeurs), ne pas le ré-importer — évite la boucle avec le webhook.
         if (consumeWritebackEcho(rec.id, rec.fields)) { echoed++; continue }
 
-        function toFloat(fieldKey) {
-          const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
-          return isNaN(n) ? null : n
-        }
-        function toInt(fieldKey) {
-          const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
-          return isNaN(n) ? null : Math.round(n)
-        }
-
-        let productId = null
-        if (fieldMap?.product) {
-          const raw = rec.fields[fieldMap.product]
-          const linkedId = Array.isArray(raw) ? raw[0] : (typeof raw === 'string' ? raw : null)
-          if (linkedId) {
-            const prod = db.prepare('SELECT id FROM products WHERE airtable_id=?').get(linkedId)
-            productId = prod?.id || null
-            if (!productId) {
-              const nameStr = typeof linkedId === 'string' ? linkedId : null
-              if (nameStr) {
-                const prod2 = db.prepare('SELECT id FROM products WHERE (name_fr LIKE ? OR sku LIKE ?) LIMIT 1').get(`%${nameStr}%`, `%${nameStr}%`)
-                productId = prod2?.id || null
-              }
-            }
-          }
-        }
-
-        const STATUS_MAP = {
-          'commandé': 'Commandé', 'ordered': 'Commandé', 'commande': 'Commandé',
-          'reçu partiellement': 'Reçu partiellement', 'partial': 'Reçu partiellement', 'partiel': 'Reçu partiellement',
-          'reçu': 'Reçu', 'received': 'Reçu', 'livré': 'Reçu', 'livre': 'Reçu',
-          'annulé': 'Annulé', 'cancelled': 'Annulé', 'canceled': 'Annulé', 'annule': 'Annulé',
-        }
-        const rawStatus = (getVal(rec.fields, fieldMap?.status) || '').trim()
-        const receivedDate = getVal(rec.fields, fieldMap?.received_date)
-        const qtyOrdered = toInt(fieldMap?.qty_ordered) ?? 0
-        const mappedQtyReceived = toInt(fieldMap?.qty_received)
-        // Airtable's "achats" table has no Statut / Qté reçue column — reception is
-        // tracked solely by "Date de réception complète". Prefer an explicit status
-        // field when one exists; otherwise derive it: a reception date ⇒ Reçu (and
-        // assume the full ordered qty received), absence ⇒ still Commandé.
-        const status = STATUS_MAP[rawStatus.toLowerCase()] || (receivedDate ? 'Reçu' : 'Commandé')
-        const qtyReceived = mappedQtyReceived ?? (status === 'Reçu' ? qtyOrdered : 0)
-
         // Fournisseur : le champ LIÉ fait foi (nom = raison sociale QB exacte). Le
-        // single-select legacy ne sert plus que de repli pour les achats antérieurs à
-        // la bascule. On ne l'ÉCRASE pas dans `supplier` (colonne héritée utilisée par
-        // les vues/filtres existants) : on ne la remplit que si elle est vide.
-        const legacySupplier = getVal(rec.fields, fieldMap?.supplier)
+        // single-select legacy n'a plus de colonne ERP (migration 032).
         const rawVendorLink = rec.fields?.[ACHATS_VENDOR_LINK_FIELD]
         const linkedVendorId = Array.isArray(rawVendorLink) ? rawVendorLink[0] : null
         const linkedVendor = linkedVendorId ? vendors.get(linkedVendorId) : null
@@ -954,26 +854,16 @@ export async function syncAchats(changes = null) {
         const payload = {
           supplier_vendor_name:  linkedVendor?.name || null,
           supplier_qb_vendor_id: linkedVendor?.qb_vendor_id || null,
-          product_id:     productId,
-          supplier:       legacySupplier || linkedVendor?.name || null,
-          reference:      getVal(rec.fields, fieldMap?.reference),
-          order_date:     getVal(rec.fields, fieldMap?.order_date),
-          received_date:  receivedDate,
-          qty_ordered:    qtyOrdered,
-          qty_received:   qtyReceived,
-          unit_cost:      toFloat(fieldMap?.unit_cost) ?? 0,
-          status,
-          notes:          getVal(rec.fields, fieldMap?.notes),
         }
 
         const existing = db.prepare('SELECT id FROM purchases WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE purchases SET product_id=?, supplier=?, supplier_vendor_name=?, supplier_qb_vendor_id=?, reference=?, order_date=?, received_date=?, qty_ordered=?, qty_received=?, unit_cost=?, status=?, notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes, existing.id)
+          db.prepare(`UPDATE purchases SET supplier_vendor_name=?, supplier_qb_vendor_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(payload.supplier_vendor_name, payload.supplier_qb_vendor_id, existing.id)
           updated++
         } else {
-          db.prepare(`INSERT INTO purchases (id, airtable_id, product_id, supplier, supplier_vendor_name, supplier_qb_vendor_id, reference, order_date, received_date, qty_ordered, qty_received, unit_cost, status, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-            .run(newRecordId(), rec.id, payload.product_id, payload.supplier, payload.supplier_vendor_name, payload.supplier_qb_vendor_id, payload.reference, payload.order_date, payload.received_date, payload.qty_ordered, payload.qty_received, payload.unit_cost, payload.status, payload.notes)
+          db.prepare(`INSERT INTO purchases (id, airtable_id, supplier_vendor_name, supplier_qb_vendor_id) VALUES (?,?,?,?)`)
+            .run(newRecordId(), rec.id, payload.supplier_vendor_name, payload.supplier_qb_vendor_id)
           imported++
         }
       }
@@ -1007,7 +897,12 @@ export async function syncSerials(changes = null) {
 
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'serials', _recordIds)
-    let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
+    // Plus de field_map « cœur » en base : les 10 clés se règlent dans
+    // /champs/serial_numbers et se relisent sous la même forme (cf.
+    // airtableUiFieldMap.js). Le repli par auto-détection ci-dessous ne sert
+    // plus que si AUCUNE colonne n'est mappée (table jamais configurée).
+    const uiMap = fieldMapFromUi('serial_numbers', SERIALS_FIELD_MAP_PLAN)
+    let fieldMap = Object.keys(uiMap).length ? uiMap : null
     let imported = 0, updated = 0
 
     db.transaction((recs) => {
@@ -1251,96 +1146,25 @@ export async function syncBillets(changes = null) {
 
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'billets', _recordIds)
-    let fieldMap = config.field_map ? JSON.parse(config.field_map) : null
+    // Field map désormais VIDE côté cœur : il ne sert plus qu'à dire aux defs
+    // dynamiques quels champs Airtable sont déjà pris (aucun).
+    const fieldMap = config.field_map ? JSON.parse(config.field_map) : null
     let imported = 0, updated = 0
 
+    // Plus AUCUNE clé cœur à auto-détecter : les neuf colonnes de 040 (title,
+    // description, response, type, status, company, contact, duration_minutes,
+    // created_at) ont toutes été droppées sur demande. L'auto-détection qui
+    // vivait ici les remettrait dans le field_map à chaque sync complet (le
+    // piège de 029), et elles réapparaîtraient dans la note « champs gérés en
+    // code » de /champs/tickets. Ces champs Airtable se mappent désormais un par
+    // un depuis cette page (defs dynamiques).
+    //
+    // Le garde « un record sans titre n'est pas un billet » tombe avec la
+    // colonne : chaque record de la table Airtable a maintenant sa ligne ERP,
+    // qui ne porte plus que son `airtable_id` et ses champs adoptés.
     db.transaction((recs) => {
       for (const rec of recs) {
-        if (rec.fields) {
-          const autoMap = {
-            title:            autoMapField(rec.fields, 'titre', 'title', 'sujet', 'subject', 'nom'),
-            description:      autoMapField(rec.fields, 'description', 'détails', 'details'),
-            response:         autoMapField(rec.fields, 'réponse', 'reponse', 'response', 'answer'),
-            type:             autoMapField(rec.fields, 'type', 'catégorie', 'categorie'),
-            status:           autoMapField(rec.fields, 'statut', 'status', 'état'),
-            company:          autoMapField(rec.fields, 'entreprise', 'company', 'client', 'compte'),
-            contact:          autoMapField(rec.fields, 'contact', 'personne'),
-            duration_minutes: autoMapField(rec.fields, 'durée', 'duree', 'duration', 'minutes', 'temps'),
-            created_at:       autoMapField(rec.fields, 'date de création', 'date creation', 'created', 'créé le', 'cree le', 'date'),
-          }
-          if (!fieldMap) fieldMap = autoMap
-          else for (const k of Object.keys(autoMap)) {
-            if (!fieldMap[k] && autoMap[k]) fieldMap[k] = autoMap[k]
-          }
-        }
-
-        const title = getVal(rec.fields, fieldMap?.title)
-        if (!title) continue
-
-        const FALLBACK_STATUS_MAP = {
-          'waiting on us': 'Waiting on us', 'en attente nous': 'Waiting on us', 'en cours': 'Waiting on us', 'ouvert': 'Waiting on us', 'open': 'Waiting on us',
-          'waiting on them': 'Waiting on them', 'en attente client': 'Waiting on them', 'waiting client': 'Waiting on them',
-          'closed': 'Closed', 'fermé': 'Closed', 'ferme': 'Closed', 'résolu': 'Closed', 'resolu': 'Closed',
-        }
-        const rawStatus = (getVal(rec.fields, fieldMap?.status) || '').trim()
-        let status
-        if (!rawStatus) {
-          status = 'Closed'
-        } else if (fieldMap?.status_map && fieldMap.status_map[rawStatus]) {
-          status = fieldMap.status_map[rawStatus]
-        } else {
-          status = FALLBACK_STATUS_MAP[rawStatus.toLowerCase()] || rawStatus
-        }
-
-        const TYPE_MAP = {
-          'aide software': 'Aide software', 'defect software': 'Defect software',
-          'aide hardware': 'Aide hardware', 'defect hardware': 'Defect hardware',
-          'erreur de commande': 'Erreur de commande', 'formation': 'Formation', 'installation': 'Installation',
-        }
-        const rawType = (getVal(rec.fields, fieldMap?.type) || '').trim()
-        const type = TYPE_MAP[rawType.toLowerCase()] || rawType || null
-
-        function toInt(fieldKey) {
-          const raw = fieldKey ? rec.fields[fieldKey] : null
-          const n = parseFloat(String(raw ?? '').replace(/[^0-9.-]/g, ''))
-          return isNaN(n) ? null : Math.round(n)
-        }
-
-        const companyId = lookupCompany(rec.fields, fieldMap?.company)
-
-        // Contact lookup via linked record or name
-        let contactId = null
-        if (fieldMap?.contact) {
-          const raw = rec.fields[fieldMap.contact]
-          const linkedId = Array.isArray(raw) ? raw[0] : null
-          if (linkedId) {
-            const ct = db.prepare('SELECT id FROM contacts WHERE airtable_id=? LIMIT 1').get(linkedId)
-            contactId = ct?.id || null
-          }
-          if (!contactId) {
-            const name = Array.isArray(raw) ? null : getVal(rec.fields, fieldMap.contact)
-            if (name) {
-              const ct = db.prepare("SELECT id FROM contacts WHERE (first_name || ' ' || last_name) LIKE ? LIMIT 1").get(`%${name}%`)
-              contactId = ct?.id || null
-            }
-          }
-        }
-
-        // Date de création: champ Airtable mappé, sinon createdTime du record Airtable
-        const rawCreatedAt = getVal(rec.fields, fieldMap?.created_at) || rec.createdTime || null
-        const createdAt = rawCreatedAt ? new Date(rawCreatedAt).toISOString() : null
-
-        const payload = {
-          title, status, type,
-          description:      getVal(rec.fields, fieldMap?.description),
-          response:         getVal(rec.fields, fieldMap?.response),
-          duration_minutes: toInt(fieldMap?.duration_minutes) ?? 0,
-          company_id:       companyId,
-          contact_id:       contactId,
-          created_at:       createdAt,
-        }
-
-        const result = upsertRecord('tickets', rec.id, payload)
+        const result = upsertRecord('tickets', rec.id, {})
         if (result === 'updated') updated++
         else imported++
       }
@@ -1631,7 +1455,12 @@ export async function syncProjets(changes = null) {
   try {
     const _projIds = changes?.[config.projects_table_id]?.recordIds
     const records = await fetchAllRecords(config.base_id, config.projects_table_id, accessToken, 'projets', _projIds)
-    let fieldMap = config.field_map_projects ? JSON.parse(config.field_map_projects) : null
+    // Le mapping des projets se règle dans /champs/projects : plus de field_map
+    // en base (cf. retireProjetsCoreFieldMap). Aucune colonne mappée → on rend
+    // `null`, ce qui laisse l'auto-détection par nom ci-dessous prendre le relais
+    // comme du temps d'un field_map vide.
+    const uiMap = fieldMapFromUi('projects', PROJETS_FIELD_MAP_PLAN)
+    let fieldMap = Object.keys(uiMap).length ? uiMap : null
     let imported = 0, updated = 0
 
     // Fetch extra table records before the sync transaction (async)
@@ -1864,21 +1693,19 @@ export async function syncRetours(changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
-        const companyId = lookupCompany(rec.fields, fm.company)
-        const contactId = lookupContact(firstLinked(rec.fields, fm.contact))
-        const returnNumber = getVal(rec.fields, fm.return_number)
-        const status = getVal(rec.fields, fm.status) || 'Ouvert'
-        const problemStatus = getVal(rec.fields, fm.problem_status)
-        const notes = getVal(rec.fields, fm.notes)
-        const billedAt = getVal(rec.fields, fm.billed_at)
+        // Plus AUCUNE colonne native alimentée en code : les 6 dernières ont
+        // été droppées par la migration 037, et `status` — une constante, jamais
+        // portée par Airtable — par la 041. La ligne ne sert plus qu'à ancrer
+        // l'`airtable_id` ; tout le contenu d'un retour vient des defs
+        // dynamiques de /champs/retours.
         const existing = db.prepare('SELECT id FROM returns WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare(`UPDATE returns SET company_id=?, contact=?, n_de_retour=?, status=?, problem_status=?, notes=?, billed_at=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
-            .run(companyId, contactId, returnNumber, status, problemStatus, notes, billedAt, existing.id)
+          db.prepare(`UPDATE returns SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
+            .run(existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO returns (id, airtable_id, company_id, contact, n_de_retour, status, problem_status, notes, billed_at) VALUES (?,?,?,?,?,?,?,?,?)')
-            .run(newRecordId(), rec.id, companyId, contactId, returnNumber, status, problemStatus, notes, billedAt)
+          db.prepare('INSERT INTO returns (id, airtable_id) VALUES (?,?)')
+            .run(newRecordId(), rec.id)
           imported++
         }
       }
@@ -1909,33 +1736,50 @@ export async function syncRetourItems(changes = null) {
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'retour_items', _recordIds)
-    const fm = config.field_map ? JSON.parse(config.field_map) : {}
+    // Plus de field_map « cœur » en base : les 13 clés se règlent dans
+    // /champs/return_items et se relisent sous la même forme (cf.
+    // airtableUiFieldMap.js).
+    const fm = fieldMapFromUi('return_items', RETOUR_ITEMS_FIELD_MAP_PLAN)
+    // Valeur d'une clé du plan, à condition qu'elle soit MAPPÉE. Depuis que le
+    // mapping est démappable depuis l'interface, écrire chaque colonne sans
+    // condition viderait la donnée de celles qu'on vient de démapper (démapper
+    // « Raison du retour » aurait effacé 616 raisons).
+    const readers = {
+      serial:              f => lookupSerial(firstLinked(f, fm.serial)),
+      company:             f => lookupCompany(f, fm.company),
+      product_to_receive:  f => lookupProduct(firstLinked(f, fm.product_to_receive)),
+      problem_category:    f => getVal(f, fm.problem_category),
+      return_reason:       f => getVal(f, fm.return_reason),
+      return_reason_notes: f => getVal(f, fm.return_reason_notes),
+      action:              f => getVal(f, fm.action),
+      received_at:         f => getVal(f, fm.received_at),
+      received_by:         f => getVal(f, fm.received_by),
+      analysis_notes:      f => getVal(f, fm.analysis_notes),
+      analyzed_by:         f => getVal(f, fm.analyzed_by),
+    }
+    // Colonnes réellement alimentées par ce sync = clés mappées, hors `return`
+    // (traité à part : c'est la garde d'insertion).
+    const mapped = Object.keys(readers)
+      .filter(k => fm[k])
+      .map(k => [RETOUR_ITEMS_FIELD_MAP_PLAN[k], readers[k]])
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
         const retourAirtableId = firstLinked(rec.fields, fm.return)
         const retour = retourAirtableId ? db.prepare('SELECT id FROM returns WHERE airtable_id=?').get(retourAirtableId) : null
         if (!retour) continue
-        const productId = lookupProduct(firstLinked(rec.fields, fm.product_to_receive))
-        const productSendId = lookupProduct(firstLinked(rec.fields, fm.product_to_send))
-        const serialId = lookupSerial(firstLinked(rec.fields, fm.serial))
-        const companyId = lookupCompany(rec.fields, fm.company)
-        const problemCategory = getVal(rec.fields, fm.problem_category)
-        const returnReason = getVal(rec.fields, fm.return_reason)
-        const returnReasonNotes = getVal(rec.fields, fm.return_reason_notes)
-        const action = getVal(rec.fields, fm.action)
-        const receivedAt = getVal(rec.fields, fm.received_at)
-        const receivedBy = getVal(rec.fields, fm.received_by)
-        const analysisNotes = getVal(rec.fields, fm.analysis_notes)
-        const analyzedBy = getVal(rec.fields, fm.analyzed_by)
+        const values = mapped.map(([, read]) => read(rec.fields))
         const existing = db.prepare('SELECT id FROM return_items WHERE airtable_id=?').get(rec.id)
         if (existing) {
-          db.prepare('UPDATE return_items SET return_id=?, product_id=?, product_send_id=?, serial_id=?, company_id=?, problem_category=?, return_reason=?, return_reason_notes=?, action=?, received_at=?, received_by=?, analysis_notes=?, analyzed_by=? WHERE id=?')
-            .run(retour.id, productId, productSendId, serialId, companyId, problemCategory, returnReason, returnReasonNotes, action, receivedAt, receivedBy, analysisNotes, analyzedBy, existing.id)
+          const sets = ['return_id=?', ...mapped.map(([col]) => `${col}=?`)].join(', ')
+          db.prepare(`UPDATE return_items SET ${sets} WHERE id=?`)
+            .run(retour.id, ...values, existing.id)
           updated++
         } else {
-          db.prepare('INSERT INTO return_items (id, return_id, airtable_id, product_id, product_send_id, serial_id, company_id, problem_category, return_reason, return_reason_notes, action, received_at, received_by, analysis_notes, analyzed_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-            .run(newRecordId(), retour.id, rec.id, productId, productSendId, serialId, companyId, problemCategory, returnReason, returnReasonNotes, action, receivedAt, receivedBy, analysisNotes, analyzedBy)
+          const cols = ['id', 'return_id', 'airtable_id', ...mapped.map(([col]) => col)]
+          db.prepare(
+            `INSERT INTO return_items (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(',')})`
+          ).run(newRecordId(), retour.id, rec.id, ...values)
           imported++
         }
       }
@@ -2143,7 +1987,9 @@ export async function syncAssemblages(changes = null) {
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'assemblages', _recordIds)
-    const fm = config.field_map ? JSON.parse(config.field_map) : {}
+    // Plus de field_map « cœur » en base : le mapping se règle dans
+    // /champs/assemblages et se relit sous la même forme (cf. airtableUiFieldMap.js).
+    const fm = fieldMapFromUi('assemblages', ASSEMBLAGES_FIELD_MAP_PLAN)
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
@@ -2325,62 +2171,32 @@ export async function syncPaies(changes = null) {
   catch (e) { console.error('❌ Airtable token:', e.message); return }
   try {
     const records = await fetchAllRecords(config.base_id, config.table_id, accessToken, 'paies', _recordIds)
-    const fieldUnion = {}
-    for (const rec of records) {
-      if (rec.fields) for (const k of Object.keys(rec.fields)) fieldUnion[k] = true
-    }
-    let fm = config.field_map ? JSON.parse(config.field_map) : null
-    if (!fm) {
-      fm = {
-        number:                     autoMapField(fieldUnion, 'number', 'numéro', 'numero'),
-        period_end:                 autoMapField(fieldUnion, 'fin', 'end', 'date de fin'),
-        status:                     autoMapField(fieldUnion, 'statut des feuilles de temps', 'statut', 'status'),
-        csv:                        autoMapField(fieldUnion, 'csv'),
-        nb_holiday_days:            autoMapField(fieldUnion, 'nombre de congés fériés', 'nombre de conges feries', 'nb congés fériés'),
-        total_with_charges_and_reimb: autoMapField(fieldUnion, 'total de la paie incluant les remises aux organismes et les remboursements de dépenses', 'total paie', 'total'),
-        timesheets_deadline:        autoMapField(fieldUnion, 'date limite pour correction des feuille de temps', 'date limite correction', 'deadline feuilles de temps'),
-        includes_hourly:            autoMapField(fieldUnion, "heures pour employés payés à l'heure", 'heures payés heure', 'hourly hours'),
-        includes_mileage:           autoMapField(fieldUnion, 'kilométrage', 'kilometrage', 'mileage'),
-        includes_expense_reimb:     autoMapField(fieldUnion, 'remboursement de dépenses', 'remboursement de depenses', 'expense reimbursement'),
-        includes_paid_leave:        autoMapField(fieldUnion, 'congés payés', 'conges payes', 'paid leave'),
-        includes_holiday_hours:     autoMapField(fieldUnion, 'heures férié', 'heures ferie', 'holiday hours'),
-        includes_sales_commissions: autoMapField(fieldUnion, 'commissions vendeurs', 'sales commissions'),
-        timesheets_sent:            autoMapField(fieldUnion, 'envoi des feuilles de temps', 'timesheets sent'),
-      }
-      db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paies'").run(JSON.stringify(fm))
-    }
-    // Champs ajoutés après coup — compléter un field_map déjà persisté.
-    // Le champ currency « Total … incluant … les remboursements » n'est rempli
-    // qu'au write-back de la comptabilisation : avant la publication, le total
-    // attendu se reconstitue depuis la formule « …excluant les remboursements »
-    // + le rollup « Remboursements de dépenses ». « Période de paie » fournit
-    // le début de période (« YYYY-MM-DD au YYYY-MM-DD »).
-    if (fm) {
-      let fmDirty = false
-      for (const [key, candidates] of Object.entries({
-        total_excl_reimb: ['total de la paie incluant les remises aux organismes et excluant les remboursements de dépenses'],
-        expense_reimb_total: ['remboursements de dépenses'],
-        period_range: ['période de paie', 'periode de paie'],
-      })) {
-        if (!(key in fm)) { fm[key] = autoMapField(fieldUnion, ...candidates); fmDirty = true }
-      }
-      if (fmDirty) db.prepare("UPDATE airtable_module_config SET field_map=? WHERE module='paies'").run(JSON.stringify(fm))
-    }
+    // Plus de field_map « cœur » en base : le mapping se règle dans /champs/paies
+    // et se relit sous la même forme (cf. airtableUiFieldMap.js). Plus
+    // d'auto-détection par nom non plus — elle reconstruirait, puis
+    // re-persisterait, un field_map dans le dos de l'utilisateur.
+    const fm = fieldMapFromUi('paies', PAIES_FIELD_MAP_PLAN)
+    // À savoir si ce chemin historique reprend du service (le miroir paies est
+    // sur le moteur unique) : l'UPDATE plus bas est figé, une clé démappée y
+    // écrirait NULL au lieu de simplement ne pas être importée.
+    // Les deux champs d'appoint du total attendu n'ont aucune colonne ERP, donc
+    // aucune ligne réglable dans l'interface : ils gardent leur nom Airtable.
+    const totalExclField = PAIES_UNMAPPED_AIRTABLE_FIELDS.total_excl_reimb
+    const reimbTotalField = PAIES_UNMAPPED_AIRTABLE_FIELDS.expense_reimb_total
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
         const totalIncl = empNum(rec.fields, fm?.total_with_charges_and_reimb)
-        const totalExcl = empNum(rec.fields, fm?.total_excl_reimb)
-        const reimbTotal = empNum(rec.fields, fm?.expense_reimb_total)
+        const totalExcl = empNum(rec.fields, totalExclField)
+        const reimbTotal = empNum(rec.fields, reimbTotalField)
         const totalFallback = totalExcl != null ? Math.round((totalExcl + (reimbTotal || 0)) * 100) / 100 : null
-        const periodRange = String(getVal(rec.fields, fm?.period_range) || '')
-        const periodStartMatch = periodRange.match(/^(\d{4}-\d{2}-\d{2})\s+au\b/)
+        // `csv` et `period_start` ne sont plus importées (migration 051) : la
+        // colonne `csv` a été droppée, `period_start` reste alimentée en
+        // interne par `paieTimesheetImport`, indépendamment du sync Airtable.
         const row = {
           number: empNum(rec.fields, fm?.number),
-          period_start: periodStartMatch ? periodStartMatch[1] : null,
           period_end: getVal(rec.fields, fm?.period_end),
           status: getVal(rec.fields, fm?.status),
-          csv: getVal(rec.fields, fm?.csv),
           nb_holiday_days: empNum(rec.fields, fm?.nb_holiday_days),
           // Fallback ignoré tant que la paie est incomplète côté Airtable (remises
           // aux organismes pas encore saisies → formule ≤ 0).
@@ -2397,8 +2213,8 @@ export async function syncPaies(changes = null) {
         const existing = db.prepare('SELECT id FROM paies WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE paies SET
-            number=@number, period_start=COALESCE(@period_start, period_start),
-            period_end=@period_end, status=@status, csv=@csv,
+            number=@number,
+            period_end=@period_end, status=@status,
             nb_holiday_days=@nb_holiday_days, total_with_charges_and_reimb=@total_with_charges_and_reimb,
             timesheets_deadline=@timesheets_deadline, includes_hourly=@includes_hourly,
             includes_mileage=@includes_mileage, includes_expense_reimb=@includes_expense_reimb,
@@ -2408,12 +2224,12 @@ export async function syncPaies(changes = null) {
           updated++
         } else {
           db.prepare(`INSERT INTO paies (
-            id, airtable_id, number, period_start, period_end, status, csv, nb_holiday_days,
+            id, airtable_id, number, period_end, status, nb_holiday_days,
             total_with_charges_and_reimb, timesheets_deadline, includes_hourly, includes_mileage,
             includes_expense_reimb, includes_paid_leave, includes_holiday_hours,
             includes_sales_commissions, timesheets_sent
           ) VALUES (
-            @id, @airtable_id, @number, @period_start, @period_end, @status, @csv, @nb_holiday_days,
+            @id, @airtable_id, @number, @period_end, @status, @nb_holiday_days,
             @total_with_charges_and_reimb, @timesheets_deadline, @includes_hourly, @includes_mileage,
             @includes_expense_reimb, @includes_paid_leave, @includes_holiday_hours,
             @includes_sales_commissions, @timesheets_sent

@@ -1,8 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Eye, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare } from 'lucide-react'
+import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Eye, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin } from 'lucide-react'
 import { fmtDateTime, fmtTime, localISODate } from '../lib/formatDate.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
+import { emailDoc, emailPalette, measureEmailHeight } from '../lib/emailDoc.js'
+import EmailBodyFrame from './EmailBodyFrame.jsx'
 import { Modal } from './Modal.jsx'
 import { useIsDark } from '../lib/theme.js'
 import EmptyState from './EmptyState.jsx'
@@ -24,81 +26,6 @@ const TRANSCRIPT_PREVIEW_LEN = 1000
 const EMAIL_PREVIEW_MAX = 180
 
 import { fmtDurationSeconds as fmtDuration } from '../lib/duration.js'
-
-// `stripEmailHtml` renvoie un fragment : sans feuille de style, l'iframe le rend
-// avec les défauts du navigateur (16 px, marges, empattements) — deux fois la
-// taille du reste de l'app, ce qui donnait des aperçus disproportionnés. On
-// enveloppe donc le fragment dans un document calé sur la typo de l'ERP.
-const EMAIL_FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif'
-
-// Un document iframe n'hérite ni de la classe `.dark` ni des variables CSS du
-// thème : on lui passe les couleurs en dur, relues sur la racine de l'app pour
-// que l'aperçu se fonde exactement dans sa carte.
-function emailPalette() {
-  const read = (name, fallback) => {
-    try {
-      const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
-      return v ? `rgb(${v})` : fallback
-    } catch { return fallback }
-  }
-  return {
-    surface: read('--c-white', '#ffffff'),
-    text: read('--c-slate-700', '#334155'),
-    muted: read('--c-slate-400', '#94a3b8'),
-    rule: read('--c-slate-200', '#e2e8f0'),
-    link: read('--c-brand-600', '#21B14B'),
-  }
-}
-
-function emailDoc(html, { compact, palette }) {
-  const p = palette || { surface: '#ffffff', text: '#334155', muted: '#94a3b8', rule: '#e2e8f0', link: '#21B14B' }
-  // Aperçu : on neutralise la mise en forme du courriel (les gabarits marketing
-  // arrivent en 24 px sur fond coloré) et on repeint tout aux couleurs de la
-  // carte — l'entrée reste lisible en jour comme en nuit. `body *` et non `*`,
-  // sinon la règle écraserait le fond posé sur `html`/`body`.
-  // Plein écran : mise en page d'origine préservée, donc fond blanc fixe.
-  const surface = compact ? p.surface : '#ffffff'
-  const text = compact ? p.text : '#334155'
-  const link = compact ? p.link : '#21B14B'
-  const neutralize = compact
-    ? `body * { background: transparent !important; background-image: none !important; color: inherit !important;
-         font-family: ${EMAIL_FONT} !important; font-size: 13px !important; line-height: 1.55 !important; }
-       a, a * { color: ${link} !important; }
-       p { margin: 0 0 0.5em }`
-    : ''
-  return `<!doctype html><html><head><meta charset="utf-8">
-<base target="_blank">
-<style>
-  html { color-scheme: ${compact ? 'normal' : 'light'} }
-  html, body { margin: 0; padding: 0; background: ${surface}; }
-  body { font: 400 ${compact ? '13px/1.55' : '14px/1.6'} ${EMAIL_FONT}; color: ${text}; overflow-wrap: anywhere; -webkit-font-smoothing: antialiased; }
-  img, video { max-width: 100% !important; height: auto; }
-  table { max-width: 100% !important; }
-  a { color: ${link}; }
-  blockquote { margin: 0.5em 0; padding-left: 0.75em; border-left: 2px solid ${compact ? p.rule : '#e2e8f0'}; color: ${compact ? p.muted : '#64748b'}; }
-  ${neutralize}
-</style></head><body>${html}</body></html>`
-}
-
-// Hauteur réelle du courriel. `body.scrollHeight` compte les blocs vides que
-// tous les clients laissent en fin de message (Gmail en met trois) : la carte
-// se terminait sur 80 px de blanc. Un Range ignore ces boîtes vides — mais
-// aussi les images, qu'on remesure à part.
-function measureEmailHeight(frame) {
-  const doc = frame.contentDocument
-  if (!doc?.body) return null
-  const scroll = doc.body.scrollHeight
-  let tight = 0
-  try {
-    const range = doc.createRange()
-    range.selectNodeContents(doc.body)
-    tight = Math.ceil(range.getBoundingClientRect().bottom)
-  } catch { /* Range indisponible : on retombe sur scrollHeight */ }
-  for (const img of doc.images) {
-    if (img.complete && img.naturalHeight > 0) tight = Math.max(tight, Math.ceil(img.getBoundingClientRect().bottom))
-  }
-  return tight > 0 ? Math.min(scroll, tight + 4) : scroll
-}
 
 // « Aujourd'hui »/« Hier » plutôt qu'une date longue : sur un fil consulté au
 // quotidien, c'est l'information qu'on cherche.
@@ -147,7 +74,7 @@ function DirectionChip({ direction, type }) {
 
 // ─── Entrée du fil (aperçu compact, cliquable) ───────────────────────────────
 
-function Entry({ item, showContact, onOpen, palette }) {
+function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
   const isOut = item.direction === 'out'
   const Icon = TYPE_ICONS[item.type] || MessagesSquare
   const [emailClipped, setEmailClipped] = useState(false)
@@ -200,13 +127,22 @@ function Entry({ item, showContact, onOpen, palette }) {
               <Link
                 to={`/contacts/${item.contact_id}`}
                 onClick={e => e.stopPropagation()}
-                className="text-xs font-medium text-brand-600 hover:underline truncate"
+                className="text-xs font-medium link-record truncate"
               >
                 {item.contact_name.trim()}
               </Link>
             )}
           </div>
           <div data-testid="interaction-meta" className="flex-shrink-0 flex items-center gap-1.5 text-[11px] text-slate-400 tabular-nums">
+            {onTogglePin && (
+              <button
+                onClick={e => { e.stopPropagation(); onTogglePin(item) }}
+                className={`rounded p-0.5 transition-colors ${item.pinned ? 'text-brand-600' : 'text-slate-300 opacity-0 group-hover:opacity-100 hover:text-slate-500'}`}
+                title={item.pinned ? 'Désépingler' : 'Épingler en haut du fil'}
+              >
+                <Pin size={12} className={item.pinned ? 'fill-current' : ''} />
+              </button>
+            )}
             <span title={fmtDateTime(item.timestamp)}>{time || fmtDateTime(item.timestamp)}</span>
             {item.user_name && (
               <span className="hidden sm:inline max-w-[110px] truncate" title={item.user_name}>· {item.user_name}</span>
@@ -303,7 +239,9 @@ function buildPreview(item) {
     if (full.length <= TRANSCRIPT_PREVIEW_LEN) return { kind: 'text', text: full, truncated: false }
     return { kind: 'text', text: full.slice(0, TRANSCRIPT_PREVIEW_LEN), truncated: true }
   }
-  if ((item.type === 'meeting' || item.type === 'note') && item.meeting_notes) {
+  // Notes : réunions et notes, mais aussi les logs manuels d'appel/SMS, qui
+  // rangent leur contenu au même endroit.
+  if (item.meeting_notes) {
     const title = item.meeting_title && item.meeting_title !== 'Note' ? item.meeting_title : null
     const full = item.meeting_notes
     if (full.length <= TRANSCRIPT_PREVIEW_LEN) return { kind: 'text', text: full, truncated: false, subject: title }
@@ -345,7 +283,7 @@ function InteractionDetail({ item }) {
         {item.contact_name?.trim() && (<>
           <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Contact</dt>
           <dd>{item.contact_id
-            ? <Link to={`/contacts/${item.contact_id}`} className="text-brand-600 hover:underline">{item.contact_name.trim()}</Link>
+            ? <Link to={`/contacts/${item.contact_id}`} className="link-record">{item.contact_name.trim()}</Link>
             : <span className="text-slate-800">{item.contact_name.trim()}</span>}
           </dd>
         </>)}
@@ -353,7 +291,7 @@ function InteractionDetail({ item }) {
         {item.company_name && (<>
           <dt className="text-xs font-medium text-slate-400 uppercase tracking-wide self-center">Entreprise</dt>
           <dd>{item.company_id
-            ? <Link to={`/companies/${item.company_id}`} className="text-brand-600 hover:underline">{item.company_name}</Link>
+            ? <Link to={`/companies/${item.company_id}`} className="link-record">{item.company_name}</Link>
             : <span className="text-slate-800">{item.company_name}</span>}
           </dd>
         </>)}
@@ -395,9 +333,7 @@ function InteractionDetail({ item }) {
       {/* Full body */}
       {emailBody?.kind === 'html' && (
         <div className="rounded-lg overflow-hidden border border-slate-200 bg-white">
-          <iframe srcDoc={emailDoc(emailBody.html, { compact: false })} sandbox="allow-same-origin" scrolling="no"
-            className="w-full border-0" style={{ minHeight: '40px' }}
-            onLoad={e => { try { const h = measureEmailHeight(e.target); if (h != null) e.target.style.height = `${h}px` } catch {} }} />
+          <EmailBodyFrame html={emailBody.html} />
         </div>
       )}
       {emailBody?.kind === 'text' && (
@@ -429,7 +365,7 @@ function InteractionDetail({ item }) {
           </div>
         </div>
       )}
-      {(item.type === 'meeting' || item.type === 'note') && item.meeting_notes && (
+      {item.meeting_notes && (
         <div>
           <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5">Notes</div>
           <div className="p-3 bg-slate-50 rounded-lg text-sm text-slate-700 whitespace-pre-wrap border border-slate-200">
@@ -441,7 +377,7 @@ function InteractionDetail({ item }) {
       {emailBody?.hasHidden && (
         <button
           onClick={() => setShowFull(v => !v)}
-          className="text-xs text-brand-600 hover:underline"
+          className="text-xs link-record"
         >
           {showFull ? 'Masquer chaîne et signature' : 'Afficher chaîne et signature'}
         </button>
@@ -452,7 +388,10 @@ function InteractionDetail({ item }) {
 
 // ─── Timeline (the list + modal orchestration) ───────────────────────────────
 
-export default function InteractionTimeline({ interactions, loading, total, onLoadMore, loadingMore, showContact = true }) {
+// `onLog` (optionnel) : quand la page sait consigner une interaction à la main,
+// l'état vide propose l'action au lieu de rester un cul-de-sac. Les appelants
+// qui ne le passent pas gardent l'état vide sans bouton.
+export default function InteractionTimeline({ interactions, loading, total, onLoadMore, loadingMore, showContact = true, onLog, onTogglePin }) {
   const [selected, setSelected] = useState(null)
   // Le document d'une iframe ne suit ni `.dark` ni les variables CSS du thème :
   // on relit la palette à chaque bascule et on la passe aux aperçus.
@@ -482,25 +421,44 @@ export default function InteractionTimeline({ interactions, loading, total, onLo
           icon={MessagesSquare}
           title="Aucune interaction"
           description="Les courriels, appels, SMS et notes apparaîtront ici au fil des échanges."
+          cta={onLog ? { label: 'Consigner', icon: Plus, onClick: onLog } : undefined}
         />
       </div>
     )
   }
 
+  // Épinglées d'abord (le backend les trie déjà en tête, peu importe leur
+  // date) : section à part, sans séparateur de jour, puis le fil chronologique
+  // normal pour le reste.
+  const pinnedItems = interactions.filter(i => i.pinned)
+  const restItems = interactions.filter(i => !i.pinned)
+
   let lastDate = null
   const elements = []
-  for (const item of interactions) {
+  for (const item of restItems) {
     const day = item.timestamp ? item.timestamp.slice(0, 10) : null
     if (day && day !== lastDate) {
       elements.push(<DaySeparator key={`date-${day}`} date={item.timestamp} />)
       lastDate = day
     }
-    elements.push(<Entry key={item.id} item={item} showContact={showContact} onOpen={setSelected} palette={palette} />)
+    elements.push(<Entry key={item.id} item={item} showContact={showContact} onOpen={setSelected} palette={palette} onTogglePin={onTogglePin} />)
   }
 
   return (
     <>
       <div className="py-1">
+        {pinnedItems.length > 0 && (
+          <div className="mb-3">
+            <div className="flex items-center gap-1.5 pl-11 pb-1.5 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <Pin size={11} className="fill-current" />Épinglé
+            </div>
+            <div className="space-y-2.5">
+              {pinnedItems.map(item => (
+                <Entry key={item.id} item={item} showContact={showContact} onOpen={setSelected} palette={palette} onTogglePin={onTogglePin} />
+              ))}
+            </div>
+          </div>
+        )}
         <div className="relative">
           {/* Rail vertical : lie les entrées entre elles et pose la colonne des
               pastilles (16 px ≈ moitié de la pastille de 32 px). */}

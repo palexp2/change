@@ -24,14 +24,16 @@ export function Section({ id, label, count, action, registerRef, children }) {
   )
 }
 
-export default function SectionNav({ sections, labels = {}, counts = {}, active, onSelect, embedded = true, testId }) {
+// `trailing` : contenu posé à droite de la barre (ex. bouton Enregistrer d'un
+// éditeur) — il reste visible avec la barre pendant le défilement.
+export default function SectionNav({ sections, labels = {}, counts = {}, active, onSelect, embedded = true, testId, trailing }) {
   if (!sections?.length) return null
   // La barre déborde du padding de la fiche pour couvrir toute la largeur
   // quand le contenu défile dessous.
   const bleed = embedded ? '-mx-5 px-5' : '-mx-6 px-6'
   return (
-    <div className={`sticky top-0 z-20 ${bleed} mb-4 bg-slate-50/95 backdrop-blur-sm border-b border-slate-200`}>
-      <nav className="flex items-center gap-1 overflow-x-auto py-2" data-testid={testId}>
+    <div className={`sticky top-0 z-20 ${bleed} mb-4 bg-slate-50/95 backdrop-blur-sm border-b border-slate-200 flex items-center gap-3`}>
+      <nav className="flex-1 min-w-0 flex items-center gap-1 overflow-x-auto py-2" data-testid={testId}>
         {sections.map(t => {
           const count = counts[t]
           const isActive = active === t
@@ -56,6 +58,7 @@ export default function SectionNav({ sections, labels = {}, counts = {}, active,
           )
         })}
       </nav>
+      {trailing && <div className="flex items-center gap-2 shrink-0 py-2 pl-3 border-l border-slate-200">{trailing}</div>}
     </div>
   )
 }

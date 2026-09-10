@@ -4,6 +4,8 @@
 // sans saisie manuelle ». Les exclusions structurelles (formule, rollup, lookup,
 // autonuméro, pièce jointe, champ lien, champ virtuel ERP) sont définitives ; un
 // champ Airtable encore en sens import reste LISTÉ mais `writable: false`.
+// Exception : un champ LIEN dont la table visée est connue est proposé, en type
+// `record_link` (le formulaire le rend avec un picker recherchable).
 
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -25,6 +27,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS custom_fields (
   kind TEXT NOT NULL DEFAULT 'data',
   source TEXT NOT NULL DEFAULT 'native',
   options TEXT,
+  link_single INTEGER DEFAULT 0,
   hidden INTEGER DEFAULT 0,
   deleted_at TEXT
 )`)
@@ -35,8 +38,18 @@ db.exec(`CREATE TABLE IF NOT EXISTS airtable_field_mappings (
   airtable_field_id TEXT,
   airtable_field_name TEXT,
   column_name TEXT NOT NULL,
+  options TEXT,
   import_disabled INTEGER DEFAULT 0
 )`)
+// Table visée d'un champ lien sans `link_target_table` : celle que miroite
+// `linked_table_id` (cf. services/airtableTableMap.js).
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_sync_config (
+  contacts_table_id TEXT, companies_table_id TEXT
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_projets_config (projects_table_id TEXT)`)
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_orders_config (orders_table_id TEXT, items_table_id TEXT)`)
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_module_config (module TEXT PRIMARY KEY, table_id TEXT)`)
+db.prepare('INSERT INTO airtable_sync_config (companies_table_id) VALUES (?)').run('tblCompanies')
 db.exec(`CREATE TABLE IF NOT EXISTS airtable_field_defs (
   id TEXT PRIMARY KEY,
   module TEXT,
@@ -61,7 +74,7 @@ const TABLE = 'purchases'
 const MODULE = 'achats'
 
 let seq = 0
-function addField({ column, label, type = 'text', kind = 'data', source = 'native', cfOptions = null, defType = null, defOptions = null, hidden = 0, deletedAt = null }) {
+function addField({ column, label, type = 'text', kind = 'data', source = 'native', cfOptions = null, mappingOptions = null, defType = null, defOptions = null, hidden = 0, deletedAt = null }) {
   const id = `cf${++seq}`
   db.prepare(`
     INSERT INTO custom_fields (id, erp_table, name, column_name, type, kind, source, options, hidden, deleted_at)
@@ -69,9 +82,9 @@ function addField({ column, label, type = 'text', kind = 'data', source = 'nativ
   `).run(id, TABLE, label || column, column, type, kind, source, cfOptions ? JSON.stringify(cfOptions) : null, hidden, deletedAt)
   if (source === 'airtable') {
     db.prepare(`
-      INSERT INTO airtable_field_mappings (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, import_disabled)
-      VALUES (?, ?, ?, ?, ?, ?, 0)
-    `).run(`m${seq}`, MODULE, TABLE, `fld${seq}`, column, column)
+      INSERT INTO airtable_field_mappings (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, options, import_disabled)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(`m${seq}`, MODULE, TABLE, `fld${seq}`, column, column, mappingOptions ? JSON.stringify(mappingOptions) : null)
   }
   if (defType || defOptions) {
     db.prepare(`
@@ -88,6 +101,17 @@ addField({ column: 'cf_case', label: 'Case', type: 'checkbox' })
 addField({ column: 'cf_choix', label: 'Choix', type: 'single_select', defType: 'single_select', defOptions: { choices: ['A', 'B'] } })
 addField({ column: 'cf_montant', label: 'Montant', type: 'number', defType: 'number', defOptions: { format: 'currency' } })
 addField({ column: 'cf_at_both', label: 'Airtable bidirectionnel', source: 'airtable', defOptions: {} })
+// Champs LIEN dont la table visée est connue : proposés, avec picker
+addField({
+  column: 'cf_lien_recs', label: 'Entreprise liée', source: 'airtable',
+  cfOptions: { airtable_link_hint: true }, mappingOptions: { linked_table_id: 'tblCompanies' },
+  defType: 'link',
+})
+addField({
+  column: 'cf_lien_erp', label: 'Contact lié', source: 'airtable',
+  cfOptions: { airtable_link_hint: true }, mappingOptions: { link_target_table: 'contacts' },
+  defType: 'link',
+})
 // Listés mais verrouillés
 addField({ column: 'cf_at_pull', label: 'Airtable import seul', source: 'airtable', defOptions: {} })
 // Jamais proposés — pas de saisie manuelle
@@ -96,6 +120,13 @@ addField({ column: 'cf_rollup_at', label: 'Rollup Airtable', source: 'airtable',
 addField({ column: 'cf_lookup_at', label: 'Lookup Airtable', source: 'airtable', defOptions: { source: 'multipleLookupValues' } })
 addField({ column: 'cf_piece_jointe', label: 'Pièce jointe', source: 'airtable', defOptions: { format: 'attachment' } })
 addField({ column: 'cf_lien_at', label: 'Lien Airtable', source: 'airtable', defType: 'link', defOptions: { linked_table_id: 'tbl1' } })
+// Lien vers une table Airtable NON miroitée : aucune liste de candidats
+// possible, donc toujours écarté.
+addField({
+  column: 'cf_lien_inconnu', label: 'Lien sans cible', source: 'airtable',
+  cfOptions: { airtable_link_hint: true }, mappingOptions: { linked_table_id: 'tblInconnue' },
+  defType: 'link',
+})
 addField({ column: 'autonumber', label: 'Autonumber', source: 'airtable', type: 'number', defType: 'number', defOptions: {} })
 addField({ column: 'record_id', label: 'Record ID', source: 'airtable', defOptions: {} })
 addField({ column: 'cf_formule_erp', label: 'Formule ERP', kind: 'formula' })
@@ -105,6 +136,8 @@ addField({ column: 'cf_supprime', label: 'Supprimé', deletedAt: '2026-01-01T00:
 addField({ column: 'cf_masque', label: 'Masqué', hidden: 1 })
 
 setFieldDirection(MODULE, dynamicDirectionKey('cf_at_both'), 'both')
+setFieldDirection(MODULE, dynamicDirectionKey('cf_lien_recs'), 'both')
+setFieldDirection(MODULE, dynamicDirectionKey('cf_lien_erp'), 'both')
 
 const catalog = formFieldCatalog(TABLE)
 const byField = new Map(catalog.map(f => [f.field, f]))
@@ -131,9 +164,26 @@ test('champ Airtable en import seul : listé mais verrouillé', () => {
   assert.ok(f.readonly_reason)
 })
 
+test('champ lien à table visée connue : proposé avec son picker', () => {
+  const recs = byField.get('cf_lien_recs')
+  assert.ok(recs, 'un champ lien vers une table miroitée doit être proposé')
+  assert.equal(recs.type, 'record_link')
+  assert.equal(recs.record_link_target, 'companies')
+  // Mapping sans table cible : la colonne porte des record ids Airtable, c'est
+  // donc cette identité que le picker doit écrire.
+  assert.equal(recs.record_link_identity, 'airtable')
+  assert.equal(recs.record_link_array, true)
+  assert.equal(recs.writable, true)
+
+  const erp = byField.get('cf_lien_erp')
+  assert.equal(erp.record_link_target, 'contacts')
+  assert.equal(erp.record_link_identity, 'erp')
+})
+
 test('champs sans saisie manuelle : jamais au catalogue', () => {
   for (const col of [
     'cf_formule_at', 'cf_rollup_at', 'cf_lookup_at', 'cf_piece_jointe', 'cf_lien_at',
+    'cf_lien_inconnu',
     'autonumber', 'record_id', 'cf_formule_erp', 'cf_rollup_erp', 'cf_bouton',
     'cf_supprime', 'cf_masque',
   ]) {

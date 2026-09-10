@@ -1,3 +1,5 @@
+import { discoveryAnswerErrors } from '../services/discoveryAnswerValidation.js'
+import { discoveryOptionsFromRow } from '../services/discoveryFormOptions.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -5,6 +7,8 @@ import { getStripeClient, ensureStripeCustomer } from '../services/stripeInvoice
 import { normalizeShortToken } from '../utils/shortToken.js'
 import { logSync } from '../services/syncLog.js'
 import { APP_URL } from '../config/appUrl.js'
+import { loadSchemaOverrides } from './discovery-form-schema.js'
+import { confirmAddressInput } from '../services/addressConfirm.js'
 
 // Crée/synchronise le customer Stripe sans bloquer la réponse, mais trace tout
 // échec dans sync_log au lieu de l'avaler silencieusement : si le customer
@@ -27,6 +31,7 @@ const router = Router()
 // Coerce + JSON-encode helpers, partagés entre les flows by-session et by-token.
 const FIELD_COERCERS = {
   is_new_site:        (v) => (v === 'new' || v === 'add_to_existing') ? v : null,
+  within_central_controller_range: (v) => typeof v === 'boolean' ? Number(v) : null,
   farm_address:       (v) => v && typeof v === 'object' ? JSON.stringify(v) : null,
   shipping_same_as_farm: (v) => v == null ? null : (v ? 1 : 0),
   shipping_address:   (v) => v && typeof v === 'object' ? JSON.stringify(v) : null,
@@ -36,12 +41,16 @@ const FIELD_COERCERS = {
   num_greenhouses:    (v) => v == null ? null : Math.max(0, parseInt(v) || 0),
   greenhouses:        (v) => Array.isArray(v) ? JSON.stringify(v) : null,
   extras:             (v) => Array.isArray(v) ? JSON.stringify(v) : null,
+  // Réponses aux questions ajoutées par l'utilisateur dans l'éditeur de
+  // formulaire — sac clé → valeur, la clé étant l'id de la question.
+  custom_answers:     (v) => v && typeof v === 'object' && !Array.isArray(v) ? JSON.stringify(v) : null,
 }
 const FIELD_TO_COLUMN = {
   farm_address:     'farm_address_json',
   shipping_address: 'shipping_address_json',
   greenhouses:      'greenhouses_json',
   extras:           'extras_json',
+  custom_answers:   'custom_answers_json',
 }
 
 // Construit l'UPDATE partiel à partir d'un body. Retourne { updates, values } prêts à concat.
@@ -141,6 +150,7 @@ function shapeResponse(row) {
     id: row.id,
     status: row.status,
     is_new_site: row.is_new_site,
+    within_central_controller_range: row.within_central_controller_range == null ? null : !!row.within_central_controller_range,
     farm_address: row.farm_address_json ? JSON.parse(row.farm_address_json) : null,
     shipping_same_as_farm: row.shipping_same_as_farm == null ? null : !!row.shipping_same_as_farm,
     shipping_address: row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null,
@@ -148,9 +158,11 @@ function shapeResponse(row) {
     wifi_ssid: row.wifi_ssid,
     wifi_password: row.wifi_password,
     permission_level: row.permission_level,
+    form_options: discoveryOptionsFromRow(row),
     num_greenhouses: row.num_greenhouses,
     greenhouses,
     extras: row.extras_json ? JSON.parse(row.extras_json) : [],
+    custom_answers: row.custom_answers_json ? JSON.parse(row.custom_answers_json) : {},
     extras_pending_invoice_id: row.extras_pending_invoice_id,
     valve_blocks_needed: valveBlocksNeeded,
     valve_blocks_paid: valveBlocksPaid,
@@ -206,12 +218,24 @@ router.get('/:sessionId', async (req, res) => {
       },
       context: ctx,
       response: shapeResponse(row),
+      form_schema: loadSchemaOverrides(),
     })
   } catch (e) {
     if (e.message === 'not_paid') return res.status(402).json({ error: 'Paiement non confirmé' })
     if (e.raw?.code === 'resource_missing') return res.status(404).json({ error: 'Session introuvable' })
     res.status(500).json({ error: e.message })
   }
+})
+
+// POST /api/customer/post-payment/:sessionId/confirm-address — même
+// confirmation, côté flow Stripe (garde = session payée valide).
+router.post('/:sessionId/confirm-address', async (req, res) => {
+  try {
+    await validateSession(req.params.sessionId)
+  } catch {
+    return res.status(404).json({ error: 'Session introuvable' })
+  }
+  res.json(await confirmAddressInput(req.body || {}))
 })
 
 // POST /api/customer/post-payment/:sessionId/save — autosave partial state
@@ -245,6 +269,11 @@ router.post('/:sessionId/submit', async (req, res) => {
       return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
     }
     if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
+    // Le contrôleur internet mobile peut venir de la facture : la question de la
+    // distance au contrôleur central n'est alors pas posée (voir validation).
+    const submitRoles = await detectProductRoles(invoice, getStripeClient())
+    const answerErrors = discoveryAnswerErrors(shapeResponse(row), { hasMobileController: submitRoles.includes('mobile_controller') })
+    if (answerErrors.length) return res.status(400).json({ error: answerErrors[0], errors: answerErrors })
 
     // Finalisation atomique. Endpoint public sans auth = exposé aux double-submits
     // (le client peut renvoyer /submit deux fois, ou deux onglets concurrents).
@@ -390,7 +419,7 @@ function detectFromGreenhouses(row) {
   return {
     has_helper: hasHelper,
     has_chief_grower: hasChief,
-    has_mobile_controller: false, // qualification ne vend pas le contrôleur mobile
+    has_mobile_controller: discoveryOptionsFromRow(row).mobile_controller,
     permission_level: hasChief ? 'chief_grower' : hasHelper ? 'helper' : null,
   }
 }
@@ -409,6 +438,7 @@ router.get('/by-token/:token', (req, res) => {
     detected: detectFromGreenhouses(row),
     context: ctx,
     response: shapeResponse(row),
+    form_schema: loadSchemaOverrides(),
     // Côté front : le nombre de serres est verrouillé (1 carte par Helper/Chief vendu).
     greenhouse_count_locked: true,
   })
@@ -429,6 +459,17 @@ router.post('/by-token/:token/save', (req, res) => {
   res.json({ ok: true, response: shapeResponse(refreshed) })
 })
 
+// POST /api/customer/post-payment/by-token/:token/confirm-address — confirme
+// l'adresse de ferme / de livraison SAISIE par le client, avant qu'elle
+// n'entre dans l'ERP. Accès gardé par la possession du token, comme le reste
+// du flow ; l'appel sortant vers l'API d'adresses ne part donc pas d'un
+// inconnu. Ne persiste rien : le client garde la main sur ce qu'il envoie.
+router.post('/by-token/:token/confirm-address', async (req, res) => {
+  const row = loadByToken(req.params.token)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  res.json(await confirmAddressInput(req.body || {}))
+})
+
 // POST /api/customer/post-payment/by-token/:token/submit — finalise et upsert les adresses.
 router.post('/by-token/:token/submit', (req, res) => {
   const row = loadByToken(req.params.token)
@@ -437,6 +478,8 @@ router.post('/by-token/:token/submit', (req, res) => {
     return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
   }
   if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
+  const answerErrors = discoveryAnswerErrors(shapeResponse(row))
+  if (answerErrors.length) return res.status(400).json({ error: answerErrors[0], errors: answerErrors })
 
   // Si une serre dépasse 4 zones d'irrigation, on exige soit le paiement
   // d'autant de blocs de 4 valves supplémentaires, soit que le client baisse

@@ -4,7 +4,8 @@ import { Modal } from './Modal.jsx'
 import Spinner from './Spinner.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import LinkedRecordField from './LinkedRecordField.jsx'
-import { AddressCheckBadge, AddressCheckIssues, parseCheckIssues } from './AddressCheckIssues.jsx'
+import { AddressCheckPanel, AddressConfirmPanel, parseCheckIssues } from './AddressCheckIssues.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 
 // États US et provinces/territoires CA — libellés complets pour rendre la recherche utile,
@@ -61,11 +62,57 @@ export function AdresseModalContent({
     status: editingAdresse?.check_status || null,
     issues: parseCheckIssues(editingAdresse?.check_issues),
   }))
+  // Confirmation auprès de l'API d'adresses (livraison / ferme). En édition,
+  // elle arrive du serveur ; en création, du contrôle fait avant d'enregistrer.
+  const [confirm, setConfirm] = useState(() => ({
+    status: editingAdresse?.confirm_status || null,
+    formatted: editingAdresse?.confirm_formatted || '',
+    suggestion: editingAdresse?.confirm_suggestion || null,
+  }))
+  const [confirming, setConfirming] = useState(false)
 
   const applySaved = (updated) => {
     onSaved?.(updated)
     setCheck({ status: updated.check_status || null, issues: parseCheckIssues(updated.check_issues) })
+    setConfirm({
+      status: updated.confirm_status || null,
+      formatted: updated.confirm_formatted || '',
+      suggestion: updated.confirm_suggestion || null,
+    })
   }
+
+  // L'appelant peut fournir une ligne rafraîchie (verdict compris) sans que la
+  // modale se remonte.
+  useEffect(() => {
+    setCheck({ status: editingAdresse?.check_status || null, issues: parseCheckIssues(editingAdresse?.check_issues) })
+  }, [editingAdresse?.id, editingAdresse?.check_status, editingAdresse?.check_issues])
+
+  useEffect(() => {
+    setConfirm({
+      status: editingAdresse?.confirm_status || null,
+      formatted: editingAdresse?.confirm_formatted || '',
+      suggestion: editingAdresse?.confirm_suggestion || null,
+    })
+  }, [editingAdresse?.id, editingAdresse?.confirm_status, editingAdresse?.confirm_suggestion,
+    editingAdresse?.confirm_formatted])
+
+  // Le verdict peut aussi être recalculé côté serveur pendant que la modale est
+  // ouverte (import, formulaire du client, vérificateur en tâche de fond) — et
+  // la confirmation d'adresse arrive TOUJOURS par ce canal : elle part en
+  // tâche de fond après l'écriture, la réponse du PUT est déjà partie.
+  useRealtimeChannel(editingAdresse?.id ? `adresse:${editingAdresse.id}` : null, (msg) => {
+    if (msg.type !== 'adresse:updated') return
+    if (msg.payload?.check_status !== undefined) {
+      setCheck({ status: msg.payload.check_status || null, issues: parseCheckIssues(msg.payload.check_issues) })
+    }
+    if (msg.payload?.confirm_status !== undefined) {
+      setConfirm({
+        status: msg.payload.confirm_status || null,
+        formatted: msg.payload.confirm_formatted || '',
+        suggestion: msg.payload.confirm_suggestion || null,
+      })
+    }
+  })
 
   const saveField = async (key, value) => {
     setAdresseForm(f => ({ ...f, [key]: value }))
@@ -93,32 +140,91 @@ export function AdresseModalContent({
     }
   }
 
-  async function handleSubmitCreate(e) {
-    e.preventDefault()
+  async function create(values) {
     setSaving(true)
     try {
-      const created = await api.adresses.create({ ...adresseForm, company_id: companyId })
+      const created = await api.adresses.create({ ...values, company_id: companyId })
       onCreated?.(created)
       onClose()
     } catch (err) { addToast({ message: err.message, type: 'error' }) } finally { setSaving(false) }
+  }
+
+  // Création : l'adresse passe par l'API de vérification AVANT d'être
+  // enregistrée. Le serveur décide seul des types concernés (livraison,
+  // ferme) et répond « skipped » pour les autres. Une adresse confirmée
+  // s'enregistre sans un clic de plus ; sinon l'utilisateur tranche entre
+  // l'écriture proposée et la sienne.
+  async function handleSubmitCreate(e) {
+    e.preventDefault()
+    setConfirming(true)
+    let verdict = null
+    try {
+      verdict = await api.adresses.confirmInput(adresseForm)
+    } catch {
+      verdict = null // API muette : on n'empêche pas d'enregistrer.
+    } finally { setConfirming(false) }
+
+    if (verdict && (verdict.status === 'corrected' || verdict.status === 'not_found')) {
+      // Le serveur rend la liste des champs qui divergent à part ; la ligne
+      // stockée en base les porte dans la suggestion — même forme des deux
+      // côtés pour que le panneau n'ait qu'une lecture à faire.
+      setConfirm({
+        status: verdict.status,
+        formatted: verdict.formatted,
+        suggestion: verdict.suggestion ? { ...verdict.suggestion, diff: verdict.diff } : null,
+      })
+      return
+    }
+    setConfirm({ status: verdict?.status || null, formatted: verdict?.formatted || '', suggestion: null })
+    await create(adresseForm)
+  }
+
+  // « Utiliser » : l'écriture proposée remplace la saisie. En édition elle part
+  // en autosave, en création elle enregistre dans la foulée.
+  async function applySuggestion(s) {
+    const patch = {
+      line1: s.line1 || '', city: s.city || '', province: s.province || '',
+      postal_code: s.postal_code || '', country: s.country || adresseForm.country,
+    }
+    setAdresseForm(f => ({ ...f, ...patch }))
+    if (!isEdit) { await create({ ...adresseForm, ...patch }); return }
+    setFieldSaving(s2 => ({ ...s2, line1: true }))
+    try {
+      applySaved(await api.adresses.update(editingAdresse.id, patch))
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally { setFieldSaving(s2 => ({ ...s2, line1: false })) }
+  }
+
+  async function reconfirm() {
+    if (!isEdit) { await handleSubmitCreate({ preventDefault() {} }); return }
+    setConfirming(true)
+    try {
+      applySaved(await api.adresses.reconfirm(editingAdresse.id))
+    } catch (err) { addToast({ message: err.message, type: 'error' }) } finally { setConfirming(false) }
   }
 
   const anySaving = Object.values(fieldSaving).some(Boolean)
 
   const fields = (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      {check.issues.length > 0 && (
-        <div
-          className={`col-span-2 rounded-lg border px-3 py-2.5 ${check.status === 'error' ? 'border-red-200 bg-red-50' : 'border-orange-200 bg-orange-50'}`}
-          data-testid="adresse-check-panel"
-        >
-          <div className="flex items-center gap-2 mb-1">
-            <AddressCheckBadge status={check.status} />
-            <span className="text-xs text-slate-600">Cette adresse ne passe pas la vérification</span>
-          </div>
-          <AddressCheckIssues issues={check.issues} />
-        </div>
-      )}
+      <AddressCheckPanel
+        adresseId={editingAdresse?.id}
+        status={check.status}
+        issues={check.issues}
+        onChecked={applySaved}
+        className="col-span-2"
+      />
+      <AddressConfirmPanel
+        status={confirm.status}
+        formatted={confirm.formatted}
+        suggestion={confirm.suggestion}
+        busy={confirming || saving}
+        onApply={applySuggestion}
+        onKeep={isEdit ? undefined : () => create(adresseForm)}
+        onRecheck={reconfirm}
+        className="col-span-2"
+      />
       <div className="col-span-2">
         <label className="label">Rue / Ligne 1</label>
         <input
@@ -206,7 +312,9 @@ export function AdresseModalContent({
       {fields}
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+        <button type="submit" disabled={saving || confirming} className="btn-primary">
+          {confirming ? 'Vérification…' : saving ? 'Enregistrement…' : 'Enregistrer'}
+        </button>
       </div>
     </form>
   )

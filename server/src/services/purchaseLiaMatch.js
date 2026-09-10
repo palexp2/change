@@ -18,6 +18,22 @@
 // réécrit la description que lorsque la concordance est nette (LIA_AUTO_THRESHOLD).
 // En dessous, l'appariement reste une suggestion affichée sur la ligne du reçu, que
 // l'opérateur confirme d'un clic (cf. GET /api/sale-receipts/:id/lia-matches).
+//
+// NOTE colonnes : les migrations 032/033/035/036 ont retiré les colonnes natives de
+// `purchases` (product_id, reference, order_date, received_date, qty_ordered, unit_cost,
+// notes, qty_received) au profit de champs personnalisés Airtable équivalents, gérés
+// depuis /champs/purchases. Ce moteur lit désormais ces « jumeaux » :
+//   - pièce liée      → nom_de_la_piece (JSON `["recXXXX"]`, résolu vers products.id via
+//                        products.airtable_id — quelques lignes anciennes portent l'id brut
+//                        sans enveloppe JSON, d'où le COALESCE ci-dessous)
+//   - quantité commandée → quantite_commande (texte numérique)
+//   - prix unitaire      → prix_unitaire_cad (texte numérique)
+//   - date de commande   → date_de_commande
+//   - date de réception  → cf_date_de_reception_complete (le champ Airtable source rend un
+//                          « 1970-01-01 » sentinel quand la commande n'est pas reçue — traité
+//                          comme absence de date, pas comme une vraie réception)
+//   - notes              → notes_2
+// La logique de score elle-même est inchangée : seuls les noms de colonnes SQL ont bougé.
 import db from '../db/database.js'
 
 // Séparateur entre le code et le nom de la pièce : une TABULATION, format déjà utilisé
@@ -127,6 +143,14 @@ export function buildLiaLabel(liaRef, partName) {
   return name ? `${ref}${LIA_SEP}${name}` : ref
 }
 
+// Fragment SQL commun : résout la pièce liée d'un achat vers products.airtable_id.
+// `nom_de_la_piece` porte normalement un JSON `["recXXXX"]` (lien Airtable brut), mais
+// quelques lignes anciennes portent directement l'id sans enveloppe — d'où le repli.
+const PRODUCT_LINK_SQL = `COALESCE(
+    CASE WHEN json_valid(p.nom_de_la_piece) THEN json_extract(p.nom_de_la_piece, '$[0]') END,
+    p.nom_de_la_piece
+  )`
+
 // Nom de la pièce d'un achat, retrouvé par son code LIA — c'est la colonne voisine du
 // code dans la table Achats (lien vers Produits). Sert à compléter une description qui
 // ne porte que le code : lignes saisies à la main, ou écrites quand seul le code était
@@ -135,9 +159,9 @@ function partNameByLiaRef(liaRef) {
   try {
     const row = db.prepare(`
       SELECT pr.name_fr, pr.name_en
-      FROM purchases p LEFT JOIN products pr ON pr.id = p.product_id
+      FROM purchases p LEFT JOIN products pr ON pr.airtable_id = ${PRODUCT_LINK_SQL}
       WHERE UPPER(p.at_id) = ?
-      ORDER BY COALESCE(p.order_date, '') DESC LIMIT 1
+      ORDER BY COALESCE(p.date_de_commande, '') DESC LIMIT 1
     `).get(String(liaRef || '').toUpperCase())
     return row?.name_fr || row?.name_en || null
   } catch {
@@ -482,7 +506,7 @@ export function scoreLine(line, purchase, ctx = {}) {
 
   // DATE DE COMMANDE IMPRIMÉE SUR LA FACTURE (« Date de la commande / Order Date » —
   // Digikey notamment l'imprime, distincte de la date de facture) : elle se compare
-  // DIRECTEMENT à purchases.order_date. C'est le signal le plus net qui existe pour
+  // DIRECTEMENT à purchases.date_de_commande. C'est le signal le plus net qui existe pour
   // départager deux commandes de la MÊME pièce encore à recevoir — bien plus net que la
   // simple proximité avec la date de facture, puisque les deux dates désignent la même
   // chose. Cas réel Digikey : deux commandes de Raspberry Pi 4 (LIA-1998 commandé le
@@ -538,14 +562,18 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
   if (!names.size && !qbIds.length) return []
 
   const rows = db.prepare(`
-    SELECT p.id, p.at_id, p.supplier, p.supplier_vendor_name, p.supplier_qb_vendor_id,
-           p.qty_ordered, p.unit_cost, p.order_date, p.received_date, p.status,
-           p.depense_line_item, p.notes,
+    SELECT p.id, p.at_id, p.fournisseur AS supplier, p.supplier_vendor_name, p.supplier_qb_vendor_id,
+           p.quantite_commande AS qty_ordered, p.prix_unitaire_cad AS unit_cost,
+           p.date_de_commande AS order_date,
+           CASE WHEN p.cf_date_de_reception_complete IS NULL
+                  OR p.cf_date_de_reception_complete <= '1970-01-02'
+                THEN NULL ELSE p.cf_date_de_reception_complete END AS received_date,
+           p.depense_line_item, p.notes_2 AS notes,
            pr.name_fr AS part_name, pr.name_en AS part_name_en, pr.sku AS part_sku,
            pr.fabricant AS part_mpn, pr.manufacturier AS part_mpn_alt,
            pr.lien_fournisseur AS part_url, pr.lien_fournisseur_alternatif AS part_url_alt
     FROM purchases p
-    LEFT JOIN products pr ON pr.id = p.product_id
+    LEFT JOIN products pr ON pr.airtable_id = ${PRODUCT_LINK_SQL}
     WHERE p.at_id IS NOT NULL AND p.at_id <> ''
   `).all()
 
@@ -583,7 +611,6 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
     // est encore en vol. C'est la section de l'interface Achats sur laquelle le
     // sélecteur et les suggestions sont cadrés.
     pending_reception: !r.received_date,
-    status: r.status,
     supplier: r.supplier_vendor_name || r.supplier,
     // Achat d'un AUTRE fournisseur, remonté en filet quand le fournisseur du reçu n'a
     // aucun achat candidat (cf. plus bas) : sélectionnable à la main, jamais noté.
@@ -598,12 +625,19 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
     // (cf. matchReceiptItems), mais toujours sélectionnable à la main — un achat peut être
     // facturé en deux fois (dépôt + solde) et un rattachement erroné doit pouvoir se corriger.
     .map(c => ({ ...c, consumed: c.already_expensed || c.linked_receipts.length > 0 }))
-    // Classement du sélecteur : « à recevoir » d'abord, puis les commandes reçues dont
-    // la facture n'est pas encore entrée, puis l'historique déjà facturé — du plus
-    // récent au plus ancien dans chaque groupe.
+    // Classement du sélecteur : codes libres d'abord, historique déjà facturé ensuite —
+    // du plus récent au plus ancien dans chaque groupe. Tous les candidats sont, par
+    // construction, « à recevoir » (cf. filtre ci-dessous) : il n'y a plus de groupe
+    // intermédiaire « reçu, pas encore facturé ».
     .sort((a, b) => (rank(a) - rank(b)) || String(b.order_date || '').localeCompare(String(a.order_date || '')))
 
-  const own = rows.filter(isVendor).filter(inWindow).map(r => shape(r))
+  // SCOPE STRICT « À RECEVOIR » : seuls les achats sans date de réception complète
+  // (`received_date` vide — la section « À recevoir » de l'interface Achats d'Airtable)
+  // sont des candidats, qu'ils soient rattachés à la main ou proposés par le moteur de
+  // score. Un achat déjà reçu n'est PLUS remonté en filet quand aucun pending ne colle :
+  // mieux vaut une liste vide (l'opérateur va chercher l'achat par son code) qu'une
+  // proposition sur un achat qui n'attend plus de facture.
+  const own = rows.filter(isVendor).filter(inWindow).filter(r => !r.received_date).map(r => shape(r))
   if (own.length) return finish(own)
 
   // FILET « AUCUN ACHAT CHEZ CE FOURNISSEUR » : le fournisseur inscrit sur l'achat est
@@ -612,6 +646,7 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
   // de rendre une liste vide, on ouvre la recherche à TOUS les achats encore à recevoir,
   // tous fournisseurs confondus — ils sont marqués `other_vendor` et restent purement
   // manuels : rien n'est proposé ni écrit d'office sur la foi d'un autre fournisseur.
+  // Ce filet reste cadré « à recevoir » lui aussi — jamais un achat déjà reçu.
   const pending = rows
     .filter(r => !r.received_date)
     .filter(r => !(r.depense_line_item && r.depense_line_item !== '[]'))
@@ -622,9 +657,10 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
 
 // Groupe d'un candidat, dans l'ordre où le sélecteur les présente.
 //   0 « à recevoir »  — pas de date de réception, facture attendue (section Airtable) ;
-//   1 « reçu »        — marchandise arrivée, facture pas encore entrée ;
 //   2 « facturé »     — dépense déjà rattachée : historique, jamais proposé d'office.
-export const candidateTier = c => (c.consumed ? 2 : c.pending_reception ? 0 : 1)
+// Tous les candidats renvoyés par listCandidatePurchases sont « à recevoir » (scope
+// strict, cf. plus haut) : le groupe 1 « reçu, pas encore facturé » n'existe plus.
+export const candidateTier = c => (c.consumed ? 2 : 0)
 const rank = candidateTier
 
 // Index achat → factures qui le référencent déjà (hors reçu courant). Le rattachement
@@ -681,7 +717,7 @@ export function learnLineAliases({ candidates = [], excludeReceiptId = null } = 
   // hors fenêtre de candidats — à sa pièce.
   const partById = new Map(db.prepare(`
     SELECT p.id, pr.name_fr AS part_name, pr.name_en AS part_name_en
-    FROM purchases p LEFT JOIN products pr ON pr.id = p.product_id
+    FROM purchases p LEFT JOIN products pr ON pr.airtable_id = ${PRODUCT_LINK_SQL}
   `).all().map(r => [r.id, partKey(r)]))
 
   for (const r of rows) {
@@ -760,31 +796,17 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
     lines[index].locked = locked
     if (locked) return
 
-    // CADRAGE « À RECEVOIR » : une facture de pièces règle presque toujours une commande
-    // encore en vol — la section « À recevoir » de l'interface Achats d'Airtable. Ce sont
-    // ces achats-là, et eux seuls, qu'on propose tant que l'un d'eux tient la route.
-    // Le reste (commandes déjà reçues mais pas encore facturées) ne sert que de filet,
-    // quand aucune commande en attente ne ressemble à la ligne : la facture qui arrive
-    // après que la réception a été cochée est un cas courant (Simplex, Digikey), et la
-    // laisser sans code obligerait à rouvrir tout l'historique à la main. Les achats
-    // DÉJÀ FACTURÉS, eux, ne sont jamais notés (cf. openCandidates).
-    // Le cadrage reste strict : tant qu'un achat À RECEVOIR tient la route, c'est lui (et
-    // lui seul) qui est proposé — jamais un achat déjà reçu à sa place. C'est la quantité
-    // commandée qui doit départager deux commandes de la même pièce encore en vol, pas un
-    // repli vers l'historique reçu (cf. calibrage qty ci-dessous : cas réel Digikey où
-    // LIA-1999, qté 2 exacte, avait été écarté par une donnée Airtable corrompue plutôt
-    // que par ce cadrage — une fois la donnée corrigée, le score qty tranche seul).
-    const scoredPending = scored.filter(s => s.purchase.pending_reception)
-    const usePending = (scoredPending[0]?.score || 0) >= LIA_SUGGEST_THRESHOLD
-    const pool = usePending ? scoredPending : scored
+    // CADRAGE STRICT « À RECEVOIR » : `openCandidates` (donc `scored`) ne contient déjà que
+    // des achats sans date de réception complète — listCandidatePurchases() ne renvoie plus
+    // que ce scope (aucun filet vers un achat déjà reçu quand aucun pending ne colle : une
+    // liste vide est préférable à une proposition sur un achat qui n'attend plus de facture).
+    const pool = scored
 
     // GARDE-FOU DU RABATTEMENT : écarter les codes consommés ne doit pas faire remonter un
     // code libre MOINS pertinent à leur place. Si le meilleur achat déjà facturé colle
     // nettement mieux à la ligne que le meilleur achat libre, c'est que la ligne désigne
     // cet achat-là — la bonne réponse est « aucune proposition » (avec la mention de
-    // l'achat en cause), pas un code libre plausible mais faux. Cas réel Dubois : la valve
-    // Rainbird de juillet étant déjà facturée, le moteur proposait une valve Irritrol de
-    // 2025 restée libre.
+    // l'achat en cause), pas un code libre plausible mais faux.
     const bestConsumed = consumedCandidates
       .map(p => ({ purchase: p, ...scoreLine(line, p, ctx) }))
       .sort((a, b) => b.score - a.score)[0]
@@ -826,6 +848,13 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       // Proposition venue du filet : l'achat est déjà reçu, il n'est plus dans la
       // section « À recevoir ». L'interface le dit.
       pending_reception: !!p.purchase.pending_reception,
+      // Détails de l'achat servant à valider la suggestion d'un coup d'œil (équivalent
+      // de ce que l'opérateur verrait dans la fiche Achats d'Airtable), sans avoir à
+      // rechercher l'achat par ailleurs — cf. candidates[].
+      qty_ordered: p.purchase.qty_ordered,
+      unit_cost: p.purchase.unit_cost,
+      order_date: p.purchase.order_date,
+      supplier: p.purchase.supplier,
     }
   }
   return { lines, candidates }

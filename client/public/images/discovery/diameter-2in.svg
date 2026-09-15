@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <rect width="640" height="300" fill="#fff"/>
+
+  <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+    <path d="M95 48h190"/>
+    <path d="M95 40v16M285 40v16"/>
+    <path d="M95 150V52M285 150V52" stroke-dasharray="5 7"/>
+  </g>
+
+  <!-- Tuyau vu en bout : profil C, ouverture vers le haut -->
+  <circle cx="190" cy="158" r="84" fill="none" stroke="#7ecdd0" stroke-width="22"/>
+  <rect x="156" y="58" width="68" height="46" fill="#fff"/>
+
+  <text x="450" y="192" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="92" font-weight="600" fill="#475569">2"</text>
+
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

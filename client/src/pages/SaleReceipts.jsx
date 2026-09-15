@@ -13,6 +13,7 @@ import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
 import { InvoiceCollectionPanel } from './InvoiceCollection.jsx'
+import { ReceiptAttachment } from '../components/ReceiptAttachment.jsx'
 
 // Deux onglets : « Reçus » (l'extraction elle-même) et « Collecte de factures »
 // (les portails fournisseurs qui l'alimentent automatiquement). La collecte n'a
@@ -283,6 +284,7 @@ const RENDERS = {
           </span>)
     : <span className="text-slate-300">—</span>,
   original_name: row => <span className="text-slate-500 text-xs">{row.original_name || '—'}</span>,
+  justificatif: row => <ReceiptAttachment receipt={row} />,
   created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
   archived_at: row => row.archived_at
     ? <span className="text-slate-500">{fmtDate(row.archived_at)}</span>

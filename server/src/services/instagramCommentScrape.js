@@ -32,6 +32,7 @@
 // semaine de publications prend moins d'une minute.
 import db from '../db/database.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { recordSessionStatus } from './sessionHealth.js'
 import { localDay, isoWeekKey, isoWeekday } from './marketingBudget.js'
 import {
   ingestManychatEvent,
@@ -54,6 +55,7 @@ const MAX_COMMENT_PAGES = 20
 
 export const INSTAGRAM_SCRAPE_DEFAULT_CONFIG = {
   accounts: 'orisha_auto, growingformarketmagazine', // comptes dont on lit les publications (virgules)
+  our_accounts: 'orisha_auto',   // une publication n'est retenue que si un de ces comptes en est l'auteur ou le co-auteur
   keywords: 'coach',             // ne filtre plus rien (tout le monde est capté) — sert à prioriser/étiqueter
   lookback_days: '7',            // la semaine qui vient de finir (tournée = lundi minuit)
   own_accounts: 'orisha_auto, growingformarketmagazine', // jamais des prospects
@@ -107,6 +109,14 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 class SessionExpired extends Error {}
 
 /**
+ * Instagram nous met de côté sans nous déconnecter : il renvoie l'appel vers
+ * sa page d'accueil (302) au lieu de répondre. Ça arrive après une rafale
+ * d'appels. Ce n'est PAS un cookie mort — envoyer quelqu'un en recoller un
+ * serait une fausse piste — mais ça arrête quand même la tournée, bruyamment.
+ */
+class Throttled extends Error {}
+
+/**
  * GET avec repli exponentiel. Renvoie le JSON, ou null quand les tentatives
  * sont épuisées (publication sautée, tournée poursuivie). Un 401/403 lève
  * SessionExpired : inutile d'insister, et le message doit remonter clair.
@@ -129,6 +139,11 @@ export async function igGet(url, { sessionid, dsUserId }, attempts = 4) {
           'sec-fetch-dest': 'empty',
         },
         signal: AbortSignal.timeout(30_000),
+        // Sans « manual », un cookie mort part en boucle de redirections vers
+        // la page de connexion et fetch finit par lever « redirect count
+        // exceeded » — une panne réseau indistinguable d'une vraie, donc une
+        // tournée qui ne lit AUCUN commentaire en se déclarant réussie.
+        redirect: 'manual',
       })
     } catch {
       await sleep(2 ** i * 1000 + Math.random() * 1000)
@@ -137,6 +152,27 @@ export async function igGet(url, { sessionid, dsUserId }, attempts = 4) {
     if (res.ok) {
       await sleep(400 + Math.random() * 500)   // politesse : ~0,4–0,9 s entre appels
       try { return await res.json() } catch { return null }
+    }
+    // Instagram ne répond pas toujours 401 : sur certaines routes il renvoie une
+    // redirection. Vers /accounts/login = déconnecté. Ailleurs (son accueil) =
+    // il nous met de côté, sans nous déconnecter : on retente, puis on abandonne
+    // en le disant — jamais en se taisant.
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location') || ''
+      if (/\/(accounts\/login|login|signin)\b/i.test(loc)) {
+        throw new SessionExpired(
+          'Instagram renvoie vers la page de connexion — le cookie de session est expiré ou invalide. ' +
+          'Recoller un « sessionid » frais dans Connecteurs → Instagram.'
+        )
+      }
+      if (i === attempts - 1) {
+        throw new Throttled(
+          'Instagram refuse de répondre pour le moment (trop d\'appels rapprochés) : la session reste valide, ' +
+          'il faut simplement relancer la lecture plus tard.'
+        )
+      }
+      await sleep(2 ** i * 4000 + Math.random() * 2000)
+      continue
     }
     if (res.status === 401 || res.status === 403) {
       throw new SessionExpired(
@@ -172,6 +208,34 @@ async function fetchPosts(account, session, sinceTs, untilTs) {
     maxId = payload.next_max_id
   }
   return out
+}
+
+/**
+ * La publication est-elle À NOUS ?
+ *
+ * Lire le fil de @growingformarketmagazine sert à attraper les publications
+ * faites EN COLLABORATION avec nous (un seul média, un seul fil, affiché sur
+ * les deux grilles). Mais leur fil contient aussi leurs publications à eux
+ * seuls — concours « commentez Subscribe », appels à leur infolettre — dont
+ * les commentateurs ne sont pas nos prospects.
+ *
+ * Instagram donne l'auteur (`user`) et les co-auteurs (`coauthor_producers`,
+ * plus `invited_coauthor_producers` tant que l'invitation n'est pas acceptée).
+ * On retient la publication si l'un de nos comptes figure dans l'un des trois.
+ * `ours` vide = aucun filtre (tout est retenu), pour ne jamais tout jeter sur
+ * une configuration effacée par mégarde.
+ */
+export function postInvolvesUs(post, ours) {
+  if (!ours || !ours.size) return true
+  const names = [
+    post?.user?.username,
+    ...(post?.coauthor_producers || []).map(c => c?.username),
+    ...(post?.invited_coauthor_producers || []).map(c => c?.username),
+  ]
+  return names.some(n => {
+    const u = normalizeUsername(n)
+    return u ? ours.has(u.toLowerCase()) : false
+  })
 }
 
 /**
@@ -279,7 +343,12 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
         if (!byMedia.has(String(post.pk))) byMedia.set(String(post.pk), post)
       }
     }
-    const posts = [...byMedia.values()]
+    const ours = new Set(
+      String(cfg.our_accounts || '').split(',').map(s => normalizeUsername(s)?.toLowerCase()).filter(Boolean)
+    )
+    const allPosts = [...byMedia.values()]
+    const posts = allPosts.filter(p => postInvolvesUs(p, ours))
+    const skippedPosts = allPosts.length - posts.length
     const withComments = posts.filter(p => p.comment_count)
 
     let scanned = 0, matched = 0, created = 0, updated = 0, duplicates = 0, repliedByUsCount = 0
@@ -325,6 +394,17 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
       }
     }
 
+    // Garde-fou : des publications qui portent des commentaires mais pas un
+    // seul commentaire lu = Instagram nous a fermé la porte (cookie mort,
+    // blocage). Se taire ici donnerait une semaine vide indistinguable d'une
+    // semaine sans activité.
+    if (withComments.length && scanned === 0) {
+      throw new Error(
+        `${withComments.length} publication(s) portent des commentaires, aucun n'a pu être lu — ` +
+        'Instagram refuse la lecture. Recoller un « sessionid » frais dans Connecteurs → Instagram.'
+      )
+    }
+
     // Miroir Airtable après coup, en série et non bloquant : une panne Airtable
     // ne doit jamais faire perdre les prospects déjà enregistrés en base.
     for (const id of toPush) { try { await pushToAirtable(id) } catch {} }
@@ -344,11 +424,15 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
 
     const summary =
       `${accounts.map(a => `@${a}`).join(' + ')} · ${lookback} j · ` +
-      `${posts.length} publication(s) distincte(s), ${withComments.length} avec commentaires · ` +
+      `${posts.length} publication(s) à nous, ${withComments.length} avec commentaires` +
+      `${skippedPosts ? `, ${skippedPosts} écartée(s) (publication d'un autre compte)` : ''} · ` +
       `${scanned} commentaire(s) lus, tous captés (mot-clé « ${cfg.keywords.trim() || 'coach'} » priorisé) → ` +
       `${created} nouveau(x), ${updated} mis à jour, ${duplicates} déjà connu(s)` +
       `${repliedByUsCount ? ` · ${repliedByUsCount} déjà répondu(s) publiquement` : ''}` +
       `${dmApplied ? ` · ${dmApplied} déjà en DM` : ''}`
+
+    // La tournée a lu des commentaires : la session est vivante, on le date.
+    recordSessionStatus('instagram', { status: 'ok', detail: `tournée du ${new Date().toISOString().slice(0, 10)}` })
 
     logSystemRun(INSTAGRAM_SCRAPE_AUTOMATION_ID, {
       status: 'success', duration_ms: Date.now() - t0,
@@ -357,15 +441,19 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
     })
     return {
       ok: true, ran: true, accounts, lookback_days: lookback,
-      posts: posts.length, posts_with_comments: withComments.length,
+      posts: posts.length, posts_skipped: skippedPosts, posts_with_comments: withComments.length,
       scanned, matched, created, updated, duplicates, repliedByUsCount, dmApplied, summary,
     }
   } catch (e) {
+    recordSessionStatus('instagram', {
+      status: e instanceof SessionExpired ? 'expired' : 'error',
+      detail: e.message,
+    })
     logSystemRun(INSTAGRAM_SCRAPE_AUTOMATION_ID, {
       status: 'error', duration_ms: Date.now() - t0, triggerData: { trigger }, error: e,
     })
     console.error('instagram comment scrape:', e.message)
-    return { error: e.message, expired: e instanceof SessionExpired }
+    return { error: e.message, expired: e instanceof SessionExpired, throttled: e instanceof Throttled }
   }
 }
 
@@ -384,6 +472,10 @@ export function previewCommentScrape() {
       ? `configuré (${sessionid.slice(0, 6)}…${dsUserId ? `, ds_user_id ${dsUserId}` : ', ds_user_id absent'})`
       : '⚠️ absent — coller le cookie « sessionid » dans Connecteurs → Instagram, sinon la tournée échoue',
     comptes: splitAccounts(cfg.accounts).map(a => `@${a}`).join(' + ') || '⚠️ aucun compte configuré',
+    publications_retenues: String(cfg.our_accounts || '').trim()
+      ? `seulement celles dont ${splitAccounts(cfg.our_accounts).map(a => `@${a}`).join(' ou ')} est auteur ou co-auteur ` +
+        '(les publications des autres comptes, collab exclue, sont ignorées)'
+      : '⚠️ toutes — aucun compte dans « our_accounts », les publications des partenaires seront lues aussi',
     mots_cles: `${cfg.keywords.trim() || 'coach'} (priorisation seulement — tous les commentateurs sont captés)`,
     fenetre: `${cfg.lookback_days} jours relus à chaque tournée`,
     cedule: `jour ISO ${cfg.run_weekday} (1 = lundi … 7 = dimanche) à ${cfg.run_hour} h, heure de Montréal` +

@@ -53,9 +53,12 @@ test('parseTrxTab : BNC CAD — double ligne d\'entêtes, débit/crédit', () =>
   ]
   const { rows, warnings } = parseTrxTab(grid, specForTab('BNC CAD'), { todayIso: TODAY })
   assert.equal(warnings.length, 0)
+  // Les faits du relevé (catégorie, type, chèque, devise d'origine) sont nuls
+  // ici : cet onglet ne porte aucune de ces colonnes.
+  const noFacts = { bank_category: null, txn_type: null, check_number: null, orig_currency: null, orig_amount: null }
   assert.deepEqual(rows, [
-    { txn_date: '2026-08-07', sheet_color: null, description: 'REMB. MCR', details: 'REMB. MCR', reference: '60024937974', amount: -850, balance: 0.83 },
-    { txn_date: '2026-08-07', sheet_color: null, description: 'COMPTES DEBITEURS', details: null, reference: null, amount: 1202.67, balance: 1203.31 },
+    { txn_date: '2026-08-07', sheet_color: null, description: 'REMB. MCR', details: 'REMB. MCR', reference: '60024937974', amount: -850, balance: 0.83, ...noFacts },
+    { txn_date: '2026-08-07', sheet_color: null, description: 'COMPTES DEBITEURS', details: null, reference: null, amount: 1202.67, balance: 1203.31, ...noFacts },
   ])
 })
 

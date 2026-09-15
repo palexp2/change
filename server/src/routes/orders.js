@@ -20,9 +20,9 @@ import {
   refreshShipmentItemsMirror,
   pushShipmentToAirtable,
 } from '../services/shipmentAirtableLink.js';
-import { parsePositiveInt, parseNonNegativeInt, parseNonNegativeNumber, validateNumericFields } from '../utils/validateNumbers.js';
+import { parsePositiveInt, parseNonNegativeInt, validateNumericFields } from '../utils/validateNumbers.js';
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
-import { shippedCostSql, refreezeOrderShippedCosts } from '../services/shippedCost.js';
+import { shippedCostSql, refreezeOrderShippedCosts, pieceUnitCostSql } from '../services/shippedCost.js';
 import { logSystemRun } from '../services/systemAutomations.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
@@ -38,7 +38,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // priority, notes, date_commande + order_number) restent traitées à part : elles
 // ont un défaut serveur. Les suivantes sont les colonnes natives ÉDITABLES qui
 // s'ajoutent — mêmes règles qu'au PUT.
-const CREATE_EXTRA_COLUMNS = ['address_id', 'is_subscription', 'revenue_override_cad', 'cogs_override_cad'];
+const CREATE_EXTRA_COLUMNS = ['farm_address_id', 'address_id', 'is_subscription', 'revenue_override_cad', 'cogs_override_cad'];
 
 // Colonnes déjà posées par le INSERT de base : une colonne du registre qui
 // porterait le même nom (champ natif adopté) les dupliquerait dans la requête.
@@ -260,7 +260,7 @@ router.get('/', (req, res) => {
 
   const orders = db.prepare(
     `SELECT o.*,
-      (SELECT SUM(oi.qty * oi.unit_cost) FROM order_items oi WHERE oi.order_id = o.id) as total_value
+      (SELECT SUM(oi.qty * ${pieceUnitCostSql('oi')}) FROM order_items oi WHERE oi.order_id = o.id) as total_value
      FROM ${readRelation('orders')} o
      ${where}
      ORDER BY o.created_at DESC
@@ -282,6 +282,8 @@ router.get('/:id', (req, res) => {
      WHERE o.id = ? AND o.deleted_at IS NULL`
   ).get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
+
+  order.farm_address = order.farm_address_id ? db.prepare('SELECT * FROM adresses WHERE id=?').get(order.farm_address_id) || null : null;
 
   const items = db.prepare(
     `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location, pr.type as product_type,
@@ -409,15 +411,10 @@ router.post('/', (req, res) => {
   const { company_id, project_id, assigned_to, status, priority, notes, date_commande, items = [] } = req.body;
 
   if (!Array.isArray(items)) return res.status(400).json({ error: 'items must be an array' });
-  // Valide qty/unit_cost de chaque ligne avant d'ouvrir la transaction : aucune
-  // quantité NaN/décimale/négative ni coût négatif ne doit entrer en DB.
+  // Valide les quantités avant d'ouvrir la transaction.
   for (const item of items) {
     if (item.qty !== undefined && item.qty !== null && parsePositiveInt(item.qty) === null) {
       return res.status(400).json({ error: 'item qty must be a positive integer' });
-    }
-    if (item.unit_cost !== undefined && item.unit_cost !== null && item.unit_cost !== '' &&
-        parseNonNegativeNumber(item.unit_cost) === null) {
-      return res.status(400).json({ error: 'item unit_cost must be a number >= 0' });
     }
   }
 
@@ -468,16 +465,10 @@ router.post('/', (req, res) => {
 
     for (const item of items) {
       const itemId = newRecordId();
-      // Get current product cost if not provided
-      let unitCost = item.unit_cost;
-      if (!unitCost && item.product_id) {
-        const product = db.prepare('SELECT unit_cost FROM products WHERE id = ?').get(item.product_id);
-        unitCost = product?.unit_cost || 0;
-      }
       db.prepare(
-        `INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
-      ).run(itemId, id, item.product_id || null, item.qty || 1, unitCost || 0,
+        `INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(itemId, id, item.product_id || null, item.qty || 1,
         item.item_type || 'Facturable', item.notes || null);
     }
   });
@@ -532,7 +523,7 @@ router.put('/:id', (req, res) => {
   const customCols = getWritableCustomColumns('orders').map(c => c.column_name);
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['company_id', 'project_id', 'assigned_to', 'status', 'priority',
-      'notes', 'address_id', 'date_commande', 'is_subscription', 'revenue_override_cad',
+      'notes', 'address_id', 'farm_address_id', 'date_commande', 'is_subscription', 'revenue_override_cad',
       'cogs_override_cad', ...customCols],
     nonNullable: new Set(['status']),
     coerce: {
@@ -636,7 +627,7 @@ router.post('/:id/shipments', (req, res) => {
       }
       // Freeze unit cost if shipment is already Envoyé
       if ((status || 'À envoyer') === 'Envoyé') {
-        const freezeStmt = db.prepare(`UPDATE order_items SET shipped_unit_cost = unit_cost WHERE id = ? AND shipped_unit_cost IS NULL`);
+        const freezeStmt = db.prepare(`UPDATE order_items SET shipped_unit_cost = ${pieceUnitCostSql('order_items')} WHERE id = ? AND shipped_unit_cost IS NULL`);
         for (const itemId of item_ids) {
           freezeStmt.run(itemId);
         }
@@ -709,23 +700,14 @@ router.post('/:id/items', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  const { product_id, qty, unit_cost, item_type, notes } = req.body;
+  const { product_id, qty, item_type, notes } = req.body;
   if (qty !== undefined && qty !== null && parsePositiveInt(qty) === null) {
     return res.status(400).json({ error: 'qty must be a positive integer' });
   }
-  if (unit_cost !== undefined && unit_cost !== null && unit_cost !== '' &&
-      parseNonNegativeNumber(unit_cost) === null) {
-    return res.status(400).json({ error: 'unit_cost must be a number >= 0' });
-  }
-  let cost = unit_cost;
-  if (!cost && product_id) {
-    const product = db.prepare('SELECT unit_cost FROM products WHERE id = ?').get(product_id);
-    cost = product?.unit_cost || 0;
-  }
   const itemId = newRecordId();
   db.prepare(
-    `INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes) VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(itemId, req.params.id, product_id || null, qty || 1, cost || 0, item_type || 'Facturable', notes || null);
+    `INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes) VALUES (?, ?, ?, ?, ?, ?)`
+  ).run(itemId, req.params.id, product_id || null, qty || 1, item_type || 'Facturable', notes || null);
 
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id);
   const newItem = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId);
@@ -750,20 +732,15 @@ router.patch('/:id/items/reorder', (req, res) => {
 router.patch('/:id/items/:itemId', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
-  // Refuse les états impossibles avant l'UPDATE : qty entier positif, unit_cost
-  // nombre >= 0, fulfilled_qty entier >= 0.
+  // Valide qty (entier positif) et fulfilled_qty (entier >= 0).
   if ('qty' in req.body && parsePositiveInt(req.body.qty) === null) {
     return res.status(400).json({ error: 'qty must be a positive integer' });
-  }
-  if ('unit_cost' in req.body && req.body.unit_cost !== null && req.body.unit_cost !== '' &&
-      parseNonNegativeNumber(req.body.unit_cost) === null) {
-    return res.status(400).json({ error: 'unit_cost must be a number >= 0' });
   }
   if ('fulfilled_qty' in req.body && req.body.fulfilled_qty !== null &&
       parseNonNegativeInt(req.body.fulfilled_qty) === null) {
     return res.status(400).json({ error: 'fulfilled_qty must be an integer >= 0' });
   }
-  const allowed = ['product_id', 'qty', 'unit_cost', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
+  const allowed = ['product_id', 'qty', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
   const updates = [];
   const values = [];
   for (const key of allowed) {
@@ -830,8 +807,8 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   const item = db.prepare('SELECT * FROM order_items WHERE id=? AND order_id=?').get(req.params.itemId, req.params.id);
   if (!item) return res.status(404).json({ error: 'Item not found' });
   const newId = newRecordId();
-  db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?,?)')
-    .run(newId, req.params.id, item.product_id, item.qty, item.unit_cost, item.item_type, item.notes, (item.sort_order || 0) + 1);
+  db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?)')
+    .run(newId, req.params.id, item.product_id, item.qty, item.item_type, item.notes, (item.sort_order || 0) + 1);
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
   const dup = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(newId);
   emitOrderItem('created', req.params.id, dup, req.user?.id);
@@ -989,7 +966,7 @@ router.post('/:id/scan', (req, res) => {
 
   // 1. Try serial number
   const serial = db.prepare(
-    `SELECT sn.*, pr.name_fr as product_name, pr.sku, pr.unit_cost as product_cost
+    `SELECT sn.*, pr.name_fr as product_name, pr.sku
      FROM serial_numbers sn
      LEFT JOIN products pr ON sn.product_id = pr.id
      WHERE sn.serial = ?`
@@ -1003,8 +980,8 @@ router.post('/:id/scan', (req, res) => {
     let action = 'linked'
     if (!item) {
       const itemId = newRecordId()
-      db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type) VALUES (?, ?, ?, 1, ?, ?)')
-        .run(itemId, req.params.id, serial.product_id || null, serial.product_cost || 0, 'Facturable')
+      db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type) VALUES (?, ?, ?, 1, ?)')
+        .run(itemId, req.params.id, serial.product_id || null, 'Facturable')
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
       action = 'added'
     }
@@ -1029,8 +1006,8 @@ router.post('/:id/scan', (req, res) => {
       action = 'incremented'
     } else {
       const itemId = newRecordId()
-      db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type) VALUES (?, ?, ?, 1, ?, ?)')
-        .run(itemId, req.params.id, product.id, product.unit_cost || 0, 'Facturable')
+      db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type) VALUES (?, ?, ?, 1, ?)')
+        .run(itemId, req.params.id, product.id, 'Facturable')
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
       action = 'added'
     }

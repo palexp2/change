@@ -49,8 +49,8 @@ describe('Fiche entreprise — alerte fournaise + module d’activation V1', () 
   test('pas d’alerte quand l’entreprise n’a pas de module V1', async () => {
     await page.goto(`${URL}/companies/${COMPANY_WITHOUT_ALERT}`, { waitUntil: 'networkidle' })
 
-    // La fiche est bien chargée (la nav de sections est rendue)
-    await page.locator('[data-testid="company-section-nav"]').waitFor({ state: 'visible', timeout: 15000 })
+    // La fiche est bien chargée (le layout CRM est rendu)
+    await page.locator('[data-testid="crm-layout"]').waitFor({ state: 'visible', timeout: 15000 })
 
     assert.equal(
       await page.locator('[data-testid="furnace-v1-alert"]').count(),

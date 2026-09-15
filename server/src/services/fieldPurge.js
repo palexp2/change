@@ -66,7 +66,20 @@ function cleanViewPills(erpTable, dropped) {
   let pills = []
   try { pills = db.prepare(`SELECT * FROM table_view_pills WHERE table_name=?`).all(erpTable) }
   catch { return 0 }
-  const list = (raw) => { try { return JSON.parse(raw || '[]') } catch { return [] } }
+  const parse = (raw, fallback) => { try { return JSON.parse(raw) ?? fallback } catch { return fallback } }
+  const list = (raw) => { const value = parse(raw, []); return Array.isArray(value) ? value : [] }
+  // Les filtres récents sont des groupes AND/OR imbriqués, les anciens
+  // sont des tableaux. Retirer aussi les groupes devenus vides.
+  const cleanFilters = node => {
+    if (Array.isArray(node)) return node.map(cleanFilters).filter(n => n != null)
+    if (!node || typeof node !== 'object') return node
+    if (dropped.has(node.field || node.id)) return null
+    if (Array.isArray(node.rules)) {
+      const rules = cleanFilters(node.rules)
+      return rules.length ? { ...node, rules } : null
+    }
+    return node
+  }
   let cleaned = 0
   for (const p of pills) {
     const patch = {}
@@ -74,13 +87,17 @@ function cleanViewPills(erpTable, dropped) {
     if (vis.some(c => dropped.has(c))) patch.visible_columns = JSON.stringify(vis.filter(c => !dropped.has(c)))
     const sort = list(p.sort)
     if (sort.some(s => dropped.has(s?.field || s?.id))) patch.sort = JSON.stringify(sort.filter(s => !dropped.has(s?.field || s?.id)))
-    const filters = list(p.filters)
-    if (filters.some(f => dropped.has(f?.field || f?.id))) patch.filters = JSON.stringify(filters.filter(f => !dropped.has(f?.field || f?.id)))
+    const filters = parse(p.filters, [])
+    const remainingFilters = cleanFilters(filters) ?? []
+    if (JSON.stringify(filters) !== JSON.stringify(remainingFilters)) patch.filters = JSON.stringify(remainingFilters)
     const rules = list(p.color_rules)
     if (rules.some(r => dropped.has(r?.field || r?.id))) patch.color_rules = JSON.stringify(rules.filter(r => !dropped.has(r?.field || r?.id)))
-    if (p.group_by && dropped.has(p.group_by)) patch.group_by = null
+    const groups = parse(p.group_by, p.group_by)
+    if (Array.isArray(groups)) {
+      if (groups.some(c => dropped.has(c))) patch.group_by = JSON.stringify(groups.filter(c => !dropped.has(c)))
+    } else if (p.group_by && dropped.has(p.group_by)) patch.group_by = null
     let widths = {}
-    try { widths = JSON.parse(p.column_widths || '{}') } catch {}
+    widths = parse(p.column_widths, {})
     if (Object.keys(widths).some(c => dropped.has(c))) {
       patch.column_widths = JSON.stringify(Object.fromEntries(Object.entries(widths).filter(([c]) => !dropped.has(c))))
     }

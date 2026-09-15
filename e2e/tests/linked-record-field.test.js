@@ -7,12 +7,16 @@ const EMAIL = process.env.ERP_EMAIL || 'pap@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-// Vérifie le composant <LinkedRecordField> sur TicketDetail (company_id)
+// Vérifie le composant <LinkedRecordField> sur OrderDetail (company_id)
 // État vide : petit bouton gris (data-testid="linked-record-add")
 // Ouvert   : portail dropdown recherchable
 // Sélectionné : chip <Link> cliquable + bouton x pour délier
-describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
-  let browser, ctx, page, token, ticketId, company
+//
+// Le véhicule était TicketDetail jusqu'à la migration 040, qui a droppé
+// `tickets.company_id` : la fiche billet n'a plus de champ Entreprise. La
+// commande jetable créée ici joue le même rôle et est supprimée après coup.
+describe('LinkedRecordField — OrderDetail (Entreprise)', () => {
+  let browser, ctx, page, token, orderId, company
   const FIELD = '[data-testid="linked-record-field-company_id"]'
 
   before(async () => {
@@ -35,28 +39,28 @@ describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
     assert.ok(company?.id, 'une entreprise doit exister pour le test')
 
     const res = await page.evaluate(async (tok) => {
-      const r = await fetch('/erp/api/tickets', {
+      const r = await fetch('/erp/api/orders', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: `LinkedRecordField test ${Date.now()}`, status: 'Ouvert' }),
+        body: JSON.stringify({ items: [] }),
       })
       return { status: r.status, data: await r.json() }
     }, token)
-    assert.equal(res.status, 201, `create ticket: ${JSON.stringify(res.data)}`)
-    ticketId = res.data.id
+    assert.equal(res.status, 201, `create order: ${JSON.stringify(res.data)}`)
+    orderId = res.data.id
   })
 
   after(async () => {
-    if (ticketId) {
+    if (orderId) {
       await page.evaluate(async ({ tok, id }) => {
-        await fetch(`/erp/api/tickets/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
-      }, { tok: token, id: ticketId })
+        await fetch(`/erp/api/orders/${id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${tok}` } })
+      }, { tok: token, id: orderId })
     }
     await browser?.close()
   })
 
   test('État vide — petit bouton gris visible, data-state="empty"', async () => {
-    await page.goto(`${URL}/tickets/${ticketId}`, { waitUntil: 'networkidle' })
+    await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
     const field = page.locator(FIELD)
     await field.waitFor({ timeout: 10000 })
     assert.equal(await field.getAttribute('data-state'), 'empty', 'état initial doit être vide')
@@ -64,7 +68,7 @@ describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
   })
 
   test('Ouverture — dropdown portail avec input de recherche', async () => {
-    await page.goto(`${URL}/tickets/${ticketId}`, { waitUntil: 'networkidle' })
+    await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
     const field = page.locator(FIELD)
     await field.locator('[data-testid="linked-record-add"]').click()
     const portal = page.locator('#linked-record-portal')
@@ -73,7 +77,7 @@ describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
   })
 
   test('Sélection — chip affiche le nom, état "selected", autosave en DB', async () => {
-    await page.goto(`${URL}/tickets/${ticketId}`, { waitUntil: 'networkidle' })
+    await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
     const field = page.locator(FIELD)
     await field.locator('[data-testid="linked-record-add"]').click()
     const portal = page.locator('#linked-record-portal')
@@ -95,14 +99,14 @@ describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
     assert.ok(href.endsWith(`/companies/${company.id}`), `href doit pointer vers /companies/${company.id}, got ${href}`)
 
     const fresh = await page.evaluate(async ({ tok, id }) => {
-      const r = await fetch(`/erp/api/tickets/${id}`, { headers: { Authorization: `Bearer ${tok}` } })
+      const r = await fetch(`/erp/api/orders/${id}`, { headers: { Authorization: `Bearer ${tok}` } })
       return r.json()
-    }, { tok: token, id: ticketId })
+    }, { tok: token, id: orderId })
     assert.equal(fresh.company_id, company.id, 'company_id persisté en DB')
   })
 
   test('Clic sur le chip → navigation vers /companies/:id', async () => {
-    await page.goto(`${URL}/tickets/${ticketId}`, { waitUntil: 'networkidle' })
+    await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
     const field = page.locator(FIELD)
     await field.waitFor({ timeout: 5000 })
     assert.equal(await field.getAttribute('data-state'), 'selected', 'doit être en état sélectionné')
@@ -111,7 +115,7 @@ describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
   })
 
   test('Clic sur le x → délie (retour état vide) et efface en DB', async () => {
-    await page.goto(`${URL}/tickets/${ticketId}`, { waitUntil: 'networkidle' })
+    await page.goto(`${URL}/orders/${orderId}`, { waitUntil: 'networkidle' })
     const field = page.locator(FIELD)
     await field.waitFor({ timeout: 5000 })
     await field.locator('[data-testid="linked-record-clear"]').click()
@@ -124,9 +128,9 @@ describe('LinkedRecordField — TicketDetail (Entreprise)', () => {
       { timeout: 5000 }
     )
     const fresh = await page.evaluate(async ({ tok, id }) => {
-      const r = await fetch(`/erp/api/tickets/${id}`, { headers: { Authorization: `Bearer ${tok}` } })
+      const r = await fetch(`/erp/api/orders/${id}`, { headers: { Authorization: `Bearer ${tok}` } })
       return r.json()
-    }, { tok: token, id: ticketId })
+    }, { tok: token, id: orderId })
     assert.equal(fresh.company_id, null, 'company_id doit être null en DB')
   })
 })

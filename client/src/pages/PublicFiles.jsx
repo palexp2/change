@@ -38,6 +38,27 @@ function publicUrl(token) {
   return `${window.location.origin}/erp/p/${token}`
 }
 
+function filePreviewUrl(file) {
+  return `${publicUrl(file.token)}?v=${encodeURIComponent(file.stored_name || file.updated_at || '')}`
+}
+
+// Révéler le nouveau champ une fois dans la vue Tous déjà personnalisée.
+function revealAttachmentColumn() {
+  try {
+    const flag = 'erp_publicFiles_revealedAttachment'
+    if (localStorage.getItem(flag)) return
+    const key = 'erp_allView_cols_public_files'
+    const saved = JSON.parse(localStorage.getItem(key) || 'null')
+    if (Array.isArray(saved) && saved.length && !saved.includes('attachment')) {
+      const at = saved.indexOf('original_name')
+      const next = [...saved]
+      next.splice(at === -1 ? 0 : at + 1, 0, 'attachment')
+      localStorage.setItem(key, JSON.stringify(next))
+    }
+    localStorage.setItem(flag, '1')
+  } catch {}
+}
+
 import { formatBytes as humanSize } from '../utils/formatters.js'
 
 function FileTypeIcon({ mime, size = 16 }) {
@@ -266,7 +287,7 @@ function EditFileModal({ file, onClose, onChange }) {
   // Le fichier est servi inline avec son type MIME sur son lien public : la
   // vignette tape dessus directement. `stored_name` en cache-buster — le lien
   // ne change pas au remplacement, mais il est mis en cache 1 h.
-  const previewUrl = `${publicUrl(file.token)}?v=${encodeURIComponent(file.stored_name || file.updated_at || '')}`
+  const previewUrl = filePreviewUrl(file)
 
   return (
     <RecordPeekDrawer open onClose={onClose} title={originalName || 'Détails du fichier'} width={680} peekKey="public_files">
@@ -395,7 +416,11 @@ export default function PublicFiles() {
   // Avant le premier rendu du DataTable — il lit la liste mémorisée pendant son
   // propre rendu, donc la retouche doit être faite ici, pas dans un effet.
   const revealedRef = useRef(false)
-  if (!revealedRef.current) { revealedRef.current = true; revealUploadedByColumn() }
+  if (!revealedRef.current) {
+    revealedRef.current = true
+    revealUploadedByColumn()
+    revealAttachmentColumn()
+  }
   const [files, setFiles] = useState([])
   const [folders, setFolders] = useState([])
   const [currentFolder, setCurrentFolder] = useState(null) // null = tous
@@ -451,6 +476,20 @@ export default function PublicFiles() {
   }
 
   const RENDERS = {
+    attachment: (row) => (
+      <div onClick={e => e.stopPropagation()} onKeyDown={e => e.stopPropagation()}>
+        <AttachmentPreview
+          key={filePreviewUrl(row)}
+          url={filePreviewUrl(row)}
+          fileName={row.original_name}
+          contentType={row.mime_type}
+          downloadName={row.original_name}
+          size="compact"
+          showFileName={false}
+          testId={`public-file-attachment-${row.id}`}
+        />
+      </div>
+    ),
     original_name: (row) => (
       <div className="flex items-center gap-2">
         <FileTypeIcon mime={row.mime_type} />
@@ -542,6 +581,7 @@ export default function PublicFiles() {
           <div className="flex-1 overflow-auto p-6">
             <DataTable
               table="public_files"
+              height="auto"
               manageViews
               columns={COLUMNS}
               data={files}

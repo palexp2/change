@@ -54,15 +54,18 @@ import PrepaidAccounts from './pages/PrepaidAccounts.jsx'
 import DriveInventory from './pages/DriveInventory.jsx'
 import TestsAntoine from './pages/TestsAntoine.jsx'
 import FinDeMois from './pages/FinDeMois.jsx'
+import RevenusReportes from './pages/RevenusReportes.jsx'
 import Travaux from './pages/Travaux.jsx'
 import DettesLT from './pages/DettesLT.jsx'
 import MarketingBudget from './pages/MarketingBudget.jsx'
-import InstagramProspects from './pages/InstagramProspects.jsx'
+import Instagram from './pages/Instagram.jsx'
 import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
+import ReglesBancaires from './pages/ReglesBancaires.jsx'
+import Propositions from './pages/Propositions.jsx'
 import Employees from './pages/Employees.jsx'
 import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
 import CodesActivite from './pages/CodesActivite.jsx'
@@ -247,12 +250,17 @@ function AppRoutes() {
       <Route path="/inventaire-drive" element={<ProtectedRoute><DriveInventory /></ProtectedRoute>} />
       <Route path="/tests-antoine" element={<ProtectedRoute><TestsAntoine /></ProtectedRoute>} />
       <Route path="/fin-de-mois" element={<ProtectedRoute><FinDeMois /></ProtectedRoute>} />
+      <Route path="/revenus-reportes" element={<ProtectedRoute><RevenusReportes /></ProtectedRoute>} />
       <Route path="/travaux" element={<ProtectedRoute><Travaux /></ProtectedRoute>} />
       <Route path="/dettes-lt" element={<ProtectedRoute><DettesLT /></ProtectedRoute>} />
       {/* Devenue un onglet d'Extraction de données (SaleReceipts) : la route reste pour ne pas casser les signets. */}
       <Route path="/collecte-factures" element={<Navigate to="/sale-receipts?onglet=collecte" replace />} />
       <Route path="/budget-marketing" element={<ProtectedRoute><MarketingBudget /></ProtectedRoute>} />
-      <Route path="/prospects-instagram" element={<ProtectedRoute><InstagramProspects /></ProtectedRoute>} />
+      <Route path="/instagram" element={<ProtectedRoute><Instagram /></ProtectedRoute>} />
+      {/* Anciennes adresses : elles mènent au bon onglet de la section unique. */}
+      <Route path="/prospects-instagram" element={<Navigate to="/instagram" replace />} />
+      <Route path="/messages-instagram" element={<Navigate to="/instagram?onglet=conversations" replace />} />
+      <Route path="/envois-instagram" element={<Navigate to="/instagram?onglet=envois" replace />} />
       {/* Douanes (ASFC) : le suivi CARM est devenu un onglet des Comptes prépayés
           — c'est un compte prépayé comme un autre. L'ancienne URL suit. */}
       <Route path="/douanes" element={<Navigate to="/comptes-prepayes?onglet=douanes" replace />} />
@@ -268,6 +276,8 @@ function AppRoutes() {
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
+      <Route path="/regles-bancaires" element={<ProtectedRoute><ReglesBancaires /></ProtectedRoute>} />
+      <Route path="/propositions" element={<ProtectedRoute><Propositions /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
       <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />

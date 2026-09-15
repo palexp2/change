@@ -129,7 +129,7 @@ describe('Paiements émis — détection QuickBooks du passé à la banque', () 
   })
 
   test('un paiement coché par QuickBooks l\'annonce dans son infobulle', async () => {
-    await page.click('[data-testid="payments-tab-cleared"]')
+    await page.click('[data-testid="payments-pile-passes"]')
     await page.waitForSelector(`[data-testid="payment-cleared-${qbClearedId}"]`, { timeout: 15000 })
     // Lecture atomique : la liste se re-rend (rechargements après sync), un
     // locator lu en deux temps peut se détacher entre les deux appels.

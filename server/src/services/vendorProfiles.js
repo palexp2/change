@@ -110,6 +110,15 @@ export function findVendorProfile(name) {
   return null
 }
 
+/**
+ * L'identifiant de la fiche correspondant à un nom, ou null. Même
+ * rapprochement conservateur que findVendorProfile — c'est ce qu'on pose à
+ * côté des noms tapés à la main (paiements émis, abonnements, règles).
+ */
+export function resolveVendorProfileId(name) {
+  return findVendorProfile(name)?.id || null
+}
+
 // Défauts applicables pour une devise donnée (les champs par devise sont résolus).
 export function profileDefaultsForCurrency(profile, currency) {
   if (!profile) return null

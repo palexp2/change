@@ -10,6 +10,7 @@ import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { runExtractionAndUpdate } from '../services/saleReceiptExtraction.js'
 import { checkReceiptAmount } from '../services/saleReceiptAmountCheck.js'
+import { readTransportInvoiceSummary } from '../services/transportInvoiceDocSummary.js'
 import { bankTxnForDocument } from '../services/bankReconciliation.js'
 import { syncReceiptAnomalies, receiptObsolescence } from '../services/transactionAnomalies.js'
 import { normalizeUploadName } from '../utils/uploadFileName.js'
@@ -191,16 +192,16 @@ router.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'receipt_date', 'order_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total']
+  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'receipt_date', 'order_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total', 'fx_converted_to', 'fx_converted_from', 'fx_rate', 'fx_converted_at']
   // bank_charged_total : paramètre de publication (conversion de devise) — persisté
   // comme brouillon pour être retrouvé au retour sur la facture.
-  const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'bank_charged_total'])
+  const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'bank_charged_total', 'fx_rate'])
   // expense_account_id/payment_account_id/tax_code_id/vendor_id : modèle de
   // comptabilisation mémorisé par fournisseur — éditables à la main pour corriger un
   // modèle erroné, et autosauvegardés comme BROUILLON par le formulaire de publication
   // (les choix faits avant de quitter la fiche sont retrouvés au retour).
   // transaction_type : statut fiscal — éditable pour corriger un classement a posteriori.
-  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type'])
+  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'fx_converted_to', 'fx_converted_from', 'fx_converted_at'])
   const sets = []
   const values = []
   for (const key of editable) {
@@ -412,6 +413,23 @@ router.get('/:id/amount-check', (req, res) => {
   res.json(checkReceiptAmount(pages, amount))
 })
 
+// Sommaire IMPRIMÉ d'une facture de transport (NovoXpress & co.) : relecture du texte
+// du PDF, aucun appel IA. Sert à confronter le dossier au papier sans dérouler le PDF.
+// { available:false } dès que le document n'est pas une facture de transport lisible.
+router.get('/:id/invoice-summary', (req, res) => {
+  const row = db.prepare('SELECT id, filename, file_type, extra_pages FROM sale_receipts WHERE id=? AND deleted_at IS NULL')
+    .get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+
+  let extra = []
+  try { extra = JSON.parse(row.extra_pages || '[]') } catch {}
+  const pages = [{ filename: row.filename, file_type: row.file_type }, ...extra]
+    .filter(p => p && p.filename)
+    .map(p => ({ filePath: join(uploadsDir, p.filename), fileExt: p.file_type }))
+
+  res.json(readTransportInvoiceSummary(pages))
+})
+
 // Sert la page demandée d'un document. ?page=0 (défaut) = page 1 (filename) ;
 // ?page=N (1-based dans extra_pages) = page N+1. Compat : sans ?page → page 1.
 router.get('/:id/file', (req, res) => {
@@ -504,7 +522,7 @@ router.get('/:id/lia-matches', (req, res) => {
     excludeReceiptId: rec.id,
   })
   res.json({
-    lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null })),
+    lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null, link_check: l.link_check || null })),
     candidates,
   })
 })

@@ -48,8 +48,8 @@ describe('Paiements émis — bouton « Synchroniser la feuille »', () => {
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
 
-    await page.goto(`${URL}/paiements-emis?onglet=pending`, { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-testid="payments-tab-pending"]', { timeout: 20000 })
+    await page.goto(`${URL}/paiements-emis`, { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('[data-testid="payments-sync-sheet"]', { timeout: 20000 })
   })
 
   after(async () => {

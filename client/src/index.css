@@ -126,6 +126,36 @@
      sur blanc, y compris en mode nuit — contrairement à `bg-white` qui suit la
      variable de surface. */
   .bg-fixed-white { background-color: #fff; }
+
+  /* Rapprochement bancaire — la ligne du classeur.
+     Le statut se lit à la couleur de la LIGNE ENTIÈRE, comme les cellules
+     peintes à la main dans TRX_Orisha. Trois raisons pour du CSS plutôt que des
+     classes utilitaires posées par `rowClassName` :
+       • la ligne de DataTable porte `hover:bg-slate-50`, de spécificité (0,2,0) :
+         un simple `bg-green-50` (0,1,0) disparaît au survol. La classe doublée
+         ci-dessous gagne sans `!important` ;
+       • les palettes chromatiques ont leur rampe INVERSÉE en mode nuit
+         (tailwind.config.js) — `--c-green-50` devient un vert sombre, donc une
+         seule déclaration tient les deux modes ;
+       • l'alpha garde la teinte assez proche de la surface pour ne pas déplacer
+         le contraste des textes de cellule. Le rouge est le plus dilué : c'est
+         la palette la plus saturée du lot. */
+  .row-st-rapproche { background-color: rgb(var(--c-green-100) / .7); }
+  .row-st-rapproche.row-st-rapproche:hover { background-color: rgb(var(--c-green-200) / .8); }
+  .row-st-comptabilise { background-color: rgb(var(--c-amber-100) / .7); }
+  .row-st-comptabilise.row-st-comptabilise:hover { background-color: rgb(var(--c-amber-200) / .8); }
+  .row-st-facture_recue { background-color: rgb(var(--c-sky-100) / .65); }
+  .row-st-facture_recue.row-st-facture_recue:hover { background-color: rgb(var(--c-sky-200) / .8); }
+  .row-st-a_traiter { background-color: rgb(var(--c-red-100) / .6); }
+  .row-st-a_traiter.row-st-a_traiter:hover { background-color: rgb(var(--c-red-200) / .75); }
+  .row-st-ignore { background-color: rgb(var(--c-slate-200) / .5); }
+  .row-st-ignore.row-st-ignore:hover { background-color: rgb(var(--c-slate-300) / .6); }
+  .row-st-ghost { background-color: rgb(var(--c-slate-50) / .8); }
+  .row-st-ghost.row-st-ghost:hover { background-color: rgb(var(--c-slate-100) / .9); }
+  /* Anomalie : un filet à gauche, pas un fond — il doit cohabiter avec la
+     couleur de statut (l'ancien fond ambre entrait en collision avec le jaune
+     « comptabilisé »). Même vocabulaire que les règles de couleur de vue. */
+  .row-flagged { box-shadow: inset 3px 0 0 0 rgb(var(--c-amber-500) / .85); }
 }
 
 @layer components {

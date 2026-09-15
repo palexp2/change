@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <rect width="640" height="300" fill="#fff"/>
+
+  <!-- Toile fixe, du tuyau d'enroulement jusqu'au faîte -->
+  <path d="M200 212v-64c0-48 54-64 120-64s120 16 120 64v64" fill="#eef8f9" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round"/>
+  <g fill="none" stroke="#b9e2e4" stroke-width="2.4" stroke-linecap="round">
+    <path d="M260 212v-98M320 212v-116M380 212v-98"/>
+  </g>
+
+  <!-- Côtés relevés : sous le tuyau, il ne reste que le vide -->
+  <g fill="none" stroke="#cbd5e1" stroke-width="2.6" stroke-dasharray="7 9" stroke-linecap="round">
+    <path d="M200 228v40M440 228v40"/>
+  </g>
+
+  <!-- Tuyaux d'enroulement vus en bout -->
+  <circle cx="200" cy="212" r="14" fill="#fff" stroke="#7ecdd0" stroke-width="5"/>
+  <circle cx="440" cy="212" r="14" fill="#fff" stroke="#7ecdd0" stroke-width="5"/>
+
+  <!-- Les moteurs sont là, montés sur chaque tuyau -->
+  <g stroke="#b45309" stroke-width="3.4" stroke-linejoin="round">
+    <rect x="152" y="202" width="46" height="20" rx="4" fill="#fbbf24"/>
+    <rect x="64" y="174" width="92" height="68" rx="12" fill="#f59e0b"/>
+    <rect x="442" y="202" width="46" height="20" rx="4" fill="#fbbf24"/>
+    <rect x="484" y="174" width="92" height="68" rx="12" fill="#f59e0b"/>
+  </g>
+  <g fill="none" stroke="#b45309" stroke-width="3" stroke-linecap="round">
+    <path d="M88 190v36M110 190v36M132 190v36M508 190v36M530 190v36M552 190v36"/>
+  </g>
+
+  <!-- Déjà en place -->
+  <circle cx="82" cy="66" r="36" fill="#22a34a"/>
+  <path d="M64 66l14 15 24-30" fill="none" stroke="#fff" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <rect x="0" y="268" width="640" height="8" rx="4" fill="#22a34a"/>
+</svg>

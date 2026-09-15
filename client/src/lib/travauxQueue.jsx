@@ -353,7 +353,7 @@ function liftToFront(prompts, id) {
 
 const EMPTY_QUEUE = {
   prompts: [], agent_enabled: true, runner_busy: false, running_questions: 0, max_parallel_questions: 2,
-  running_implementations: 0, exec_lanes: 4,
+  running_implementations: 0, exec_lanes: 2,
   queue_paused: false, queue_paused_at: null, queue_paused_reason: null,
   queue_paused_by_quota: false,
 }

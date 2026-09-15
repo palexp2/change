@@ -340,70 +340,6 @@ function Stat({ label, value, sub, tone = 'slate', testId }) {
   )
 }
 
-// Ligne du fichier Google Sheet — au fond du panneau d'attention. La sync est
-// AUTOMATIQUE (horaire + à l'ouverture de la page) : le bouton ne reste que
-// comme échappatoire, l'information utile est « lu il y a X ».
-function SheetLine({ status, onSynced }) {
-  const [syncing, setSyncing] = useState(false)
-  const { addToast } = useToast()
-  const run = status?.last_run
-  const chain = run?.chain || null
-
-  async function syncNow() {
-    setSyncing(true)
-    try {
-      const r = await api.treasury.soldeSheet.sync()
-      addToast({ message: r.summary, type: 'success' })
-      onSynced?.()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSyncing(false)
-    }
-  }
-
-  // Désactivée le 2026-08-29 (Charles : le fichier créait des paiements en
-  // double avec Pmt_Suivi/la cédule — voir project memory). Le bouton
-  // disparaît : le laisser cliquable aurait rouvert la même porte.
-  if (status && !status.active) {
-    return (
-      <div className="text-[11px] text-slate-400" data-testid="treasury-sheet-sync">
-        « Maintien du solde disponible BNC » · synchronisation désactivée (créait des paiements en double)
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex items-center justify-between gap-3 text-[11px] text-slate-400" data-testid="treasury-sheet-sync">
-      <span className="min-w-0 truncate">
-        « Maintien du solde disponible BNC »
-        {status?.every_minutes > 0 && (
-          <span data-testid="treasury-sheet-cadence"> · auto {status.every_minutes} min</span>
-        )}
-        {' · '}
-        {run
-          ? (run.status === 'error'
-            ? <span className="text-rose-600">échec — {run.error}</span>
-            : <>
-              synchronisé le {fmtDate(run.executed_at)}
-              {chain && (
-                <span className={chain.ok ? '' : 'text-rose-600'} data-testid="treasury-sheet-chain">
-                  {' · '}{chain.checked} ligne{chain.checked > 1 ? 's' : ''} vérifiée{chain.checked > 1 ? 's' : ''}
-                  {chain.ok ? '' : ` · ${chain.breaks.length} incohérence(s)`}
-                </span>
-              )}
-            </>)
-          : 'aucune sync encore exécutée'}
-      </span>
-      {/* Lecture du Drive + ajustements : action transactionnelle, donc bouton. */}
-      <button onClick={syncNow} disabled={syncing} data-testid="treasury-sheet-sync-run"
-        className="shrink-0 text-slate-400 hover:text-slate-700 disabled:opacity-40" title="Synchroniser maintenant">
-        <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-      </button>
-    </div>
-  )
-}
-
 // Une ligne du panneau d'attention : étiquette courte à gauche, contenu à
 // droite. La colonne d'étiquettes rend le panneau scannable — on saute à la
 // rubrique cherchée sans lire de phrases.
@@ -419,10 +355,11 @@ function AttnRow({ label, tone = 'text-slate-600', testId, children }) {
 // Panneau d'attention : TOUT ce qui n'est pas un chiffre du haut ni un
 // mouvement. Replié par défaut ; ouvert d'office quand de l'argent peut
 // manquer (anomalie de lecture, montant non compté, découvert projeté).
-function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced }) {
-  const anomalies = sheet?.last_run?.anomalies || []
-  const notCounted = sheet?.last_run?.not_counted || null
-  const diffs = sheet?.last_run?.differences || []
+// Le fichier Google « Maintien du solde » ne fait plus partie du panneau : il
+// n'est plus tenu à jour et ses écarts n'appellent aucune décision (Charles,
+// 12 septembre 2026). La projection vit sur la banque, les factures, les
+// paiements émis et les sorties récurrentes.
+function AttentionPanel({ proj, learning, recurring, onChanged }) {
   const late = proj?.late_events || []
   const excluded = proj?.inflows?.excluded || []
   const counted = proj?.inflows?.counted || []
@@ -445,11 +382,19 @@ function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced 
   const suggestions = (learning?.suggestions || []).filter(s => !ignored.has(s.key))
   const unseen = learning?.unseen || []
   const autoCleared = proj?.auto_cleared || []
+  const cardStatements = proj?.card_statements || []
 
-  const hard = anomalies.filter(a => a.severity === 'error').length + (notCounted?.total > 0 ? 1 : 0)
-  const soft = anomalies.length - anomalies.filter(a => a.severity === 'error').length
-    + late.length + excluded.length + needsAmount.length + suggestions.length + unseen.length
-  const total = hard + soft
+  // ── Ce qui appelle une décision, et ce qui n'est qu'une trace ─────────────
+  // Le compteur du bandeau ne compte QUE ce sur quoi Charles doit trancher : de
+  // l'argent qui peut sortir sans être projeté. Tout ce que le système a déjà
+  // résolu tout seul (montants appris, sorties confirmées par la banque, écarts
+  // ajustés, propositions) reste consultable mais ne gonfle plus le nombre :
+  // un « 6 points à vérifier » dont 6 n'appelaient aucune action se lisait
+  // comme une alerte et n'en était pas une.
+  const hard = 0
+  const total = late.length + excluded.length + needsAmount.length + unseen.length
+  const traceCount = suggestions.length + learned.length + autoCleared.length + cardStatements.length
+  const [showTrace, setShowTrace] = useState(false)
   const [open, setOpen] = useState(false)
   // L'ouverture forcée ne se fait qu'une fois : si l'utilisateur referme, on ne
   // lui rouvre pas le panneau sous le nez à chaque rafraîchissement.
@@ -484,12 +429,12 @@ function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced 
     } finally { setBusyKey(null) }
   }
 
-  if (!total && !learned.length && !autoCleared.length && !sheet) return null
+  if (!total && !learned.length && !autoCleared.length && !suggestions.length) return null
 
   const tone = hard ? 'text-rose-700' : total ? 'text-amber-700' : 'text-slate-400'
   const summary = total
     ? `${total} point${total > 1 ? 's' : ''} à vérifier`
-    : 'Tout concorde avec la banque et le fichier'
+    : 'Tout concorde avec la banque'
 
   return (
     <div className="mb-4 rounded-lg border border-slate-200" data-testid="treasury-attention">
@@ -498,27 +443,10 @@ function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced 
         {open ? <ChevronDown size={14} className="text-slate-400" /> : <ChevronRight size={14} className="text-slate-400" />}
         {hard ? <AlertTriangle size={13} className="text-rose-600" /> : total ? <AlertTriangle size={13} className="text-amber-500" /> : <CheckCircle2 size={13} className="text-emerald-500" />}
         <span className={`font-medium ${tone}`}>{summary}</span>
-        {notCounted?.total > 0 && (
-          <span className="text-rose-700" data-testid="treasury-sheet-not-counted">
-            · {fmtCad(notCounted.total, 2)} non comptés
-          </span>
-        )}
       </button>
 
       {open && (
         <div className="border-t border-slate-100 px-3 py-2.5 space-y-1.5 text-xs">
-          {/* Lecture du fichier : une ligne illisible est de l'argent qui sortira
-              sans avoir été projeté — c'est le plus grave de ce panneau. */}
-          {anomalies.length > 0 && (
-            <AttnRow label="Lecture">
-              <ul className="space-y-0.5" data-testid="treasury-sheet-anomalies">
-                {anomalies.map((a, i) => (
-                  <li key={i} className={a.severity === 'error' ? 'text-rose-800' : 'text-amber-800'}>{a.text}</li>
-                ))}
-              </ul>
-            </AttnRow>
-          )}
-
           {/* Sorties datées depuis la saisie du solde que la banque ne confirme
               pas encore. Le relevé en confirme la plupart tout seul — il ne
               reste ici que le doute. La date du solde tient dans l'étiquette :
@@ -540,18 +468,14 @@ function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced 
             </AttnRow>
           )}
 
-          {/* Rentrées : ce qui est compté, ce qui est écarté faute de certitude. */}
-          {(counted.length > 0 || excluded.length > 0) && (
-            <AttnRow label="Rentrées" tone="text-slate-500" testId="treasury-inflows">
-              {counted.length > 0 && (
-                <span>{counted.length} comptée{counted.length > 1 ? 's' : ''} · {fmtCad(proj.inflows.total_counted, 2)}</span>
-              )}
-              {excluded.length > 0 && (
-                <span className="text-amber-800" data-testid="treasury-inflows-excluded">
-                  {counted.length > 0 ? ' · ' : ''}
-                  {fmtCad(proj.inflows.total_excluded, 2)} non compté ({excluded.map(p => p.reason).join(' ; ')})
-                </span>
-              )}
+          {/* Rentrée écartée = argent que la projection ne compte pas : c'est
+              une décision à prendre. Les rentrées comptées, elles, sont une
+              trace — elles descendent dans « Détails ». */}
+          {excluded.length > 0 && (
+            <AttnRow label="Rentrées" tone="text-amber-800" testId="treasury-inflows">
+              <span data-testid="treasury-inflows-excluded">
+                {fmtCad(proj.inflows.total_excluded, 2)} non compté ({excluded.map(p => p.reason).join(' ; ')})
+              </span>
             </AttnRow>
           )}
 
@@ -561,59 +485,75 @@ function AttentionPanel({ proj, sheet, learning, recurring, onChanged, onSynced 
             </AttnRow>
           )}
 
-          {/* Ce que le relevé a corrigé tout seul : la trace de l'apprentissage.
-              Sans elle, un montant projeté différent du montant saisi serait
-              incompréhensible. */}
-          {learned.length > 0 && (
-            <AttnRow label="Relevé" tone="text-slate-500" testId="treasury-learned">
-              {learned.map(l => `${l.label} ${fmtCad(l.to, 0)}${l.estimated ? ' (moy.)' : l.from ? ` (saisi ${fmtCad(l.from, 0)})` : ''}`).join(' · ')}
-            </AttnRow>
-          )}
-
-          {autoCleared.length > 0 && (
-            <AttnRow label="Passés" tone="text-slate-500" testId="treasury-auto-cleared">
-              {autoCleared.map(e => `${e.label} ${fmtCad(e.bank_amount, 2)} le ${fmtDate(e.bank_date)}`).join(' · ')}
-            </AttnRow>
-          )}
-
           {unseen.length > 0 && (
             <AttnRow label="Jamais vu" tone="text-amber-800" testId="treasury-unseen">
               {unseen.map(u => `${u.label} ${fmtCad(u.amount, 0)}`).join(' · ')}
             </AttnRow>
           )}
 
-          {/* Prélèvements périodiques détectés au relevé mais absents de l'ERP :
-              proposés, jamais ajoutés d'office. */}
-          {suggestions.length > 0 && (
-            <AttnRow label="Proposé" testId="treasury-suggestions">
-              <div className="flex flex-wrap gap-1">
-                {suggestions.map(s => (
-                  <span key={s.key} className="inline-flex items-center gap-1 bg-white border border-slate-200 rounded-full pl-2 pr-1 py-px text-slate-600">
-                    {s.label} {fmtCad(s.amount, 2)} · {FREQ_LABELS[s.frequency] || s.frequency} · {s.n}×
-                    <button type="button" onClick={() => adopt(s)} disabled={busyKey === s.key}
-                      className="text-brand-600 hover:text-brand-800 px-1 disabled:opacity-40" title="Ajouter aux sorties récurrentes">
-                      {busyKey === s.key ? '…' : 'ajouter'}
-                    </button>
-                    <button type="button" onClick={() => ignore(s.key)}
-                      className="text-slate-300 hover:text-slate-600 px-0.5" title="Ne plus proposer">×</button>
-                  </span>
-                ))}
-                <span className="text-slate-400 self-center">{fmtCad(learning.suggestions_monthly_total, 0)}/mois</span>
-              </div>
-            </AttnRow>
+          {/* Tout ce qui suit est une TRACE : le système l'a déjà traité, rien
+              à décider. Replié par défaut — c'est ce qui rendait le panneau
+              long à lire alors que rien n'y appelait d'action. */}
+          {(traceCount > 0 || counted.length > 0) && (
+            <div className="pt-0.5">
+              <button type="button" onClick={() => setShowTrace(v => !v)} data-testid="treasury-attention-trace-toggle"
+                className="flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-700">
+                {showTrace ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                Détails{traceCount > 0 ? ` (${traceCount})` : ''}
+              </button>
+              {showTrace && (
+                <div className="mt-1.5 space-y-1.5">
+                  {counted.length > 0 && (
+                    <AttnRow label="Rentrées" tone="text-slate-500" testId="treasury-inflows-counted">
+                      {counted.length} comptée{counted.length > 1 ? 's' : ''} · {fmtCad(proj.inflows.total_counted, 2)}
+                    </AttnRow>
+                  )}
+                  {/* Paiement de carte chiffré sur le relevé de la carte : la
+                      période dit d'où sort le montant, sans avoir à la chercher. */}
+                  {cardStatements.length > 0 && (
+                    <AttnRow label="Carte" tone="text-slate-500" testId="treasury-card-statements">
+                      {cardStatements.map(c => `${c.label} ${fmtCad(c.amount, 2)} — ${c.source === 'releve'
+                        ? `relevé du ${fmtDate(c.to)}`
+                        : `achats du ${fmtDate(c.from)} au ${fmtDate(c.to)}${c.closed ? '' : ', période en cours'}`}`).join(' · ')}
+                    </AttnRow>
+                  )}
+                  {/* Ce que le relevé a corrigé tout seul : la trace de l'apprentissage.
+                      Sans elle, un montant projeté différent du montant saisi serait
+                      incompréhensible. */}
+                  {learned.length > 0 && (
+                    <AttnRow label="Relevé" tone="text-slate-500" testId="treasury-learned">
+                      {learned.map(l => `${l.label} ${fmtCad(l.to, 0)}${l.estimated ? ' (moy.)' : l.from ? ` (saisi ${fmtCad(l.from, 0)})` : ''}`).join(' · ')}
+                    </AttnRow>
+                  )}
+                  {autoCleared.length > 0 && (
+                    <AttnRow label="Passés" tone="text-slate-500" testId="treasury-auto-cleared">
+                      {autoCleared.map(e => `${e.label} ${fmtCad(e.bank_amount, 2)} le ${fmtDate(e.bank_date)}`).join(' · ')}
+                    </AttnRow>
+                  )}
+                  {/* Prélèvements périodiques détectés au relevé mais absents de l'ERP :
+                      proposés, jamais ajoutés d'office. */}
+                  {suggestions.length > 0 && (
+                    <AttnRow label="Proposé" testId="treasury-suggestions">
+                      <div className="flex flex-wrap gap-1">
+                        {suggestions.map(s => (
+                          <span key={s.key} className="inline-flex items-center gap-1 bg-white border border-slate-200 rounded-full pl-2 pr-1 py-px text-slate-600">
+                            {s.label} {fmtCad(s.amount, 2)} · {FREQ_LABELS[s.frequency] || s.frequency} · {s.n}×
+                            <button type="button" onClick={() => adopt(s)} disabled={busyKey === s.key}
+                              className="text-brand-600 hover:text-brand-800 px-1 disabled:opacity-40" title="Ajouter aux sorties récurrentes">
+                              {busyKey === s.key ? '…' : 'ajouter'}
+                            </button>
+                            <button type="button" onClick={() => ignore(s.key)}
+                              className="text-slate-300 hover:text-slate-600 px-0.5" title="Ne plus proposer">×</button>
+                          </span>
+                        ))}
+                        <span className="text-slate-400 self-center">{fmtCad(learning.suggestions_monthly_total, 0)}/mois</span>
+                      </div>
+                    </AttnRow>
+                  )}
+                </div>
+              )}
+            </div>
           )}
-
-          {diffs.length > 0 && (
-            <AttnRow label="Ajusté" tone="text-slate-500">
-              <ul className="space-y-0.5" data-testid="treasury-sheet-sync-diffs">
-                {diffs.map((d, i) => (
-                  <li key={i}>{d.text}{!d.adjusted && <span className="text-slate-400"> — non ajusté</span>}</li>
-                ))}
-              </ul>
-            </AttnRow>
-          )}
-
-          {sheet && <AttnRow label="Fichier"><SheetLine status={sheet} onSynced={onSynced} /></AttnRow>}
         </div>
       )}
     </div>
@@ -699,10 +639,10 @@ function ProjectionCalendar({ days, threshold, renderEvent }) {
 export function TreasuryProjectionSection() {
   const [proj, setProj] = useState(null)
   const [recurring, setRecurring] = useState([])
-  const [sheet, setSheet] = useState(null)
   const [learning, setLearning] = useState(null)
   const [balanceInput, setBalanceInput] = useState('')
   const [noting, setNoting] = useState(false)
+  const [pulling, setPulling] = useState(false)
   const [editing, setEditing] = useState(null) // {} = nouveau, {id...} = édition
   const [billPeek, setBillPeek] = useState(null) // {id, date} = facture fournisseur cliquée
   const [showBeyond, setShowBeyond] = useState(false)
@@ -716,21 +656,9 @@ export function TreasuryProjectionSection() {
   const load = useCallback(() => {
     api.treasury.projection().then(setProj).catch(() => {})
     api.treasury.recurring.list().then(setRecurring).catch(() => {})
-    api.treasury.soldeSheet.status().then(setSheet).catch(() => {})
     api.treasury.learning.get().then(setLearning).catch(() => {})
   }, [])
   useEffect(() => { load() }, [load])
-
-  // Sync du fichier À L'OUVERTURE quand il n'a pas été lu depuis 20 min : la
-  // page affiche toujours la donnée du fichier sans que personne ne clique.
-  // Silencieuse — seul le résultat (chiffres, panneau d'attention) est visible.
-  useEffect(() => {
-    let alive = true
-    api.treasury.soldeSheet.syncIfStale(20)
-      .then(r => { if (alive && r && r.skipped === false) load() })
-      .catch(() => {})
-    return () => { alive = false }
-  }, [load])
 
   async function noteBalance() {
     const n = Number(balanceInput.replace(/\s/g, '').replace(',', '.'))
@@ -744,6 +672,24 @@ export function TreasuryProjectionSection() {
       addToast({ message: e.message, type: 'error' })
     } finally {
       setNoting(false)
+    }
+  }
+
+  // Le solde se met à jour tout seul (sync Plaid aux 30 min) ; ce bouton sert
+  // quand on vient de faire un virement et qu'on ne veut pas attendre.
+  async function pullBalance() {
+    setPulling(true)
+    try {
+      const r = await api.treasury.refreshBalanceFromBank()
+      addToast({
+        message: `Solde à la banque : ${fmtCad(r.balance, 2)}${r.woke ? '' : ' (dernier solde livré)'}`,
+        type: 'success',
+      })
+      load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setPulling(false)
     }
   }
 
@@ -842,6 +788,11 @@ export function TreasuryProjectionSection() {
               className="w-40 px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30"
               data-testid="treasury-balance-input"
             />
+            <button onClick={pullBalance} disabled={pulling} data-testid="treasury-balance-pull"
+              className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-40"
+              title="Lire le solde à la banque maintenant (sinon automatique aux 30 min)">
+              <RefreshCw size={15} className={pulling ? 'animate-spin' : ''} />
+            </button>
             {/* Action transactionnelle : chaque saisie crée une entrée horodatée */}
             <button onClick={noteBalance} disabled={noting} data-testid="treasury-balance-save"
               className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50 whitespace-nowrap">
@@ -861,11 +812,7 @@ export function TreasuryProjectionSection() {
                 label="Solde BNC noté"
                 value={entry ? fmtCad(entry.balance, 0) : '—'}
                 sub={entry
-                  ? [entry.source === 'plaid' ? `banque · ${formatRelativeTime(entry.noted_at)}` : formatRelativeTime(entry.noted_at),
-                    // Le fichier Drive ne vaut plus la peine d'être mentionné
-                    // quand la banque donne le solde elle-même.
-                    entry.source !== 'plaid' && sheet?.last_run && !sheet.last_run.error ? `fichier lu ${formatRelativeTime(sheet.last_run.executed_at)}` : null]
-                    .filter(Boolean).join(' · ')
+                  ? (entry.source === 'plaid' ? `banque · ${formatRelativeTime(entry.noted_at)}` : formatRelativeTime(entry.noted_at))
                   : 'aucune saisie'}
                 tone={entry && !proj.balance_stale ? 'slate' : 'amber'}
               />
@@ -900,7 +847,7 @@ export function TreasuryProjectionSection() {
               )}
             </div>
 
-            <AttentionPanel proj={proj} sheet={sheet} learning={learning} recurring={recurring}
+            <AttentionPanel proj={proj} learning={learning} recurring={recurring}
               onChanged={load} onSynced={load} />
 
             <div className="min-w-0">

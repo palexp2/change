@@ -1,6 +1,5 @@
 // Champ « Phase » du formulaire « Nouvelle entreprise » (Companies.jsx) → SearchableSelect.
-// Avant, c'était un <select> natif (PHASES), alors que le champ « Type » juste au-dessus
-// dans le même formulaire utilise déjà SearchableSelect, et que CompanyDetail.jsx affiche
+// Avant, c'était un <select> natif (PHASES), alors que CompanyDetail.jsx affichait déjà
 // ces mêmes PHASES via SearchableSelect. Incohérence visuelle sur la même liste de valeurs.
 //
 // Vérifie :

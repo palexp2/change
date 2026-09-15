@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <rect width="640" height="300" fill="#fff"/>
+
+  <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+    <path d="M106 48h168"/>
+    <path d="M106 40v16M274 40v16"/>
+    <path d="M106 150V52M274 150V52" stroke-dasharray="5 7"/>
+  </g>
+
+  <!-- Tuyau vu en bout : un diamètre quelconque -->
+  <circle cx="190" cy="158" r="74" fill="none" stroke="#7ecdd0" stroke-width="20"/>
+
+  <!-- La mesure se saisit : un champ à remplir -->
+  <rect x="300" y="126" width="300" height="72" rx="12" fill="#fff" stroke="#94a3b8" stroke-width="2.6"/>
+  <path d="M336 146v32" fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round"/>
+  <path d="M356 180h140" fill="none" stroke="#e2e8f0" stroke-width="5" stroke-linecap="round"/>
+  <text x="576" y="174" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="30" fill="#94a3b8">po</text>
+  <g transform="rotate(30 545 92)">
+    <path d="M533 60h24v52l-12 18-12-18Z" fill="#fff" stroke="#22a34a" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M533 98h24" fill="none" stroke="#22a34a" stroke-width="3"/>
+  </g>
+
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

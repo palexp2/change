@@ -35,7 +35,7 @@ describe('Billets — mots-clés en sélection multiple', () => {
       const r = await fetch('/erp/api/tickets', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: `E2E mots-cles ${Date.now()}`, type: 'Support', status: 'Waiting on us' }),
+        body: JSON.stringify({}),
       })
       return { status: r.status, data: await r.json() }
     }, token)

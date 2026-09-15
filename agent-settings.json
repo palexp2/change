@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
   "autoApprove": true,
   "queuePaused": false,
   "queuePausedAt": null,
@@ -13,5 +13,9 @@
   "questionPrompt": "{{general}}\n\nLa demande ci-dessous est une QUESTION de l'utilisateur — PAS une demande d'implémentation. N'implémente RIEN : tu es en LECTURE SEULE (Read/Glob/Grep uniquement), tu ne modifies aucun fichier, tu ne lances ni build, ni test, ni redémarrage. Ne lis pas agent-tasks.json ni les autres fichiers de gestion de tâches de l'agent.\n\n{{brief}}\n\nExplore le code autant que nécessaire pour répondre précisément et complètement à la question.\nTermine IMPÉRATIVEMENT ta réponse par une section délimitée EXACTEMENT ainsi:\n=== RÉSUMÉ UTILISATEUR ===\nSuivie de la RÉPONSE à la question, en français, destinée à l'utilisateur, SANS jargon technique ni noms de fichiers. Adapte la longueur à la complexité de la question : une phrase pour une question simple, quelques paragraphes si nécessaire. Si tu n'as pas pu répondre, explique simplement pourquoi.",
   "preferredModel": "opus",
   "queueEngine": "claude",
-  "queueEngineAuto": false
+  "queueEngineAuto": false,
+  "quotaPauseResetAt": null,
+  "quotaFloorPct": 30,
+  "quotaFloorWeekPct": 30,
+  "quotaFloorSessionPct": 30
 }

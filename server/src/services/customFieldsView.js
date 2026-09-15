@@ -631,13 +631,18 @@ export function normalizeLookupLimit(limitN, limitDir) {
   return { n, dir }
 }
 
-// Liste des clés liées d'une colonne, en JSON, quelle que soit sa forme de
-// stockage : tableau JSON tel quel, sinon valeur simple / liste à virgules
-// convertie en tableau. Les guillemets sont retirés avant reconstruction —
-// json_each() lève sur du JSON invalide, ce qui casserait toute la vue.
-function linkedKeysJson(colRef) {
-  return `CASE WHEN json_valid(${colRef}) AND trim(${colRef}) LIKE '[%' THEN ${colRef} ` +
-    `ELSE '["' || replace(replace(replace(trim(coalesce(${colRef}, '')), '"', ''), ' ', ''), ',', '","') || '"]' END`
+// Découpe la valeur d'un champ de référence en clés liées ORDONNÉES (_i = rang,
+// _key = clé). Une seule mécanique pour les trois formes de stockage rencontrées :
+// '["recA","recB"]' (sync Airtable), « recA, recB » et « recA ». On coupe sur les
+// virgules puis on rogne crochets, guillemets et espaces — ni json_each() (qui
+// lève sur du JSON invalide et casserait la vue entière) ni replace() : ce nom
+// est pris par la fonction de formule REPLACE(texte, début, longueur, texte),
+// enregistrée en UDF, qui masque le replace() natif de SQLite.
+function linkedKeysCte(colRef) {
+  return `WITH RECURSIVE _keys(_i, _key, _rest) AS (` +
+    `SELECT 0, '', coalesce(${colRef}, '') || ',' ` +
+    `UNION ALL SELECT _i + 1, trim(substr(_rest, 1, instr(_rest, ',') - 1), ' []"'), ` +
+    `substr(_rest, instr(_rest, ',') + 1) FROM _keys WHERE _rest <> '')`
 }
 
 // Expression SELECT d'un lookup limité. Une seule valeur (n=1) reste scalaire —
@@ -647,16 +652,16 @@ function limitedLookupExpr(cf, erpTable, n, dir) {
   const tgt = cf.lookup_target_table
   const tgtCols = childColumns(tgt)
   // Les listes d'Airtable portent des recXXX ; la sync traduit parfois en id ERP.
-  const byAirtable = tgtCols.includes('airtable_id') ? ` OR _t.airtable_id = _k.value` : ''
+  const byAirtable = tgtCols.includes('airtable_id') ? ` OR _t.airtable_id = _keys._key` : ''
   const soft = tgtCols.includes('deleted_at') ? ` AND _t.deleted_at IS NULL` : ''
   const order = dir === 'last' ? 'DESC' : 'ASC'
+  const cte = linkedKeysCte(`${erpTable}.${cf.lookup_fk}`)
   const rows =
-    `FROM json_each(${linkedKeysJson(`${erpTable}.${cf.lookup_fk}`)}) _k ` +
-    `JOIN ${tgt} AS _t ON (_t.id = _k.value${byAirtable}) ` +
-    `WHERE _k.value IS NOT NULL AND _k.value <> ''${soft} ` +
-    `ORDER BY _k.key ${order} LIMIT ${n}`
-  if (n === 1) return `(SELECT _t.${cf.lookup_target_column} ${rows}) AS ${cf.column_name}`
-  return `(SELECT group_concat(_v, ', ') FROM ` +
+    `FROM _keys JOIN ${tgt} AS _t ON (_t.id = _keys._key${byAirtable}) ` +
+    `WHERE _keys._i > 0 AND _keys._key <> ''${soft} ` +
+    `ORDER BY _keys._i ${order} LIMIT ${n}`
+  if (n === 1) return `(${cte} SELECT _t.${cf.lookup_target_column} ${rows}) AS ${cf.column_name}`
+  return `(${cte} SELECT group_concat(_v, ', ') FROM ` +
     `(SELECT _t.${cf.lookup_target_column} AS _v ${rows})) AS ${cf.column_name}`
 }
 

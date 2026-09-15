@@ -142,7 +142,7 @@ describe('Paie ↔ Feuilles de temps — import + banque d\'heures', () => {
     assert.ok(before.regular_hours >= 11, `après resync, regular_hours >= 11h (reçu: ${before.regular_hours})`)
   })
 
-  test('employé salarié (hours_per_week > 0) → diff va en banque d\'heures', async () => {
+  test('employé salarié (hours_per_week > 0) → regular_hours contractuelles conservées', async () => {
     const result = await page.evaluate(async ({ paieId, empId, userId }) => {
       const token = localStorage.getItem('erp_token')
       // Passer l'employé en "salarié" avec 35h/semaine → 70h biweekly
@@ -164,15 +164,13 @@ describe('Paie ↔ Feuilles de temps — import + banque d\'heures', () => {
       }).then(r => r.json())
       const full2 = await fetch(`/erp/api/paies/${paie2.id}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
       const item2 = full2.items.find(i => i.employee_id === empId)
-      // Le user courant n'a pas d'entries dans la période 2029-11-23 → 2029-12-06 (tous nos tests sont avant)
-      // donc totalHours = 0, alors que regular_hours = 70. Le diff = -70 doit aller en banque.
-      const bank = await fetch(`/erp/api/hour-bank/${empId}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
+      // Le user courant n'a pas d'entries dans la période 2029-11-23 → 2029-12-06 (tous nos tests sont
+      // avant) : totalHours = 0, mais regular_hours doit rester aux 70h contractuelles.
       void userId
       return {
         paieId2: paie2.id,
         item_regular_hours: item2?.regular_hours,
-        bank_balance: bank.balance_hours,
-        bank_entries: bank.entries,
+        import_results: paie2.timesheet_import?.results || [],
       }
     }, { paieId, empId: employeeId, userId })
 
@@ -186,11 +184,11 @@ describe('Paie ↔ Feuilles de temps — import + banque d\'heures', () => {
       await fetch(`/erp/api/paies/${pid}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } }).catch(() => {})
     }, { pid: paieId2 })
 
-    // regular_hours salarié = 70h, banque doit avoir un deficit de -70 (pas de FdT sur cette période)
+    // regular_hours salarié = 70h : l'import ne les écrase pas avec les 0h de FdT de la période.
     assert.strictEqual(Math.round(result.item_regular_hours * 100) / 100, 70, 'salarié → regular_hours = hours_per_week * 2')
-    // Solde banque = -70 (ou proche)
-    assert.ok(result.bank_balance < 0, `salarié sans FdT → déficit attendu dans la banque (reçu: ${result.bank_balance})`)
-    const importEntry = (result.bank_entries || []).find(e => e.source === 'timesheet_import')
-    assert.ok(importEntry, 'une entrée timesheet_import doit exister')
+    const line = result.import_results.find(r => r.employee_id === employeeId)
+    assert.ok(line, "l'employé doit figurer dans le récap d'import")
+    assert.equal(line.mode, 'contractual', 'salarié → mode contractual (heures conservées)')
+    assert.ok(line.diff_hours < 0, `salarié sans FdT → écart négatif remonté (reçu: ${line.diff_hours})`)
   })
 })

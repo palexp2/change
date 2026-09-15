@@ -52,11 +52,14 @@ export function expectedFeeFor(debt, paymentDate) {
   return Number(String(paymentDate).slice(5, 7)) === month ? round2(fee) : 0
 }
 
-export async function confirmDebtPaymentsFromBank(debtId = null) {
+// L'appariement SANS écriture : ce que le moteur de propositions interroge.
+// `confirmDebtPaymentsFromBank` ci-dessous s'en sert et écrit, pour le geste
+// explicite (fiche de dette) ; le passage automatique, lui, propose.
+export async function findDebtPaymentMatches(debtId = null) {
   const debts = debtId
     ? db.prepare('SELECT * FROM lt_debts WHERE id=? AND deleted_at IS NULL').all(debtId)
     : db.prepare('SELECT * FROM lt_debts WHERE deleted_at IS NULL AND active=1').all()
-  const linked = []
+  const hits = []
   for (const debt of debts) {
     if (!debt.bank_label_pattern) continue
     const accountName = await bankAccountNameForAcctnum(debt.qb_bank_acctnum)
@@ -73,7 +76,6 @@ export async function confirmDebtPaymentsFromBank(debtId = null) {
     for (const p of payments) {
       const scheduled = round2((Number(p.principal) || 0) + (Number(p.interest) || 0))
       if (!(scheduled > 0)) continue
-      // Le mois des frais annuels, c'est le débit AVEC les frais qu'on attend.
       const fee = expectedFeeFor(debt, p.payment_date)
       const expected = round2(scheduled + fee)
       const found = findBankDebit({
@@ -89,19 +91,32 @@ export async function confirmDebtPaymentsFromBank(debtId = null) {
         && found.match.delta_pct != null && found.match.delta_pct <= DEBT_TOLERANCE_PCT
         ? found.match : null
       if (!hit) continue
-      // Ce que la banque a pris en plus de la cédule : les frais quand ils
-      // expliquent l'écart, sinon un reste à comprendre. Écrit dans les deux
-      // cas — un écart inexpliqué doit rester visible.
       const extra = round2(hit.amount - scheduled)
-      db.prepare(`UPDATE lt_debt_payments SET bank_txn_id=?, bank_extra_amount=?,
-                  updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-        .run(hit.id, Math.abs(extra) < 0.005 ? null : extra, p.id)
       used.push(hit.id)
-      linked.push({ debt: debt.label, payment_id: p.id, payment_date: p.payment_date,
-        txn_id: hit.id, amount: hit.amount, extra: extra || null, expected_fee: fee || null })
+      hits.push({
+        debt: debt.label, debt_id: debt.id, payment_id: p.id, payment_date: p.payment_date,
+        txn_id: hit.id, account_id: found.account_id || null, amount: hit.amount,
+        extra: Math.abs(extra) < 0.005 ? null : extra, expected_fee: fee || null,
+      })
     }
   }
-  return linked
+  return hits
+}
+
+// Écrit le rattachement d'un versement à son débit au relevé. Point d'entrée
+// unique : l'appariement automatique passe par une proposition acceptée, le
+// geste manuel par confirmDebtPaymentsFromBank.
+export function attachDebtPaymentBankTxn(paymentId, txnId, extra = null) {
+  const res = db.prepare(`UPDATE lt_debt_payments SET bank_txn_id=?, bank_extra_amount=?,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND deleted_at IS NULL`)
+    .run(txnId, extra == null || Math.abs(extra) < 0.005 ? null : extra, paymentId)
+  return res.changes > 0
+}
+
+export async function confirmDebtPaymentsFromBank(debtId = null) {
+  const hits = await findDebtPaymentMatches(debtId)
+  for (const h of hits) attachDebtPaymentBankTxn(h.payment_id, h.txn_id, h.extra)
+  return hits
 }
 
 // Passage complet, déclenché à chaque arrivée de transactions bancaires et

@@ -106,35 +106,8 @@ describe('Recherche DataTable — champs ajoutés', () => {
     assert.ok(count > 0, `recherche "${term}" sur Pipeline = 0 ligne`)
   })
 
-  test('Tickets — recherche par contact_name (sous-titre du title)', async () => {
-    const rows = await loadPageRows(page, URL + '/tickets')
-    if (rows.length === 0) { console.log('Tickets: aucune ligne visible, skip'); return }
-    // Le rendu du titre affiche le contact_name en sous-titre. On capture ces
-    // lignes via le sélecteur DOM des spans '.text-slate-400' enfant de '.font-medium'
-    // Plus simple : on prend la 2e ligne de chaque innerText (où contact_name s'affiche
-    // sous le numéro/title), si elle ressemble à un nom prénom-nom.
-    let term = null
-    for (const r of rows) {
-      const lines = r.split('\n').map(l => l.trim()).filter(Boolean)
-      for (const l of lines) {
-        // contact_name typiquement « Prénom Nom » avec espace
-        if (/^[A-Za-zÀ-ÿ-]+ [A-Za-zÀ-ÿ-]+$/.test(l) && l.length >= 6 && l.length <= 40) {
-          // Évite les doublons avec les noms d'entreprises (déjà couverts)
-          // — heuristique : un nom de personne contient typiquement un seul espace
-          // alors qu'une entreprise peut avoir des chiffres ou « Inc. » / « Ltd. »
-          if (!/\d|Inc|Ltd|S\.A|GmbH|Farm|Greenhouse|Cannabis/i.test(l)) {
-            // prend juste le prénom pour minimiser collisions
-            term = l.split(' ')[0]
-            break
-          }
-        }
-      }
-      if (term && term.length >= 4) break
-    }
-    if (!term) { console.log('Tickets: aucun contact_name testable, skip'); return }
-    const count = await searchAndCount(page, term)
-    assert.ok(count > 0, `recherche "${term}" sur Tickets = 0 ligne`)
-  })
+  // Le cas « Tickets » est parti avec `tickets.contact_id` (migration 040) :
+  // la liste des billets n'a plus de colonne contact à chercher.
 
   test('Tasks — recherche par assigned_name', async () => {
     const rows = await loadPageRows(page, URL + '/tasks')

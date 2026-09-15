@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { resolveVendorProfileId } from '../services/vendorProfiles.js'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
@@ -92,8 +93,8 @@ router.post('/', (req, res) => {
     INSERT INTO vendor_subscriptions
       (id, vendor, plan, currency, variable, amount, amount_label, taxes, frequency,
        billing_day, billing_month, billing_label, period, payment_method, active, comments, created_by,
-       cancel_url)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+       cancel_url, vendor_profile_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, String(b.vendor).trim(), b.plan || null, b.currency || 'CAD', b.variable ? 1 : 0,
     b.amount === '' || b.amount == null ? null : Number(b.amount), b.amount_label || null,
@@ -104,7 +105,9 @@ router.post('/', (req, res) => {
     b.active === 0 || b.active === false ? 0 : 1, b.comments || null, req.user.id,
     // Page d'annulation connue du répertoire : le bouton « Se désabonner »
     // ouvre la bonne page dès la création, sans saisie.
-    (b.cancel_url || '').trim() || lookupCancelUrl(b.vendor) || null
+    (b.cancel_url || '').trim() || lookupCancelUrl(b.vendor) || null,
+    // Lien vers la fiche du fournisseur, à côté du nom affiché.
+    resolveVendorProfileId(b.vendor),
   )
   const created = db.prepare('SELECT * FROM vendor_subscriptions WHERE id = ?').get(id)
   emitEntity('vendor_subscription', 'created', id, created, req.user?.id)
@@ -125,6 +128,13 @@ router.put('/:id', (req, res) => {
     db.prepare(`UPDATE vendor_subscriptions SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id)
   }
+  // Le nom change, le lien vers la fiche suit : sinon l'abonnement resterait
+  // accroché au fournisseur d'avant.
+  if ('vendor' in req.body) {
+    db.prepare('UPDATE vendor_subscriptions SET vendor_profile_id = ? WHERE id = ?')
+      .run(resolveVendorProfileId(req.body.vendor), req.params.id)
+  }
+
   // Désabonnement / réactivation : horodate le moment où l'abonnement est
   // marqué annulé, efface la date à la réactivation. La date d'origine n'est
   // pas réécrite si `active` est resauvegardé à 0 alors qu'il l'était déjà.

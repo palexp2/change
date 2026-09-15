@@ -2,7 +2,7 @@
 // de côtés ouvrants ni de fournaises (ou seulement l'un des deux).
 //
 // Couvre :
-//   - Choisir « Non, pas de côtés ouvrants » cache les questions liées
+//   - Choisir l'image « Aucun côté ouvrant » cache les questions liées
 //     (hauteur, tuyaux de côté, tuyaux guides).
 //   - Choisir « Non, pas de fournaises » (carte chief grower) cache le champ
 //     « Nombre de fournaises » et empêche l'apparition des sous-formulaires.
@@ -79,7 +79,7 @@ describe('Discovery form — « pas de côtés ouvrants » / « pas de fournaise
     await browser?.close()
   })
 
-  test('côtés ouvrants : choisir « Non » cache les sous-questions et persiste has_side_vents=false', async () => {
+  test('côtés ouvrants : choisir « Aucun » cache les sous-questions et persiste has_side_vents=false', async () => {
     const anonCtx = await browser.newContext()
     const anonPage = await anonCtx.newPage()
     try {
@@ -90,25 +90,24 @@ describe('Discovery form — « pas de côtés ouvrants » / « pas de fournaise
       await anonPage.click('text=Un nouveau site de production avec Orisha')
       await anonPage.waitForSelector('text=Serre #1', { timeout: 5000 })
 
-      // La question « Cette serre a-t-elle des côtés ouvrants » est visible.
-      const sideVentQ = anonPage.locator('text=Cette serre a-t-elle des côtés ouvrants à automatiser')
+      // La question « Combien de côtés ouvrants » est visible.
+      const sideVentQ = anonPage.locator('text=Combien de côtés ouvrants à automatiser')
       await sideVentQ.waitFor({ timeout: 3000 })
 
       // Avant choix, les sous-questions (hauteur, type tuyau) NE sont PAS visibles.
       const heightBefore = await anonPage.locator('text=Hauteur des côtés ouvrants').count()
-      assert.equal(heightBefore, 0, 'la hauteur ne doit pas apparaître avant le choix oui/non')
+      assert.equal(heightBefore, 0, 'la hauteur ne doit pas apparaître avant le choix du nombre de côtés')
 
-      // Choix « Non, pas de côtés ouvrants ».
-      const sideSelect = anonPage.locator('select').filter({ hasText: 'Non, pas de côtés ouvrants' }).first()
-      await sideSelect.selectOption({ label: 'Non, pas de côtés ouvrants' })
+      // Image « Aucun côté ouvrant ».
+      await anonPage.getByRole('radio', { name: 'Aucun côté ouvrant' }).first().check({ force: true })
 
       // Les sous-questions restent cachées.
       const heightAfter = await anonPage.locator('text=Hauteur des côtés ouvrants').count()
-      assert.equal(heightAfter, 0, 'la hauteur doit rester cachée après « Non »')
+      assert.equal(heightAfter, 0, 'la hauteur doit rester cachée après « Aucun »')
       const pipeType = await anonPage.locator('text=Type de tuyau de côté').count()
-      assert.equal(pipeType, 0, 'type de tuyau doit rester caché après « Non »')
+      assert.equal(pipeType, 0, 'type de tuyau doit rester caché après « Aucun »')
       const guidePipes = await anonPage.locator('text=Tuyaux guides').count()
-      assert.equal(guidePipes, 0, 'tuyaux guides doivent rester cachés après « Non »')
+      assert.equal(guidePipes, 0, 'tuyaux guides doivent rester cachés après « Aucun »')
 
       // Attend la fin du debounce d'autosave (600 ms) + marge.
       await anonPage.waitForTimeout(900)

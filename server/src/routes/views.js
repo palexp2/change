@@ -37,6 +37,8 @@ const ALLOWED_TABLES = new Set([
   'contact_tasks', 'serial_state_changes',
   // Pages listes sans table SQL propre (ou dérivée) qui n'avaient pas leur clé.
   'activity_log', 'activity_codes', 'changelog', 'mapaq_import', 'vendor_profiles',
+  // Revenus perçus d'avance : lignes calculées mois par mois, aucune table SQL.
+  'revenus_reportes',
 ])
 
 // Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom :

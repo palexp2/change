@@ -29,7 +29,17 @@ import { expandRecurring, TREASURY_BANK_ACCOUNT } from './treasury.js'
 // Va-et-vient avec la marge de crédit et transferts internes : ce n'est ni une
 // dépense ni une rentrée (le compte est balayé chaque jour), et ça écraserait
 // toute détection de périodicité. Même exclusion que computeActuals.
-const NOISE_RE = /^(?:deboursé?|debourse|remb)[.,]?\s*mcr$|^trf\s+(?:ct|dt)\s+internet$/i
+// Le libellé porte souvent un numéro de compte ou de référence à la suite
+// (« REMB. MCR 10281 060024937974 », « TRF DT INTERNET C439… ») : pas d'ancre
+// de fin, sinon le va-et-vient de la marge et les virements internes passent
+// le filtre — un transfert interne de 20 000 $ s'était ainsi fait prendre pour
+// un paiement de Mastercard, et le remboursement de marge était proposé comme
+// sortie récurrente de 20 000 $/mois.
+const NOISE_RE = /^(?:deboursé?|debourse|remb)[.,]?\s*mcr\b|^trf\s+(?:ct|dt)\s+internet\b/i
+
+// Vrai quand le libellé n'est ni une dépense ni une rentrée, seulement un
+// mouvement interne (marge de crédit, virement entre nos comptes).
+export const isBankNoise = description => NOISE_RE.test(String(description || '').trim())
 
 // Fenêtre d'apprentissage : 6 mois = 6 occurrences pour un mensuel, 13 pour une
 // quinzaine. Assez pour une médiane, assez court pour suivre une hausse de loyer.
@@ -69,7 +79,7 @@ export function bankOutflows({ fromIso, toIso, includeMatched = true }) {
     ORDER BY txn_date
   `).all(account.id, fromIso, toIso)
   return rows
-    .filter(t => !NOISE_RE.test((t.description || '').trim()))
+    .filter(t => !isBankNoise(t.description))
     .filter(t => includeMatched || !t.matched_type)
     .map(t => ({
       id: t.id,

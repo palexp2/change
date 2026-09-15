@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300">
+  <rect width="640" height="300" fill="#fff"/>
+  <text x="320" y="56" text-anchor="middle" font-family="system-ui, sans-serif" font-size="32" font-weight="600" fill="#475569">Je ne sais pas</text>
+  <path d="M190 268V190C190 136 248 104 320 104C392 104 450 136 450 190V268Z" fill="#eaf7f8"/>
+  <path d="M190 200V190C190 136 248 104 320 104C392 104 450 136 450 190V200" fill="none" stroke="#7ecdd0" stroke-width="4"/>
+  <path d="M254 200V192C254 158 284 136 320 136M386 200V192C386 158 356 136 320 136" fill="none" stroke="#b9e2e4" stroke-width="3"/>
+  <path d="M190 202V266M450 202V266" fill="none" stroke="#94a3b8" stroke-width="3" stroke-dasharray="9 9"/>
+  <g fill="#fff" stroke="#7ecdd0" stroke-width="4">
+    <rect x="180" y="190" width="20" height="14" rx="7"/>
+    <rect x="440" y="190" width="20" height="14" rx="7"/>
+  </g>
+  <path d="M150 198V268M140 198H176M140 268H176" fill="none" stroke="#94a3b8" stroke-width="3"/>
+  <text x="112" y="246" text-anchor="middle" font-family="system-ui, sans-serif" font-size="42" font-weight="600" fill="#475569">?</text>
+  <path d="M60 268H580" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+</svg>

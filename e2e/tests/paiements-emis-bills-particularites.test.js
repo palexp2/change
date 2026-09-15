@@ -166,9 +166,8 @@ describe('Paiements émis — factures à payer et particularités fournisseur',
     }
     assert.ok(row?.cleared_at, 'cleared_at doit être posé après le clic')
 
-    // Passé → il quitte l'onglet « À passer » ; on le retrouve dans « Tous »
-    // et on le repasse en attente (décocher = échappatoire).
-    await page.click('[data-testid="payments-tab-all"]')
+    // Passé → il reste dans le fil (une seule liste, plus d'onglets) ; on le
+    // repasse en attente (décocher = échappatoire).
     await page.waitForSelector(`[data-testid="payment-cleared-${id}"][aria-pressed="true"]`, { timeout: 20000 })
     await page.click(`[data-testid="payment-cleared-${id}"]`)
     row = null

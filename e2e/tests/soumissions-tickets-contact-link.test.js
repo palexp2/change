@@ -7,11 +7,12 @@ const EMAIL = process.env.ERP_EMAIL || 'pap@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-// Règle « champs référence FK » : le contact_name affiché dans les tableaux
-// Soumissions et Tickets doit être un <Link> vers /contacts/:id, pas du texte brut.
-describe('Soumissions & Tickets — contact_name cliquable vers /contacts/:id', () => {
+// Règle « champs référence FK » : le contact_name affiché dans le tableau
+// Soumissions doit être un <Link> vers /contacts/:id, pas du texte brut.
+// Le volet Billets est parti avec `tickets.contact_id` (migration 040).
+describe('Soumissions — contact_name cliquable vers /contacts/:id', () => {
   let browser, ctx, page, token
-  let contactId, ticketId, soumissionId
+  let contactId, soumissionId
   const stamp = Date.now()
   const lastName = `Lien${stamp}`
   const contactLabel = `E2E ${lastName}` // first_name='E2E' + ' ' + last_name
@@ -49,14 +50,6 @@ describe('Soumissions & Tickets — contact_name cliquable vers /contacts/:id', 
     assert.equal(c.status, 201, `create contact: ${JSON.stringify(c.data)}`)
     contactId = c.data.id
 
-    // Ticket lié au contact
-    const t = await apiFetch('POST', '/api/tickets', {
-      company_id: companyId, contact_id: contactId,
-      title: `E2E Ticket ${lastName}`, type: 'question', status: 'open',
-    })
-    assert.equal(t.status, 201, `create ticket: ${JSON.stringify(t.data)}`)
-    ticketId = t.data.id
-
     // Soumission liée au contact (titre auto-généré, on cherchera par nom de contact)
     const s = await apiFetch('POST', '/api/documents/soumissions', {
       company_id: companyId, contact_id: contactId, items: [],
@@ -67,7 +60,6 @@ describe('Soumissions & Tickets — contact_name cliquable vers /contacts/:id', 
 
   after(async () => {
     if (soumissionId) await apiFetch('DELETE', `/api/documents/soumissions/${soumissionId}`)
-    if (ticketId) await apiFetch('DELETE', `/api/tickets/${ticketId}`)
     if (contactId) await apiFetch('DELETE', `/api/contacts/${contactId}`)
     await browser?.close()
   })
@@ -96,18 +88,4 @@ describe('Soumissions & Tickets — contact_name cliquable vers /contacts/:id', 
     await page.waitForURL(u => u.toString().includes(`/contacts/${contactId}`), { timeout: 8000 })
   })
 
-  test('Tickets : le contact rend un lien /contacts/:id cliquable', async () => {
-    await page.goto(URL + '/tickets', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('h1:has-text("Billets")', { timeout: 10000 })
-
-    await page.fill('input[placeholder="Rechercher..."]', contactLabel)
-
-    const link = page.locator(`a[href$="/contacts/${contactId}"]`).first()
-    await link.waitFor({ state: 'visible', timeout: 10000 })
-    const txt = (await link.textContent() || '').trim()
-    assert.equal(txt, contactLabel, `texte du lien inattendu: "${txt}"`)
-
-    await link.click()
-    await page.waitForURL(u => u.toString().includes(`/contacts/${contactId}`), { timeout: 8000 })
-  })
 })

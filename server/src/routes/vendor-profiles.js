@@ -3,6 +3,7 @@ import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { normalizeVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup } from '../services/vendorProfiles.js'
+import { backfillProfilesFromHistory, learnBankLabelsFromMatches } from '../services/vendorLearning.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -56,11 +57,16 @@ router.get('/', (req, res) => {
   res.json({ data: rows.map(r => enrich(serializeProfile(r), ctx)) })
 })
 
-// Amorçage : profils créés depuis l'historique publié,
-// défauts remplis depuis la dernière transaction par devise. Idempotent.
+// Amorçage : profils créés depuis l'historique publié, défauts remplis depuis la
+// dernière transaction par devise, PUIS les trois canaux d'apprentissage
+// (historique comptabilisé, relevé bancaire) rejoués sur tout le répertoire.
+// Idempotent : une fiche déjà remplie n'est jamais réécrite.
 router.post('/seed', (req, res) => {
   try {
-    res.json(seedVendorProfiles())
+    const seeded = seedVendorProfiles()
+    const history = backfillProfilesFromHistory()
+    const bank = learnBankLabelsFromMatches()
+    res.json({ ...seeded, history, bank })
   } catch (e) {
     res.status(400).json({ error: e.message })
   }

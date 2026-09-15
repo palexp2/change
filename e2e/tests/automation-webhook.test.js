@@ -4,13 +4,13 @@
 //   UI  — la page « Nouveau webhook » affiche le builder (modes Déclaratif/Script,
 //         ajout d'étape, section notification d'échec) et, à la création, génère
 //         et affiche l'URL publique /api/hooks/hook…
-//   E2E — un webhook déclaratif (update tickets WHERE title=param → set description)
+//   E2E — un webhook déclaratif (update projects WHERE name=param → set notes)
 //         est réellement déclenché par un appel HTTP PUBLIC (sans token d'auth) sur
-//         /api/hooks/:token : le ticket est mis à jour, la réponse est templatée,
+//         /api/hooks/:token : le projet est mis à jour, la réponse est templatée,
 //         le 0-match renvoie 500, et les deux runs sont journalisés (success+error).
 //
 // Cleanup (hook after, exécuté même en cas d'échec) :
-//   - DELETE du ticket jetable (créé sans airtable_id → aucun write-back Airtable)
+//   - DELETE du projet jetable (créé sans airtable_id → aucun write-back Airtable)
 //   - DELETE des automations créées (UI + API)
 // Aucune configuration utilisateur existante n'est modifiée.
 
@@ -59,7 +59,7 @@ describe('Webhook automations — builder + moteur entrant', () => {
   let browser, ctx, page, api, hit
   let uiAutomationId = null
   let apiAutomationId = null
-  let ticketId = null
+  let projectId = null
 
   before(async () => {
     browser = await chromium.launch()
@@ -71,7 +71,7 @@ describe('Webhook automations — builder + moteur entrant', () => {
   })
 
   after(async () => {
-    if (ticketId) { try { await api('DELETE', `/tickets/${ticketId}`) } catch { /* best effort */ } }
+    if (projectId) { try { await api('DELETE', `/projects/${projectId}`) } catch { /* best effort */ } }
     if (uiAutomationId) { try { await api('DELETE', `/automations/${uiAutomationId}`) } catch { /* best effort */ } }
     if (apiAutomationId) { try { await api('DELETE', `/automations/${apiAutomationId}`) } catch { /* best effort */ } }
     await browser?.close()
@@ -112,21 +112,23 @@ describe('Webhook automations — builder + moteur entrant', () => {
     const ts = Date.now()
     const title = `E2E-HOOK-${ts}`
 
-    // 1. Ticket jetable (sans airtable_id → aucun write-back Airtable).
-    const tk = await api('POST', '/tickets', { title, description: 'orig' })
-    assert.equal(tk.status, 201, `création ticket: ${JSON.stringify(tk.body)}`)
-    ticketId = tk.body.id
+    // 1. Projet jetable (sans airtable_id → aucun write-back Airtable). Le
+    //    véhicule était un billet jusqu'à la migration 040, qui a droppé son
+    //    titre et sa description.
+    const tk = await api('POST', '/projects', { name: title, notes: 'orig' })
+    assert.equal(tk.status, 201, `création projet: ${JSON.stringify(tk.body)}`)
+    projectId = tk.body.id
 
-    // 2. Webhook déclaratif : update tickets WHERE title=param('title') → description=param('note').
+    // 2. Webhook déclaratif : update projects WHERE name=param('title') → notes=param('note').
     const action_config = {
       mode: 'declarative',
       steps: [{
-        type: 'update', table: 'tickets',
-        match: { field: 'title', param: 'title' },
-        fields: [{ column: 'description', source: 'param', value: 'note' }],
+        type: 'update', table: 'projects',
+        match: { field: 'name', param: 'title' },
+        fields: [{ column: 'notes', source: 'param', value: 'note' }],
       }],
       response_rules: [],
-      default_response: { status: 200, body: { ok: true, updated: '{{steps.0.record.description}}' } },
+      default_response: { status: 200, body: { ok: true, updated: '{{steps.0.record.notes}}' } },
     }
     const created = await api('POST', '/automations', {
       kind: 'webhook', name: `E2E hook api ${ts}`, active: 1,
@@ -140,11 +142,11 @@ describe('Webhook automations — builder + moteur entrant', () => {
     // 3. Appel PUBLIC (aucun auth) → 200 + réponse templatée avec la valeur écrite.
     const ok = await hit(`/hooks/${token}?title=${encodeURIComponent(title)}&note=CHANGED`)
     assert.equal(ok.status, 200, `appel public: ${JSON.stringify(ok.body)}`)
-    assert.equal(ok.body.updated, 'CHANGED', 'la réponse par défaut devrait templater {{steps.0.record.description}}')
+    assert.equal(ok.body.updated, 'CHANGED', 'la réponse par défaut devrait templater {{steps.0.record.notes}}')
 
-    // 4. Le ticket a bien été mis à jour en DB.
-    const after = await api('GET', `/tickets/${ticketId}`)
-    assert.equal(after.body.description, 'CHANGED', 'la description du ticket devrait être mise à jour par le webhook')
+    // 4. Le projet a bien été mis à jour en DB.
+    const after = await api('GET', `/projects/${projectId}`)
+    assert.equal(after.body.notes, 'CHANGED', 'les notes du projet devraient être mises à jour par le webhook')
 
     // 5. 0-match → 500 (échec) sur un titre inexistant.
     const fail = await hit(`/hooks/${token}?title=NOPE-${ts}&note=x`)

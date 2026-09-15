@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from '../services/shippedCost.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
@@ -149,8 +150,10 @@ router.get('/:id', (req, res) => {
   if (!row) return res.status(404).json({ error: 'Envoi introuvable' })
 
   // Articles assignés explicitement à cet envoi (order_items.shipment_id).
+  // unit_cost est ici une projection du coût produit pour la déclaration
+  // douanière, pas un champ stocké/configurable des articles de commande.
   let order_items = db.prepare(`
-    SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.weight_lbs
+    SELECT oi.*, ${pieceUnitCostSql('oi')} AS unit_cost, pr.name_fr as product_name, pr.sku, pr.weight_lbs
     FROM order_items oi
     LEFT JOIN products pr ON oi.product_id = pr.id
     WHERE oi.shipment_id = ?
@@ -164,7 +167,7 @@ router.get('/:id', (req, res) => {
   if (order_items.length === 0 && row.order_id) {
     items_fallback = true
     order_items = db.prepare(`
-      SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.weight_lbs
+      SELECT oi.*, ${pieceUnitCostSql('oi')} AS unit_cost, pr.name_fr as product_name, pr.sku, pr.weight_lbs
       FROM order_items oi
       LEFT JOIN products pr ON oi.product_id = pr.id
       WHERE oi.order_id = ?
@@ -263,7 +266,7 @@ router.patch('/:id', (req, res) => {
   // Freeze unit cost on items when shipment is marked as Envoyé
   if (status === 'Envoyé') {
     db.prepare(`
-      UPDATE order_items SET shipped_unit_cost = unit_cost
+      UPDATE order_items SET shipped_unit_cost = ${pieceUnitCostSql('order_items')}
       WHERE shipment_id = ? AND shipped_unit_cost IS NULL
     `).run(req.params.id)
 
@@ -317,7 +320,7 @@ function getTrackingLink(carrier, trackingNumber) {
 
 const TRANSLATIONS = {
   fr: {
-    subject:        (orderNum) => `Votre commande${orderNum ? ` #${orderNum}` : ''} a été expédiée`,
+    subject:        'Votre commande a été expédiée',
     greeting:       'Bonjour',
     message:        'Votre commande a été expédiée et est en route vers :',
     warning:        'Veuillez vous assurer que quelqu\'un est disponible pour réceptionner la livraison.',
@@ -327,7 +330,7 @@ const TRANSLATIONS = {
     help:           'Des questions ? Répondez directement à ce courriel ou appelez-nous au 888-267-4742',
   },
   en: {
-    subject:        (orderNum) => `Your order${orderNum ? ` #${orderNum}` : ''} has been shipped`,
+    subject:        'Your order has been shipped',
     greeting:       'Hello',
     message:        'Your order has been shipped and is on its way to:',
     warning:        'Please make sure someone is available to receive the delivery.',
@@ -342,7 +345,7 @@ function buildTrackingHtml(t, recipientName, addressLine1, carrier, trackingNumb
   const link = trackingLink || '#'
   return `<!DOCTYPE html>
 <html>
-  <head><meta charset="utf-8"><title>${t.subject('')}</title></head>
+  <head><meta charset="utf-8"><title>${t.subject}</title></head>
   <body style="margin: 0; padding: 0; background-color: #f4f4f4; font-family: Arial, sans-serif;">
     <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #f4f4f4;">
       <tr><td align="center">
@@ -417,7 +420,7 @@ function loadTrackingEmailContext(shipmentId) {
     t,
     recipientName: row.contact_first_name || '',
     trackingLink: getTrackingLink(row.carrier, row.tracking_number),
-    subject: t.subject(row.order_number),
+    subject: t.subject,
   }
 }
 

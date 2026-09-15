@@ -38,7 +38,7 @@ export const FROZEN_AT_COLUMN = 'shipped_cost_frozen_at'
 //      FIFO pour une pièce achetée. C'est la valeur qu'affiche la fiche Pièce,
 //      et celle sur laquelle reposent les coûts déjà gelés ;
 //   2. à défaut « Coût unitaire (FIFO) » (products.unit_cost) ;
-//   3. en dernier recours seulement, le coût porté par la ligne de commande —
+//   3. en dernier recours seulement, le coût déjà figé à l’envoi —
 //      pour ne pas valoriser à 0 une pièce sans coût de référence.
 function num(v) {
   const n = Number(v)
@@ -51,7 +51,7 @@ function pieceUnitCost(item) {
     const fromPiece = num(p?.cout_unitaire) || num(p?.unit_cost)
     if (fromPiece) return fromPiece
   }
-  return num(item.shipped_unit_cost) || num(item.unit_cost)
+  return num(item.shipped_unit_cost)
 }
 
 /**
@@ -60,7 +60,7 @@ function pieceUnitCost(item) {
  */
 export function computeShippedTotalCost(itemId) {
   const item = db.prepare(
-    'SELECT id, qty, unit_cost, shipped_unit_cost, product_id FROM order_items WHERE id = ?'
+    'SELECT id, qty, shipped_unit_cost, product_id FROM order_items WHERE id = ?'
   ).get(itemId)
   if (!item) return null
 
@@ -204,7 +204,6 @@ export function pieceUnitCostSql(alias = 'oi') {
     ${fromPiece('cout_unitaire')},
     ${fromPiece('unit_cost')},
     NULLIF(${alias}.shipped_unit_cost, 0),
-    NULLIF(${alias}.unit_cost, 0),
     0)`
 }
 

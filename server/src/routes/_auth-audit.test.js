@@ -65,6 +65,7 @@ const MOUNTS = {
   'scrapers.js':                '/api/scrapers',
   'fx.js':                      '/api/fx',
   'prepaid.js':                 '/api/prepaid',
+  'deferred-revenue.js':        '/api/deferred-revenue',
   'vendor-subscriptions.js':    '/api/vendor-subscriptions',
   'vendor-profiles.js':         '/api/vendor-profiles',
   'lt-debts.js':                '/api/lt-debts',

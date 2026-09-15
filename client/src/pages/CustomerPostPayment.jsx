@@ -1,11 +1,19 @@
-import { useEffect, useState, useCallback, useRef, useMemo, createContext, useContext } from 'react'
+import { useEffect, useState, useCallback, useRef, useMemo, createContext, useContext, Fragment } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import { useSearchParams, useParams } from 'react-router-dom'
 import Spinner from '../components/Spinner.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
 import { fmtMoney } from '../utils/formatters.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
-import { buildForm, customAnswered } from '../lib/discoveryFormSchema.js'
+import { buildForm, controllerDistanceValue, customAnswered, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
 import GreenhouseIllustration from '../components/GreenhouseIllustration.jsx'
+import SideVentCountChoice from '../components/SideVentCountChoice.jsx'
+import IrrigationValveChoice from '../components/IrrigationValveChoice.jsx'
+import EndFanChoice from '../components/EndFanChoice.jsx'
+import LouverCountChoice from '../components/LouverCountChoice.jsx'
+import LouverFanChoice from '../components/LouverFanChoice.jsx'
+import FurnaceCountChoice from '../components/FurnaceCountChoice.jsx'
+import LouverTypeChoice, { LOUVER_COMBOS, louverComboValue, louverSummary } from '../components/LouverTypeChoice.jsx'
 import { focusForSection, focusLabel } from '../lib/greenhouseFocus.js'
 
 // Public page (no auth). Deux entrées :
@@ -21,6 +29,23 @@ import { focusForSection, focusLabel } from '../lib/greenhouseFocus.js'
 const inputCls = 'w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500'
 const btnPrimary = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50'
 const btnGhost = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg'
+
+// Toutes les questions sont obligatoires : aucune page ne laisse passer le
+// bouton Suivant sans réponse. Quand le client peut légitimement ignorer la
+// réponse, la question offre une sortie explicite — un choix « Je ne sais pas »
+// dans les listes, cette case sous les champs libres — plutôt qu'un champ
+// qu'on saute en silence.
+const DONT_KNOW = 'Je ne sais pas'
+const filled = (v) => v != null && String(v).trim() !== ''
+
+// Illustration de chaque accès réseau livré par le code. Un choix ajouté dans
+// l'éditeur retombe sur la scène générique.
+const NETWORK_FOCUS = {
+  ethernet: 'network_ethernet',
+  wifi_250: 'network_wifi',
+  wifi_350_coax: 'network_coax',
+  mobile_controller: 'network_mobile_choice',
+}
 
 // value = code à 2 lettres (sauvegardé), label = code + nom complet pour la recherche
 const PROVINCES = [
@@ -139,12 +164,16 @@ export default function CustomerPostPayment() {
     <FormSchemaContext.Provider value={form}>
       <div className="min-h-screen bg-slate-50 py-10 px-4">
         <div className="max-w-2xl mx-auto space-y-5">
-          <Header data={data} isDiscoveryMode={isDiscoveryMode} />
+          <img src="/erp/orisha-logo.png" alt="Orisha" className="h-9 mx-auto" />
+          {/* En mode découverte, le titre n'est plus répété au-dessus de chaque
+              question : il devient la première page du questionnaire (cf. `cover`). */}
+          {(!isDiscoveryMode || submitted) && <Header data={data} isDiscoveryMode={isDiscoveryMode} />}
           {saveError && <ErrorBanner>{saveError}</ErrorBanner>}
           {submitted ? (
             <SubmittedSummary resp={resp} extrasResult={extrasResult} setExtrasResult={setExtrasResult} sessionId={identifier} permission={permission} isDiscoveryMode={isDiscoveryMode} hasMobileController={hasMobileController} />
           ) : (
             <Wizard
+              cover={isDiscoveryMode ? <Header data={data} isDiscoveryMode /> : null}
               resp={resp}
               flushSave={flushSave}
               queueSave={queueSave}
@@ -157,6 +186,11 @@ export default function CustomerPostPayment() {
               onSubmitted={() => setResp(r => ({ ...r, status: 'submitted', submitted_at: new Date().toISOString() }))}
             />
           )}
+          {/* Sortie de secours, visible à chaque étape : le client bloqué sur une
+              question appelle plutôt que d'abandonner le formulaire. */}
+          <p className="text-center text-xs text-slate-500">
+            Besoin d'aide ? <a href="tel:+18882674247" className="font-medium text-brand-700 hover:text-brand-800">1-888-267-4247</a>
+          </p>
         </div>
       </div>
     </FormSchemaContext.Provider>
@@ -170,7 +204,6 @@ function Header({ data, isDiscoveryMode }) {
     return (
       <div className="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
         <h1 className="text-2xl font-bold text-slate-900">{form.t('header.title')}</h1>
-        <p className="text-slate-600 mt-1">{form.t('header.intro')}</p>
       </div>
     )
   }
@@ -202,7 +235,7 @@ function Header({ data, isDiscoveryMode }) {
 
 // ─── Wizard ───────────────────────────────────────────────────────────────
 
-function Wizard({ resp, queueSave, flushSave, permission, hasMobileController, lockedCount, baseUrl, submitting, setSubmitting, onSubmitted }) {
+function Wizard({ cover, resp, queueSave, flushSave, permission, hasMobileController, lockedCount, baseUrl, submitting, setSubmitting, onSubmitted }) {
   const [error, setError] = useState(null)
   const [outdated, setOutdated] = useState(false)
   const [activeId, setActiveId] = useState(null)
@@ -211,12 +244,16 @@ function Wizard({ resp, queueSave, flushSave, permission, hasMobileController, l
   const resumed = useRef(false)
   const form = useFormSchema()
   const pages = buildQuestionPages({ resp, queueSave, permission, hasMobileController, lockedCount, baseUrl, form })
+  // Page de garde : le titre du formulaire, seul, sans question. Elle ne compte
+  // pas dans la numérotation des étapes.
+  if (cover) pages.unshift({ id: 'cover', title: null, content: cover, complete: true, cover: true })
   if (resp.is_new_site) pages.push({ id: 'submit', title: null, content: null, complete: true })
+  const coverOffset = pages[0]?.cover ? 1 : 0
   const index = Math.max(0, pages.findIndex(page => page.id === activeId))
   const current = pages[index]
   const last = current.id === 'submit'
   const firstIncomplete = pages.find(page => !page.complete)
-  const ready = !firstIncomplete && canSubmit(resp, hasMobileController, form)
+  const ready = !firstIncomplete && canSubmit(resp, hasMobileController, form, permission)
 
   // Formulaire déjà entamé : on reprend à la première question sans réponse
   // plutôt qu'au tout début. C'est aussi le chemin de sortie quand une question
@@ -274,7 +311,7 @@ function Wizard({ resp, queueSave, flushSave, permission, hasMobileController, l
     }}>
       <fieldset disabled={submitting || moving} className="space-y-5 min-w-0">
         <div key={current.id} ref={pageRef} tabIndex={-1} className="outline-none scroll-mt-4" data-question-page={current.id}>
-          <p className="text-xs text-slate-500 mb-3" aria-live="polite">Étape {index + 1} sur {pages.length}</p>
+          {!current.cover && <p className="text-xs text-slate-500 mb-3" aria-live="polite">Étape {index + 1 - coverOffset} sur {pages.length - coverOffset}</p>}
           {last ? <Card title="Prêt à envoyer ?">
             <p className="text-sm text-slate-600">{ready ? 'Vos réponses sont enregistrées.' : form.t('submit.incomplete')}</p>
             {firstIncomplete && <button type="button" className={btnGhost} onClick={() => navigate(firstIncomplete)}>Compléter</button>}
@@ -286,12 +323,11 @@ function Wizard({ resp, queueSave, flushSave, permission, hasMobileController, l
         </ErrorBanner>}
         {error && <ErrorBanner>{error}</ErrorBanner>}
         <div className="flex flex-wrap justify-between items-center gap-3">
-          <button type="button" disabled={index === 0} onClick={() => navigate(pages[index - 1])} className={btnGhost + ' disabled:opacity-50'}>Précédent</button>
-          <button type="submit" disabled={last ? !ready : !current.complete} className={btnPrimary}>
+          {index > 0 && <button type="button" onClick={() => navigate(pages[index - 1])} className={btnGhost + ' disabled:opacity-50'}>Précédent</button>}
+          <button type="submit" disabled={last ? !ready : !current.complete} className={btnPrimary + ' ml-auto'}>
             {submitting ? 'Envoi…' : moving ? 'Enregistrement…' : last ? form.t('submit.label') : 'Suivant'}
           </button>
         </div>
-        {!last && !current.complete && <p className="text-xs text-slate-500">{form.t('submit.incomplete')}</p>}
       </fieldset>
     </form>
   )
@@ -311,7 +347,7 @@ function visibleCustomSections(resp, hasMobileController) {
   return s
 }
 
-function canSubmit(resp, hasMobileController, form) {
+function canSubmit(resp, hasMobileController, form, permission) {
   if (!resp.is_new_site) return false
   if (resp.is_new_site === 'add_to_existing' && !hasMobileController && typeof resp.within_central_controller_range !== 'boolean') return false
   if (resp.is_new_site === 'new') {
@@ -338,10 +374,15 @@ function canSubmit(resp, hasMobileController, form) {
     }
   }
   for (const g of (resp.greenhouses || [])) {
+    // Serre Helper : ni louvres ni humidité ne lui sont demandées (côtés
+    // ouvrants seulement), donc rien à exiger de ce côté.
+    const helperOnly = sideVentsOnly(g.permission_level || resp.permission_level || permission)
     if (g.has_side_vents === true && !form.isHidden('greenhouse.length') && g.length_range === 'over_200' && (!Number.isFinite(Number(g.length)) || Number(g.length) <= 200)) return false
-    if (typeof g.has_louvers !== 'boolean') return false
-    if (g.has_louvers && (!(g.louvers?.length) || g.louvers.some(l => !['110', '24', '12', 'other'].includes(l.voltage) || (l.voltage === 'other' && !l.voltage_other?.trim()) || !['spring_loaded', 'open_close', 'other'].includes(l.control_type) || (l.voltage === '110' && l.control_type === 'open_close') || typeof l.has_fan !== 'boolean'))) return false
-    if (resp.form_options?.humidity_retention && (typeof g.humidity_valve !== 'boolean' || typeof g.humidity_haf !== 'boolean' || (g.humidity_haf && (!Number.isInteger(Number(g.humidity_haf_count)) || Number(g.humidity_haf_count) < 1 || Number(g.humidity_haf_count) > 100)))) return false
+    if (!helperOnly && typeof g.has_louvers !== 'boolean') return false
+    // « Autre » ne porte pas de voltage : seule la commande est exigée.
+    if (!helperOnly && g.has_louvers && (!(g.louvers?.length) || g.louvers.some(l => !['spring_loaded', 'open_close', 'other'].includes(l.control_type) || typeof l.has_fan !== 'boolean'
+      || (l.control_type !== 'other' && (!['110', '24', '12', 'other'].includes(l.voltage) || (l.voltage === 'other' && !l.voltage_other?.trim()) || (l.voltage === '110' && l.control_type === 'open_close')))))) return false
+    if (!helperOnly && resp.form_options?.humidity_retention && (typeof g.humidity_valve !== 'boolean' || typeof g.humidity_haf !== 'boolean' || (g.humidity_haf && (!Number.isInteger(Number(g.humidity_haf_count)) || Number(g.humidity_haf_count) < 1 || Number(g.humidity_haf_count) > 100)))) return false
     const ghCtx = { record: g, custom: g.custom, root: resp, rootCustom: answers }
     const perCard = [...form.custom('greenhouse', ghCtx)]
     if ((g.permission_level || resp.permission_level) === 'chief_grower') perCard.push(...form.custom('greenhouse_chief', ghCtx))
@@ -349,81 +390,7 @@ function canSubmit(resp, hasMobileController, form) {
       if (q.required && !customAnswered(q, (g.custom || {})[q.id])) return false
     }
   }
-  // Si des blocs de 4 valves supplémentaires sont requis, soit ils sont payés,
-  // soit le client doit baisser à ≤ 4 zones. Sinon on bloque la soumission.
-  const blocksNeeded = Number(resp.valve_blocks_needed) || 0
-  if (blocksNeeded > 0 && !resp.valve_blocks_paid) return false
   return true
-}
-
-function Step_ValveBlocksPayment({ resp, baseUrl }) {
-  const blocksNeeded = Number(resp.valve_blocks_needed) || 0
-  const paid = !!resp.valve_blocks_paid
-  const [loading, setLoading] = useState(false)
-  const [err, setErr] = useState(null)
-  if (blocksNeeded <= 0 && !paid) return null
-
-  async function handlePay() {
-    setErr(null); setLoading(true)
-    try {
-      const r = await fetch(`${baseUrl}/valve-blocks-checkout`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pricing: 'one_time' }),
-      })
-      const j = await r.json().catch(() => ({}))
-      if (!r.ok) throw new Error(j.error || 'Erreur de paiement')
-      if (j.checkout_url) {
-        window.location.href = j.checkout_url
-        return
-      }
-      throw new Error('URL de paiement manquante')
-    } catch (e) {
-      setErr(e.message)
-      setLoading(false)
-    }
-  }
-
-  if (paid) {
-    return (
-      <Card title="Blocs de valves supplémentaires">
-        <div className="rounded-lg bg-green-50 border border-green-200 p-3 text-sm text-green-800">
-          ✓ Paiement reçu — vos {blocksNeeded} bloc{blocksNeeded > 1 ? 's' : ''} de 4 valves supplémentaire{blocksNeeded > 1 ? 's' : ''} {blocksNeeded > 1 ? 'ont' : 'a'} été {blocksNeeded > 1 ? 'achetés' : 'acheté'}.
-        </div>
-      </Card>
-    )
-  }
-
-  const unitPriceCad = 400
-  const totalCad = unitPriceCad * blocksNeeded
-  return (
-    <Card title="Blocs de valves supplémentaires">
-      <p className="text-sm text-slate-700">
-        Vous avez configuré plus de 4 zones d'irrigation dans au moins une serre. Pour soumettre, vous devez payer <strong>{blocksNeeded} bloc{blocksNeeded > 1 ? 's' : ''} de 4 valves supplémentaire{blocksNeeded > 1 ? 's' : ''}</strong>, ou baisser à 4 zones par serre.
-      </p>
-
-      <div className="rounded-lg border border-slate-200 p-4 space-y-2">
-        <div className="flex items-baseline justify-between">
-          <div>
-            <div className="font-medium text-slate-900">Achat unique</div>
-            <div className="text-xs text-slate-500">{blocksNeeded} × 400 $ CAD</div>
-          </div>
-          <div className="text-lg font-semibold text-slate-900">{totalCad} $ CAD</div>
-        </div>
-        <button type="button" onClick={handlePay} disabled={loading} className={btnPrimary + ' w-full'}>
-          {loading ? 'Redirection…' : `Payer ${totalCad} $ par Stripe`}
-        </button>
-        {err && <div className="text-sm text-red-700">{err}</div>}
-      </div>
-
-      <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-sm text-slate-700">
-        <div className="font-medium text-slate-800">Préférez l'option mensuelle (25 $/mois par bloc) ?</div>
-        <p className="mt-1 text-xs text-slate-600">
-          Cette option s'ajoute à votre abonnement existant — contactez votre conseiller @orisha pour qu'il l'active de son côté.
-        </p>
-      </div>
-    </Card>
-  )
 }
 
 // ─── Steps ────────────────────────────────────────────────────────────────
@@ -444,7 +411,7 @@ function Ask({ questionId, image, focus, height = 96, pipeType, children }) {
   return (
     <div className="flex flex-col sm:flex-row items-start gap-3">
       <div className="flex-1 min-w-0 w-full space-y-2">{children}</div>
-      <GreenhouseIllustration image={image || form.image(questionId)} focus={focus} pipeType={pipeType} height={height} label={focusLabel(focus)} className="self-center sm:self-start" />
+      <GreenhouseIllustration image={image || form.image(questionId)} focus={focus} variant={focus === 'furnaces' ? 'furnace-choice' : undefined} pipeType={pipeType} height={height} label={focusLabel(focus)} className="self-center sm:self-start" />
     </div>
   )
 }
@@ -453,6 +420,8 @@ function Ask({ questionId, image, focus, height = 96, pipeType, children }) {
 // conditionnelles et les questions ajoutées dans l'éditeur restent synchronisées.
 function buildQuestionPages({ resp, queueSave, permission, hasMobileController, lockedCount, baseUrl, form }) {
   const pages = []
+  // « Même adresse » montre l'illustration de la question ; « différente », le même camion devant une maison.
+  const sameAddressImage = (form.image('shipping.prompt_new') !== 'none' && form.image('shipping.prompt_new')) || 'shipping.webp'
   const add = (id, title, content, complete = true) => pages.push({ id, title, content, complete: !!complete })
   const rootCustom = (section) => {
     for (const q of form.custom(section, { record: resp, custom: resp.custom_answers })) {
@@ -467,18 +436,25 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
     </Ask>, value.line1?.trim() && value.province)
   }
   rootCustom('intro')
-  add('order_type', form.t('order_type.title'), <Ask questionId="order_type.prompt" focus="site" height={116}>
-    <p className="text-sm text-slate-600">{form.t('order_type.prompt')}</p>
-    <div className="space-y-2">{form.opts('order_type.options').map(o => <RadioOption key={o.value} checked={resp.is_new_site === o.value} onChange={() => queueSave({ is_new_site: o.value })} label={o.label} help={o.help} />)}</div>
-  </Ask>, resp.is_new_site)
+  // Deux scènes cliquables : un nouveau site (une serre) ou un site qui a déjà
+  // son contrôleur central (deux serres). L'image porte la réponse.
+  add('order_type', form.t('order_type.title'), <div className="space-y-2">
+    <p className="text-sm text-slate-600">{form.t('order_type.prompt')}<Req /></p>
+    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {form.opts('order_type.options').map(o => {
+        const focus = o.value === 'add_to_existing' ? 'site_existing' : 'site_new'
+        return <ImageOption key={o.value} checked={resp.is_new_site === o.value} onChange={() => queueSave({ is_new_site: o.value })} label={o.label} help={o.help} focus={focus} image={form.image(o.value === 'add_to_existing' ? 'order_type.image_existing' : 'order_type.image_new')} />
+      })}
+    </div>
+  </div>, resp.is_new_site)
   // Un contrôleur central internet mobile déjà à la commande en fournit un
   // nouveau : la distance au contrôleur existant ne change plus rien.
   if (resp.is_new_site === 'add_to_existing' && !hasMobileController) {
+    const distance = controllerDistanceValue(resp)
     add('controller_distance', form.t('controller_distance.title'), <div className="space-y-2">
-      <p className="text-sm text-slate-600">{form.t('controller_distance.prompt')}</p>
-      <RadioOption checked={resp.within_central_controller_range === true} onChange={() => queueSave({ within_central_controller_range: true })} label="Oui" />
-      <RadioOption checked={resp.within_central_controller_range === false} onChange={() => queueSave({ within_central_controller_range: false })} label="Non" />
-      {typeof resp.within_central_controller_range === 'boolean' && <p className="text-sm text-slate-600">{form.t(resp.within_central_controller_range ? 'controller_distance.near' : 'controller_distance.far')}</p>}
+      <p className="text-sm text-slate-600">{form.t('controller_distance.prompt')}<Req /></p>
+      {form.opts('controller_distance.options').map(o => <RadioOption key={o.value} checked={distance === o.value} onChange={() => queueSave({ central_controller_distance: o.value, within_central_controller_range: o.value !== 'no' })} label={o.label} help={o.help} />)}
+      {resp.within_central_controller_range === true && <p className="text-sm text-slate-600">{form.t('controller_distance.near')}</p>}
     </div>, typeof resp.within_central_controller_range === 'boolean')
   }
   rootCustom('order_type')
@@ -487,26 +463,38 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
   if (resp.is_new_site === 'new') {
     address('farm_address', form.t('farm.title'), 'farm.title')
     rootCustom('farm_address')
-    add('shipping_same', form.t('shipping.title'), <Ask questionId="shipping.prompt_new" focus="shipping" height={110}>
-      <p className="text-sm text-slate-600">{form.t('shipping.prompt_new')}</p>
-      <RadioOption checked={resp.shipping_same_as_farm === true} onChange={() => queueSave({ shipping_same_as_farm: true })} label={form.t('shipping.same_yes')} />
-      <RadioOption checked={resp.shipping_same_as_farm === false} onChange={() => queueSave({ shipping_same_as_farm: false })} label={form.t('shipping.same_no')} />
-    </Ask>, typeof resp.shipping_same_as_farm === 'boolean')
+    add('shipping_same', form.t('shipping.title'), <div className="space-y-2">
+      <p className="text-sm text-slate-600">{form.t('shipping.prompt_new')}<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <ImageOption checked={resp.shipping_same_as_farm === true} onChange={() => queueSave({ shipping_same_as_farm: true })} label={form.t('shipping.same_yes')} image={sameAddressImage} />
+        <ImageOption checked={resp.shipping_same_as_farm === false} onChange={() => queueSave({ shipping_same_as_farm: false })} label={form.t('shipping.same_no')} image="shipping_home.webp" />
+      </div>
+    </div>, typeof resp.shipping_same_as_farm === 'boolean')
   }
   if (resp.is_new_site !== 'new' || resp.shipping_same_as_farm === false) address('shipping_address', form.t('shipping.title'), 'shipping.prompt_existing')
   rootCustom('shipping_address')
   if (resp.is_new_site === 'new' && !hasMobileController) {
-    add('network', form.t('network.title'), <Ask questionId="network.prompt" focus="network" height={116}>
-      <p className="text-sm text-slate-600">{form.t('network.prompt')}</p>
-      <div className="space-y-2">{form.opts('network.options').map(o => <RadioOption key={o.value} checked={resp.network_access === o.value} onChange={() => queueSave({ network_access: o.value })} label={o.label} help={o.help} />)}</div>
-    </Ask>, resp.network_access)
+    // Quatre scènes cliquables : chaque façon de rejoindre la serre porte sa réponse.
+    add('network', form.t('network.title'), <div className="space-y-2">
+      <p className="text-sm text-slate-600">{form.t('network.prompt')}<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {form.opts('network.options').map(o => <ImageOption key={o.value} checked={resp.network_access === o.value} onChange={() => queueSave({ network_access: o.value })} label={o.label} help={o.help} focus={NETWORK_FOCUS[o.value] || 'network'} image={form.image(`network.image_${o.value}`)} />)}
+      </div>
+    </div>, resp.network_access)
     if (!form.isHidden('network.wifi') && ['wifi_250', 'wifi_350_coax'].includes(resp.network_access)) {
-      for (const field of ['wifi_ssid', 'wifi_password']) add(field, form.t('network.title'), <Ask questionId="network.wifi" focus="network">
-        <p className="text-sm text-slate-600">{form.t('network.wifi_prompt')}</p>
-        <Field label={form.t(`network.${field === 'wifi_ssid' ? 'wifi_ssid_label' : 'wifi_password_label'}`)}>
-          <input aria-label={form.t(`network.${field === 'wifi_ssid' ? 'wifi_ssid_label' : 'wifi_password_label'}`)} type={field === 'wifi_password' ? 'password' : 'text'} autoComplete={field === 'wifi_password' ? 'new-password' : undefined} className={inputCls} value={resp[field] || ''} onChange={e => queueSave({ [field]: e.target.value })} />
-        </Field>
-      </Ask>)
+      for (const field of ['wifi_ssid', 'wifi_password']) {
+        const label = form.t(`network.${field === 'wifi_ssid' ? 'wifi_ssid_label' : 'wifi_password_label'}`)
+        const unknown = resp[field] === DONT_KNOW
+        add(field, form.t('network.title'), <Ask questionId="network.wifi" focus="network">
+          <p className="text-sm text-slate-600">{form.t('network.wifi_prompt')}</p>
+          <Field label={label} required>
+            {field === 'wifi_password' && !unknown
+              ? <PasswordInput label={label} value={resp[field] || ''} onChange={v => queueSave({ [field]: v })} />
+              : <input aria-label={label} type="text" autoComplete={field === 'wifi_password' ? 'new-password' : undefined} disabled={unknown} className={inputCls} value={unknown ? '' : (resp[field] || '')} onChange={e => queueSave({ [field]: e.target.value })} />}
+            <DontKnow checked={unknown} onChange={on => queueSave({ [field]: on ? DONT_KNOW : '' })} />
+          </Field>
+        </Ask>, filled(resp[field]))
+      }
     }
     rootCustom('network')
   }
@@ -515,7 +503,7 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
   }
   const greenhouses = resp.greenhouses || []
   if (!lockedCount) add('greenhouse_count', form.t('greenhouses.count_title'), <Ask questionId="greenhouses.count_label" focus="count" height={116}>
-    <Field label={form.t('greenhouses.count_label')}><input aria-label={form.t('greenhouses.count_label')} type="number" min={1} max={50} className={inputCls} value={resp.num_greenhouses || ''} onChange={e => {
+    <Field label={form.t('greenhouses.count_label')} required><input aria-label={form.t('greenhouses.count_label')} type="number" min={1} max={50} className={inputCls} value={resp.num_greenhouses || ''} onChange={e => {
       const count = Math.max(0, Math.min(50, parseInt(e.target.value) || 0))
       queueSave({ num_greenhouses: count, greenhouses: Array.from({ length: count }, (_, i) => greenhouses[i] || {}) })
     }} /></Field>
@@ -524,115 +512,287 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
     const onChange = patch => queueSave({ greenhouses: greenhouses.map((item, i) => i === idx ? { ...item, ...patch } : item) })
     addGreenhousePages({ add, idx, g, onChange, permission, root: resp, form })
   })
-  if (Number(resp.valve_blocks_needed) > 0 || resp.valve_blocks_paid) add('valve_payment', null, <Step_ValveBlocksPayment resp={resp} baseUrl={baseUrl} />, resp.valve_blocks_paid)
   rootCustom('end')
   return pages
 }
 
 const FURNACE_WIRE_PRESETS = ['25', '50', '75', '100']
 
+// Les deux profils de tuyau de côté sont proposés en photo, pas en liste.
+const SIDE_PIPE_IMAGES = { aluminum_C: 'pipe-c.png', steel_O: 'pipe-o.png' }
+
+// Le diamètre se choisit en image : la mesure standard du tuyau montré, une
+// autre mesure à préciser, ou « je ne sais pas ».
+const DIAMETER_PRESET_IMAGES = { '2"': 'diameter-2in.svg', '1 5/16"': 'diameter-1-5-16.svg' }
+// Le choix reste stocké à la mesure maximale ; le libellé et la variante
+// d’illustration montrent la plage acceptée.
+const DIAMETER_PRESET_LABELS = { '1 5/16"': 'Entre 1/2 po et 1 5/16 po' }
+const DIAMETER_IMAGE_IDS = { standard: 'greenhouse.image_diameter_standard', other: 'greenhouse.image_diameter_other', unknown: 'greenhouse.image_diameter_unknown' }
+
+// Les deux longueurs possibles sont proposées en scène cliquable.
+const LENGTH_RANGE_FOCUS = { up_to_200: 'length_up_to_200', over_200: 'length_over_200' }
+const LENGTH_RANGE_IMAGE_IDS = { up_to_200: 'greenhouse.image_length_up_to_200', over_200: 'greenhouse.image_length_over_200' }
+
+// Moteurs des côtés : la réponse se choisit sur l'image — le moteur déjà monté
+// sur le tuyau, ou la place encore vide.
+const MOTORS_FOCUS = { yes: 'motors_existing', no: 'motors_needed' }
+const MOTORS_IMAGE_IDS = { yes: 'greenhouse.image_motors_existing', no: 'greenhouse.image_motors_needed' }
+
+// Hauteur du côté ouvrant : le film relevé se montre, court ou haut.
+const VENT_HEIGHT_FOCUS = { up_to_6: 'vent_height_up_to_6', over_6: 'vent_height_over_6' }
+const VENT_HEIGHT_IMAGE_IDS = { up_to_6: 'greenhouse.image_vent_height_up_to_6', over_6: 'greenhouse.image_vent_height_over_6', unknown: 'greenhouse.image_vent_height_unknown' }
+
 function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   const cardPermission = g.permission_level || permission
-  const title = `Serre #${idx + 1}${g.permission_level === 'chief_grower' ? ' (Chef de culture)' : g.permission_level === 'helper' ? ' (Helper)' : ''}`
+  const helperOnly = sideVentsOnly(cardPermission)
+  const title = `Serre #${idx + 1}`
   const page = (id, content, complete = true, suffix = '') => add(`greenhouse:${idx}:${id}`, suffix ? `${title} · ${suffix}` : title, content, complete)
-  const question = (id, label, control, { focus = 'overview', questionId = id, complete = true, suffix = '', help } = {}) => page(id,
-    <Ask questionId={questionId} focus={focus} pipeType={g.side_pipe_type}>
-      <Field label={label}>{control}{help && <div className="text-xs text-slate-500 mt-1">{help}</div>}</Field>
-    </Ask>, complete, suffix)
-  const input = (id, label, value, change, options = {}) => question(id, label,
-    <input aria-label={label} className={inputCls} value={value ?? ''} onChange={e => change(e.target.value)} type={options.type || 'text'} min={options.min} max={options.max} step={options.step} />, options)
+  // Toute question retient le bouton Suivant (d'où l'astérisque rouge) : par
+  // défaut une réponse saisie suffit, `complete` en options dit mieux quand la
+  // réponse doit remplir une condition (nombre au-delà d'un seuil, liste non
+  // vide…). `dontKnow` ajoute la case « Je ne sais pas » sous un champ libre.
+  const question = (id, label, control, options = {}) => {
+    const { focus = 'overview', questionId = id, complete, suffix = '', help } = options
+    return page(id,
+      <Ask questionId={questionId} focus={focus} pipeType={g.side_pipe_type}>
+        <Field label={label} required>{control}{help && <div className="text-xs text-slate-500 mt-1">{help}</div>}</Field>
+      </Ask>, complete, suffix)
+  }
+  const input = (id, label, value, change, options = {}) => {
+    const unknown = value === DONT_KNOW
+    return question(id, label, <>
+      <input aria-label={label} className={inputCls} disabled={unknown} value={unknown ? '' : (value ?? '')} onChange={e => change(e.target.value)} type={options.type || 'text'} min={options.min} max={options.max} step={options.step} />
+      {options.dontKnow && <DontKnow checked={unknown} onChange={on => change(on ? DONT_KNOW : '')} />}
+    </>, { complete: filled(value), ...options })
+  }
   const select = (id, label, value, change, choices, options = {}) => question(id, label,
-    <select aria-label={label} className={inputCls} value={value ?? ''} onChange={e => change(e.target.value)}><option value="">—</option>{choices.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>, options)
+    <select aria-label={label} className={inputCls} value={value ?? ''} onChange={e => change(e.target.value)}><option value="">—</option>{choices.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>, { complete: filled(value), ...options })
   const boolean = (id, label, value, change, options = {}) => select(id, label, value == null ? '' : value ? 'yes' : 'no', v => change(v === '' ? null : v === 'yes'), [{ value: 'yes', label: 'Oui' }, { value: 'no', label: 'Non' }], options)
-  const diameter = (id, label, value, change, preset, focus) => {
+  const diameter = (id, label, value, change, preset) => {
     const other = value?.startsWith('Autre:')
-    select(id, label, other ? '__other' : value, v => change(v === '__other' ? 'Autre: ' : v), [{ value: preset, label: preset }, { value: '__other', label: 'Autre (préciser)' }], { focus, questionId: focus === 'side_pipe' ? 'greenhouse.side_pipe_type_label' : 'greenhouse.guide_pipes_label' })
-    if (other) input(`${id}:other`, form.t('greenhouse.diameter_other_label'), value.replace('Autre:', '').trim(), v => change(`Autre: ${v}`), { focus })
+    const exactDiameter = other ? value.slice('Autre:'.length).trimStart() : ''
+    const selected = other ? '__other' : value
+    const choices = [
+      { value: preset, label: DIAMETER_PRESET_LABELS[preset] || preset, focus: 'diameter_standard', image: form.image(DIAMETER_IMAGE_IDS.standard) || DIAMETER_PRESET_IMAGES[preset], variant: preset === '1 5/16"' ? 'diameter-range' : undefined },
+      { value: '__other', label: preset === '1 5/16"' ? 'Plus de 1 5/16 po' : 'Autre (préciser)', focus: 'diameter_other', image: form.image(DIAMETER_IMAGE_IDS.other), variant: preset === '1 5/16"' ? 'diameter-over-1-5-16' : undefined },
+      { value: DONT_KNOW, label: DONT_KNOW, focus: 'diameter_unknown', image: form.image(DIAMETER_IMAGE_IDS.unknown) },
+    ]
+    page(id, <div className="space-y-2">
+      <p className="text-sm text-slate-600">{label}<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {choices.map(o => (
+          <ImageOption key={o.value} checked={selected === o.value} onChange={() => change(o.value === '__other' ? 'Autre: ' : o.value)} label={o.label} focus={o.focus} image={o.image} variant={o.variant} />
+        ))}
+      </div>
+      {other && <Field label={form.t('greenhouse.diameter_other_label')} required>
+        <input aria-label={form.t('greenhouse.diameter_other_label')} className={inputCls} value={exactDiameter} onChange={e => change(`Autre: ${e.target.value}`)} />
+      </Field>}
+    </div>, other ? filled(exactDiameter) : filled(value))
   }
   if (!form.isHidden('greenhouse.side_vents')) {
-    select('side_vents', form.t('greenhouse.side_vents_label'), g.has_side_vents == null ? '' : g.has_side_vents ? 'yes' : 'no', v => {
-      if (!v) return
-      onChange(v === 'yes' ? { has_side_vents: true } : { has_side_vents: false, side_vent_height: '', side_vent_height_range: '', side_pipe_type: '', side_pipe_diameter: '', guide_pipes_state: '', guide_pipe_diameter: '', wants_compatible_guide_pipes: false, num_side_vent_motors: 0, has_existing_side_vent_motors: null })
-    }, form.opts('greenhouse.side_vents_options'), { focus: 'side_vents', questionId: 'greenhouse.side_vents_label' })
+    // Le nombre de côtés ouvrants à automatiser se choisit sur l'image : aucun,
+    // un seul côté, ou un de chaque côté — soit un moteur par côté automatisé.
+    const sideVents = g.has_side_vents === false ? 0 : g.has_side_vents === true && filled(g.num_side_vent_motors) ? Number(g.num_side_vent_motors) : null
+    const pickSideVents = n => onChange(n === 0
+      ? { has_side_vents: false, side_vent_height: '', side_vent_height_range: '', side_pipe_type: '', side_pipe_diameter: '', guide_pipes_state: '', guide_pipe_diameter: '', wants_compatible_guide_pipes: false, num_side_vent_motors: 0, has_existing_side_vent_motors: null }
+      : { has_side_vents: true, num_side_vent_motors: n })
+    page('side_vents', <div className="space-y-2">
+      <p className="text-sm text-slate-600">{form.t('greenhouse.side_vents_count_label')}<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {[0, 1, 2].map(n => <SideVentCountChoice key={n} name={`side-vents-${idx}`} count={n} checked={sideVents === n} onChange={() => pickSideVents(n)} />)}
+      </div>
+    </div>, sideVents != null)
     if (g.has_side_vents === true) {
-      boolean('existing_motors', 'Avez-vous déjà les moteurs ?', g.has_existing_side_vent_motors, v => onChange({ has_existing_side_vent_motors: v }), { focus: 'side_vents', questionId: 'greenhouse.motors', complete: typeof g.has_existing_side_vent_motors === 'boolean' })
+      const motors = g.has_existing_side_vent_motors == null ? '' : g.has_existing_side_vent_motors ? 'yes' : 'no'
+      page('existing_motors', <div className="space-y-2">
+        <p className="text-sm text-slate-600">{form.t('greenhouse.motors_label')}<Req /></p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {form.opts('greenhouse.motors_options').map(o => (
+            <ImageOption key={o.value} checked={motors === o.value} onChange={() => onChange({ has_existing_side_vent_motors: o.value === 'yes' })} label={o.label} help={o.help}
+              focus={MOTORS_FOCUS[o.value] || 'side_vents'} image={form.image(MOTORS_IMAGE_IDS[o.value])} />
+          ))}
+        </div>
+      </div>, typeof g.has_existing_side_vent_motors === 'boolean')
+      // Moteurs déjà là : marque et modèle se demandent tout de suite après.
+      if (g.has_existing_side_vent_motors) {
+        input('motor_brand', 'Marque des moteurs', g.side_vent_motor_brand, v => onChange({ side_vent_motor_brand: v }), { focus: 'side_vents', dontKnow: true })
+        input('motor_model', 'Modèle des moteurs', g.side_vent_motor_model, v => onChange({ side_vent_motor_model: v }), { focus: 'side_vents', dontKnow: true })
+      }
     }
   }
   const lengthRange = g.length_range || (Number(g.length) > 0 ? (Number(g.length) > 200 ? 'over_200' : 'up_to_200') : '')
   if (g.has_side_vents === true && !form.isHidden('greenhouse.length')) {
-    select('length_range', form.t('greenhouse.length_label'), lengthRange, range => {
+    // La longueur se choisit sur l'image : une serre courte, ou une serre longue.
+    const pickLength = range => {
       const keep = range === 'up_to_200' ? Number(g.length) > 0 && Number(g.length) <= 200 : range === 'over_200' && Number(g.length) > 200
       onChange({ length_range: range, length: keep ? g.length : '' })
-    }, [{ value: 'up_to_200', label: '200 pi ou moins' }, { value: 'over_200', label: 'Plus de 200 pi' }], { questionId: 'greenhouse.length_label', focus: 'length' })
+    }
+    page('length_range', <div className="space-y-2">
+      <p className="text-sm text-slate-600">{form.t('greenhouse.length_label')}<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {form.opts('greenhouse.length_range_options').map(o => (
+          <ImageOption key={o.value} checked={lengthRange === o.value} onChange={() => pickLength(o.value)} label={o.label} help={o.help}
+            focus={LENGTH_RANGE_FOCUS[o.value] || 'length'} image={form.image(LENGTH_RANGE_IMAGE_IDS[o.value])} />
+        ))}
+      </div>
+    </div>, filled(lengthRange))
     if (lengthRange === 'over_200') input('length', 'Précisez la longueur (pi)', g.length, v => onChange({ length_range: 'over_200', length: v }), { type: 'number', min: 200, step: 'any', focus: 'length', questionId: 'greenhouse.length_label', complete: Number.isFinite(Number(g.length)) && Number(g.length) > 200 })
   }
   if (!form.isHidden('greenhouse.side_vents')) {
     if (g.has_side_vents === true) {
       if (g.has_existing_side_vent_motors === false) {
-        const heightRange = g.side_vent_height_range || (Number(g.side_vent_height) > 0 ? (Number(g.side_vent_height) > 6 ? 'over_6' : 'up_to_6') : '')
-        select('side_vent_height_range', form.t('greenhouse.side_vent_height_label'), heightRange, range => {
+        const heightRange = g.side_vent_height_range || (g.side_vent_height === DONT_KNOW ? 'unknown' : Number(g.side_vent_height) > 0 ? (Number(g.side_vent_height) > 6 ? 'over_6' : 'up_to_6') : '')
+        // Deux seuils existants et une hauteur inconnue, sans inventer de mesure.
+        const pickHeight = range => {
           const keep = range === 'up_to_6' ? Number(g.side_vent_height) > 0 && Number(g.side_vent_height) <= 6 : range === 'over_6' && Number(g.side_vent_height) > 6
-          onChange({ side_vent_height_range: range, side_vent_height: keep ? g.side_vent_height : '' })
-        }, [{ value: 'up_to_6', label: '6 pi et moins' }, { value: 'over_6', label: 'Plus de 6 pi' }], { focus: 'vent_height', questionId: 'greenhouse.side_vent_height_label' })
+          onChange({ side_vent_height_range: range, side_vent_height: range === 'unknown' ? DONT_KNOW : keep ? g.side_vent_height : '' })
+        }
+        page('side_vent_height_range', <fieldset className="min-w-0 space-y-2">
+          <legend className="text-sm text-slate-600">{form.t('greenhouse.side_vent_height_label')}<Req /></legend>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {form.opts('greenhouse.side_vent_height_range_options').map(o => (
+              <ImageOption key={o.value} name={`vent-height-${idx}`} checked={heightRange === o.value} onChange={() => pickHeight(o.value)} label={o.label} help={o.help}
+                focus={VENT_HEIGHT_FOCUS[o.value] || 'vent_height'} image={form.image(VENT_HEIGHT_IMAGE_IDS[o.value]) || (o.value === 'unknown' ? 'vent-height-unknown.svg' : undefined)} />
+            ))}
+          </div>
+        </fieldset>, filled(heightRange))
         if (heightRange === 'over_6') input('side_vent_height', 'Précisez la hauteur (pi)', g.side_vent_height, v => onChange({ side_vent_height_range: 'over_6', side_vent_height: v }), { type: 'number', min: 6, step: 'any', focus: 'vent_height', questionId: 'greenhouse.side_vent_height_label', complete: Number.isFinite(Number(g.side_vent_height)) && Number(g.side_vent_height) > 6 })
-        select('side_pipe_type', form.t('greenhouse.side_pipe_type_label'), g.side_pipe_type, v => onChange({ side_pipe_type: v, side_pipe_diameter: '' }), form.opts('greenhouse.side_pipe_type_options'), { focus: 'side_pipe', questionId: 'greenhouse.side_pipe_type_label' })
-        if (['aluminum_C', 'steel_O'].includes(g.side_pipe_type)) diameter('side_pipe_diameter', g.side_pipe_type === 'aluminum_C' ? 'Diamètre du tuyau aluminium' : 'Diamètre du tuyau acier', g.side_pipe_diameter, v => onChange({ side_pipe_diameter: v }), g.side_pipe_type === 'aluminum_C' ? '2"' : '1 5/16"', 'side_pipe')
+        // Le type de tuyau se choisit sur la photo : les deux profils sont
+        // montrés côte à côte au lieu d'être cachés derrière une liste.
+        const pipeOpts = form.opts('greenhouse.side_pipe_type_options')
+        const pickPipe = v => onChange({ side_pipe_type: v, side_pipe_diameter: '' })
+        page('side_pipe_type', <div className="space-y-2">
+          <p className="text-sm text-slate-600">{form.t('greenhouse.side_pipe_type_label')}<Req /></p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {pipeOpts.filter(o => SIDE_PIPE_IMAGES[o.value]).map(o => (
+              <ImageOption key={o.value} checked={g.side_pipe_type === o.value} onChange={() => pickPipe(o.value)} label={o.label} image={SIDE_PIPE_IMAGES[o.value]} />
+            ))}
+          </div>
+          {pipeOpts.filter(o => !SIDE_PIPE_IMAGES[o.value]).map(o => (
+            <RadioOption key={o.value} checked={g.side_pipe_type === o.value} onChange={() => pickPipe(o.value)} label={o.label} help={o.help} />
+          ))}
+        </div>, filled(g.side_pipe_type))
+        if (['aluminum_C', 'steel_O'].includes(g.side_pipe_type)) diameter('side_pipe_diameter', g.side_pipe_type === 'aluminum_C' ? 'Diamètre du tuyau aluminium' : 'Diamètre du tuyau acier', g.side_pipe_diameter, v => onChange({ side_pipe_diameter: v }), g.side_pipe_type === 'aluminum_C' ? '2"' : '1 5/16"')
       }
-      select('guide_pipes', form.t('greenhouse.guide_pipes_label'), g.guide_pipes_state, v => onChange({ guide_pipes_state: v, guide_pipe_diameter: '' }), form.opts('greenhouse.guide_pipes_options'), { focus: 'guide_pipes', questionId: 'greenhouse.guide_pipes_label' })
+      page('guide_pipes', <fieldset className="space-y-2">
+        <legend className="text-sm text-slate-600">{form.t('greenhouse.guide_pipes_label')}<Req /></legend>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {form.opts('greenhouse.guide_pipes_options').map(o => (
+            <GuidePipeOption key={o.value} name={`guide-pipes-${idx}`} value={o.value} label={o.label} help={o.help}
+              checked={g.guide_pipes_state === o.value}
+              onChange={() => onChange({ guide_pipes_state: o.value, guide_pipe_diameter: '' })} />
+          ))}
+        </div>
+      </fieldset>, filled(g.guide_pipes_state))
       if (g.guide_pipes_state === 'present') {
-        diameter('guide_diameter', 'Diamètre des tuyaux guides existants', g.guide_pipe_diameter, v => onChange({ guide_pipe_diameter: v }), '1 5/16"', 'guide_pipes')
-        if (g.guide_pipe_diameter?.startsWith('Autre:')) page('guide_compatibility', <CompatibilityWarning value={g.guide_pipe_diameter.replace('Autre:', '').trim()} onAccept={() => onChange({ wants_compatible_guide_pipes: true })} accepted={!!g.wants_compatible_guide_pipes} />)
-      }
-      input('motor_count', 'Nombre de moteurs de côtés', g.num_side_vent_motors, v => onChange({ num_side_vent_motors: v }), { type: 'number', min: 0, max: 8, focus: 'side_vents', questionId: 'greenhouse.motors' })
-      if (g.has_existing_side_vent_motors) {
-        input('motor_brand', 'Marque des moteurs', g.side_vent_motor_brand, v => onChange({ side_vent_motor_brand: v }), { focus: 'side_vents' })
-        input('motor_model', 'Modèle des moteurs', g.side_vent_motor_model, v => onChange({ side_vent_motor_model: v }), { focus: 'side_vents' })
+        // Aucun avertissement de compatibilité : le diamètre saisi est pris tel quel.
+        diameter('guide_diameter', 'Diamètre des tuyaux guides existants', g.guide_pipe_diameter, v => onChange({ guide_pipe_diameter: v }), '1 5/16"')
       }
     }
   }
-  select('fans', 'Ventilateurs de bout de serre sans louvre associée', g.num_fans, v => onChange({ num_fans: v, fans_combined_hp: v === '2' ? g.fans_combined_hp : '' }), [{ value: '0', label: 'Aucun' }, { value: '1', label: '1 ventilateur' }, { value: '2', label: '2 ventilateurs' }], { questionId: 'greenhouse.fans' })
-  if (Number(g.num_fans) === 2) input('fans_hp', 'Puissance combinée (HP)', g.fans_combined_hp, v => onChange({ fans_combined_hp: v }), { type: 'number', min: 0, step: '0.1', questionId: 'greenhouse.fans' })
-
-  const louvers = g.louvers || []
-  boolean('louvers', form.t('louvers.present'), g.has_louvers, v => onChange({ has_louvers: v, louvers: v ? (louvers.length ? louvers : [{}]) : [] }), { complete: typeof g.has_louvers === 'boolean' })
-  if (g.has_louvers) {
-    input('louver_count', form.t('louvers.count'), louvers.length || '', value => {
-      const n = Math.min(50, Math.max(0, parseInt(value) || 0))
-      onChange({ louvers: Array.from({ length: n }, (_, i) => louvers[i] || {}) })
-    }, { type: 'number', min: 1, max: 50, step: 1, complete: louvers.length > 0 })
-    louvers.forEach((l, i) => {
-      const set = patch => onChange({ louvers: louvers.map((item, j) => i === j ? { ...item, ...patch } : item) })
-      const opts = { suffix: `Louvre #${i + 1}` }
-      select(`louver:${i}:voltage`, form.t('louvers.voltage'), l.voltage, v => set({ voltage: v, voltage_other: '', ...(v === '110' && l.control_type === 'open_close' ? { control_type: '' } : {}) }), form.opts('louvers.voltages'), { ...opts, complete: ['110', '24', '12', 'other'].includes(l.voltage) })
-      if (l.voltage === 'other') input(`louver:${i}:voltage_other`, form.t('louvers.voltage_other'), l.voltage_other, v => set({ voltage_other: v }), { ...opts, complete: l.voltage_other?.trim() })
-      select(`louver:${i}:type`, form.t('louvers.type'), l.control_type, v => set({ control_type: v }), form.opts('louvers.types').filter(option => l.voltage !== '110' || option.value !== 'open_close'), { ...opts, complete: ['spring_loaded', 'open_close', 'other'].includes(l.control_type) && !(l.voltage === '110' && l.control_type === 'open_close') })
-      boolean(`louver:${i}:fan`, form.t('louvers.fan'), l.has_fan, v => set({ has_fan: v }), { ...opts, complete: typeof l.has_fan === 'boolean', help: l.control_type === 'open_close' && l.has_fan ? form.t('louvers.fan_unavailable') : null })
-    })
-  }
-  if (root.form_options?.humidity_retention) {
-    boolean('humidity_valve', form.t('humidity.valve'), g.humidity_valve, v => onChange({ humidity_valve: v }), { complete: typeof g.humidity_valve === 'boolean' })
-    boolean('humidity_haf', form.t('humidity.haf'), g.humidity_haf, v => onChange({ humidity_haf: v, humidity_haf_count: v ? (g.humidity_haf_count || 1) : 0 }), { complete: typeof g.humidity_haf === 'boolean' })
-    if (g.humidity_haf) input('haf_count', form.t('humidity.haf_count'), g.humidity_haf_count, v => onChange({ humidity_haf_count: v }), { type: 'number', min: 1, max: 100, step: 1, complete: Number.isInteger(Number(g.humidity_haf_count)) && Number(g.humidity_haf_count) >= 1 && Number(g.humidity_haf_count) <= 100 })
+  // Serre Helper : seuls les côtés ouvrants sont automatisables — ventilateurs,
+  // louvres et conservation de l'humidité ne sont pas proposés.
+  if (!helperOnly) {
+    // Les louvres d'abord : la question des ventilateurs porte sur ceux qui
+    // n'y sont pas associés, elle ne se comprend qu'une fois les louvres dites.
+    const louvers = g.louvers || []
+    // La réponse se choisit sur l'image : bout de serre nu, avec une louvre, ou
+    // avec deux. Un enregistrement plus ancien peut en porter davantage : aucune
+    // image n'est alors cochée, mais ses louvres restent saisies plus loin.
+    const louverCount = g.has_louvers === false ? 0 : g.has_louvers === true && louvers.length ? louvers.length : null
+    const pickLouvers = n => onChange({ has_louvers: n > 0, louvers: Array.from({ length: n }, (_, i) => louvers[i] || {}) })
+    page('louvers', <div className="space-y-2">
+      <p className="text-sm text-slate-600">{form.t('louvers.present')}<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {[0, 1, 2].map(n => <LouverCountChoice key={n} name={`louvers-${idx}`} count={n} checked={louverCount === n} onChange={() => pickLouvers(n)} />)}
+      </div>
+    </div>, louverCount != null)
+    if (g.has_louvers) {
+      louvers.forEach((l, i) => {
+        const set = patch => onChange({ louvers: louvers.map((item, j) => i === j ? { ...item, ...patch } : item) })
+        const opts = { suffix: `Louvre #${i + 1}` }
+        // Voltage et commande en une seule question illustrée : chaque image est
+        // une combinaison offerte. Une réponse plus ancienne hors combinaisons
+        // (12 V, autre voltage…) reste acceptée telle quelle.
+        const combo = louverComboValue(l)
+        page(`louver:${i}:type`, <div className="space-y-2">
+          <p className="text-sm text-slate-600">{form.t('louvers.type')}<Req /></p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {form.opts('louvers.types').map(o => {
+              const def = LOUVER_COMBOS.find(c => c.value === o.value)
+              return <LouverTypeChoice key={o.value} name={`louver-${idx}-${i}`} combo={o.value}
+                label={o.value === 'spring_110' ? 'Actuateur 110 V et retour automatique en position fermée avec un ressort.' : o.label} checked={combo === o.value}
+                onChange={() => set({ control_type: def?.control_type || o.value, voltage: def?.voltage ?? '', voltage_other: '' })} />
+            })}
+          </div>
+        </div>, !!combo || (filled(l.voltage) && filled(l.control_type)), opts.suffix)
+        page(`louver:${i}:fan`, <fieldset className="min-w-0 space-y-2">
+          <legend className="text-sm text-slate-600">{form.t('louvers.fan')}<Req /></legend>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            {[true, false].map(hasFan => (
+              <LouverFanChoice key={String(hasFan)} name={`louver-fan-${idx}-${i}`} hasFan={hasFan}
+                checked={l.has_fan === hasFan} onChange={() => set({ has_fan: hasFan })} />
+            ))}
+          </div>
+          {l.control_type === 'open_close' && l.has_fan && <p className="text-xs text-slate-500">{form.t('louvers.fan_unavailable')}</p>}
+        </fieldset>, typeof l.has_fan === 'boolean', opts.suffix)
+      })
+    }
+    // La réponse se choisit sur l'image : bout de serre nu, avec un ventilateur, ou avec deux.
+    page('fans', <div className="space-y-2">
+      <p className="text-sm text-slate-600">Ventilateurs de bout de serre sans louvre associée<Req /></p>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {['0', '1', '2'].map(n => (
+          <EndFanChoice key={n} name={`fans-${idx}`} count={Number(n)} checked={filled(g.num_fans) && String(g.num_fans) === n}
+            onChange={() => onChange({ num_fans: n, fans_combined_hp: n === '2' ? g.fans_combined_hp : '', fans_hp_range: n === '2' ? g.fans_hp_range : '' })} />
+        ))}
+      </div>
+    </div>, filled(g.num_fans))
+    // Seule la plage compte pour l'équipement : on ne demande plus le nombre
+    // exact de HP, que le client cherchait sur la plaque du moteur.
+    if (Number(g.num_fans) === 2) page('fans_hp', <fieldset className="space-y-2">
+      <legend className="text-sm text-slate-600">Puissance combinée (HP)<Req /></legend>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {[...FANS_HP_RANGE_OPTIONS, { value: DONT_KNOW, label: DONT_KNOW }].map(o => (
+          <FanPowerOption key={o.value} name={`fans-hp-${idx}`} value={o.value} label={o.label}
+            checked={fansHpRangeValue(g) === o.value}
+            onChange={() => onChange({ fans_hp_range: o.value, fans_combined_hp: '' })} />
+        ))}
+      </div>
+    </fieldset>, filled(fansHpRangeValue(g)))
+    if (root.form_options?.humidity_retention) {
+      boolean('humidity_valve', form.t('humidity.valve'), g.humidity_valve, v => onChange({ humidity_valve: v }), { complete: typeof g.humidity_valve === 'boolean' })
+      boolean('humidity_haf', form.t('humidity.haf'), g.humidity_haf, v => onChange({ humidity_haf: v, humidity_haf_count: v ? (g.humidity_haf_count || 1) : 0 }), { complete: typeof g.humidity_haf === 'boolean' })
+      if (g.humidity_haf) input('haf_count', form.t('humidity.haf_count'), g.humidity_haf_count, v => onChange({ humidity_haf_count: v }), { type: 'number', min: 1, max: 100, step: 1, complete: Number.isInteger(Number(g.humidity_haf_count)) && Number(g.humidity_haf_count) >= 1 && Number(g.humidity_haf_count) <= 100 })
+    }
   }
   if (cardPermission === 'chief_grower') {
     if (!form.isHidden('chief.furnaces')) {
-      select('furnaces', form.t('chief.has_furnaces_label'), g.has_furnaces == null ? '' : g.has_furnaces ? 'yes' : 'no', v => {
-        if (v) onChange(v === 'yes' ? { has_furnaces: true } : { has_furnaces: false, num_furnaces: 0, furnaces: [] })
-      }, form.opts('chief.has_furnaces_options'), { focus: 'furnaces', questionId: 'chief.has_furnaces_label' })
+      const furnaceCount = g.has_furnaces === false ? 0 : g.has_furnaces === true && [1, 2].includes(Number(g.num_furnaces)) ? Number(g.num_furnaces) : null
+      const pickFurnaces = count => onChange({
+        has_furnaces: count > 0,
+        num_furnaces: count,
+        furnaces: Array.from({ length: count }, (_, i) => g.furnaces?.[i] || {}),
+      })
+      page('furnaces', <fieldset className="space-y-2">
+        <legend className="text-sm text-slate-600">{form.t('chief.furnaces_count_label')}<Req /></legend>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {[0, 1, 2].map(n => <FurnaceCountChoice key={n} name={`furnaces-${idx}`} count={n} checked={furnaceCount === n} onChange={() => pickFurnaces(n)} />)}
+        </div>
+      </fieldset>, furnaceCount != null)
       if (g.has_furnaces) {
         const furnaces = g.furnaces || []
-        select('furnace_count', form.t('chief.num_furnaces_label'), g.num_furnaces ? String(g.num_furnaces) : '', value => {
-          const count = Math.max(0, Math.min(2, parseInt(value) || 0))
-          onChange({ num_furnaces: count, furnaces: Array.from({ length: count }, (_, i) => furnaces[i] || {}) })
-        }, [{ value: '1', label: '1' }, { value: '2', label: '2' }], { focus: 'furnaces', questionId: 'chief.has_furnaces_label', complete: Number(g.num_furnaces) > 0 })
         furnaces.forEach((f, i) => {
           const set = patch => onChange({ furnaces: furnaces.map((item, j) => i === j ? { ...item, ...patch } : item) })
           const opts = { suffix: `Fournaise #${i + 1}`, focus: 'furnaces' }
           const brand = form.brands.find(b => b.brand === f.brand)
-          select(`furnace:${i}:brand`, form.t('furnace.brand_label'), f.brand, v => set({ brand: v, model: '' }), [...form.brands.map(b => ({ value: b.brand, label: b.brand })), { value: 'Autre', label: 'Autre' }], { ...opts, questionId: 'furnace.brand_label' })
-          if (brand) select(`furnace:${i}:model`, form.t('furnace.model_label'), f.model, v => set({ model: v }), [...brand.models.map(m => ({ value: m, label: m })), { value: 'Autre', label: 'Autre / Je ne sais pas' }], { ...opts, questionId: 'furnace.brand_label' })
-          else input(`furnace:${i}:model`, form.t('furnace.model_label'), f.model, v => set({ model: v }), { ...opts, questionId: 'furnace.brand_label' })
-          if (f.model === 'Autre') input(`furnace:${i}:model_other`, form.t('furnace.model_other_label'), f.model_other, v => set({ model_other: v }), { ...opts, questionId: 'furnace.brand_label' })
+          select(`furnace:${i}:brand`, form.t('furnace.brand_label'), f.brand, v => set({ brand: v, model: '' }), [...form.brands.map(b => ({ value: b.brand, label: b.brand })), { value: 'Autre', label: 'Autre' }, { value: DONT_KNOW, label: DONT_KNOW }], { ...opts, questionId: 'furnace.brand_label' })
+          // Marque inconnue : le modèle ne l'est pas davantage, on ne le demande pas.
+          if (f.brand !== DONT_KNOW) {
+            if (brand) select(`furnace:${i}:model`, form.t('furnace.model_label'), f.model, v => set({ model: v }), [...brand.models.map(m => ({ value: m, label: m })), { value: 'Autre', label: 'Autre / Je ne sais pas' }], { ...opts, questionId: 'furnace.brand_label' })
+            else input(`furnace:${i}:model`, form.t('furnace.model_label'), f.model, v => set({ model: v }), { ...opts, questionId: 'furnace.brand_label', dontKnow: true })
+            if (f.model === 'Autre') input(`furnace:${i}:model_other`, form.t('furnace.model_other_label'), f.model_other, v => set({ model_other: v }), { ...opts, questionId: 'furnace.brand_label', dontKnow: true })
+          }
           // Longueurs livrées telles quelles (25/50/75/100 pi) ; tout autre choix
           // ouvre la question du nombre exact de pieds. `control_wire_feet` reste
           // un nombre de pieds : le calcul d'équipement n'a pas à changer.
@@ -646,13 +806,14 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
       }
     }
     const zones = Number(g.irrigation_zones) || 0
-    input('irrigation_zones', form.t('chief.irrigation_zones_label'), g.irrigation_zones, v => onChange({ irrigation_zones: v }), { type: 'number', min: 0, max: 50, focus: 'irrigation', questionId: 'chief.irrigation_zones_label', help: zones > 4 ? `${Math.ceil((zones - 4) / 4)} bloc(s) de 4 valves supplémentaire(s) requis. Paiement avant l’envoi ou ajout à l’abonnement avec votre conseiller.` : null })
+    // La réponse se choisit sur l'image : de 0 à 4 valves, soit le contenu d'un bloc.
+    page('irrigation_zones', <IrrigationZones name={`valves-${idx}`} label={form.t('chief.irrigation_zones_label')} value={g.irrigation_zones} onChange={v => onChange({ irrigation_zones: v })} />, filled(g.irrigation_zones))
     if (zones > 0) {
       select('orisha_valves', form.t('chief.orisha_valves_label'), g.needs_orisha_valves == null ? '' : g.needs_orisha_valves ? 'yes' : 'no', v => onChange({ needs_orisha_valves: v === '' ? null : v === 'yes' }), form.opts('chief.orisha_valves_options'), { focus: 'valves', questionId: 'chief.orisha_valves_label' })
-      page('valve_wire', <Ask questionId="chief.orisha_valves_label" focus="valves"><ValveWireLength value={g.valve_control_wire_feet} onChange={value => onChange({ valve_control_wire_feet: value })} /></Ask>)
+      page('valve_wire', <Ask questionId="chief.orisha_valves_label" focus="valves"><ValveWireLength value={g.valve_control_wire_feet} onChange={value => onChange({ valve_control_wire_feet: value })} /></Ask>, filled(g.valve_control_wire_feet))
       if (!g.needs_orisha_valves) {
-        input('valve_brand', 'Marque des valves', g.valve_brand, v => onChange({ valve_brand: v }), { focus: 'valves' })
-        input('valve_model', 'Modèle des valves', g.valve_model, v => onChange({ valve_model: v }), { focus: 'valves' })
+        input('valve_brand', 'Marque des valves', g.valve_brand, v => onChange({ valve_brand: v }), { focus: 'valves', dontKnow: true })
+        input('valve_model', 'Modèle des valves', g.valve_model, v => onChange({ valve_model: v }), { focus: 'valves', dontKnow: true })
       }
     }
   }
@@ -661,6 +822,26 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   for (const section of sections) for (const q of form.custom(section, ghCtx)) {
     page(`custom:${q.id}`, <CustomFields questions={[q]} values={g.custom} onChange={patch => onChange({ custom: { ...(g.custom || {}), ...patch } })} />, !q.required || customAnswered(q, g.custom?.[q.id]))
   }
+}
+
+// Zones d'irrigation : 5 images de 0 à 4 valves. Au-delà de 4, le nombre exact
+// se tape ; le vendeur prendra contact pour les besoins supplémentaires.
+function IrrigationZones({ name, label, value, onChange }) {
+  const zones = Number(value) || 0
+  const [more, setMore] = useState(zones > 4)
+  return (
+    <div className="space-y-2">
+      <p className="text-sm text-slate-600">{label}<Req /></p>
+      {!more && <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {[0, 1, 2, 3, 4].map(n => <IrrigationValveChoice key={n} name={name} count={n} checked={filled(value) && zones === n} onChange={() => onChange(n)} />)}
+      </div>}
+      <label className="flex items-center gap-2 text-sm text-slate-600">
+        <input type="checkbox" checked={more} onChange={e => { setMore(e.target.checked); onChange('') }} />Plus de 4
+      </label>
+      {zones > 4 && <p className="text-sm text-slate-600">Un vendeur vous contactera pour vos zones d’irrigation supplémentaires.</p>}
+      {more && <input aria-label={label} type="number" min={5} max={50} className={inputCls} value={value ?? ''} onChange={e => onChange(e.target.value)} />}
+    </div>
+  )
 }
 
 // Confirmation de l'adresse auprès de l'API d'adresses (Google), au blur du
@@ -735,13 +916,13 @@ function AddressForm({ value, onChange, baseUrl }) {
 function AddressFields({ value, onChange }) {
   return (
     <div className="grid grid-cols-2 gap-3">
-      <Field label="Adresse" colSpan={2}>
+      <Field label="Adresse" required colSpan={2}>
         <input className={inputCls} value={value.line1 || ''} onChange={e => onChange({ line1: e.target.value })} />
       </Field>
       <Field label="Ville">
         <input className={inputCls} value={value.city || ''} onChange={e => onChange({ city: e.target.value })} />
       </Field>
-      <Field label="Province">
+      <Field label="Province" required>
         <SearchableSelect
           value={value.province || ''}
           options={PROVINCES}
@@ -763,10 +944,39 @@ function AddressFields({ value, onChange }) {
   )
 }
 
-function Field({ label, colSpan = 1, children }) {
+// Astérisque rouge : la seule marque d'une question obligatoire (la page ne
+// répète plus « Complétez les champs obligatoires » sous le bouton Suivant).
+function Req() {
+  return <span className="text-red-500" title="Obligatoire"> *</span>
+}
+
+function DontKnow({ checked, onChange }) {
+  return (
+    <label className="mt-2 inline-flex items-center gap-2 text-xs text-slate-500">
+      <input type="checkbox" data-dont-know checked={checked} onChange={e => onChange(e.target.checked)} />
+      {DONT_KNOW}
+    </label>
+  )
+}
+
+// Mot de passe masqué par défaut, l'œil le révèle le temps de le relire.
+function PasswordInput({ label, value, onChange }) {
+  const [shown, setShown] = useState(false)
+  return (
+    <div className="relative">
+      <input aria-label={label} type={shown ? 'text' : 'password'} autoComplete="new-password" className={`${inputCls} pr-10`} value={value} onChange={e => onChange(e.target.value)} />
+      <button type="button" aria-label={shown ? 'Masquer' : 'Afficher'} onClick={() => setShown(s => !s)}
+        className="absolute inset-y-0 right-0 px-3 flex items-center text-slate-400 hover:text-slate-600">
+        {shown ? <EyeOff size={16} /> : <Eye size={16} />}
+      </button>
+    </div>
+  )
+}
+
+function Field({ label, required, colSpan = 1, children }) {
   return (
     <div className={colSpan === 2 ? 'col-span-2' : ''}>
-      <label className="label">{label}</label>
+      <label className="label">{label}{required && <Req />}</label>
       {children}
     </div>
   )
@@ -784,17 +994,83 @@ function RadioOption({ checked, onChange, label, help }) {
   )
 }
 
-function CompatibilityWarning({ value, onAccept, accepted }) {
-  // Crude heuristic: warn if the dimension contains "1/2" or numbers different from 1 5/16
+// Choix illustré : l'image porte la réponse, le texte ne fait que la nommer.
+function FanPowerOption({ name, value, label, checked, onChange }) {
+  const badge = value === DONT_KNOW ? '?' : value === FANS_HP_RANGE_OPTIONS[0].value ? '1 HP max.' : '> 1 HP'
   return (
-    <div className="rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800 mt-2">
-      <p className="font-medium">Compatibilité à vérifier</p>
-      <p className="text-xs mt-1">Le diamètre « {value || '—'} » pourrait ne pas être compatible avec nos moteurs (recommandé : 1 5/16"). Voulez-vous que nous vous fournissions des tuyaux guides compatibles ?</p>
-      <label className="mt-2 inline-flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={accepted} onChange={onAccept} />
-        Oui, ajouter des tuyaux guides compatibles aux extras
-      </label>
-    </div>
+    <label className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+      <div className="relative w-full pt-6" aria-hidden="true">
+        <img src={`${import.meta.env.BASE_URL}images/discovery/fans-two.svg`} alt="" width="640" height="300" className="w-full h-28 object-contain" />
+        <span className="absolute top-0 inset-x-0 text-center text-lg font-semibold text-slate-800">{badge}</span>
+      </div>
+      <span className="flex items-center gap-2 text-sm text-slate-800">
+        <input type="radio" name={name} value={value} checked={checked} onChange={onChange} />
+        {label}
+      </span>
+    </label>
+  )
+}
+
+// Les guides déjà installés se distinguent des tuyaux à fournir, encore libres.
+function GuidePipeOption({ name, value, label, help, checked, onChange }) {
+  const present = value === 'present'
+  const needed = value === 'needed'
+  return (
+    <label className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+      <svg viewBox={present ? '0 0 260 180' : '0 0 240 150'} className="w-full h-28" aria-hidden="true">
+        {present ? <>
+          {/* Les deux axes au sol suivent la même projection isométrique. */}
+          <path d="M17 125L139 54L234 109L112 180Z" fill="#f1f5f3" />
+          <path d="M140 58V22C140 -16 216 28 216 66V102Z" fill="#e2efed" stroke="#94a3b8" strokeWidth="2" />
+          <path d="M28 87C28 49 104 93 104 131L216 66C216 28 140 -16 140 22Z" fill="#eef8f9" stroke="#94a3b8" strokeWidth="2" />
+          <path d="M104 131L216 66V102L104 167Z" fill="#d7ece7" stroke="#94a3b8" strokeWidth="2" />
+          <g fill="none" stroke="#b0c4c1" strokeWidth="2">
+            {[28, 56, 84].map(offset => (
+              <path key={offset} transform={`translate(${offset} ${-offset * 65 / 112})`} d="M28 123V87C28 49 104 93 104 131V167" />
+            ))}
+            <path d="M66 80L178 15M104 150L216 85" />
+          </g>
+          <path d="M28 123V87C28 49 104 93 104 131V167Z" fill="#f0f9f7" fillOpacity="0.8" stroke="#94a3b8" strokeWidth="2.5" />
+          <path d="M53 137V100L79 115V152M28 123L104 167" fill="none" stroke="#b0c4c1" strokeWidth="2" />
+          {/* Tuyau d'enroulement sur le côté, moteur guidé verticalement. */}
+          <path d="M111 143L220 80" stroke="#64748b" strokeWidth="6" strokeLinecap="round" />
+          <path d="M118 112V168" stroke="#15803d" strokeWidth="7" strokeLinecap="round" />
+          <path d="M105 135L122 125L134 132L117 142Z" fill="#fde68a" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M105 135L117 142V159L105 152Z" fill="#fbbf24" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M117 142L134 132V149L117 159Z" fill="#f59e0b" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round" />
+          <path d="M112 122H124M112 163H124" stroke="#475569" strokeWidth="2.5" strokeLinecap="round" />
+          <circle cx="37" cy="28" r="19" fill="#15803d" />
+          <path d="M27 28L34 35L47 20" fill="none" stroke="#f0fdf4" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+        </> : <>
+          <g fill="none" stroke={needed ? '#64748b' : '#94a3b8'} strokeWidth="9" strokeLinecap="round">
+            <path d="M61.5 128L95.5 33M94.5 128L128.5 33" />
+          </g>
+          <circle cx="189" cy="65" r="27" fill={needed ? '#dcfce7' : '#f1f5f9'} />
+          {needed
+            ? <path d="M175 65H203M189 51V79" stroke="#15803d" strokeWidth="5" strokeLinecap="round" />
+            : <text x="189" y="77" textAnchor="middle" fontSize="36" fontWeight="600" fill="#64748b">?</text>}
+        </>}
+        {!present && <path d="M18 137H224" stroke="#cbd5e1" strokeWidth="2" />}
+      </svg>
+      <span className="flex items-center gap-2 text-sm text-slate-800">
+        <input type="radio" name={name} value={value} checked={checked} onChange={onChange} />
+        {label}
+      </span>
+      {help && <span className="text-xs text-slate-500 text-center">{help}</span>}
+    </label>
+  )
+}
+
+function ImageOption({ checked, onChange, label, help, image, focus, name, variant }) {
+  return (
+    <label className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border ${name ? 'focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2' : ''} ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+      <GreenhouseIllustration image={image} focus={focus} variant={variant} height={96} label={label} className="w-full" />
+      <div className="flex items-center gap-2">
+        <input type="radio" name={name} aria-label={name ? label : undefined} checked={checked} onChange={onChange} />
+        <span className="text-sm text-slate-800">{label}</span>
+      </div>
+      {help && <div className="text-xs text-slate-500 text-center">{help}</div>}
+    </label>
   )
 }
 
@@ -804,21 +1080,41 @@ function ValveWireLength({ value, onChange }) {
   const isPreset = [15, 25].includes(Number(value))
   const selection = custom || (hasValue && !isPreset) ? 'custom' : hasValue ? String(value) : ''
   return (
-    <Field label="Longueur de filage des valves">
-      <select aria-label="Longueur de filage des valves" className={inputCls} value={selection} onChange={e => {
-        setCustom(e.target.value === 'custom')
-        onChange(e.target.value === 'custom' ? '' : e.target.value)
-      }}>
-        <option value="">—</option>
-        <option value="15">15 pi</option>
-        <option value="25">25 pi</option>
-        <option value="custom">Longueur personnalisée</option>
-      </select>
+    <fieldset className="min-w-0">
+      <legend className="label">Longueur de filage des valves<Req /></legend>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {[{ value: '15', label: '15 pi' }, { value: '25', label: '25 pi' }, { value: 'custom', label: 'Longueur personnalisée' }].map(option => (
+          <label key={option.value} className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${selection === option.value ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+            <svg viewBox="0 0 180 110" className="w-full h-24" aria-hidden="true">
+              <g className="fill-none stroke-slate-500" strokeWidth="4">
+                {[0, 1, 2, ...(option.value === '25' ? [3, 4] : [])].map(i => (
+                  <ellipse key={i} cx={64 + i * 7} cy="51" rx="31" ry="34" />
+                ))}
+                <path d={`M${78 + (option.value === '25' ? 14 : 0)} 81 Q122 100 146 73`} strokeLinecap="round" />
+              </g>
+              <path d="M145 74 l9 -13" className="stroke-amber-600" strokeWidth="4" strokeLinecap="round" />
+              <rect x="102" y="8" width="70" height="29" rx="5" className="fill-brand-50 stroke-brand-500" />
+              <text x="137" y="28" textAnchor="middle" fontSize="16" className="fill-brand-700 font-semibold">{option.value === 'custom' ? '? pi' : option.label}</text>
+              {option.value === 'custom' && <g className="stroke-amber-600 fill-amber-50" strokeWidth="1.5">
+                <rect x="25" y="88" width="91" height="14" rx="2" />
+                {[35, 47, 59, 71, 83, 95, 107].map(x => <path key={x} d={`M${x} 88 v7`} />)}
+              </g>}
+            </svg>
+            <span className="flex items-center gap-2 text-sm text-slate-800">
+              <input type="radio" name="valve-wire-length" value={option.value} checked={selection === option.value} onChange={() => {
+                setCustom(option.value === 'custom')
+                onChange(option.value === 'custom' ? '' : option.value)
+              }} />
+              {option.label}
+            </span>
+          </label>
+        ))}
+      </div>
       {selection === 'custom' && <label className="block mt-2 text-sm text-slate-600">
         Longueur personnalisée (pi)
         <input type="number" min="0" className={inputCls} value={value ?? ''} onChange={e => onChange(e.target.value)} />
       </label>}
-    </Field>
+    </fieldset>
   )
 }
 
@@ -832,7 +1128,7 @@ function CustomFields({ questions, values, onChange, disabled }) {
   // section (cf. lib/greenhouseFocus.js).
   return questions.map(q => (
     <Ask key={q.id} image={q.image} focus={focusForSection(q.section)}>
-      <Field label={q.label + (q.required ? ' *' : '')} colSpan={q.type === 'textarea' ? 2 : 1}>
+      <Field label={q.label} required={q.required} colSpan={q.type === 'textarea' ? 2 : 1}>
         <CustomInput q={q} value={v[q.id]} onChange={(nv) => onChange({ [q.id]: nv })} disabled={disabled} />
         {q.help && <div className="text-xs text-slate-500 mt-1">{q.help}</div>}
       </Field>
@@ -918,14 +1214,15 @@ function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, perm
   return (
     <Card title={form.t('submitted.title')}>
       <p className="text-sm text-slate-700">{form.t('submitted.text')}</p>
+      {isDiscoveryMode && resp.greenhouses?.some(g => Number(g.irrigation_zones) > 4) && <p className="text-sm text-slate-700">Un vendeur vous contactera pour vos zones d’irrigation supplémentaires.</p>}
       <button type="button" className="btn-ghost btn-sm mt-2" onClick={() => setShowAnswers(v => !v)}>{showAnswers ? 'Masquer mes réponses' : 'Consulter mes réponses'}</button>
       {showAnswers && <div className="mt-3 border-t border-slate-100 pt-3 space-y-3 text-sm text-slate-700">
         {resp.is_new_site === 'add_to_existing' && !hasMobileController && <div>
-          <p>{form.t('controller_distance.prompt')} <strong>{resp.within_central_controller_range == null ? '—' : resp.within_central_controller_range ? 'Oui' : 'Non'}</strong></p>
-          {typeof resp.within_central_controller_range === 'boolean' && <p>{form.t(resp.within_central_controller_range ? 'controller_distance.near' : 'controller_distance.far')}</p>}
+          <p>{form.t('controller_distance.prompt')} <strong>{form.opts('controller_distance.options').find(o => o.value === controllerDistanceValue(resp))?.label || '—'}</strong></p>
+          {resp.within_central_controller_range === true && <p>{form.t('controller_distance.near')}</p>}
         </div>}
         <div className="grid grid-cols-2 gap-2"><span>Nombre de serres</span><span className="font-medium text-slate-900">{resp.num_greenhouses || '—'}</span><span>Accès réseau</span><span className="font-medium text-slate-900">{form.opts('network.options').find(o => o.value === resp.network_access)?.label || '—'}</span>{resp.wifi_ssid && <><span>Réseau Wi‑Fi</span><span className="font-medium text-slate-900">{resp.wifi_ssid}</span></>}</div>
-        {(resp.greenhouses || []).map((g, i) => <div key={i} className="rounded-lg bg-slate-50 p-3"><p className="font-medium text-slate-900">Serre #{i + 1}</p><div className="mt-1 grid grid-cols-2 gap-1 text-xs"><span>Longueur</span><span>{g.length_range === 'up_to_200' ? '200 pi ou moins' : g.length ? `${g.length} pi` : '—'}</span><span>Côtés ouvrants</span><span>{g.has_side_vents ? 'Oui' : 'Non'}</span><span>Ventilateurs</span><span>{g.num_fans ?? '—'}</span>{g.has_side_vents && <><span>Moteurs</span><span>{g.num_side_vent_motors ?? '—'}</span></>}{g.permission_level === 'chief_grower' && <><span>Zones d’irrigation</span><span>{g.irrigation_zones ?? '—'}</span><span>Fournaises</span><span>{g.num_furnaces ?? '—'}</span></>}</div></div>)}
+        {(resp.greenhouses || []).map((g, i) => <GreenhouseAnswers key={i} g={g} idx={i} form={form} permission={permission} root={resp} />)}
       </div>}
       {extras.items.length > 0 && !extrasResult && (
         <div className="mt-3 rounded-lg bg-blue-50 border border-blue-200 p-4">
@@ -949,6 +1246,95 @@ function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, perm
         </div>
       )}
     </Card>
+  )
+}
+
+// Relecture des réponses d'une serre : le résumé reprend TOUTES les questions
+// répondues (côtés, tuyaux, louvres, humidité, fournaises, irrigation, questions
+// ajoutées), pas seulement les cinq premières. Une ligne n'apparaît que si elle
+// a une réponse — l'écran reste court quand le formulaire l'était.
+function GreenhouseAnswers({ g, idx, form, permission, root }) {
+  const cardPermission = g.permission_level || permission
+  const helperOnly = sideVentsOnly(cardPermission)
+  const chief = cardPermission === 'chief_grower'
+  const yn = v => typeof v === 'boolean' ? (v ? 'Oui' : 'Non') : null
+  const choice = (list, value) => value ? (form.opts(list).find(o => o.value === value)?.label || value) : null
+  const feet = v => !filled(v) ? null : v === DONT_KNOW ? DONT_KNOW : `${v} pi`
+  const rows = []
+  const row = (label, value) => { if (value != null && value !== '') rows.push([label, value]) }
+
+  row('Longueur', g.length_range === 'up_to_200' ? '200 pi ou moins' : feet(g.length))
+  row('Côtés ouvrants', g.has_side_vents === false ? 'Aucun' : filled(g.num_side_vent_motors) ? String(g.num_side_vent_motors) : yn(g.has_side_vents))
+  if (g.has_side_vents) {
+    row('Moteurs déjà en place', yn(g.has_existing_side_vent_motors))
+    if (g.has_existing_side_vent_motors) {
+      row('Marque des moteurs', g.side_vent_motor_brand)
+      row('Modèle des moteurs', g.side_vent_motor_model)
+    }
+    row('Hauteur des côtés', g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : feet(g.side_vent_height))
+    row('Tuyau de côté', choice('greenhouse.side_pipe_type_options', g.side_pipe_type))
+    row('Diamètre du tuyau', g.side_pipe_diameter?.replace(/^Autre:\s*/, ''))
+    row('Tuyaux guides', choice('greenhouse.guide_pipes_options', g.guide_pipes_state))
+    row('Diamètre des guides', g.guide_pipe_diameter?.replace(/^Autre:\s*/, ''))
+    if (g.wants_compatible_guide_pipes) row('Guides compatibles', 'À fournir')
+  }
+  if (!helperOnly) {
+    row('Louvres', g.has_louvers === false ? 'Aucune' : g.louvers?.length || null)
+    row('Ventilateurs', g.num_fans)
+    if (Number(g.num_fans) === 2) {
+      const hpRange = fansHpRangeValue(g)
+      row('Puissance des ventilateurs', FANS_HP_RANGE_OPTIONS.find(o => o.value === hpRange)?.label || (filled(hpRange) ? hpRange : null))
+    }
+    if (root.form_options?.humidity_retention) {
+      row('Valve d’humidité', yn(g.humidity_valve))
+      row('Ventilateurs HAF', g.humidity_haf ? g.humidity_haf_count : yn(g.humidity_haf))
+    }
+  }
+  if (chief) {
+    row('Fournaises', g.has_furnaces === false ? 'Aucune' : g.num_furnaces || null)
+    row('Zones d’irrigation', filled(g.irrigation_zones) ? g.irrigation_zones : null)
+    if (Number(g.irrigation_zones) > 0) {
+      row('Valves fournies par Orisha', yn(g.needs_orisha_valves))
+      row('Filage des valves', feet(g.valve_control_wire_feet))
+      if (g.needs_orisha_valves === false) {
+        row('Marque des valves', g.valve_brand)
+        row('Modèle des valves', g.valve_model)
+      }
+    }
+  }
+  const ctx = { record: g, custom: g.custom, root, rootCustom: root.custom_answers }
+  for (const section of chief ? ['greenhouse', 'greenhouse_chief'] : ['greenhouse']) {
+    for (const q of form.custom(section, ctx)) {
+      const v = g.custom?.[q.id]
+      if (v == null || v === '') continue
+      row(q.label, typeof v === 'boolean' ? (v ? 'Oui' : 'Non') : (q.options?.find(o => o.value === v)?.label ?? String(v)))
+    }
+  }
+
+  const louvers = !helperOnly && g.has_louvers ? (g.louvers || []) : []
+  const furnaces = chief && g.has_furnaces ? (g.furnaces || []) : []
+  const sub = (title, items) => <div className="mt-2 border-t border-slate-200 pt-2">
+    <p className="font-medium text-slate-900">{title}</p>
+    <div className="mt-1 grid grid-cols-2 gap-1 text-xs">{items.map(([l, v], i) => <Fragment key={i}><span>{l}</span><span>{v}</span></Fragment>)}</div>
+  </div>
+
+  return (
+    <div className="rounded-lg bg-slate-50 p-3">
+      <p className="font-medium text-slate-900">Serre #{idx + 1}</p>
+      <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
+        {rows.map(([label, value], i) => <Fragment key={i}><span>{label}</span><span>{value}</span></Fragment>)}
+      </div>
+      {louvers.map((l, i) => sub(`Louvre #${i + 1}`, [
+        ['Commande', choice('louvers.types', louverComboValue(l)) || louverSummary(l) || '—'],
+        ['Ventilateur associé', yn(l.has_fan) || '—'],
+      ]))}
+      {furnaces.map((f, i) => sub(`Fournaise #${i + 1}`, [
+        ['Marque', f.brand || '—'],
+        ['Modèle', (f.model === 'Autre' ? f.model_other : f.model) || '—'],
+        ['Filage', feet(f.control_wire_feet) || '—'],
+        ['Thermostat de secours', yn(f.backup_thermostat) || '—'],
+      ]))}
+    </div>
   )
 }
 

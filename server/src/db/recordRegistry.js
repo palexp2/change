@@ -162,6 +162,29 @@ export const RECORD_REGISTRY = {
     },
   },
 
+  // Constatations de revenus perçus d'avance : une ligne par (facture, mois).
+  // Sa présence marque le mois comme constaté — la page ne le repropose plus.
+  // La création passe par la comptabilisation (services/deferredRevenue.js) ;
+  // ce qui reste ouvert ici, c'est la correction manuelle d'une ligne (montant,
+  // note) et sa suppression pour reproposer le mois.
+  deferred_revenue_recognitions: {
+    table: 'deferred_revenue_recognitions',
+    idColumn: 'id',
+    softDelete: true,
+    touchUpdatedAt: true,
+    allowed: ['amount_cad', 'note', 'revenue_acctnum', 'deferral_acctnum'],
+    nonNullable: new Set(),
+    coerce: {},
+    insertable: ['facture_id', 'month', 'amount_cad', 'amount_native', 'currency',
+      'exchange_rate', 'fx_source', 'deferral_acctnum', 'revenue_acctnum', 'source', 'note'],
+    required: { facture_id: 'facture_id requis', month: 'month requis' },
+    defaults: { source: 'manuel' },
+    filters: ['month', 'facture_id'],
+    orderBy: 'month DESC, created_at DESC',
+    messages: { notFound: 'Constatation introuvable' },
+    deleteResponse: { ok: true },
+  },
+
   projects: {
     table: 'projects',
     idColumn: 'id',

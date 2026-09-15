@@ -7,7 +7,7 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { runPostImportHooks, autoMatchAccount, RECEIPT_BANK_MATCH_AUTOMATION_ID } from './bankReconciliation.js'
 import { isSystemAutomationActive } from './systemAutomations.js'
-import { syncItemTransactions, listItems, itemHealth } from '../connectors/plaid.js'
+import { syncItemTransactions, fetchItemBalances, listItems, itemHealth, requestTransactionsRefresh } from '../connectors/plaid.js'
 import { logSync } from './syncLog.js'
 import { TREASURY_BANK_ACCOUNT, recordBalance, checkBalanceVariance } from './treasury.js'
 
@@ -119,7 +119,7 @@ const BALANCE_MIN_AGE_MIN = 6 * 60
 // suivait le fichier « Maintien du solde disponible BNC », et c'est lui que la
 // projection attend : prendre `current` ferait crier le découvert tous les
 // jours. `current` ne sert que de repli pour un compte sans disponible.
-export function recordPlaidBalance(balances) {
+export function recordPlaidBalance(balances, { minAgeMinutes = BALANCE_MIN_AGE_MIN } = {}) {
   const account = db.prepare(
     'SELECT id, plaid_account_id FROM bank_accounts WHERE name=? AND deleted_at IS NULL'
   ).get(TREASURY_BANK_ACCOUNT)
@@ -129,16 +129,49 @@ export function recordPlaidBalance(balances) {
   // retombe sur `current` quand la banque ne le donne pas.
   const balance = row?.available ?? row?.current
   if (balance == null) return null
-  const { entry, skipped } = recordBalance({ balance, source: 'plaid', minAgeMinutes: BALANCE_MIN_AGE_MIN })
+  const { entry, skipped } = recordBalance({ balance, source: 'plaid', minAgeMinutes })
   if (!skipped) checkBalanceVariance(entry.id, { trigger: 'solde Plaid' }).catch(() => {})
   return { balance, skipped, entry_id: entry.id }
 }
 
+// ── Lecture des transactions : coupée par défaut depuis le 2026-09-12 ───────
+// Constat de Charles, chiffré : sur les dix comptes mappés, un seul (BNC CAD)
+// recevait vraiment ses transactions, et plus rien depuis le 31 août. Le
+// fichier TRX_Orisha redevient donc la source des transactions pour TOUS les
+// comptes (services/bankTrxSheet.js) — et Plaid cesse d'écrire dans
+// bank_transactions, sinon chaque mouvement finirait en double (les deux
+// sources ne partagent pas leur clé de dédup).
+// Ce qui RESTE actif : le solde, que la projection de trésorerie lit
+// (recordPlaidBalance ci-dessus) — c'est la seule chose que Plaid livre bien.
+// Remettre `import_transactions` à '1' dans l'automation sys_plaid_sync
+// rallume la lecture des transactions ; le curseur n'a pas bougé entre-temps,
+// rien n'est perdu.
+export function plaidImportsTransactions() {
+  const row = db.prepare('SELECT action_config FROM automations WHERE id=?').get('sys_plaid_sync')
+  let cfg = {}
+  try { cfg = JSON.parse(row?.action_config || '{}') } catch {}
+  return String(cfg.import_transactions ?? '0').trim() === '1'
+}
+
 // Point d'entrée appelé par le webhook Plaid et par la sync manuelle : sync
 // l'item auprès de Plaid, mappe vers bank_transactions, journalise.
-export async function syncPlaidItem(itemId, trigger = 'webhook') {
+export async function syncPlaidItem(itemId, trigger = 'webhook', { balanceMinAgeMinutes } = {}) {
   const startedAt = Date.now()
   try {
+    // Transactions coupées : on ne lit QUE le solde, et surtout on ne fait pas
+    // avancer le curseur — de quoi tout relire le jour où Plaid redeviendrait
+    // fiable.
+    if (!plaidImportsTransactions()) {
+      const { balances } = await fetchItemBalances(itemId)
+      const result = { inserted: 0, touchedAccounts: [], transactions_disabled: true }
+      try {
+        result.balance = recordPlaidBalance(balances, balanceMinAgeMinutes == null ? {} : { minAgeMinutes: balanceMinAgeMinutes })
+      } catch (e) {
+        console.error('plaidSync.recordPlaidBalance:', e.message)
+      }
+      logSync('plaid', trigger, { status: 'success', modified: 0, durationMs: Date.now() - startedAt })
+      return result
+    }
     const { added, modified, removed, accounts, balances } = await syncItemTransactions(itemId)
     const accountsByPlaidId = new Map()
     for (const acc of accounts || []) {
@@ -147,7 +180,7 @@ export async function syncPlaidItem(itemId, trigger = 'webhook') {
     }
     const result = importPlaidTransactions(accountsByPlaidId, { added, modified, removed })
     try {
-      result.balance = recordPlaidBalance(balances)
+      result.balance = recordPlaidBalance(balances, balanceMinAgeMinutes == null ? {} : { minAgeMinutes: balanceMinAgeMinutes })
     } catch (e) {
       // Le solde ne doit jamais faire échouer la sync des transactions.
       console.error('plaidSync.recordPlaidBalance:', e.message)
@@ -158,6 +191,31 @@ export async function syncPlaidItem(itemId, trigger = 'webhook') {
     logSync('plaid', trigger, { status: 'error', error: e.message, durationMs: Date.now() - startedAt })
     throw e
   }
+}
+
+// ── Lecture du solde à la demande ───────────────────────────────────────────
+// Le passage planifié (30 min) tient le solde à jour tout seul, mais après un
+// virement on veut le chiffre MAINTENANT : ce bouton demande à Plaid
+// d'interroger la banque, relit l'item et note le solde sans l'anti-bruit de
+// 6 h — un clic est une demande explicite, il doit laisser une lecture datée.
+export async function refreshTreasuryBalance() {
+  const account = db.prepare(
+    'SELECT id, plaid_item_id FROM bank_accounts WHERE name=? AND deleted_at IS NULL'
+  ).get(TREASURY_BANK_ACCOUNT)
+  if (!account?.plaid_item_id) {
+    throw new Error(`${TREASURY_BANK_ACCOUNT} n'est pas relié à la banque`)
+  }
+  // Relecture refusée (produit non consenti, banque muette) : non bloquant, on
+  // lit quand même le dernier solde que Plaid détient.
+  let woke = true
+  try { await requestTransactionsRefresh(account.plaid_item_id) }
+  catch (e) {
+    woke = false
+    console.error('plaidSync.refreshTreasuryBalance/refresh:', e?.response?.data?.error_code || '', e?.response?.data?.error_message || e.message)
+  }
+  const result = await syncPlaidItem(account.plaid_item_id, 'manual', { balanceMinAgeMinutes: 0 })
+  if (!result.balance) throw new Error("La banque n'a pas donné de solde")
+  return { woke, balance: result.balance.balance, entry_id: result.balance.entry_id, inserted: result.inserted }
 }
 
 // ── Passage planifié ─────────────────────────────────────────────────────────

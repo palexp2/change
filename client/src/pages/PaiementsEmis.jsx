@@ -84,67 +84,6 @@ const inputXs = 'px-1.5 py-1 text-xs border border-slate-200 rounded-md w-full f
 const cellCls = 'px-1.5 py-1 text-sm bg-transparent border border-transparent rounded-md hover:border-slate-200 focus:bg-white focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-500/20'
 const stepCls = 'text-[11px] font-semibold uppercase tracking-wide text-slate-400 mb-2'
 
-// ── Colonnes ajustables, largeur mémorisée ──────────────────────────────────
-// Comme dans un vrai tableur : on tire le bord d'une colonne, et la largeur
-// choisie reste d'une visite à l'autre (localStorage — pas besoin de mémoriser
-// ça côté serveur, c'est une préférence d'affichage par personne/poste).
-const PAYMENT_COLUMNS = [
-  { key: 'created', label: 'Date du jour', default: 84 },
-  { key: 'invoiceDate', label: 'Date de la facture', default: 116 },
-  { key: 'paymentDate', label: 'Date du Pmt', default: 116 },
-  { key: 'reference', label: '# Paiement', default: 104 },
-  { key: 'vendor', label: 'Fournisseur', default: 220 },
-  { key: 'invoiceNumber', label: '# Facture', default: 144 },
-  { key: 'amount', label: 'Montant', default: 112 },
-  { key: 'notes', label: 'Commentaire', default: 176 },
-]
-const COL_WIDTHS_STORAGE_KEY = 'paymentsEmis.colWidths.v1'
-const MIN_COL_WIDTH = 56
-
-function useColumnWidths(columns, storageKey) {
-  const [widths, setWidths] = useState(() => {
-    const defaults = Object.fromEntries(columns.map(c => [c.key, c.default]))
-    try {
-      const saved = JSON.parse(localStorage.getItem(storageKey) || '{}')
-      return { ...defaults, ...saved }
-    } catch { return defaults }
-  })
-  // Poignée de redimensionnement : suit la souris pendant le drag (état local,
-  // pas d'écriture disque à chaque pixel) et ne persiste qu'au relâchement.
-  const startResize = useCallback((key) => (e) => {
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = widths[key]
-    const onMove = (ev) => {
-      const w = Math.max(MIN_COL_WIDTH, Math.round(startW + (ev.clientX - startX)))
-      setWidths(prev => ({ ...prev, [key]: w }))
-    }
-    const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-      setWidths(prev => {
-        try { localStorage.setItem(storageKey, JSON.stringify(prev)) } catch {}
-        return prev
-      })
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }, [widths, storageKey])
-  return [widths, startResize]
-}
-
-// En-tête de colonne avec poignée de redimensionnement sur son bord droit.
-function ResizableTh({ label, width, onResizeStart }) {
-  return (
-    <span className="relative shrink-0 pr-2 select-none" style={{ width }}>
-      {label}
-      <span onMouseDown={onResizeStart}
-        title="Glisser pour ajuster la largeur de la colonne"
-        className="absolute right-0 top-1/2 -translate-y-1/2 w-2.5 h-4 cursor-col-resize rounded hover:bg-brand-200/70 active:bg-brand-300" />
-    </span>
-  )
-}
-
 // Clé de rapprochement des noms de fournisseurs (même normalisation que côté
 // serveur) : « Les Jardins d'Inverness » et « les jardins d inverness » = pareil.
 const vendorKey = s => String(s || '')
@@ -178,18 +117,13 @@ function Field({ label, hint, className = '', as = 'label', children }) {
   )
 }
 
-// Ligne éditable en autosave : chaque champ se sauvegarde au blur (règle de
-// design ERP — aucun bouton « Enregistrer »).
-//
-// Une ligne = une rangée de tableur, dans le même ordre que l'onglet Pmt_Suivi
-// du fichier CTB - Suivi qui a inspiré la page : Date du jour · Date de la
-// facture · Date du Pmt · # Paiement · Fournisseur · # Facture · Montant ·
-// Commentaire. Le Montant se colore en vert une fois passé à la banque — le
-// même signal que le fichier, où c'était la seule marque d'état. Le reste
-// (sens du mouvement, comptes, bénéficiaire réel) n'a pas d'équivalent dans le
-// fichier : ça reste de la donnée de SAISIE derrière le chevron, pas une
-// colonne de plus.
-function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths }) {
+// Une ligne du fil. Ce qui se lit d'un coup d'œil tient sur une seule rangée :
+// l'état (la pastille, seul geste de la ligne), le fournisseur, la manière de
+// payer, le montant. Tout le reste — dates, références, comptes, bénéficiaire,
+// commentaire — vit dans le détail qui s'ouvre dessous. La couleur du fond dit
+// l'état, comme au rapprochement bancaire : ambre = émis mais l'argent n'est
+// pas sorti, vert = passé à la banque.
+function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
   const { addToast } = useToast()
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
@@ -223,19 +157,27 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
   // L'autre compte n'a de sens que pour un mouvement interne — on le montre aussi
   // dès qu'il est renseigné, pour ne jamais cacher une donnée existante.
   const showCounterparty = sp.transfer || !!p.counterparty_account
+  // La deuxième information de la rangée : COMMENT l'argent est parti. Pour un
+  // mouvement interne c'est le trajet entre les deux comptes qui porte le sens,
+  // pas le moyen (« entre comptes » ne dit rien de plus que la colonne).
+  const sides = transferSides(p)
+  const meta = sp.transfer
+    ? `${sides.from || '—'} → ${sides.to || '—'}`
+    : [sp.label, p.reference].filter(Boolean).join(' · ')
   return (
-    <div className={`group border-t border-slate-100 ${busy || saving ? 'opacity-60' : ''} ${cleared ? 'bg-emerald-50/30' : ''}`}
-      data-testid={`payment-row-${p.id}`}>
-      <div className="flex items-center gap-1.5 px-3 py-1">
-        {/* Le bouton porte tout le sens de la page : coché = l'argent est sorti
-            du compte, plus rien à projeter. Re-cliquer le remet dans la projection.
-            Pas de libellé — c'est l'icône et la couleur qui portent l'état, comme
-            le vert du fichier Pmt_Suivi ; le titre détaille l'état et la source. */}
+    <div data-testid={`payment-row-${p.id}`}
+      className={`rounded-lg transition-colors ${busy || saving ? 'opacity-60' : ''} ${cleared
+        ? 'bg-emerald-50/70 hover:bg-emerald-100/60'
+        : 'bg-amber-50/70 hover:bg-amber-100/50'}`}>
+      <div className="group flex items-center gap-2 px-2 py-1.5">
+        {/* La pastille porte tout le sens de la page : cochée = l'argent est
+            sorti du compte, plus rien à projeter. Re-cliquer le remet dans la
+            projection. */}
         <button type="button" onClick={toggleCleared} aria-pressed={cleared}
           data-testid={`payment-cleared-${p.id}`}
           className={`shrink-0 inline-flex items-center justify-center w-6 h-6 rounded-md border transition-colors ${cleared
             ? 'border-emerald-200 bg-emerald-100 text-emerald-700 hover:bg-emerald-200/70'
-            : 'border-slate-200 bg-white text-slate-400 hover:border-emerald-300 hover:text-emerald-700'}`}
+            : 'border-amber-200 bg-white text-amber-600 hover:border-emerald-300 hover:text-emerald-700'}`}
           title={cleared
             ? `Passé à la banque${p.cleared_source === 'qb'
               ? ' · détecté dans QuickBooks (écriture compensée au compte bancaire)'
@@ -250,38 +192,12 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
           {cleared ? <CheckCircle2 size={14} /> : <Circle size={14} />}
         </button>
 
-        {/* Date du jour : lecture seule, c'est la date de saisie du paiement dans
-            l'ERP — l'équivalent de la colonne du même nom dans Pmt_Suivi. */}
-        <span className="shrink-0 text-xs text-slate-400 tabular-nums" style={{ width: widths.created }} title="Date du jour (saisie)">
-          {fmtIso(p.created_at)}
-        </span>
-
-        {/* Date de la facture : dès qu'une facture est liée, sa vraie date
-            (TxnDate QuickBooks) s'affiche en lecture seule — plus la peine de
-            la retaper, et rien à désynchroniser. Sans lien (virement, import
-            historique), elle reste saisissable ; le serveur tente d'abord de
-            la retrouver chez QuickBooks par n° de facture. */}
-        {p.achat_id
-          ? <span className="shrink-0 text-xs text-slate-400 tabular-nums" style={{ width: widths.invoiceDate }}
-              title="Date de la facture liée — synchronisée depuis QuickBooks, non modifiable ici">
-              {fmtIso(p.invoice_date)}
-            </span>
-          : <input type="date" defaultValue={p.invoice_date ? String(p.invoice_date).slice(0, 10) : ''}
-              className={`${cellCls} shrink-0 text-slate-500 tabular-nums`} style={{ width: widths.invoiceDate }}
-              title="Date de la facture — remplie automatiquement depuis QuickBooks quand un n° de facture concorde, sinon à saisir"
-              onBlur={e => save('invoice_date', e.target.value || null)} />}
-
-        <input type="date" defaultValue={String(p.payment_date).slice(0, 10)}
-          className={`${cellCls} shrink-0 text-slate-500 tabular-nums`} style={{ width: widths.paymentDate }}
-          title={sp.dateLabel} onBlur={e => save('payment_date', e.target.value)} />
-
-        <input defaultValue={p.reference || ''} className={`${cellCls} shrink-0`} style={{ width: widths.reference }} title={sp.refLabel} data-testid={`payment-reference-${p.id}`}
-          onBlur={e => save('reference', e.target.value)} />
-
-        <span className="shrink-0 flex items-center gap-1.5" style={{ width: widths.vendor }}>
-          <input defaultValue={p.label || ''} className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`} onBlur={e => save('label', e.target.value)} />
-          {/* Particularité du fournisseur : signalée tant que le paiement n'est pas
-              passé — c'est en l'émettant qu'il ne faut pas l'oublier. */}
+        <span className="flex-1 min-w-0 flex items-center gap-1.5">
+          <input defaultValue={p.label || ''}
+            className={`${cellCls} flex-1 min-w-0 font-medium text-slate-800`}
+            onBlur={e => save('label', e.target.value)} />
+          {/* Particularité du fournisseur : signalée tant que le paiement n'est
+              pas passé — c'est en l'émettant qu'il ne faut pas l'oublier. */}
           {!cleared && particularites && (
             <span className="shrink-0 text-amber-500" title={particularites}
               data-testid={`payment-particularites-${p.id}`}>
@@ -290,65 +206,29 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
             </span>
           )}
           {/* Paiement émis pour une facture qui n'est pas encore due : symptôme
-              d'un faux clic dans la cédule. La facture ayant quitté la cédule,
-              c'est ici — et nulle part ailleurs — que l'erreur peut se voir
-              avant que la facture ne soit jamais payée. */}
+              d'un faux clic dans la cédule. */}
           {notYetDue && (
-            <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300 bg-amber-50 text-[11px] text-amber-800"
+            <span className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-amber-300 bg-white text-[11px] text-amber-800"
               data-testid={`payment-not-due-${p.id}`}
-              title={`La facture n'est due que le ${fmtDay(p.achat_due_date)}. Si elle n'a pas encore été payée, la retirer d'ici : elle reviendra dans « À payer (cédule) ».`}>
+              title={`La facture n'est due que le ${fmtDay(p.achat_due_date)}. Si elle n'a pas encore été payée, la retirer d'ici : elle reviendra dans « À payer ».`}>
               <AlertTriangle size={12} /> pas due avant le {fmtDay(p.achat_due_date)}
             </span>
           )}
         </span>
 
-        {/* # Facture : le lien vers la fiche ERP + QuickBooks quand le paiement
-            règle une facture connue, sinon une simple case à saisir. */}
-        <span className="shrink-0 text-xs" style={{ width: widths.invoiceNumber }}>
-          {p.achat_id
-            ? <span className="inline-flex items-center gap-1 min-w-0">
-              <Link to={`/fournisseurs/achats?id=${p.achat_id}`} className="shrink-0 p-0.5 -ml-0.5 rounded-md text-slate-300 hover:text-brand-600 hover:bg-brand-50"
-                data-testid={`payment-bill-link-${p.id}`}
-                title={`Facture ${p.achat_vendor || ''} ${p.achat_total ? fmtCad(p.achat_total, p.currency) : ''} · ${p.achat_status || ''} — ouvrir la fiche dans l'ERP`}>
-                <ReceiptText size={12} />
-              </Link>
-              {p.bill_qb_url
-                ? <a href={p.bill_qb_url} target="_blank" rel="noreferrer"
-                  className="min-w-0 inline-flex items-center gap-1 link-record"
-                  data-testid={`payment-bill-qb-${p.id}`}
-                  title="Ouvrir la facture dans QuickBooks">
-                  <span className="truncate">{p.invoice_number || p.achat_vendor || 'facture liée'}</span>
-                  <ExternalLink size={11} className="shrink-0 opacity-60" />
-                </a>
-                : <span className="min-w-0 truncate text-slate-500"
-                  data-testid={`payment-bill-qb-${p.id}`}
-                  title="Pas encore publiée dans QuickBooks — rien à ouvrir">
-                  {p.invoice_number || p.achat_vendor || 'facture liée'}
-                </span>}
-            </span>
-            : <input defaultValue={p.invoice_number || ''} className={`${cellCls} w-full`}
-              data-testid={`payment-invoice-${p.id}`}
-              onBlur={e => save('invoice_number', e.target.value.trim() || null)} />}
+        <span className="shrink-0 hidden sm:block max-w-[240px] truncate text-xs text-slate-500" title={meta}>
+          {meta}
         </span>
 
-        {/* Montant : coloré en vert une fois passé à la banque, comme la cellule
-            du fichier Pmt_Suivi — la seule marque d'état de l'onglet d'origine. */}
-        <span className="flex items-center gap-1 shrink-0">
-          <input inputMode="decimal" defaultValue={fmtNum(p.amount)}
-            className={`${cellCls} text-right tabular-nums font-medium ${cleared ? 'bg-emerald-50 text-emerald-700' : (p.direction === 'in' ? 'text-emerald-700' : 'text-slate-800')}`}
-            style={{ width: widths.amount }}
-            title="Montant" onBlur={e => save('amount', parseAmount(e.target.value))} />
-          <span className="w-8 text-[11px] text-slate-400">{(p.currency || 'CAD') !== 'CAD' ? p.currency : ''}</span>
+        <span className={`shrink-0 w-28 text-right text-sm font-medium tabular-nums ${p.direction === 'in' ? 'text-emerald-700' : 'text-slate-800'}`}
+          title={cleared ? 'Passé à la banque' : 'Pas encore sorti du compte'}>
+          {p.direction === 'in' ? '+' : ''}{fmtCad(p.amount, p.currency)}
         </span>
-
-        <input defaultValue={p.notes || ''} className={`${cellCls} shrink-0`} style={{ width: widths.notes }} data-testid={`payment-notes-${p.id}`}
-          title="Mémorisé sur le profil du fournisseur et re-proposé au prochain paiement"
-          onBlur={e => save('notes', e.target.value.trim() || null)} />
 
         <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open}
           data-testid={`payment-expand-${p.id}`}
-          className={`shrink-0 p-1 rounded-md text-slate-300 hover:text-slate-600 hover:bg-slate-100 ${open ? 'text-slate-600' : ''}`}
-          title={open ? 'Masquer le détail' : 'Détail : sens, comptes, références, note'}>
+          className={`shrink-0 p-1 rounded-md text-slate-300 hover:text-slate-600 hover:bg-white/70 ${open ? 'text-slate-600' : ''}`}
+          title={open ? 'Masquer le détail' : 'Détail : dates, références, comptes, commentaire'}>
           <ChevronDown size={14} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
         </button>
         {/* Actions rares : révélées au survol de la ligne, jamais dans le chemin
@@ -366,8 +246,59 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
       </div>
 
       {open && (
-        <div className="px-3 pb-3 pt-1 border-t border-slate-100 bg-slate-50/60" data-testid={`payment-details-${p.id}`}>
+        <div className="px-3 pb-3 pt-1 border-t border-white/70 bg-white/50" data-testid={`payment-details-${p.id}`}>
           <div className="grid gap-x-3 gap-y-2 grid-cols-2 md:grid-cols-4">
+            <Field label={sp.dateLabel || 'Date du paiement'}>
+              <input type="date" defaultValue={String(p.payment_date).slice(0, 10)} className={inputXs}
+                onBlur={e => save('payment_date', e.target.value)} />
+            </Field>
+            {/* Date de la facture : dès qu'une facture est liée, sa vraie date
+                (TxnDate QuickBooks) s'affiche en lecture seule — plus la peine
+                de la retaper, et rien à désynchroniser. */}
+            <Field as="div" label="Date de la facture">
+              {p.achat_id
+                ? <span className="block px-1.5 py-1 text-xs text-slate-500 tabular-nums"
+                    title="Date de la facture liée — synchronisée depuis QuickBooks, non modifiable ici">
+                    {fmtIso(p.invoice_date)}
+                  </span>
+                : <input type="date" defaultValue={p.invoice_date ? String(p.invoice_date).slice(0, 10) : ''}
+                    className={inputXs}
+                    title="Remplie automatiquement depuis QuickBooks quand un n° de facture concorde"
+                    onBlur={e => save('invoice_date', e.target.value || null)} />}
+            </Field>
+            <Field label={sp.refLabel || 'Référence'}>
+              <input defaultValue={p.reference || ''} className={inputXs} data-testid={`payment-reference-${p.id}`}
+                onBlur={e => save('reference', e.target.value)} />
+            </Field>
+            <Field as="div" label="N° de facture">
+              {p.achat_id
+                ? <span className="flex items-center gap-1 min-w-0 px-1.5 py-1 text-xs">
+                  <Link to={`/fournisseurs/achats?id=${p.achat_id}`} className="shrink-0 rounded-md text-slate-300 hover:text-brand-600"
+                    data-testid={`payment-bill-link-${p.id}`}
+                    title={`Facture ${p.achat_vendor || ''} ${p.achat_total ? fmtCad(p.achat_total, p.currency) : ''} · ${p.achat_status || ''} — ouvrir la fiche dans l'ERP`}>
+                    <ReceiptText size={12} />
+                  </Link>
+                  {p.bill_qb_url
+                    ? <a href={p.bill_qb_url} target="_blank" rel="noreferrer"
+                      className="min-w-0 inline-flex items-center gap-1 link-record"
+                      data-testid={`payment-bill-qb-${p.id}`} title="Ouvrir la facture dans QuickBooks">
+                      <span className="truncate">{p.invoice_number || p.achat_vendor || 'facture liée'}</span>
+                      <ExternalLink size={11} className="shrink-0 opacity-60" />
+                    </a>
+                    : <span className="min-w-0 truncate text-slate-500" data-testid={`payment-bill-qb-${p.id}`}
+                      title="Pas encore publiée dans QuickBooks — rien à ouvrir">
+                      {p.invoice_number || p.achat_vendor || 'facture liée'}
+                    </span>}
+                </span>
+                : <input defaultValue={p.invoice_number || ''} className={inputXs}
+                  data-testid={`payment-invoice-${p.id}`}
+                  onBlur={e => save('invoice_number', e.target.value.trim() || null)} />}
+            </Field>
+            <Field label="Montant">
+              <input inputMode="decimal" defaultValue={fmtNum(p.amount)}
+                className={`${inputXs} text-right tabular-nums`}
+                onBlur={e => save('amount', parseAmount(e.target.value))} />
+            </Field>
             <Field as="div" label="Moyen de paiement">
               <select defaultValue={p.method || 'autre'} className={inputXs}
                 onChange={e => save('method', e.target.value)}>
@@ -406,9 +337,12 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites, widths })
                   onBlur={e => save('recipient', e.target.value.trim() || null)} />
               </Field>
             )}
+            <Field label="Commentaire" className="col-span-2">
+              <input defaultValue={p.notes || ''} className={inputXs} data-testid={`payment-notes-${p.id}`}
+                title="Mémorisé sur le profil du fournisseur et re-proposé au prochain paiement"
+                onBlur={e => save('notes', e.target.value.trim() || null)} />
+            </Field>
           </div>
-          {/* Référence, # facture et commentaire vivent maintenant dans la ligne
-              elle-même — colonnes de Pmt_Suivi, pas de la donnée de détail. */}
           {(!cleared && particularites) && (
             <p className="mt-2 flex items-start gap-1.5 text-[11px] leading-snug text-amber-700">
               <AlertTriangle size={12} className="shrink-0 mt-px" /> {particularites}
@@ -1215,17 +1149,18 @@ function PageMenu({ items }) {
 
 export default function PaiementsEmis() {
   const { addToast } = useToast()
-  // Onglet piloté par l'URL (?onglet=) : partageable, et le sous-menu de la
-  // sidebar peut y sauter même quand la page est déjà affichée.
+  // Plus d'onglets : une seule page, un seul fil. La légende pose un filtre
+  // (?pile=), partageable et rappelable par le sous-menu de la sidebar. Les
+  // anciens liens ?onglet=cedule retombent naturellement sur « à payer », qui
+  // est maintenant le HAUT du fil et non plus un écran séparé.
   const [params, setParams] = useSearchParams()
-  // 'cedule' = la sous-vue « À payer » : ce qu'on décide de payer cette semaine
-  // (factures ouvertes), avant que ça devienne un paiement émis.
-  const TAB_KEYS = ['cedule', 'pending', 'cleared', 'all']
-  const tab = TAB_KEYS.includes(params.get('onglet')) ? params.get('onglet') : 'pending'
-  const setTab = (v) => setParams({ onglet: v }, { replace: true })
+  const PILES = ['apayer', 'envol', 'passes']
+  const legacy = params.get('onglet')
+  const pile = PILES.includes(params.get('pile'))
+    ? params.get('pile')
+    : (legacy === 'cedule' ? 'apayer' : legacy === 'pending' ? 'envol' : legacy === 'cleared' ? 'passes' : null)
+  const setPile = (v) => setParams(v ? { pile: v } : {}, { replace: true })
   const [rows, setRows] = useState([])
-  // Largeur des colonnes de la liste, ajustable et mémorisée (localStorage).
-  const [colWidths, startColResize] = useColumnWidths(PAYMENT_COLUMNS, COL_WIDTHS_STORAGE_KEY)
   // Mémoire par fournisseur (dernière note / moyen / compte) : chargée une fois,
   // rafraîchie après chaque ajout puisqu'un nouveau paiement l'enrichit.
   const [hints, setHints] = useState([])
@@ -1241,14 +1176,24 @@ export default function PaiementsEmis() {
   // ligne de flottaison.
   const [formOpen, setFormOpen] = useState(false)
 
+  // Une seule requête, tous états confondus : le fil montre ensemble ce qui est
+  // en vol et ce qui est passé, et les compteurs de la légende ne bougent pas
+  // quand on filtre.
   const load = useCallback(() => {
-    if (tab === 'cedule') { setLoading(false); return }
     setLoading(true)
-    api.treasury.payments.list({ status: tab, limit: tab === 'all' ? 500 : 300 })
+    api.treasury.payments.list({ status: 'all', limit: 500 })
       .then(setRows).catch(e => addToast({ message: e.message, type: 'error' }))
       .finally(() => setLoading(false))
-  }, [tab, addToast])
+  }, [addToast])
   useEffect(() => { load() }, [load])
+
+  // Le haut du fil (ce qui reste à payer) et le panneau « cette semaine » lisent
+  // la même cédule que la sous-vue d'avant : totaux, solde BNC, solde après.
+  const [schedule, setSchedule] = useState(null)
+  const loadSchedule = useCallback(() => {
+    api.treasury.schedule.get().then(setSchedule).catch(() => setSchedule(null))
+  }, [])
+  useEffect(() => { loadSchedule() }, [loadSchedule])
 
   const loadMemory = useCallback(() => {
     api.treasury.payments.vendorHints().then(setHints).catch(() => setHints([]))
@@ -1409,6 +1354,41 @@ export default function PaiementsEmis() {
     finally { setQbBusy(false) }
   }
 
+  // Le fil : les paiements émis groupés par jour de paiement, du plus récent au
+  // plus ancien. Un jour = un repère sur le fil, ses paiements dessous.
+  const days = useMemo(() => {
+    const keep = rows.filter(p => (pile === 'envol' ? !p.cleared_at : pile === 'passes' ? !!p.cleared_at : true))
+    const by = new Map()
+    for (const p of keep) {
+      const d = String(p.payment_date || '').slice(0, 10)
+      if (!by.has(d)) by.set(d, [])
+      by.get(d).push(p)
+    }
+    return [...by.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1))
+  }, [rows, pile])
+
+  // Compteurs de la légende : calculés sur TOUT, jamais sur ce qui est filtré.
+  const counts = useMemo(() => ({
+    apayer: (schedule?.counts?.late || 0) + (schedule?.counts?.week || 0),
+    envol: rows.filter(p => !p.cleared_at).length,
+    passes: rows.filter(p => !!p.cleared_at).length,
+  }), [rows, schedule])
+
+  const chip = (key, label, hint, swatch, n) => (
+    <button type="button" key={key} data-testid={`payments-pile-${key}`}
+      aria-pressed={pile === key} title={hint} disabled={n === 0}
+      onClick={() => setPile(pile === key ? null : key)}
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-default ${pile === key
+        ? 'bg-slate-100 ring-1 ring-slate-300 text-slate-900 font-medium'
+        : 'text-slate-500 hover:bg-slate-50'}`}>
+      <span className={`w-2.5 h-2.5 rounded-[3px] ${swatch}`} />
+      <span className="tabular-nums">{n}</span>
+      <span>{label}</span>
+    </button>
+  )
+
+  const bal = schedule?.balance || null
+
   return (
     <Layout>
       <div className="max-w-7xl mx-auto px-6 py-6">
@@ -1416,26 +1396,23 @@ export default function PaiementsEmis() {
           <div className="min-w-0">
             <PageTitle>Paiements et virements émis</PageTitle>
             <p className="text-sm text-slate-500 mt-0.5">
-              Tant qu'un paiement n'est pas passé à la banque, il pèse sur la{' '}
-              <Link to="/comptabilite" className="link-record">projection du solde</Link>.
+              À payer, en vol, passés — dans l'ordre où l'argent quitte le{' '}
+              <Link to="/comptabilite" className="link-record">compte</Link>.
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {tab !== 'cedule' && (
-              <button onClick={() => setFormOpen(o => !o)} data-testid="payment-new-toggle" aria-expanded={formOpen}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg">
-                <Plus size={15} /> Nouveau paiement
-                {!!bills.length && (
-                  <span className="px-1.5 rounded-full bg-white/25 text-[11px] tabular-nums"
-                    title={`${bills.length} facture(s) fournisseur encore à payer`}>{bills.length}</span>
-                )}
-              </button>
-            )}
+            <button onClick={() => setFormOpen(o => !o)} data-testid="payment-new-toggle" aria-expanded={formOpen}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg">
+              <Plus size={15} /> Nouveau paiement
+              {!!bills.length && (
+                <span className="px-1.5 rounded-full bg-white/25 text-[11px] tabular-nums"
+                  title={`${bills.length} facture(s) fournisseur encore à payer`}>{bills.length}</span>
+              )}
+            </button>
             {/* La feuille se relit toute seule aux 30 min, mais ce bouton reste
                 la porte manuelle : demande explicite de Charles, il doit se voir
                 comme un bouton (fond blanc, bordure franche, libellé TOUJOURS
-                affiché) et rester dans la barre d'actions de tous les onglets.
-                Ne pas le repasser en bouton fantôme ni le mettre dans « ⋯ ». */}
+                affiché). Ne pas le repasser en bouton fantôme ni le mettre dans « ⋯ ». */}
             <button onClick={syncSheet} disabled={sheetBusy} data-testid="payments-sync-sheet"
               title={`Relire maintenant l'onglet Pmt_Suivi du fichier « CTB - Suivi » et reprendre les paiements ajoutés dans le fichier${
                 sheetStatus?.active === false
@@ -1446,13 +1423,15 @@ export default function PaiementsEmis() {
               <RefreshCw size={14} className={sheetBusy ? 'animate-spin' : ''} />
               <span>{sheetBusy ? 'Synchronisation…' : 'Synchroniser la feuille'}</span>
             </button>
-            <button onClick={importQbBills} disabled={qbImportBusy} data-testid="payments-qb-import"
-              title="Importer maintenant les factures fournisseurs comptabilisées dans QuickBooks — sans attendre la synchronisation automatique (toutes les 2 minutes)"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 shadow-sm hover:bg-slate-50 hover:border-slate-400 rounded-lg disabled:opacity-50">
-              <RefreshCw size={14} className={qbImportBusy ? 'animate-spin' : ''} />
-              <span>{qbImportBusy ? 'Importation…' : 'Importer depuis QB'}</span>
-            </button>
             <PageMenu items={[
+              {
+                label: 'Importer les factures de QuickBooks',
+                testId: 'payments-qb-import',
+                icon: <RefreshCw size={14} className="text-slate-400" />,
+                disabled: qbImportBusy,
+                title: 'Importer maintenant les factures fournisseurs comptabilisées dans QuickBooks',
+                onClick: importQbBills,
+              },
               {
                 label: 'Apparier au relevé bancaire',
                 testId: 'payments-auto-clear',
@@ -1467,8 +1446,7 @@ export default function PaiementsEmis() {
 
         {/* Ce que QuickBooks dit passé à la banque et qui demande un arbitrage.
             Rien à confirmer = une seule ligne grise : le cas normal ne doit rien
-            coûter à lire. Juste au-dessus, la même forme pour la relecture
-            automatique de la feuille (état, pas action). */}
+            coûter à lire. */}
         <div className="mt-3 space-y-1">
           <SheetSyncStatus status={sheetStatus} />
           <QbClearPanel candidates={qb.candidates} lastRun={qb.last_run} busy={qbBusy}
@@ -1476,77 +1454,110 @@ export default function PaiementsEmis() {
         </div>
 
         {/* Formulaire + factures à payer côte à côte : on pioche une facture à
-            droite, le formulaire se remplit à gauche. Empilés sur petit écran.
-            Masqués dans la cédule : là-bas, cocher une facture EST la saisie. */}
-        {tab !== 'cedule' && formOpen && (
+            droite, le formulaire se remplit à gauche. */}
+        {formOpen && (
           <div className="mt-3 flex flex-col xl:flex-row items-start gap-4">
             <div className="flex-1 min-w-0 w-full">
               <NewPaymentForm hints={hints} templates={templates} accounts={accounts} bills={bills} prefill={prefill}
                 onClose={() => setFormOpen(false)}
-                onCreated={() => { load(); loadMemory(); loadBills() }} />
+                onCreated={() => { load(); loadMemory(); loadBills(); loadSchedule() }} />
             </div>
             <OpenBillsPanel bills={bills} particByKey={particByKey} onPick={pickBill} />
           </div>
         )}
 
-        <div className="flex items-center gap-1 mt-4 mb-3 border-b border-slate-200">
-          {[{ v: 'cedule', label: 'À payer (cédule)' }, { v: 'pending', label: 'À passer à la banque' }, { v: 'cleared', label: 'Passés' }, { v: 'all', label: 'Tous' }].map(t => (
-            <button key={t.v} onClick={() => setTab(t.v)} data-testid={`payments-tab-${t.v}`}
-              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${tab === t.v ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
-              {t.label}
-            </button>
-          ))}
-          {tab === 'pending' && !!rows.length && (
-            <span className="ml-auto text-sm text-slate-500 pb-2" data-testid="payments-pending-total">
+        {/* La légende remplace les onglets : elle compte et elle filtre. */}
+        <div className="flex items-center gap-x-0.5 flex-wrap mt-4 mb-3 py-1 border-b border-slate-200">
+          {chip('apayer', 'à payer', 'Factures ouvertes de la séance — pas encore payées', 'border border-dashed border-slate-400', counts.apayer)}
+          {chip('envol', 'en vol', "Émis, mais l'argent n'est pas encore sorti du compte", 'bg-amber-100 border border-amber-400', counts.envol)}
+          {chip('passes', 'passés', 'Retrouvés au relevé — plus rien à faire', 'bg-emerald-100 border border-emerald-500', counts.passes)}
+          {!!pendingTotal && (
+            <span className="ml-auto text-sm text-slate-500 pb-1" data-testid="payments-pending-total">
               Effet net sur le {PROJECTED_ACCOUNT} :{' '}
               <span className={`tabular-nums font-medium ${pendingTotal < 0 ? 'text-rose-600' : 'text-emerald-700'}`}>{fmtCad(pendingTotal)}</span>
             </span>
           )}
         </div>
 
-        {/* Cédule de la semaine : les factures à payer, pas encore des paiements. */}
-        {tab === 'cedule' && <PaymentSchedule />}
+        <div className="flex flex-col lg:flex-row items-start gap-4">
+          <div className="flex-1 min-w-0 w-full">
+            {/* Le futur du fil : les factures qu'on décide de payer. Cocher une
+                ligne crée le paiement émis — il apparaît alors sous le repère
+                « aujourd'hui », dans le même fil. */}
+            {pile !== 'envol' && pile !== 'passes' && (
+              <div className="mb-5" data-testid="payments-a-payer">
+                <PaymentSchedule />
+              </div>
+            )}
 
-        {/* Une ligne par paiement, dans le même ordre de colonnes que l'onglet
-            Pmt_Suivi du fichier CTB - Suivi : Date du jour · Date de la facture ·
-            Date du Pmt · # Paiement · Fournisseur · # Facture · Montant ·
-            Commentaire. Chaque colonne se redimensionne (bord droit de l'en-tête)
-            et la largeur choisie est mémorisée (localStorage, par poste) — pas
-            besoin de la réajuster à chaque visite. Défilement horizontal plutôt
-            que colonnes cachées sur petit écran — c'est ainsi qu'un tableur se
-            comporte. Le détail de saisie (sens, comptes, bénéficiaire réel…)
-            s'ouvre à la demande sous la ligne. */}
-        {tab !== 'cedule' && (
-        <div className="rounded-xl border border-slate-200 bg-white overflow-x-auto">
-          <div className="w-max min-w-full">
-          {!!rows.length && (
-            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50/70 text-[11px] font-medium uppercase tracking-wide text-slate-400">
-              <span className="w-6 shrink-0" />
-              {PAYMENT_COLUMNS.filter(c => c.key !== 'amount' && c.key !== 'notes').map(c => (
-                <ResizableTh key={c.key} label={c.label} width={colWidths[c.key]} onResizeStart={startColResize(c.key)} />
-              ))}
-              <span className="flex items-center gap-1 shrink-0">
-                <ResizableTh label="Montant" width={colWidths.amount} onResizeStart={startColResize('amount')} />
-                <span className="w-8" />
-              </span>
-              <ResizableTh label="Commentaire" width={colWidths.notes} onResizeStart={startColResize('notes')} />
-              <span className="w-[22px] shrink-0" />
-              <span className="w-[52px] shrink-0" />
-            </div>
-          )}
-          {rows.map(p => (
-            <PaymentRow key={p.id} p={p} accounts={accounts} onChanged={load} onReuse={reuse}
-              particularites={particByKey.get(vendorKey(p.label))} widths={colWidths} />
-          ))}
-          {!loading && !rows.length && (
-            <p className="py-6 px-3 text-center text-sm text-slate-400">
-              {tab === 'pending' ? 'Tout est passé à la banque.' : 'Aucun paiement.'}
-            </p>
-          )}
-          {loading && <p className="py-6 px-3 text-center text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
+            {pile !== 'apayer' && (
+              <>
+                <div className="flex items-center gap-3 mb-3">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-brand-700">Aujourd'hui</span>
+                  <span className="flex-1 h-px bg-brand-300/50" />
+                </div>
+
+                <div className="relative pl-6">
+                  <span className="absolute left-[7px] top-2 bottom-2 w-px bg-slate-200" aria-hidden="true" />
+                  {days.map(([date, list]) => (
+                    <div key={date} className="relative mb-5">
+                      <span className="absolute -left-[22px] top-[7px] w-2 h-2 rounded-full bg-slate-300 ring-4 ring-white" aria-hidden="true" />
+                      <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
+                        {fmtDayLong(date)}
+                      </div>
+                      <div className="space-y-1">
+                        {list.map(p => (
+                          <PaymentRow key={p.id} p={p} accounts={accounts}
+                            onChanged={() => { load(); loadSchedule() }} onReuse={reuse}
+                            particularites={particByKey.get(vendorKey(p.label))} />
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {!loading && !days.length && (
+                    <p className="py-6 text-sm text-slate-400">
+                      {pile === 'envol' ? 'Tout est passé à la banque.' : 'Aucun paiement.'}
+                    </p>
+                  )}
+                  {loading && <p className="py-6 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
+                </div>
+              </>
+            )}
           </div>
+
+          {/* Ce qui va sortir du compte, et ce qu'il restera : le chiffre qui
+              justifie que la page existe, posé à côté du fil. */}
+          <aside className="w-full lg:w-64 shrink-0 rounded-xl border border-slate-200 bg-slate-50/60 p-3.5"
+            data-testid="payments-week-rail">
+            <h3 className="text-sm font-semibold text-slate-800">Cette semaine</h3>
+            <p className="text-xs text-slate-400 mb-2">Ce qui va sortir</p>
+            <dl className="text-xs">
+              <div className="flex justify-between gap-3 py-1.5 border-b border-dashed border-slate-200">
+                <dt className="text-slate-500">À payer</dt>
+                <dd className="tabular-nums text-slate-700">{fmtCad(schedule?.totals?.week_remaining_cad)}</dd>
+              </div>
+              <div className="flex justify-between gap-3 py-1.5 border-b border-dashed border-slate-200">
+                <dt className="text-slate-500">Émis, pas passé</dt>
+                <dd className="tabular-nums text-slate-700">{fmtCad(Math.abs(pendingTotal))}</dd>
+              </div>
+              <div className="flex justify-between gap-3 py-1.5 border-b border-dashed border-slate-200">
+                <dt className="text-slate-500">Solde {PROJECTED_ACCOUNT}</dt>
+                <dd className="tabular-nums text-slate-700">{bal?.available == null ? '—' : fmtCad(bal.available)}</dd>
+              </div>
+              <div className="flex justify-between gap-3 py-1.5">
+                <dt className="text-slate-500">Après tout</dt>
+                <dd className={`tabular-nums font-medium ${bal?.negative ? 'text-rose-600' : bal?.below_threshold ? 'text-amber-700' : 'text-emerald-700'}`}>
+                  {bal?.after_week == null ? '—' : fmtCad(bal.after_week)}
+                </dd>
+              </div>
+            </dl>
+            {bal?.stale && (
+              <p className="mt-2 text-[11px] leading-snug text-amber-700">
+                Le solde noté date — il se relit dans la feuille de suivi du solde.
+              </p>
+            )}
+          </aside>
         </div>
-        )}
       </div>
     </Layout>
   )

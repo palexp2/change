@@ -176,6 +176,13 @@ export function CurrencyConversionModal({ isOpen, onClose, receipt = null, onApp
       }
       const updated = await api.saleReceipts.update(receipt.id, {
         currency: targetCurrency,
+        // Trace de la conversion : les montants du dossier ne sont plus ceux du
+        // document. La publication s'y réfère pour refuser de reconvertir si la devise
+        // du dossier est remise à celle de la facture.
+        fx_converted_to: targetCurrency,
+        fx_converted_from: sourceCurrency,
+        fx_rate: rate,
+        fx_converted_at: new Date().toISOString(),
         subtotal: result.lines.subtotal,
         tps: result.lines.tps,
         tvq: result.lines.tvq,

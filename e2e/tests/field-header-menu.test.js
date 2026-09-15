@@ -17,7 +17,7 @@ const FIELD_NAME = `E2E Menu ${STAMP}`
 //   • chevron visible au survol, ouvert au clic GAUCHE ;
 //   • mêmes entrées partout : Modifier · Dupliquer · Insérer à gauche/droite ·
 //     Masquer · Supprimer ;
-//   • renommage EN LIGNE au double-clic sur l'en-tête (autosave) ;
+//   • double-clic sur l'en-tête = modale « Modifier le champ » (autosave) ;
 //   • suppression sans boîte de dialogue quand le champ n'a aucune dépendance,
 //     avec « Annuler » pendant 10 s.
 //
@@ -90,15 +90,19 @@ describe('Menu d\'en-tête de champ — unifié natif / personnalisé', () => {
     await page.mouse.click(5, 5)
   })
 
-  test('renommage en ligne au double-clic, sans modale ni bouton Enregistrer', async () => {
+  test('double-clic sur l\'en-tête : modale « Modifier le champ », renommage autosauvegardé', async () => {
     // Création par le « + » de l'en-tête : c'est le flux réel, et il place la
     // colonne dans la vue courante (l'auto-affichage ne joue que sur une
     // création vécue par la session — après un rechargement, un champ déjà
     // existant reste masqué tant que la vue ne le liste pas).
     await page.locator('button[aria-label="Ajouter un champ"]').first().click()
     await page.waitForSelector('text=Nouveau champ', { timeout: 5000 })
-    await page.fill('input[placeholder="ex: Priorité interne"]', FIELD_NAME)
-    await page.click('[data-testid="cf-type-text"]')
+    // Pas de placeholder dans les champs (règle produit) : on vise l'input du
+    // libellé « Nom ».
+    await page.fill('[role="dialog"] label:text-is("Nom") + input', FIELD_NAME)
+    // Type : un seul menu recherchable (« cf-type »), option « Texte ».
+    await page.click('[data-testid="cf-type"]')
+    await page.locator('[data-testid="cf-type-menu"] button', { hasText: 'Texte' }).first().click()
     await page.click('button[type="submit"]')
     await page.waitForSelector('text=Nouveau champ', { state: 'detached', timeout: 8000 })
 
@@ -112,17 +116,21 @@ describe('Menu d\'en-tête de champ — unifié natif / personnalisé', () => {
 
     const renamed = `${FIELD_NAME} renomme`
     await header.dblclick()
-    const input = page.locator(`[data-testid="col-rename-${createdColumnName}"]`)
+    // Le double-clic ouvre la modale d'édition du champ (partout dans l'app).
+    await page.waitForSelector('text=Modifier le champ', { timeout: 5000 })
+    const input = page.locator('[role="dialog"] label:text-is("Nom") + input').last()
     await input.waitFor({ timeout: 5000 })
     await input.fill(renamed)
-    await input.press('Enter')
+    // Autosave au blur : pas de bouton « Enregistrer » en édition.
+    await page.keyboard.press('Tab')
+    await page.keyboard.press('Escape')
 
     let ok = false
     for (let i = 0; i < 20 && !ok; i++) {
       ok = db.prepare('SELECT name FROM custom_fields WHERE id=?').get(createdFieldId)?.name === renamed
       if (!ok) await page.waitForTimeout(300)
     }
-    assert.ok(ok, 'le renommage en ligne doit être persisté sans bouton Enregistrer')
+    assert.ok(ok, 'le renommage fait dans la modale doit être persisté sans bouton Enregistrer')
   })
 
   test('duplication : structure + valeurs, posée juste à droite, sans lien externe', async () => {

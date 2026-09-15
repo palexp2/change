@@ -141,6 +141,26 @@ function balanceRows(accounts) {
   })).filter(b => b.current != null || b.available != null)
 }
 
+// Soldes SEULS, sans toucher au curseur de transactions : /accounts/get est
+// inclus dans le produit Transactions (aucun appel à Balance, facturé à
+// l'appel). Sert quand la lecture des transactions est coupée — le fichier
+// TRX_Orisha les fournit — alors que la projection de trésorerie a toujours
+// besoin du solde disponible. Lecture seule.
+export async function fetchItemBalances(itemId) {
+  const item = getItemRow(itemId)
+  if (!item) throw new Error(`Item Plaid inconnu : ${itemId}`)
+  const resp = await getClient().accountsGet({ access_token: item.accessToken })
+  const balances = balanceRows(resp.data.accounts)
+  const balanceAt = new Date().toISOString()
+  const byId = new Map(balances.map(b => [b.plaid_account_id, b]))
+  const accounts = (item.metadata.accounts || []).map(a => {
+    const b = byId.get(a.plaid_account_id)
+    return b ? { ...a, balance: b.current, balance_available: b.available, balance_at: balanceAt } : a
+  })
+  saveItemMeta(itemId, { ...item.metadata, accounts, last_synced_at: balanceAt, last_error: null })
+  return { accounts, balances, balanceAt }
+}
+
 export async function syncItemTransactions(itemId) {
   if (syncLocks.has(itemId)) return syncLocks.get(itemId)
   const promise = (async () => {

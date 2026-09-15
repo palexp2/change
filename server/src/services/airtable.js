@@ -528,7 +528,7 @@ export async function syncOrders(changes = null) {
 // Colonne ERP → clé du field_map des lignes de commande : le sens de sync se
 // règle par clé de mapping, l'UPDATE ci-dessous raisonne par colonne.
 const ITEM_KEY_BY_COLUMN = {
-  product_id: 'product', qty: 'qty', unit_cost: 'unit_cost', item_type: 'item_type', notes: 'notes',
+  product_id: 'product', qty: 'qty', item_type: 'item_type', notes: 'notes',
 }
 
 /**
@@ -575,7 +575,6 @@ export async function syncOrderItems(changes = null) {
             order:     autoMapField(rec.fields, 'order', 'commande', 'bon de commande'),
             product:   autoMapField(rec.fields, 'product', 'produit', 'pièce', 'piece', 'item'),
             qty:       autoMapField(rec.fields, 'qty', 'quantité', 'quantite', 'quantity'),
-            unit_cost: autoMapField(rec.fields, 'coût unitaire', 'cout', 'unit cost', 'prix unitaire'),
             item_type: autoMapField(rec.fields, 'type', 'item type', 'type item', 'facturable'),
             notes:     autoMapField(rec.fields, 'notes', 'commentaires'),
           }
@@ -608,7 +607,6 @@ export async function syncOrderItems(changes = null) {
         }
 
         const qty = parseInt(String(fm?.qty ? rec.fields[fm.qty] ?? 1 : 1)) || 1
-        const unitCost = parseFloat(String(fm?.unit_cost ? rec.fields[fm.unit_cost] ?? 0 : 0).replace(/[^0-9.-]/g, '')) || 0
         const rawType = (getVal(rec.fields, fm?.item_type) || '').trim()
         const ITEM_TYPES = ['Facturable', 'Remplacement', 'Non facturable']
         const itemType = ITEM_TYPES.find(t => t.toLowerCase() === rawType.toLowerCase()) || 'Facturable'
@@ -618,7 +616,7 @@ export async function syncOrderItems(changes = null) {
         if (existing) {
           // Les colonnes en 'push' sont retirées du UPDATE (jamais de l'INSERT :
           // une ligne qui arrive d'Airtable n'a pas encore de valeur ERP à protéger).
-          const sets = { product_id: productId, qty, unit_cost: unitCost, item_type: itemType, notes }
+          const sets = { product_id: productId, qty, item_type: itemType, notes }
           const cols = Object.keys(sets).filter(c => !pushOnly(ITEM_KEY_BY_COLUMN[c]))
           if (cols.length) {
             db.prepare(`UPDATE order_items SET ${cols.map(c => `${c}=?`).join(', ')} WHERE id=?`)
@@ -626,8 +624,8 @@ export async function syncOrderItems(changes = null) {
           }
           updated++
         } else {
-          db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, airtable_id) VALUES (?,?,?,?,?,?,?,?)')
-            .run(newRecordId(), order.id, productId, qty, unitCost, itemType, notes, rec.id)
+          db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes, airtable_id) VALUES (?,?,?,?,?,?,?)')
+            .run(newRecordId(), order.id, productId, qty, itemType, notes, rec.id)
           imported++
         }
       }

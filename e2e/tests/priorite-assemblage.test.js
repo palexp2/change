@@ -234,45 +234,11 @@ describe("Priorité d'assemblage", () => {
     }
   })
 
-  test('étape 5 : Commander crée un achat interne LIA-ERP (avec avertissement)', async () => {
-    await page.goto(URL + '/priorite-assemblage', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-testid="step-5"]', { timeout: 15000 })
-    await page.waitForFunction(() => {
-      const box = document.querySelector('[data-testid="step-5"]')
-      return box && !box.textContent.includes('Chargement')
-    }, { timeout: 20000 })
-
-    const rows = await page.locator('[data-testid="achat-row"]').count()
-    if (rows === 0) return // rien à commander
-
-    // Achats LIA-ERP existants avant (pour identifier le nouveau).
-    const before = await apiCall('GET', '/purchases?limit=all')
-    const beforeIds = new Set((before.json?.data || []).map(p => p.id))
-
-    // Ouvrir le mini-formulaire de la 1re pièce.
-    await page.locator('[data-testid="achat-commander"]').first().click()
-    await page.waitForSelector('[data-testid="commander-modal"]', { timeout: 5000 })
-
-    // Avertissement « interne ERP, PAS Airtable » présent.
-    const warn = await page.locator('[data-testid="commander-warning"]').innerText()
-    assert.match(warn, /interne dans l'ERP/)
-    assert.match(warn, /PAS dans Airtable/)
-
-    // Saisir une quantité et créer.
-    await page.fill('[data-testid="commander-modal"] input[type="number"]', '3')
-    await page.click('[data-testid="commander-submit"]')
-    await page.waitForSelector('[data-testid="commander-modal"]', { state: 'detached', timeout: 10000 })
-
-    // Vérifier qu'un achat a bien été créé, avec référence LIA-ERP-n et statut Commandé.
-    const after = await apiCall('GET', '/purchases?limit=all')
-    const created = (after.json?.data || []).filter(p => !beforeIds.has(p.id))
-    assert.equal(created.length, 1, 'exactement un achat créé')
-    const purchase = created[0]
-    createdPurchaseIds.push(purchase.id) // cleanup
-    assert.match(purchase.reference, /^LIA-ERP-\d+$/, `référence LIA-ERP (got ${purchase.reference})`)
-    assert.equal(purchase.status, 'Commandé')
-    assert.equal(purchase.qty_ordered, 3)
-  })
+  // Le test « Commander crée un achat interne LIA-ERP » a été retiré : le bouton
+  // n'existe plus. Un achat ne porte plus ni pièce, ni quantité commandée, ni
+  // référence — ces colonnes ont été droppées sur demande (migration 035), il n'y
+  // avait plus rien à écrire. L'étape 5 reste la liste des pièces à commander,
+  // avec le report (« Reporter »), couvert par le test précédent.
 
   test('chaque boîte est repliable via la flèche (collapse/expand)', async () => {
     await page.goto(URL + '/priorite-assemblage', { waitUntil: 'domcontentloaded' })

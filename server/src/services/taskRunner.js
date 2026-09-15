@@ -19,7 +19,7 @@ const TASKS_TMP     = TASKS_FILE + '.tmp'
 const DATA_DIR      = dirname(TASKS_FILE)
 const BACKLOG_FILE  = resolve(DATA_DIR, 'agent-backlog.json')
 const SETTINGS_FILE = resolve(DATA_DIR, 'agent-settings.json')
-// ─── Quatre files d'implémentation ────────────────────────────────────────────
+// ─── Deux files d'implémentation ──────────────────────────────────────────────
 // Les tâches d'implémentation sont réparties ALÉATOIREMENT en EXEC_LANES files ;
 // chaque file avance une tâche à la fois, donc jusqu'à EXEC_LANES chantiers
 // tournent ensemble.
@@ -30,11 +30,22 @@ const SETTINGS_FILE = resolve(DATA_DIR, 'agent-settings.json')
 // y survivent — chaque exécution est détachée et son résultat est durable, voir
 // runDetachedExecution). La répartition au hasard mise sur des chantiers de zones
 // différentes ; c'est le choix de l'utilisateur, pas une garantie du code.
-export const EXEC_LANES = 4
+//
+// Ramené de 4 à 2 le 2026-09-12 (demande de Pap) : quatre chantiers simultanés sur
+// le même arbre se marchaient dessus trop souvent, et se disputaient une machine à
+// 2 vCPU. Les files au-delà de la limite ne disparaissent pas d'un coup — voir
+// LEGACY_EXEC_LANES et la migration 055.
+export const EXEC_LANES = 2
+
+// Nombre de files jamais dépassé historiquement : les fichiers PID et les items en
+// file peuvent encore porter une file 2 ou 3 au moment où l'on réduit EXEC_LANES.
+// On continue donc de les RELIRE au démarrage (reprise/nettoyage), sans jamais y
+// démarrer de nouvelle exécution.
+const LEGACY_EXEC_LANES = 4
 
 // Un fichier PID PAR file d'implémentation. La file 0 garde le nom historique
-// `.agent-pid` : c'est celui que deploy.sh connaît (il consulte maintenant les
-// quatre avant de redémarrer le serveur).
+// `.agent-pid` : c'est celui que deploy.sh connaît (il les consulte toutes avant de
+// redémarrer le serveur).
 const EPID_FILE     = lane => resolve(fileURLToPath(import.meta.url), `../../../../.agent-pid${lane ? `-${lane}` : ''}`)
 // Voie lecture seule : un fichier PID PAR tâche (plusieurs questions tournent en
 // parallèle, un fichier unique serait écrasé et le suivi viserait le mauvais
@@ -80,7 +91,7 @@ function execTimeoutFor(model) { return model === 'codex' ? CODEX_EXEC_TIMEOUT_M
 // treekill de pm2), et un seul `systemctl --user kill` suffit à tout nettoyer.
 //
 // ⚠️ Recalibré au passage à EXEC_LANES files parallèles : le plafond d'UNE exécution
-// (3 Go) tenait parce qu'il n'y en avait qu'une. À quatre, c'est le TOTAL qui doit
+// (3 Go) tenait parce qu'il n'y en avait qu'une. À plusieurs, c'est le TOTAL qui doit
 // tenir dans la machine — d'où un budget global divisé par le nombre de files.
 // On garde ~2 Go au système, à erp-server et à nginx.
 const EXEC_MEMORY_BUDGET_MB = 6000
@@ -89,11 +100,11 @@ const EXEC_MEMORY_MAX  = `${Math.floor(EXEC_MEMORY_BUDGET_MB / EXEC_LANES)}M`   
 const EXEC_MEMORY_HIGH = `${Math.floor(EXEC_MEMORY_BUDGET_MB * 0.8 / EXEC_LANES)}M`  // throttling progressif avant le mur
 const EXEC_SWAP_MAX    = `${Math.floor(EXEC_SWAP_BUDGET_MB / EXEC_LANES)}M`          // le swap est un filet, pas un terrain de jeu
 // Plafond CPU laissé large (une exécution seule reste aussi rapide qu'avant), mais
-// pondération basse : quand les quatre files travaillent en même temps, elles
+// pondération basse : quand toutes les files travaillent en même temps, elles
 // s'effacent devant erp-server et nginx plutôt que de rendre l'app inutilisable.
 const EXEC_CPU_QUOTA   = '150%'
 const EXEC_CPU_WEIGHT  = 30
-// 128 était trop juste depuis le passage à quatre files : le build client (vite +
+// 128 était trop juste depuis le passage aux files parallèles : le build client (vite +
 // esbuild, très gourmand en threads) échouait dans l'unité avec « newosproc,
 // errno=11 » — la tâche rendait alors du code non buildé. La mémoire reste le vrai
 // garde-fou (MemoryMax par file) ; ceci ne borne que le nombre de tâches noyau.
@@ -322,10 +333,10 @@ function renderTemplate(tpl, vars) {
 // d'aide envoyait « Tâche terminée » dans le DM Slack d'Antoine. Le recap des items
 // de la file de prompts est envoyé par le serveur (voir promptQueue.js), pas par le hook.
 
-// ─── Quatre postes d'implémentation (un par file) ─────────────────────────────
+// ─── Un poste d'implémentation par file ───────────────────────────────────────
 // `_execSlots` : index de file (0..EXEC_LANES-1) → id de la tâche qui l'occupe.
 // Une tâche n'attend donc plus « le » poste libre, mais celui de SA file : c'est
-// ce qui rend les quatre files réellement indépendantes.
+// ce qui rend les files réellement indépendantes.
 const _execSlots = new Map()
 // La conversation (lecture seule, en process) garde son propre poste unique : elle
 // n'édite rien, elle n'a pas à disputer une file d'implémentation.
@@ -934,7 +945,7 @@ export function getRunningExecutionCount() { return _execSlots.size }
 export function getExecLaneCount() { return EXEC_LANES }
 /** Ids des implémentations en cours, une par file occupée. */
 export function getRunningTaskIds() { return [..._execSlots.values()] }
-// Conservé pour les appelants historiques (statut de l'ordonnanceur) : avec quatre
+// Conservé pour les appelants historiques (statut de l'ordonnanceur) : avec plusieurs
 // files, « la » tâche courante n'existe plus — on rend la première occupée.
 export function getCurrentTaskId() { return _execSlots.values().next().value || null }
 export function getCurrentActivity() {
@@ -1227,7 +1238,7 @@ function spawnClaude({ prompt, allowedTools, streamTaskId = null, timeoutMs }) {
 // the child. monitorExecution() tails the log to stream live and finalizes the task off
 // the .code file — the same path used to reconnect after a restart. (taskId, optional pid
 // when reconnecting to an already-running orphan.)
-// `lane` : 'exec' (poste d'une des quatre files, fichier PID de la file),
+// `lane` : 'exec' (poste d'une des files, fichier PID de la file),
 // 'question' (voie parallèle lecture seule, un fichier PID par tâche — voir
 // QPID_FILE) ou 'recover' (récupération d'une exécution orpheline dont le poste est
 // déjà tenu par une AUTRE tâche : on lit ses artefacts et on écrit son résultat,
@@ -1483,7 +1494,7 @@ function runDetachedExecution(taskId, prompt, {
 
   const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
   // Voie question : fichier PID par tâche ; voie exec : le fichier PID de SA file
-  // (les quatre sont consultés par deploy.sh avant de redémarrer le serveur).
+  // (ils sont tous consultés par deploy.sh avant de redémarrer le serveur).
   const pidFile = lane === 'question' ? QPID_FILE(taskId) : EPID_FILE(execLane)
   // ⚠️ `setsid --fork` n'est PAS cosmétique : pm2 tourne en `treekill: true` (défaut) et
   // tue TOUT le sous-arbre du serveur à chaque `pm2 restart erp-server`. Sans la coupure
@@ -1857,9 +1868,12 @@ export function initTaskRunner() {
   // plus bas — elles tournent encore (ou viennent de finir, le .code fait foi).
   const reconnected = new Set()
 
-  // Une file, un fichier PID : les quatre sont repris indépendamment (un
+  // Une file, un fichier PID : toutes sont reprises indépendamment (un
   // redémarrage peut avoir laissé jusqu'à EXEC_LANES exécutions orphelines).
-  for (let execLane = 0; execLane < EXEC_LANES; execLane++) {
+  // On balaie aussi les files historiques au-delà de la limite courante : réduire
+  // EXEC_LANES ne doit ni perdre le suivi d'une exécution déjà partie sur une
+  // ancienne file, ni laisser son fichier PID traîner pour toujours.
+  for (let execLane = 0; execLane < Math.max(EXEC_LANES, LEGACY_EXEC_LANES); execLane++) {
     const pidFile = EPID_FILE(execLane)
     if (!existsSync(pidFile)) continue
     let taken = false

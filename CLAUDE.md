@@ -41,7 +41,11 @@ Format d'une entrée (à ajouter en tête de `entries`) :
   "changes": [ { "type": "new|improved|fixed", "text": "…" } ] }
 ```
 
-`requester` est optionnel : le nom de la personne qui a demandé le changement (colonne « Demandé par » sur `/changelog`). À renseigner quand le brief le donne (« Signalement utilisateur (par X) »). Sans lui, le serveur tente de déduire le demandeur de la demande traitée le même jour.
+`requester` = le nom de la personne qui a demandé le changement (colonne « Demandé par » sur `/changelog`). **Obligatoire dès que le brief donne un demandeur**, sous l'une de ces deux formes :
+- une section `=== DEMANDÉ PAR ===` suivie du nom — ajoutée automatiquement par la file de travaux quand la demande vient d'un humain (fenêtre « Modifier le système », page `/travaux`) ;
+- une mention explicite dans le texte (« Signalement utilisateur (par X) »).
+
+Recopier le nom **tel quel**. Sans demandeur dans le brief (travail lancé par l'agent lui-même), le champ est absent et la colonne reste vide — aucune déduction, ni côté agent ni côté serveur.
 
 ## Redémarrage serveur
 

@@ -12,7 +12,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 // avec juste { company_id } sur /contacts cassait first_name en NOT NULL.
 describe('Routes PUT — vrais partial updates (pas de full-row écrasant)', () => {
   let browser, ctx, page, token
-  const createdIds = { products: [], projects: [], tasks: [], tickets: [] }
+  const createdIds = { products: [], projects: [], tasks: [] }
 
   before(async () => {
     browser = await chromium.launch()
@@ -114,21 +114,6 @@ describe('Routes PUT — vrais partial updates (pas de full-row écrasant)', () 
     assert.equal(patch.data.priority, 'Haute')
   })
 
-  test('tickets PUT { status: "..." } préserve title', async () => {
-    const create = await api('/tickets', {
-      method: 'POST',
-      body: JSON.stringify({ title: 'Ticket Test Partial', description: 'Description originale' }),
-    })
-    assert.equal(create.status, 201, `create: ${JSON.stringify(create)}`)
-    createdIds.tickets.push(create.data.id)
-
-    const patch = await api(`/tickets/${create.data.id}`, {
-      method: 'PUT',
-      body: JSON.stringify({ status: 'Waiting on customer' }),
-    })
-    assert.equal(patch.status, 200)
-    assert.equal(patch.data.title, 'Ticket Test Partial', 'title préservé')
-    assert.equal(patch.data.description, 'Description originale', 'description préservée')
-    assert.equal(patch.data.status, 'Waiting on customer')
-  })
+  // Le cas « billets » est parti avec `title` / `description` / `status`
+  // (migration 040) : un PUT de billet ne porte plus que l'assignation.
 })

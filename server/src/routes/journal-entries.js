@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from '../services/shippedCost.js'
 import { Router } from 'express'
 import { requireAuth } from '../middleware/auth.js'
 import { qbGet, qbPost, getAccessToken } from '../connectors/quickbooks.js'
@@ -200,7 +201,7 @@ router.get('/pending-operations', requireAuth, (req, res) => {
   // Un order_item "non sérialisé" = produit lié dont besoin_d_un_numero_de_serie n'est pas vrai
   const shipped = db.prepare(`
     SELECT DISTINCT
-      oi.id, oi.product_id, oi.qty, oi.shipped_unit_cost, oi.unit_cost,
+      oi.id, oi.product_id, oi.qty, oi.shipped_unit_cost, ${pieceUnitCostSql('oi')} AS unit_cost,
       oi.item_type,
       sh.id AS shipment_id, sh.shipped_at,
       p.name_fr AS product_name, p.sku

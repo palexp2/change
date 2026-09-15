@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen, Download, Clock, SearchCheck, Plus, ArrowLeftRight } from 'lucide-react'
+import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen, Download, Clock, SearchCheck, Plus, ArrowLeftRight, Check, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
@@ -20,13 +20,31 @@ const NO_TAX = '__none__'
 // Statuts = l'ancien code couleur du fichier TRX_Orisha.xlsx. `cell` peint la
 // cellule du tableau (le fichier était lu à la couleur, pas au texte) ; `color`
 // reste la pastille du panneau latéral.
+// La LIGNE entière porte la couleur (voir `row-st-*` dans index.css) : la
+// pastille de la colonne Statut ne garde donc que son texte coloré — deux
+// jaunes superposés rendaient la ligne sale.
+// `tint` : le nom de classe est écrit ici EN TOUTES LETTRES, jamais construit
+// par interpolation — sinon le scanner de Tailwind ne le voit pas et purge la
+// règle du CSS livré.
 const STATUS_META = {
-  a_traiter:     { label: 'À traiter',      color: 'red',    cell: 'bg-red-50 text-red-700',     hint: 'Aucun document trouvé — souvent facture manquante' },
-  facture_recue: { label: 'Facture reçue',  color: 'blue',   cell: 'bg-sky-50 text-sky-700',     hint: 'Document apparié, pas encore publié à QB' },
-  comptabilise:  { label: 'Comptabilisé',   color: 'yellow', cell: 'bg-amber-50 text-amber-700', hint: 'Publié à QuickBooks, pas encore rapproché' },
-  rapproche:     { label: 'Rapproché',      color: 'green',  cell: 'bg-green-50 text-green-700', hint: 'Comptabilisé et validé contre le relevé' },
-  ignore:        { label: 'Ignoré',         color: 'gray',   cell: 'bg-slate-100 text-slate-500', hint: 'Exclu du rapprochement' },
+  a_traiter:     { label: 'À traiter',      color: 'red',    cell: 'text-red-700',    tint: 'row-st-a_traiter',     hint: 'Aucun document trouvé — souvent facture manquante' },
+  facture_recue: { label: 'Facture reçue',  color: 'blue',   cell: 'text-sky-700',    tint: 'row-st-facture_recue', hint: 'Document apparié, pas encore publié à QB' },
+  comptabilise:  { label: 'Comptabilisé',   color: 'yellow', cell: 'text-amber-700',  tint: 'row-st-comptabilise',  hint: 'Publié à QuickBooks, pas encore rapproché' },
+  rapproche:     { label: 'Rapproché',      color: 'green',  cell: 'text-green-700',  tint: 'row-st-rapproche',     hint: 'Comptabilisé et validé contre le relevé' },
+  ignore:        { label: 'Ignoré',         color: 'gray',   cell: 'text-slate-500',  tint: 'row-st-ignore',        hint: 'Exclu du rapprochement' },
 }
+
+// Les écritures QuickBooks sans ligne au relevé : une couleur à part, sinon
+// elles fausseraient le compteur « Comptabilisé » (qui doit rester le nombre de
+// lignes du relevé restant à rapprocher).
+const GHOST_META = { label: 'Hors relevé', tint: 'row-st-ghost', hint: 'Écriture QuickBooks sans ligne au relevé' }
+
+// La couleur d'une ligne : le fantôme l'emporte sur le statut (il n'a pas de
+// statut réel). Une seule fonction pour les compteurs, le filtre et la teinte.
+const bucketOf = (r) => (r._ghost ? 'ghost' : (STATUS_META[r.status] ? r.status : 'a_traiter'))
+
+// Ordre de la légende = ordre du travail, pas celui de STATUS_META.
+const LEGEND_ORDER = ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore']
 
 const money = (n, currency = 'CAD') => fmtMoney(n, currency, { fallback: <span className="text-slate-300">—</span> })
 
@@ -125,10 +143,11 @@ function ImportModal({ account, onClose, onDone }) {
 
 // ── « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture ──────
 //
-// Le pendant du bouton « Ajouter » de QuickBooks. Les valeurs proposées ne sont
-// pas devinées : elles viennent du profil du fournisseur, puis de la façon dont
-// on a réellement comptabilisé ce fournisseur les fois précédentes. Quand ces
-// fois-là ne concordent pas, on le dit plutôt que de choisir en silence.
+// Le pendant du bouton « Ajouter » de QuickBooks, et le dossier de préparation
+// de l'écriture : chaque valeur proposée affiche D'OÙ elle vient — le relevé, le
+// document apparié, une règle, le profil du fournisseur, ou l'habitude (« 7 fois
+// sur 8 »). Un champ sans source reste vide : on ne devine pas en silence.
+// Quand le profil et l'habitude se contredisent, on le dit au lieu de trancher.
 function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const [defaults, setDefaults] = useState(null)
   const [form, setForm] = useState(null)
@@ -147,7 +166,9 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         vendor: d.vendor || '',
         expense_account_id: d.expense_account_id || '',
         tax_code_id: d.tax_code_id || '',
-        memo: d.memo || d.label || '',
+        memo: d.memo || '',
+        doc_number: d.doc_number || '',
+        qb_type: d.qb_type === 'bill' ? 'bill' : 'purchase',
       })
     }).catch((e) => setError(e.message))
     Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
@@ -168,7 +189,11 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   }, [taxCodeId])
 
   const total = Math.abs(txn.amount)
-  const taxCad = rate ? Math.round((total - total / (1 + rate / 100)) * 100) / 100 : 0
+  // La taxe RÉELLEMENT facturée quand un document est apparié ; sinon seulement,
+  // la part déduite du taux nominal du code choisi.
+  const docTax = defaults?.tax_cad
+  const taxCad = docTax != null ? docTax
+    : (rate ? Math.round((total - total / (1 + rate / 100)) * 100) / 100 : 0)
 
   const submit = async () => {
     setBusy(true); setError(null)
@@ -180,6 +205,10 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         tax_cad: taxCad,
         memo: form.memo,
         payment_account_id: defaults?.payment_account_id || null,
+        payment_method: defaults?.payment_method || null,
+        doc_number: form.doc_number || null,
+        qb_type: form.qb_type,
+        due_date: form.qb_type === 'bill' ? defaults?.due_date || null : null,
       })
       invalidate('/bank')
       if (r.qbError) setError(`Écriture créée, publication QuickBooks refusée : ${r.qbError}`)
@@ -196,15 +225,29 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const taxName = (id) => (id === NO_TAX ? 'aucune' : taxCodes.find((t) => String(t.Id) === String(id))?.Name || id)
   const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
 
+  const draft = defaults?.draft
+  // La provenance d'une valeur, sous le champ. Vide = l'humain l'a saisie.
+  const from = (k) => {
+    const src = draft?.fields?.[k]?.source
+    return src ? <span className="text-[11px] text-slate-400">{src}</span> : null
+  }
+
   return (
     <div className="space-y-3 text-sm">
       <div className="text-xs text-slate-500">
-        Comptabiliser {money(total, currency)} sans facture. {defaults?.source ? `Proposé d'après : ${defaults.source}.` : 'Aucun fournisseur reconnu.'}
+        Comptabiliser {money(total, currency)}{draft?.document ? ` · ${draft.document.label}` : ' sans facture'}.
       </div>
+
+      {!!draft?.hints?.length && (
+        <div className="rounded-lg bg-slate-50 px-2.5 py-1.5 text-xs text-slate-500 space-y-0.5">
+          {draft.hints.map((h) => <div key={h.label}>{h.label} : {h.value}</div>)}
+        </div>
+      )}
 
       <label className="block">
         <span className="text-xs text-slate-500">Fournisseur</span>
         <VendorSelect value={form.vendor} onChange={({ vendor }) => set('vendor')(vendor)} />
+        {from('vendor')}
       </label>
 
       <label className="block">
@@ -213,6 +256,7 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
           options={accounts} getOptionValue={(a) => String(a.Id)}
           getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
           placeholder="Choisir un compte" />
+        {from('expense_account_id')}
       </label>
 
       <label className="block">
@@ -220,18 +264,49 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         <SearchableSelect value={form.tax_code_id} onChange={set('tax_code_id')}
           options={taxCodes} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
           emptyOption="Aucune taxe" placeholder="Aucune taxe" />
-        {rate === undefined && <span className="text-xs text-slate-400">taux…</span>}
-        {!!rate && (
+        {docTax != null ? (
           <span className="text-xs text-slate-500">
-            {rate.toFixed(3).replace(/\.?0+$/, '')} % → {money(taxCad, currency)} de taxe, {money(total - taxCad, currency)} au compte
+            {money(taxCad, currency)} de taxe, {money(total - taxCad, currency)} au compte — {draft?.fields?.tax?.source}
           </span>
+        ) : (
+          <>
+            {rate === undefined && <span className="text-xs text-slate-400">taux…</span>}
+            {!!rate && (
+              <span className="text-xs text-slate-500">
+                {rate.toFixed(3).replace(/\.?0+$/, '')} % → {money(taxCad, currency)} de taxe, {money(total - taxCad, currency)} au compte
+              </span>
+            )}
+          </>
         )}
       </label>
+
+      <div className="grid grid-cols-2 gap-2">
+        <label className="block">
+          <span className="text-xs text-slate-500">Type</span>
+          <select className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm bg-white"
+            value={form.qb_type} onChange={(e) => set('qb_type')(e.target.value)}>
+            <option value="purchase">Dépense</option>
+            <option value="bill">Facture fournisseur</option>
+          </select>
+          {from('qb_type')}
+          {form.qb_type === 'bill' && defaults?.due_date && (
+            <span className="text-[11px] text-slate-400">échéance {defaults.due_date}</span>
+          )}
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-slate-500">N° de pièce</span>
+          <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+            value={form.doc_number} onChange={(e) => set('doc_number')(e.target.value)} />
+          {from('doc_number')}
+        </label>
+      </div>
 
       <label className="block">
         <span className="text-xs text-slate-500">Mémo</span>
         <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
           value={form.memo} onChange={(e) => set('memo')(e.target.value)} />
+        {from('memo')}
       </label>
 
       {h && (() => {
@@ -360,6 +435,352 @@ function TransferForm({ txn, currency, onDone, onCancel }) {
 }
 
 // ── Drawer latéral : détail + suggestions de matching ────────────────────────
+// Ce qu'un moteur a trouvé et qui attend une décision. La preuve est écrite en
+// français par le serveur et affichée telle quelle : c'est elle qui permet de
+// trancher en une seconde, pas la confiance en pourcentage.
+// Un refus est DÉFINITIF — la proposition ne reviendra pas au prochain passage.
+function ProposalCards({ txn, currency, onChanged }) {
+  const [items, setItems] = useState(null)
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+
+  const load = () => api.bank.txnProposals(txn.id).then(setItems).catch(() => setItems([]))
+  useEffect(() => { setItems(null); setError(null); load() }, [txn.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const decide = async (p, accept) => {
+    setBusy(p.id); setError(null)
+    try {
+      if (accept) await api.bank.acceptProposal(p.id)
+      else await api.bank.refuseProposal(p.id)
+      invalidate('/bank')
+      await onChanged()
+    } catch (e) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  const open = (items || []).filter((p) => p.status === 'proposee')
+  if (!open.length) return null
+
+  return (
+    <div className="space-y-2" data-testid="proposal-cards">
+      {open.map((p) => (
+        <div key={p.id} className="rounded-lg border border-brand-200 bg-brand-50/60 p-3 space-y-2">
+          <div className="flex items-center gap-2">
+            <Wand2 size={13} className="text-brand-700 shrink-0" />
+            <span className="text-xs font-medium text-slate-800">{PROPOSAL_TITLE[p.kind] || p.kind}</span>
+            {p.confidence != null && <span className="text-[11px] text-slate-500">{Math.round(p.confidence * 100)} %</span>}
+          </div>
+          {p.payload?.qb_txn_id && (
+            <div className="text-xs text-slate-700">
+              Écriture {p.payload.qb_txn_type || ''} n° {p.payload.qb_txn_id}
+              {p.payload.date ? ` · ${fmtDate(p.payload.date)}` : ''}
+            </div>
+          )}
+          <div className="flex flex-wrap gap-1">
+            {(p.evidence || []).map((e, i) => (
+              <span key={i} className="text-[11px] px-1.5 py-0.5 rounded border border-slate-200 bg-white text-slate-600">
+                {e.label}{e.detail ? ` : ${e.detail}` : ''}
+              </span>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <button className="inline-flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+              data-testid="proposal-accept" disabled={busy === p.id} onClick={() => decide(p, true)}>
+              <Check size={13} /> C'est bien ça
+            </button>
+            <button className="inline-flex items-center gap-1 text-xs text-red-600 hover:underline disabled:opacity-50"
+              title="Définitif : cette proposition ne reviendra pas"
+              disabled={busy === p.id} onClick={() => decide(p, false)}>
+              <X size={12} /> Ce n'est pas ça
+            </button>
+            <span className="grow" />
+            <span className="text-[11px] text-slate-400">{money(txn.amount, currency)}</span>
+          </div>
+        </div>
+      ))}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+    </div>
+  )
+}
+
+const PROPOSAL_TITLE = {
+  qb_link: 'Écriture QuickBooks retrouvée',
+  doc_match: 'Document apparié',
+  invoice_found: 'Facture retrouvée',
+  payment_clear: 'Paiement passé au compte',
+  paie_debit: 'Débit de paie',
+  aga_repartition: 'Répartition AGA',
+  debt_payment: 'Versement de dette',
+  vendor_expense: 'Écriture prête',
+}
+
+// L'écriture QuickBooks de la ligne, montrée comme QuickBooks la montre.
+// Confirmer un appariement demandait d'ouvrir QBO dans un autre onglet, de
+// lire l'écriture, de revenir : les trois colonnes qui comptent (compte,
+// taxe, montant) sont maintenant ici, et le lien vers QBO reste à un clic
+// pour le cas où on veut la modifier.
+function QbEntryCard({ txn, currency, onChanged }) {
+  const [entry, setEntry] = useState(null)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    setEntry(null); setError(null)
+    api.bank.qbEntry(txn.id)
+      .then((e) => { if (alive) setEntry(e) })
+      .catch((e) => { if (alive) setError(e.message) })
+    return () => { alive = false }
+  }, [txn.id])
+
+  const act = async (fn) => {
+    setBusy(true)
+    try { await fn(); invalidate('/bank'); await onChanged() }
+    catch (e) { setError(e.message) }
+    finally { setBusy(false) }
+  }
+
+  const done = txn.status === 'rapproche'
+  const head = entry?.readable
+    ? [entry.type_label, entry.doc_number && `n° ${entry.doc_number}`, entry.date && fmtDate(entry.date)].filter(Boolean).join(' · ')
+    : 'Écriture QuickBooks'
+
+  return (
+    <div className="rounded-lg border border-slate-200 overflow-hidden" data-testid="qb-entry-card">
+      <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 border-b border-slate-200">
+        <BookOpen size={13} className="text-slate-500 shrink-0" />
+        <span className="text-xs font-medium text-slate-700 truncate">{head}</span>
+        <span className="grow" />
+        {entry?.total != null && (
+          <span className="text-sm font-semibold tabular-nums">{money(entry.total, entry.currency || currency)}</span>
+        )}
+      </div>
+
+      {!entry && !error && <div className="px-3 py-3 text-xs text-slate-400">Lecture dans QuickBooks…</div>}
+      {error && <div className="px-3 py-3 text-xs text-red-600">{error}</div>}
+
+      {entry?.readable === false && (
+        <div className="px-3 py-3 text-xs text-slate-500">{entry.reason}</div>
+      )}
+
+      {entry?.readable && (
+        <div className="px-3 py-2.5 space-y-2 text-xs">
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {entry.party && <span><span className="text-slate-500">Nom </span>{entry.party}</span>}
+            {entry.payment_account && <span><span className="text-slate-500">Compte </span>{entry.payment_account}</span>}
+            {entry.payment_type && <span><span className="text-slate-500">Mode </span>{entry.payment_type}</span>}
+            {entry.exchange_rate && entry.exchange_rate !== 1 && (
+              <span><span className="text-slate-500">Taux </span>{entry.exchange_rate}</span>
+            )}
+          </div>
+
+          {entry.lines?.length > 0 && (
+            <table className="w-full">
+              <tbody>
+                {entry.lines.map((l, i) => (
+                  <tr key={i} className="border-t border-slate-100">
+                    <td className="py-1 pr-2 align-top">
+                      <div className="text-slate-800">{l.account || '—'}</div>
+                      {l.description && <div className="text-slate-500 truncate">{l.description}</div>}
+                    </td>
+                    <td className="py-1 pr-2 align-top text-slate-500 whitespace-nowrap">
+                      {l.tax_code || l.posting || ''}
+                    </td>
+                    <td className="py-1 align-top text-right tabular-nums whitespace-nowrap">
+                      {money(l.amount, entry.currency || currency)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+
+          {entry.tax_total != null && entry.tax_total !== 0 && (
+            <div className="text-slate-500">Taxe {money(entry.tax_total, entry.currency || currency)}</div>
+          )}
+          {entry.memo && <div className="text-slate-500 italic truncate" title={entry.memo}>{entry.memo}</div>}
+
+          {/* L'écart avec le relevé décide à lui seul de la confirmation. */}
+          {entry.bank_amount != null && entry.total != null && (
+            (() => {
+              const gap = Math.round((Math.abs(entry.bank_amount) - Math.abs(entry.total)) * 100) / 100
+              return gap === 0
+                ? <div className="text-green-700">Même montant qu'au relevé.</div>
+                : <div className="text-amber-700">Écart avec le relevé : {money(gap, currency)}{entry.match_rate ? ` (taux ${entry.match_rate})` : ''}</div>
+            })()
+          )}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-t border-slate-200 bg-white">
+        {done ? (
+          <>
+            <span className="inline-flex items-center gap-1 text-xs text-green-700"><Check size={13} /> Rapprochée</span>
+            <button className="text-xs text-slate-500 hover:underline disabled:opacity-50" disabled={busy}
+              onClick={() => act(() => api.bank.reconcile([txn.id], true))}>Annuler</button>
+          </>
+        ) : (
+          <button data-testid="qb-entry-confirm" disabled={busy}
+            className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+            onClick={() => act(() => api.bank.reconcile([txn.id]))}>
+            <Check size={13} /> C'est bien ça
+          </button>
+        )}
+        {entry?.url && (
+          <a href={entry.url} target="_blank" rel="noreferrer"
+            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">
+            <ExternalLink size={12} /> Ouvrir dans QuickBooks
+          </a>
+        )}
+        <span className="grow" />
+        <button className="inline-flex items-center gap-1 text-xs text-red-600 hover:underline disabled:opacity-50" disabled={busy}
+          title="Le lien est refusé ; l'écriture, elle, reste dans QuickBooks"
+          onClick={() => act(() => api.bank.clearQbLink(txn.id))}>
+          <X size={12} /> Ce n'est pas ça
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// « Ce libellé, c'est ce fournisseur ». Le relevé écrit « CHQ #4471 DIGI-KEY
+// CORP MN » ; le motif appris ici fait que toutes les lignes suivantes du même
+// fournisseur sont reconnues toutes seules. Il fallait auparavant ouvrir la
+// page Fournisseurs et coller le motif à la main.
+// ── « Toujours faire ça pour ce libellé » ───────────────────────────────────
+//
+// La généralisation du geste « ce libellé = ce fournisseur » : une règle
+// bancaire préremplie avec ce que l'humain vient de voir, et l'aperçu de ce
+// qu'elle couvrirait. Elle PRÉPARE l'écriture des prochaines lignes — elle ne
+// publie jamais seule.
+function RuleFromTxnForm({ txn }) {
+  const [draft, setDraft] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [done, setDone] = useState(false)
+  const [error, setError] = useState(null)
+  // Ce libellé revient-il assez pour mériter une règle ? Boréal ne le propose
+  // qu'à partir de la troisième fois, et seulement si rien ne le couvre déjà.
+  const [chance, setChance] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    api.bank.rules.opportunity(txn.id).then((o) => { if (alive) setChance(o) }).catch(() => {})
+    return () => { alive = false }
+  }, [txn.id])
+
+  const open = async () => {
+    setBusy(true); setError(null)
+    try { setDraft(await api.bank.rules.draftFromTxn(txn.id)) }
+    catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  const save = async () => {
+    setBusy(true); setError(null)
+    try {
+      const { preview: _p, ...rule } = draft
+      await api.bank.rules.create(rule)
+      setDone(true); setDraft(null)
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  if (done) return <Link to="/regles-bancaires" className="text-xs text-emerald-700 hover:underline">Règle créée — la voir</Link>
+  if (!draft) {
+    // Le libellé est déjà passé plusieurs fois : on le dit, plutôt que
+    // d'attendre que l'utilisateur pense tout seul à créer la règle.
+    if (chance) {
+      return (
+        <div className="flex items-center gap-2 rounded-lg bg-brand-50 px-2.5 py-1.5">
+          <span className="text-xs text-slate-600 flex-1 min-w-0">
+            <b className="font-semibold">{chance.lines}<sup>e</sup> fois</b> en {chance.months} mois
+            {chance.vendor_name ? ` · ${chance.vendor_name}` : ''} — en faire une règle ?
+          </span>
+          <button type="button" className="shrink-0 text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700"
+            disabled={busy} onClick={open}>Oui</button>
+          <button type="button" className="shrink-0 text-xs text-slate-400 hover:text-slate-700"
+            onClick={() => setChance(null)}>Non</button>
+        </div>
+      )
+    }
+    return (
+      <div>
+        <button type="button" className="text-xs text-slate-500 hover:text-brand-600 hover:underline"
+          disabled={busy} onClick={open}>
+          Toujours faire ça pour ce libellé
+        </button>
+        {error && <div className="text-xs text-red-600">{error}</div>}
+      </div>
+    )
+  }
+  return (
+    <div className="space-y-2 bg-slate-50 rounded-lg p-2">
+      <input value={draft.label_pattern} className="w-full text-xs border border-slate-300 rounded-lg px-2 py-1"
+        onChange={(e) => setDraft((d) => ({ ...d, label_pattern: e.target.value, name: e.target.value.slice(0, 40) }))} />
+      <div className="text-xs text-slate-500">
+        {draft.preview.count} lignes · {draft.preview.a_traiter} à traiter
+      </div>
+      <div className="flex items-center gap-2">
+        <button className="text-xs px-2 py-1 rounded-lg bg-brand-600 text-white disabled:opacity-50"
+          disabled={busy || draft.label_pattern.trim().length < 3} onClick={save}>
+          {busy ? '…' : 'Créer la règle'}
+        </button>
+        <Link to="/regles-bancaires" className="text-xs text-slate-500 hover:underline">Compléter</Link>
+        <button className="text-xs text-slate-500 hover:underline" onClick={() => setDraft(null)}>Annuler</button>
+      </div>
+      {error && <div className="text-xs text-red-600">{error}</div>}
+    </div>
+  )
+}
+
+function VendorPatternForm({ txn, onSaved }) {
+  const [open, setOpen] = useState(false)
+  const [profiles, setProfiles] = useState([])
+  const [profileId, setProfileId] = useState(txn.resolved_vendor?.profile_id || '')
+  // Par défaut, les premiers mots du libellé : la partie qui ne change pas
+  // d'une transaction à l'autre (les numéros et les villes, si).
+  const [pattern, setPattern] = useState(() => txnLabel(txn).split(/\s+/).slice(0, 2).join(' '))
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  // Les fiches fournisseurs, chargées seulement quand on ouvre le formulaire.
+  useEffect(() => {
+    if (!open || profiles.length) return
+    api.vendorProfiles.list().then((r) => setProfiles(r?.data || r || [])).catch(() => setProfiles([]))
+  }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (!open) {
+    return (
+      <button type="button" className="text-xs text-slate-500 hover:text-brand-600 hover:underline"
+        onClick={() => setOpen(true)}>
+        {txn.resolved_vendor ? 'Corriger le fournisseur reconnu' : 'Dire à quel fournisseur ce libellé appartient'}
+      </button>
+    )
+  }
+  const save = async () => {
+    setBusy(true); setError(null)
+    try {
+      await api.bank.learnVendorPattern(txn.id, { profile_id: profileId, pattern })
+      setOpen(false)
+      await onSaved()
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="space-y-2 bg-slate-50 rounded-lg p-2">
+      <SearchableSelect value={profileId} options={profiles} onChange={setProfileId}
+        placeholder="Quel fournisseur ?"
+        getOptionValue={(o) => o.id} getOptionLabel={(o) => o.name} />
+      <div className="flex items-center gap-2">
+        <input value={pattern} onChange={(e) => setPattern(e.target.value)}
+          className="flex-1 min-w-0 text-xs border border-slate-300 rounded-lg px-2 py-1" />
+        <button className="text-xs px-2 py-1 rounded-lg bg-brand-600 text-white disabled:opacity-50"
+          disabled={busy || !profileId || pattern.trim().length < 3} onClick={save}>
+          {busy ? '…' : 'Retenir'}
+        </button>
+        <button className="text-xs text-slate-500 hover:underline" onClick={() => setOpen(false)}>Annuler</button>
+      </div>
+      {error && <div className="text-xs text-red-600">{error}</div>}
+    </div>
+  )
+}
+
 function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
   // Le panneau porte les deux gestes qui demandent un formulaire : comptabiliser
   // sans facture, et apparier un virement. Les boutons de la ligne ouvrent le
@@ -471,13 +892,13 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
             {txn.qb_match_delta ? ` — écart de ${money(txn.qb_match_delta, currency)}` : ''}
           </div>
         )}
-        {txn.qb_url && !txn.matched_id && (
-          <a href={txn.qb_url} target="_blank" rel="noreferrer"
-            className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-300 text-slate-700 hover:bg-slate-50">
-            <ExternalLink size={12} /> Ouvrir dans QuickBooks
-          </a>
-        )}
       </div>
+
+      {/* Ce qui attend une décision, puis l'écriture une fois confirmée. */}
+      <ProposalCards txn={txn} currency={currency} onChanged={onChanged} />
+
+      {/* Écriture QuickBooks retrouvée : on la lit ici, on confirme ici. */}
+      {txn.qb_txn_id && <QbEntryCard txn={txn} currency={currency} onChanged={onChanged} />}
 
       {txn.transfer_txn_id ? (
         <div className="bg-slate-50 rounded-lg p-3 space-y-2">
@@ -561,6 +982,13 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {!txn.matched_id && !txn.transfer_txn_id && (
+        <div className="space-y-1.5">
+          <VendorPatternForm txn={txn} onSaved={onChanged} />
+          <RuleFromTxnForm txn={txn} />
         </div>
       )}
 
@@ -792,6 +1220,9 @@ const SHEET_COLOR_META = {
   rouge: { dot: 'bg-red-300', label: 'Fichier : pas encore comptabilisée' },
 }
 
+// Comment le fournisseur a été reconnu derrière le libellé du relevé.
+const VENDOR_VIA = { motif: 'un motif de relevé', alias: 'un alias', nom: 'son nom' }
+
 // Comment l'écriture QuickBooks a été retrouvée (services/bankQbSearch.js).
 const MATCH_METHOD = {
   exact: 'montant et date exacts',
@@ -866,6 +1297,20 @@ function TrxSheetIndicator({ trx, open, onToggle }) {
         ? 'bg-slate-100 border-slate-300 text-slate-700'
         : 'border-slate-300 text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}>
       {trx.syncing ? <RefreshCw size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />}
+    </button>
+  )
+}
+
+// Sync du fichier à la demande, sans avoir à déplier le panneau : demandé le
+// 2026-09-12, en même temps que le retour de TRX_Orisha comme source unique.
+function TrxSheetSyncButton({ trx }) {
+  if (!trx.status) return null
+  return (
+    <button type="button" onClick={trx.runSync} disabled={trx.syncing} data-testid="trx-sheet-sync"
+      title="Relire le fichier TRX_Orisha maintenant (sync auto aux 20 min)"
+      className="inline-flex items-center gap-1.5 px-2.5 h-8 text-xs rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+      <RefreshCw size={13} className={trx.syncing ? 'animate-spin' : ''} />
+      {trx.syncing ? 'Sync…' : 'TRX'}
     </button>
   )
 }
@@ -992,12 +1437,42 @@ function TrxSheetPanel({ trx, onGoToAccount }) {
 
 // Trois files, comme « Opérations bancaires » de QuickBooks : ce qui demande
 // encore un geste, ce qui est classé, ce qu'on a mis de côté.
-const TABS = [
-  { key: 'review', label: 'À réviser', statuses: ['a_traiter', 'facture_recue'] },
-  { key: 'done', label: 'Catégorisées', statuses: ['comptabilise', 'rapproche'] },
-  { key: 'excluded', label: 'Exclues', statuses: ['ignore'] },
-]
-const TAB_OF_STATUS = Object.fromEntries(TABS.flatMap((t) => t.statuses.map((st) => [st, t.key])))
+// Les trois files « À réviser / Catégorisées / Exclues » ont disparu le
+// 2026-09-12 : une seule liste continue, comme le fichier, et la légende des
+// couleurs fait le filtre. Un compteur à zéro n'est pas cliquable — sinon la
+// liste se viderait et DataTable afficherait son écran « aucune transaction ».
+function StatusLegend({ counts, value, onChange }) {
+  const chip = (key, label, hint, tint, n) => (
+    <button key={key} type="button" data-testid={`reconcile-legend-${key}`}
+      aria-pressed={value === key} aria-label={`${label} — ${n}`} title={hint}
+      disabled={n === 0} onClick={() => onChange(value === key ? null : key)}
+      className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors disabled:opacity-40 disabled:cursor-default ${value === key
+        ? 'bg-slate-100 ring-1 ring-slate-300 text-slate-900 font-medium'
+        : 'text-slate-500 hover:bg-slate-50'}`}>
+      <span className={`w-2.5 h-2.5 rounded-[3px] border border-black/10 ${tint}`} />
+      <span className="tabular-nums">{n}</span>
+    </button>
+  )
+  return (
+    <div role="group" aria-label="Filtrer par statut" className="flex items-center gap-x-0.5 py-1">
+      {LEGEND_ORDER.map((k) => chip(k, STATUS_META[k].label, STATUS_META[k].hint, STATUS_META[k].tint, counts[k] || 0))}
+      {counts.ghost > 0 && chip('ghost', GHOST_META.label, GHOST_META.hint, GHOST_META.tint, counts.ghost)}
+      {/* Pas une couleur du fichier : ce que les moteurs proposent et qui
+          attend un clic. Posée à la suite, séparée par un filet. */}
+      {counts.proposals > 0 && (
+        <button type="button" data-testid="reconcile-legend-proposals"
+          aria-pressed={value === 'proposals'} title="Propositions à confirmer"
+          onClick={() => onChange(value === 'proposals' ? null : 'proposals')}
+          className={`ml-2 pl-3 border-l border-slate-200 inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${value === 'proposals'
+            ? 'bg-brand-100 text-brand-800 font-medium'
+            : 'text-brand-700 hover:bg-brand-50'}`}>
+          <Wand2 size={12} />
+          <span className="tabular-nums">{counts.proposals}</span> à confirmer
+        </button>
+      )}
+    </div>
+  )
+}
 
 // Onglet : soulignement fin, pas de pastille pleine — la barre de comptes et
 // la barre de files se lisent comme les onglets d'un classeur.
@@ -1030,7 +1505,8 @@ export default function RapprochementBancaire() {
   const [loading, setLoading] = useState(true)
   const [showImport, setShowImport] = useState(false)
   const [notice, setNotice] = useState(null)
-  const [tab, setTab] = useState('review')
+  // null = toute la liste ; sinon une clé de STATUS_META ou 'ghost'.
+  const [colorFilter, setColorFilter] = useState(null)
 
   const account = accounts.find((a) => a.id === accountId) || null
 
@@ -1061,7 +1537,7 @@ export default function RapprochementBancaire() {
     }
   }, [askedAccount, accounts, accountId])
   useEffect(() => { loadTxns() }, [loadTxns])
-  useEffect(() => { setTab('review') }, [accountId])
+  useEffect(() => { setColorFilter(null) }, [accountId])
 
   // Incrémenté à chaque refresh : le résumé local se recalcule (la comparaison
   // QuickBooks, elle, reste à la demande).
@@ -1123,20 +1599,42 @@ export default function RapprochementBancaire() {
     _flag: flags.get(r.id) || null,
   })), [rows, flags])
 
-  const counts = useMemo(() => {
-    const c = { review: 0, done: 0, excluded: 0 }
-    for (const r of rows) { const k = TAB_OF_STATUS[r.status]; if (k) c[k] += 1 }
-    c.review += ghosts.length
-    return c
-  }, [rows, ghosts])
+  // Une seule liste : le relevé au complet, fantômes glissés à leur date. Le
+  // filtre de couleur s'applique APRÈS (mémo séparé) pour qu'un clic sur la
+  // légende ne refasse ni la fusion ni le tri.
+  const allRows = useMemo(() => {
+    if (!ghosts.length) return decorated
+    return [...decorated, ...ghosts].sort((a, b) => (
+      a.txn_date < b.txn_date ? 1 : a.txn_date > b.txn_date ? -1 : (a._ghost ? 1 : b._ghost ? -1 : 0)
+    ))
+  }, [decorated, ghosts])
 
-  const tabRows = useMemo(() => {
-    const wanted = new Set(TABS.find((t) => t.key === tab)?.statuses || [])
-    const kept = decorated.filter((r) => wanted.has(r.status))
-    // Les fantômes n'existent qu'à réviser : c'est là qu'ils demandent un geste.
-    if (tab !== 'review' || ghosts.length === 0) return kept
-    return [...kept, ...ghosts].sort((a, b) => (a.txn_date < b.txn_date ? 1 : a.txn_date > b.txn_date ? -1 : 0))
-  }, [decorated, ghosts, tab])
+  // Compteurs sur TOUTE la liste : ils ne doivent pas bouger quand on filtre.
+  const counts = useMemo(() => {
+    const c = { ghost: 0, proposals: 0 }
+    for (const k of LEGEND_ORDER) c[k] = 0
+    for (const r of allRows) {
+      c[bucketOf(r)] += 1
+      if (r.proposal_count) c.proposals += r.proposal_count
+    }
+    return c
+  }, [allRows])
+
+  const visibleRows = useMemo(() => {
+    if (!colorFilter) return allRows
+    if (colorFilter === 'proposals') return allRows.filter((r) => r.proposal_count > 0)
+    return allRows.filter((r) => bucketOf(r) === colorFilter)
+  }, [allRows, colorFilter])
+
+  // Les lignes fantômes (`qb:…`) n'existent pas en base : aucune action de lot
+  // ne doit leur être envoyée. Elles restent cochables — DataTable ne sait pas
+  // désactiver une case ligne par ligne — d'où le filtre ici.
+  const bulkReal = async (ids, fn) => {
+    const real = ids.filter((id) => !String(id).startsWith('qb:'))
+    if (!real.length) return
+    await fn(real)
+    await refresh()
+  }
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(null), 6000) }
 
@@ -1157,6 +1655,7 @@ export default function RapprochementBancaire() {
       // en infobulle. Le ⚠ dit sur place ce qui cloche.
       description: (r) => (
         <span className={`block truncate ${r._ghost ? 'italic text-slate-400' : ''}`} title={txnSubLabel(r) || undefined}>
+          {r.proposal_count > 0 && <Wand2 size={12} className="inline mr-1 -mt-0.5 text-brand-600" title={`${r.proposal_count} proposition${r.proposal_count > 1 ? 's' : ''} à confirmer`} />}
           {r._flag && <AlertTriangle size={12} className="inline mr-1 -mt-0.5 text-amber-500" title={r._flag} />}
           {r._ghost && <span className="text-slate-400">QuickBooks · </span>}
           {txnLabel(r)}
@@ -1168,9 +1667,27 @@ export default function RapprochementBancaire() {
       balance: (r) => num(r.balance, 'text-slate-400'),
       // Le statut se lit à la couleur, comme les cases peintes du vieux fichier.
       status: (r) => {
-        if (r._ghost) return <span className="block truncate rounded px-1.5 py-0.5 text-xs bg-slate-100 text-slate-500">Hors relevé</span>
+        // La ligne est déjà peinte : la pastille ne garde que son texte.
+        if (r._ghost) return <span className="block truncate text-xs text-slate-500" title={GHOST_META.hint}>{GHOST_META.label}</span>
         const m = STATUS_META[r.status] || STATUS_META.a_traiter
-        return <span className={`block truncate rounded px-1.5 py-0.5 text-xs font-medium ${m.cell}`} title={m.hint}>{m.label}</span>
+        return <span className={`block truncate text-xs font-medium ${m.cell}`} title={m.hint}>{m.label}</span>
+      },
+      // Fournisseur : reconnu par le document apparié (lien) ou deviné du
+      // libellé (gris, avec la manière dont il a été reconnu en infobulle).
+      vendor: (r) => {
+        if (r.matched_id && r.matched_label) {
+          return <span className="block truncate">{docLink(r.matched_type, r.matched_id, r.matched_label)}</span>
+        }
+        if (r.resolved_vendor) {
+          return (
+            <Link to="/fournisseurs" onClick={(e) => e.stopPropagation()}
+              className="block truncate text-slate-500 hover:text-brand-600"
+              title={`Reconnu par ${VENDOR_VIA[r.resolved_vendor.via] || r.resolved_vendor.via}`}>
+              {r.resolved_vendor.name}
+            </Link>
+          )
+        }
+        return <span className="text-slate-200">·</span>
       },
       matched_label: (r) => (
         <span className="flex items-center gap-1.5 min-w-0">
@@ -1192,17 +1709,18 @@ export default function RapprochementBancaire() {
     }
     const cols = TABLE_COLUMN_META.bank_transactions.map((meta) => ({ ...meta, render: RENDERS[meta.id] }))
     // Les deux gestes de « Opérations bancaires », à portée de clic sur la
-    // ligne : le panneau s'ouvre déjà dans le bon formulaire. Uniquement dans
-    // la file à réviser — ailleurs, il n'y a plus rien à décider. En TÊTE de
+    // ligne : le panneau s'ouvre déjà dans le bon formulaire. La colonne est
+    // TOUJOURS là (sa largeur ne saute plus quand on filtre) ; c'est son rendu
+    // qui se tait sur les lignes où il n'y a plus rien à décider. En TÊTE de
     // ligne : en queue, la colonne sortait de l'écran dès que les colonnes
     // larges (libellé, document) prenaient toute la place.
-    if (tab !== 'review') return cols
     const act = (e, r, mode) => { e.stopPropagation(); setPeekOpen({ id: r.id, mode, forId: r.id }) }
     const btn = 'p-1 rounded text-slate-400 hover:text-brand-600 hover:bg-white'
     return [{
       id: '_actions', label: '', width: 62, sortable: false, filterable: false, groupable: false,
       render: (r) => {
         if (r._ghost || r.matched_id || r.transfer_txn_id) return null
+        if (r.status === 'rapproche' || r.status === 'ignore') return null
         return (
           <span className="flex items-center gap-0.5">
             {r.amount < 0 && (
@@ -1215,7 +1733,7 @@ export default function RapprochementBancaire() {
         )
       },
     }, ...cols]
-  }, [currency, tab])
+  }, [currency])
 
   return (
     <Layout>
@@ -1223,20 +1741,16 @@ export default function RapprochementBancaire() {
         <div className="flex items-center justify-between mb-3">
           <PageTitle>Rapprochement bancaire</PageTitle>
           <div className="flex items-center gap-1.5">
-            {!account?.plaid_account_id && (
-              <TrxSheetIndicator trx={trx} open={trxOpen} onToggle={() => setTrxOpen((v) => !v)} />
-            )}
-            {/* Compte branché à Plaid : les transactions arrivent de la banque.
-                Un collage y créerait un doublon par ligne (les deux sources ne
-                partagent pas leur clé de dédup) — le bouton disparaît, comme
-                l'indicateur TRX_Orisha juste au-dessus. */}
-            {!account?.plaid_account_id && (
-              <button type="button" title="Importer un relevé (collage)"
-                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-                disabled={!accountId} onClick={() => setShowImport(true)}>
-                <Upload size={15} />
-              </button>
-            )}
+            {/* TRX_Orisha alimente de nouveau TOUS les comptes, y compris ceux
+                branchés à Plaid (la banque ne livrait pas) : l'indicateur et le
+                collage manuel ne se cachent plus sur ces comptes-là. */}
+            <TrxSheetIndicator trx={trx} open={trxOpen} onToggle={() => setTrxOpen((v) => !v)} />
+            <TrxSheetSyncButton trx={trx} />
+            <button type="button" title="Importer un relevé (collage)"
+              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
+              disabled={!accountId} onClick={() => setShowImport(true)}>
+              <Upload size={15} />
+            </button>
             {!!account?.plaid_account_id && (
               <button type="button"
                 className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
@@ -1271,17 +1785,12 @@ export default function RapprochementBancaire() {
           ))}
         </div>
 
-        {trxOpen && !account?.plaid_account_id && <TrxSheetPanel trx={trx} onGoToAccount={(id) => setAccountId(id)} />}
+        {trxOpen && <TrxSheetPanel trx={trx} onGoToAccount={(id) => setAccountId(id)} />}
 
-        {/* Files de travail à gauche, le seul chiffre qui compte à droite */}
+        {/* La légende des couleurs à gauche (elle fait le filtre), le seul
+            chiffre qui compte à droite. */}
         <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-slate-200 mb-3">
-          <div className="flex items-center gap-x-3">
-            {TABS.map((t) => (
-              <Tab key={t.key} active={tab === t.key} onClick={() => setTab(t.key)}>
-                {t.label} <span className="text-xs text-slate-400 tabular-nums">{counts[t.key]}</span>
-              </Tab>
-            ))}
-          </div>
+          <StatusLegend counts={counts} value={colorFilter} onChange={setColorFilter} />
           <div className="pb-1.5 min-w-0"><EcartBar account={account} rec={rec} /></div>
         </div>
 
@@ -1291,21 +1800,61 @@ export default function RapprochementBancaire() {
           table="bank_transactions"
           manageViews
           columns={COLUMNS}
-          data={tabRows}
+          data={visibleRows}
           loading={loading}
           rowKey="id"
-          rowClassName={(r) => r._ghost ? 'bg-slate-50/70' : r._flag ? 'bg-amber-50/70' : ''}
+          // La ligne porte la couleur de son statut (index.css, `row-st-*`).
+          // L'anomalie ne prend PLUS le fond — elle pose un filet à gauche, qui
+          // cohabite avec la teinte. Une règle de couleur de vue, elle, est
+          // posée en style inline par DataTable : elle gagne sur tout, c'est
+          // voulu (la règle explicite de l'utilisateur passe avant).
+          rowClassName={(r) => `${r._ghost ? GHOST_META.tint : STATUS_META[bucketOf(r)].tint}${r._flag ? ' row-flagged' : ''}`}
           searchFields={['details', 'description', 'reference', 'amount', 'comment', 'matched_label']}
+          // Sans `bulkDeleteAlways`, DataTable n'affiche les cases à cocher que
+          // si un admin a activé la suppression en lot sur la table : la
+          // confirmation en lot était invisible. Pas de `onBulkDelete` — on ne
+          // supprime pas une ligne de relevé depuis la barre.
+          bulkDeleteAlways
           bulkActions={[
             {
-              key: 'reconcile', label: 'Marquer rapproché', icon: CheckCheck, busyLabel: 'Rapprochement…',
-              onClick: async (ids) => { await api.bank.reconcile(ids.filter((id) => !String(id).startsWith('qb:'))); await refresh() },
+              key: 'reconcile', label: 'Confirmer', icon: CheckCheck, busyLabel: 'Rapprochement…',
+              show: (rows) => rows.some((r) => !r._ghost && r.status !== 'rapproche' && r.status !== 'ignore'),
+              onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real)) },
             },
             {
-              key: 'automatch-hint', label: 'Ignorer', icon: Undo2, busyLabel: 'Mise à jour…',
+              key: 'accept-proposals', label: 'Confirmer les propositions', icon: Wand2, busyLabel: 'Confirmation…',
+              show: (rows) => rows.some((r) => r.proposal_count > 0),
               onClick: async (ids) => {
-                for (const id of ids) if (!String(id).startsWith('qb:')) await api.bank.updateTransaction(id, { status: 'ignore' })
+                const rows = allRows.filter((r) => ids.includes(r.id) && r.proposal_count > 0)
+                if (!rows.length) return
+                const props = (await Promise.all(rows.map((r) => api.bank.txnProposals(r.id)))).flat()
+                const open = props.filter((p) => p.status === 'proposee').map((p) => p.id)
+                if (open.length) await api.bank.acceptProposals(open)
+                invalidate('/bank')
                 await refresh()
+              },
+            },
+            {
+              key: 'unreconcile', label: 'Annuler le rapprochement', icon: Undo2, busyLabel: 'Mise à jour…',
+              show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'rapproche'),
+              onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real, true)) },
+            },
+            {
+              key: 'ignore', label: 'Ignorer', icon: Unlink, busyLabel: 'Mise à jour…',
+              show: (rows) => rows.some((r) => !r._ghost && r.status !== 'ignore'),
+              onClick: async (ids) => {
+                await bulkReal(ids, async (real) => {
+                  for (const id of real) await api.bank.updateTransaction(id, { status: 'ignore' })
+                })
+              },
+            },
+            {
+              key: 'reactivate', label: 'Ré-activer', icon: Undo2, busyLabel: 'Mise à jour…',
+              show: (rows) => rows.length > 0 && rows.every((r) => r.status === 'ignore'),
+              onClick: async (ids) => {
+                await bulkReal(ids, async (real) => {
+                  for (const id of real) await api.bank.updateTransaction(id, { status: 'a_traiter' })
+                })
               },
             },
           ]}
@@ -1321,12 +1870,8 @@ export default function RapprochementBancaire() {
                   initialMode={peekOpen.forId === r.id ? peekOpen.mode : null} />,
           }}
           emptyState={{
-            title: tab === 'review' ? 'Rien à réviser' : 'Aucune transaction',
-            description: tab === 'review'
-              ? 'Tout est classé pour ce compte.'
-              : account?.plaid_account_id
-                ? 'Les transactions arrivent de la banque — rien à importer.'
-                : 'Importer un relevé pour commencer le rapprochement.',
+            title: 'Aucune transaction',
+            description: 'Importer un relevé pour commencer le rapprochement.',
           }}
         />
       </div>

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText, Landmark } from 'lucide-react'
+import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText, Landmark, MessageCircle } from 'lucide-react'
 import { usePlaidLink } from 'react-plaid-link'
 import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
@@ -341,6 +341,7 @@ const CONNECTORS = [
   { id: 'amazon',     name: 'Amazon Business', icon: ShoppingCart, color: 'bg-orange-50 text-orange-700' },
   { id: 'digikey',    name: 'DigiKey',     icon: Cpu,        color: 'bg-red-50 text-red-700',      apiKeyManaged: true },
   { id: 'instagram',  name: 'Instagram',   icon: Instagram,  color: 'bg-pink-50 text-pink-600',    apiKeyManaged: true },
+  { id: 'manychat',   name: 'ManyChat',    icon: MessageCircle, color: 'bg-indigo-50 text-indigo-600', apiKeyManaged: true },
 ]
 
 /**
@@ -359,10 +360,15 @@ function InstagramConfig() {
   const [dsUserId, setDsUserId] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [health, setHealth] = useState(null)        // { status, detail, checked_at, last_ok_at }
+  const [checking, setChecking] = useState(false)
   const confirm = useConfirm()
 
   const load = useCallback(() => {
     api.instagram.session().then(s => { setState(s); setDsUserId(s.ds_user_id || '') }).catch(() => {})
+    api.connectors.sessionHealth()
+      .then(r => setHealth((r.sessions || []).find(x => x.connector === 'instagram') || null))
+      .catch(() => {})
   }, [])
   useEffect(() => { load() }, [load])
 
@@ -372,6 +378,9 @@ function InstagramConfig() {
       await api.instagram.setSession({ sessionid, ds_user_id: dsUserId })
       setSessionid('')
       addToast({ message: 'Cookie Instagram enregistré', type: 'success' })
+      // Vérification immédiate : un cookie recollé qui ne marche pas doit se
+      // voir tout de suite, pas au prochain lundi.
+      try { await api.connectors.checkSession('instagram') } catch { /* l'état reste celui d'avant */ }
       load()
     } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setSaving(false) }
@@ -385,6 +394,22 @@ function InstagramConfig() {
       load()
     } catch (e) { addToast({ message: e.message, type: 'error' }) }
   }
+
+  const check = async () => {
+    setChecking(true)
+    try {
+      const r = await api.connectors.checkSession('instagram')
+      setHealth(r)
+      addToast({ message: r.status === 'ok' ? 'Connexion valide' : r.detail, type: r.status === 'ok' ? 'success' : 'error' })
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setChecking(false) }
+  }
+
+  // Le cookie « présent » ne veut rien dire : c'est sa VALIDITÉ qui compte.
+  // Un cookie mort laissait la lecture des commentaires répondre « rien
+  // trouvé » — d'où cet état, vérifié chaque matin et affiché ici.
+  const healthTone = health?.status === 'ok' ? 'text-green-600'
+    : health?.status === 'expired' ? 'text-red-600' : 'text-amber-600'
 
   return (
     <div className="mt-4 space-y-4">
@@ -423,12 +448,124 @@ function InstagramConfig() {
             </button>
           )}
         </div>
+        <div className="flex items-center gap-2 text-sm">
+          <span className={`font-medium ${healthTone}`}>
+            {health?.status === 'ok' ? 'Connexion valide' : health?.status === 'expired' ? 'Connexion expirée' : health?.status === 'error' ? 'Connexion incertaine' : 'Jamais vérifiée'}
+          </span>
+          {health?.detail && <span className="text-xs text-slate-400 truncate">{health.detail}</span>}
+          <button onClick={check} disabled={checking} className="btn-secondary btn-sm ml-auto">
+            {checking ? 'Vérification…' : 'Vérifier'}
+          </button>
+        </div>
+
+        <ol className="text-xs text-slate-500 space-y-1 list-decimal list-inside">
+          <li>Ouvrir <code>instagram.com</code> connecté au compte <strong>@orisha_auto</strong>.</li>
+          <li>
+            Avec l'extension <strong>Cookie-Editor</strong> : cliquer son icône, chercher <code>sessionid</code>, copier sa valeur.
+            <span className="text-slate-400"> Sans extension : ⌥⌘I (Mac) ou F12 → <strong>Application</strong> → <strong>Cookies</strong> → <code>https://www.instagram.com</code>.</span>
+          </li>
+          <li>Coller dans le champ ci-dessus, puis faire de même avec <code>ds_user_id</code>.</li>
+          <li>Enregistrer, puis <strong>Vérifier</strong>.</li>
+        </ol>
         <p className="text-xs text-slate-400">
-          Dans un Chrome connecté au compte Instagram : DevTools → Application → Cookies → instagram.com → copier
-          <code className="mx-1">sessionid</code> et <code className="mx-1">ds_user_id</code>.
-          Le cookie expire environ une fois par an — le recoller ici quand la page{' '}
-          <Link to="/prospects-instagram" className="underline hover:text-slate-600">Prospects Instagram</Link> signale une erreur 401.
+          Vérifié tous les matins ; une connexion morte part en alerte Slack et se voit ici et sur{' '}
+          <Link to="/instagram" className="underline hover:text-slate-600">Instagram</Link>.
         </p>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * ManyChat — identifiant et session.
+ *
+ * La connexion ne peut pas être faite par l'ERP : ManyChat est protégé par un
+ * contrôle anti-robot que seul un vrai navigateur franchit. L'utilisateur se
+ * connecte chez lui, exporte les témoins avec Cookie-Editor, et les colle ici.
+ */
+function ManychatConfig() {
+  const { addToast } = useToast()
+  const [state, setState] = useState(null)
+  const [username, setUsername] = useState('')
+  const [payload, setPayload] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(() => {
+    api.connectors.manychat().then(s => { setState(s); setUsername(u => u || s.username || '') }).catch(() => {})
+  }, [])
+  useEffect(() => { load() }, [load])
+
+  const saveAccount = async () => {
+    setBusy(true)
+    try { await api.connectors.saveManychat({ username }); addToast({ message: 'Compte ManyChat enregistré', type: 'success' }); load() }
+    catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setBusy(false) }
+  }
+
+  const importSession = async () => {
+    setBusy(true)
+    try {
+      const r = await api.connectors.importManychatSession(payload)
+      setPayload('')
+      addToast({ message: `Session importée (${r.cookies} témoins)`, type: 'success' })
+      try { await api.connectors.checkSession('manychat') } catch { /* l'état reste celui d'avant */ }
+      load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setBusy(false) }
+  }
+
+  const check = async () => {
+    setBusy(true)
+    try {
+      const r = await api.connectors.checkSession('manychat')
+      addToast({ message: r.status === 'ok' ? 'Connexion valide' : r.detail, type: r.status === 'ok' ? 'success' : 'error' })
+      load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setBusy(false) }
+  }
+
+  const h = state?.health
+  const tone = h?.status === 'ok' ? 'text-green-600' : h?.status === 'expired' ? 'text-red-600' : 'text-amber-600'
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        <div className="flex items-center gap-2 text-sm">
+          <span className={`font-medium ${tone}`}>
+            {h?.status === 'ok' ? 'Connexion valide' : h?.status === 'expired' ? 'Session expirée' : state?.has_session ? 'Jamais vérifiée' : 'Aucune session'}
+          </span>
+          {h?.detail && <span className="text-xs text-slate-400 truncate">{h.detail}</span>}
+          <button onClick={check} disabled={busy || !state?.has_session} className="btn-secondary btn-sm ml-auto">Vérifier</button>
+        </div>
+
+        <div className="flex gap-2">
+          <label className="block flex-1">
+            <span className={lblCls}>Courriel du compte</span>
+            <input className="input w-full text-sm" value={username} onChange={e => setUsername(e.target.value)} />
+          </label>
+          <button onClick={saveAccount} disabled={busy || !username} className="btn-secondary btn-sm self-end">Enregistrer</button>
+        </div>
+
+        <label className="block">
+          <span className={lblCls}>Session exportée</span>
+          <textarea
+            className="input w-full font-mono text-xs h-24"
+            value={payload}
+            onChange={e => setPayload(e.target.value)}
+          />
+        </label>
+        <div className="flex items-center gap-2">
+          <button onClick={importSession} disabled={busy || !payload.trim()} className="btn-primary btn-sm">
+            Importer la session
+          </button>
+          {state?.session_at && <span className="text-xs text-slate-400">Dernière session : {new Date(state.session_at).toLocaleDateString('fr-CA')}</span>}
+        </div>
+
+        <ol className="text-xs text-slate-500 space-y-1 list-decimal list-inside">
+          <li>Sur ton ordi, ouvre <code>app.manychat.com</code> connecté au compte.</li>
+          <li>Clique l'icône <strong>Cookie-Editor</strong> → <strong>Export</strong> → <strong>Export as JSON</strong> (copie dans le presse-papiers).</li>
+          <li>Colle ici, puis <strong>Importer la session</strong>.</li>
+        </ol>
       </div>
     </div>
   )
@@ -2072,6 +2209,7 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           {connector.id === 'hubspot' && (
             <HubSpotConfig configured={hubspotConfigured} syncStatus={syncStatus} onRefresh={onRefresh} />
           )}
+          {connector.id === 'manychat' && <ManychatConfig />}
           {connector.id === 'instagram' && (
             <InstagramConfig />
           )}

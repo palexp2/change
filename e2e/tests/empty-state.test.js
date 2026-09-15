@@ -1,9 +1,6 @@
-// Vérifie le composant <EmptyState> réutilisable :
-//  1. DataTable — quand une recherche ne matche rien, l'état vide « filtré »
-//     s'affiche avec un CTA « Réinitialiser » qui restaure les lignes.
-//  2. CompanyDetail — un onglet sans données (ex. Support sans ticket) affiche
-//     un EmptyState contextuel (icône + titre + description) au lieu du sec
-//     « Aucun ticket ».
+// Vérifie le composant <EmptyState> réutilisable : quand une recherche de
+// DataTable ne matche rien, l'état vide « filtré » s'affiche avec un CTA
+// « Réinitialiser » qui restaure les lignes.
 //
 // Lecture seule : aucun record créé ou muté → pas de cleanup DB nécessaire.
 const { test, describe, before, after } = require('node:test')
@@ -16,7 +13,7 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
 describe('EmptyState réutilisable', () => {
-  let browser, ctx, page, emptyTicketsCompanyId
+  let browser, ctx, page
 
   before(async () => {
     browser = await chromium.launch()
@@ -28,19 +25,6 @@ describe('EmptyState réutilisable', () => {
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
 
-    // Trouve une entreprise dont l'onglet Support n'a aucun ticket.
-    emptyTicketsCompanyId = await page.evaluate(async () => {
-      const tok = localStorage.getItem('erp_token')
-      const r = await fetch('/erp/api/companies?limit=all', { headers: { Authorization: `Bearer ${tok}` } })
-      const j = await r.json()
-      const list = j.data || j || []
-      for (const c of list.slice(0, 40)) {
-        const dr = await fetch(`/erp/api/companies/${c.id}`, { headers: { Authorization: `Bearer ${tok}` } })
-        const d = await dr.json()
-        if (Array.isArray(d.tickets) && d.tickets.length === 0) return c.id
-      }
-      return null
-    })
   })
 
   after(async () => { await browser?.close() })
@@ -71,22 +55,6 @@ describe('EmptyState réutilisable', () => {
     assert.equal(await searchInput.inputValue(), '', 'la recherche devrait être réinitialisée')
   })
 
-  test('CompanyDetail : onglet Support vide → EmptyState contextuel', async (t) => {
-    if (!emptyTicketsCompanyId) {
-      t.skip('Aucune entreprise sans ticket trouvée dans l\'échantillon')
-      return
-    }
-    await page.goto(`${URL}/companies/${emptyTicketsCompanyId}`, { waitUntil: 'domcontentloaded' })
-    await page.waitForLoadState('networkidle')
-
-    await page.click('button:has-text("support")')
-
-    const empty = page.locator('[data-testid="empty-state"]')
-    await empty.waitFor({ state: 'visible', timeout: 5000 })
-    await assert.doesNotReject(empty.locator('text=Aucun ticket').waitFor({ state: 'visible', timeout: 3000 }))
-
-    // Vérifie qu'une icône SVG est rendue (le repère visuel contextuel).
-    const svgCount = await empty.locator('svg').count()
-    assert.ok(svgCount >= 1, 'l\'EmptyState devrait afficher une icône')
-  })
+  // Le test « onglet Support vide » est parti avec l'onglet lui-même :
+  // `tickets.company_id` a été droppée (migration 040).
 })

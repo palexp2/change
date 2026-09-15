@@ -1,5 +1,7 @@
+import { discoveryAddresses } from '../services/discoveryAddresses.js'
 import { discoveryAnswerErrors } from '../services/discoveryAnswerValidation.js'
 import { discoveryOptionsFromRow } from '../services/discoveryFormOptions.js'
+import { mobileControllerRole } from '../services/discoveryEquipment.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -32,6 +34,7 @@ const router = Router()
 const FIELD_COERCERS = {
   is_new_site:        (v) => (v === 'new' || v === 'add_to_existing') ? v : null,
   within_central_controller_range: (v) => typeof v === 'boolean' ? Number(v) : null,
+  central_controller_distance: (v) => typeof v === 'string' && v ? v : null,
   farm_address:       (v) => v && typeof v === 'object' ? JSON.stringify(v) : null,
   shipping_same_as_farm: (v) => v == null ? null : (v ? 1 : 0),
   shipping_address:   (v) => v && typeof v === 'object' ? JSON.stringify(v) : null,
@@ -151,6 +154,7 @@ function shapeResponse(row) {
     status: row.status,
     is_new_site: row.is_new_site,
     within_central_controller_range: row.within_central_controller_range == null ? null : !!row.within_central_controller_range,
+    central_controller_distance: row.central_controller_distance || null,
     farm_address: row.farm_address_json ? JSON.parse(row.farm_address_json) : null,
     shipping_same_as_farm: row.shipping_same_as_farm == null ? null : !!row.shipping_same_as_farm,
     shipping_address: row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null,
@@ -292,30 +296,7 @@ router.post('/:sessionId/submit', async (req, res) => {
       ).run(row.id)
       if (claim.changes === 0) return { alreadySubmitted: true }
 
-      // Upsert addresses if company is known
-      if (row.company_id) {
-        const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
-        const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
-        const sameAsShipping = !!row.shipping_same_as_farm
-
-        function upsertAddress(type, addr) {
-          if (!addr || !addr.line1 || !addr.province) return
-          const existing = db.prepare(
-            "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
-          ).get(row.company_id, type)
-          if (existing) {
-            db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-              .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
-          } else {
-            db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
-              .run(newRecordId(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
-          }
-        }
-
-        if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
-        if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
-        else if (ship) upsertAddress('Livraison', ship)
-      }
+      discoveryAddresses(row, { persist: true })
       return { alreadySubmitted: false }
     })
 
@@ -345,11 +326,26 @@ router.post('/:sessionId/extras', async (req, res) => {
     const { items } = req.body || {}
     if (!Array.isArray(items) || items.length === 0) return res.status(400).json({ error: 'items requis' })
 
+    // Resolve company shipping for the new pending_invoice
+    const ship = db.prepare(`SELECT province, country FROM adresses WHERE company_id=? AND address_type='Livraison' AND province IS NOT NULL AND province!='' ORDER BY created_at DESC LIMIT 1`).get(row.company_id)
+    const formShip = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
+    const formFarm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
+    const province = ship?.province || formShip?.province || formFarm?.province
+    if (!province) return res.status(400).json({ error: 'Aucune province de livraison déterminée — soumettez d\'abord vos adresses' })
+    const country = ship?.country || formShip?.country || formFarm?.country || 'Canada'
+
     // Resolve each role to a product + price
     const resolved = []
     for (const it of items) {
       if (!it?.role || !Number.isFinite(Number(it.qty)) || Number(it.qty) <= 0) continue
-      const product = db.prepare("SELECT id, sku, name_fr, price_cad, monthly_price_cad FROM products WHERE role=? AND active=1 LIMIT 1").get(it.role)
+      // Le contrôleur Internet mobile a un produit par pays ; repli sur l'ancien
+      // rôle unique tant que le catalogue n'a pas les deux.
+      const roles = it.role === 'mobile_controller' ? [mobileControllerRole(country), 'mobile_controller'] : [it.role]
+      let product = null
+      for (const role of roles) {
+        product = db.prepare("SELECT id, sku, name_fr, price_cad, monthly_price_cad FROM products WHERE role=? AND active=1 LIMIT 1").get(role)
+        if (product) break
+      }
       if (!product) continue
       const isSubscription = it.role === 'valve_block_sub'
       const unitPrice = isSubscription ? Number(product.monthly_price_cad || 0) : Number(product.price_cad || 0)
@@ -363,13 +359,6 @@ router.post('/:sessionId/extras', async (req, res) => {
       })
     }
     if (resolved.length === 0) return res.status(400).json({ error: 'Aucun extra valide à facturer' })
-
-    // Resolve company shipping for the new pending_invoice
-    const ship = db.prepare(`SELECT province, country FROM adresses WHERE company_id=? AND address_type='Livraison' AND province IS NOT NULL AND province!='' ORDER BY created_at DESC LIMIT 1`).get(row.company_id)
-    const province = ship?.province || (row.shipping_address_json ? JSON.parse(row.shipping_address_json)?.province : null)
-      || (row.farm_address_json ? JSON.parse(row.farm_address_json)?.province : null)
-    if (!province) return res.status(400).json({ error: 'Aucune province de livraison déterminée — soumettez d\'abord vos adresses' })
-    const country = ship?.country || 'Canada'
 
     // Create pending invoice + lier au formulaire client de façon atomique :
     // si le lien échoue, la facture ne doit pas exister orpheline (impossible à
@@ -481,141 +470,24 @@ router.post('/by-token/:token/submit', (req, res) => {
   const answerErrors = discoveryAnswerErrors(shapeResponse(row))
   if (answerErrors.length) return res.status(400).json({ error: answerErrors[0], errors: answerErrors })
 
-  // Si une serre dépasse 4 zones d'irrigation, on exige soit le paiement
-  // d'autant de blocs de 4 valves supplémentaires, soit que le client baisse
-  // à 4. (L'autre chemin "aviser conseiller" se fait hors-formulaire.)
-  const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
-  const blocksNeeded = computeValveBlocksNeeded(greenhouses)
-  if (blocksNeeded > 0) {
-    let paid = false
-    if (row.extras_pending_invoice_id) {
-      const pi = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
-      paid = pi?.status === 'paid'
-    }
-    if (!paid) {
-      return res.status(400).json({
-        error: `Vous avez ${blocksNeeded} bloc(s) de 4 valves supplémentaires à payer avant de soumettre. Baissez à 4 zones par serre ou complétez le paiement plus bas dans le formulaire.`,
-        code: 'valve_blocks_unpaid',
-        valve_blocks_needed: blocksNeeded,
-      })
-    }
-  }
+  // Les zones supplémentaires seront traitées avec le vendeur après l'envoi.
 
-  if (row.company_id) {
-    const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
-    const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
-    const sameAsShipping = !!row.shipping_same_as_farm
-    function upsertAddress(type, addr) {
-      if (!addr || !addr.line1 || !addr.province) return
-      const existing = db.prepare(
-        "SELECT id FROM adresses WHERE company_id=? AND address_type=? ORDER BY created_at DESC LIMIT 1"
-      ).get(row.company_id, type)
-      if (existing) {
-        db.prepare(`UPDATE adresses SET line1=?, city=?, province=?, postal_code=?, country=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-          .run(addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada', existing.id)
-      } else {
-        db.prepare(`INSERT INTO adresses (id, company_id, address_type, line1, city, province, postal_code, country) VALUES (?,?,?,?,?,?,?,?)`)
-          .run(newRecordId(), row.company_id, type, addr.line1, addr.city || null, addr.province, addr.postal_code || null, addr.country || 'Canada')
-      }
-    }
-    if (row.is_new_site === 'new' && farm) upsertAddress('Ferme', farm)
-    if (row.is_new_site === 'new' && sameAsShipping && farm) upsertAddress('Livraison', farm)
-    else if (ship) upsertAddress('Livraison', ship)
-  }
-
-  db.prepare(`UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(row.id)
+  db.transaction(() => {
+    discoveryAddresses(row, { persist: true })
+    db.prepare(`UPDATE customer_onboarding_responses SET status='submitted', submitted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(row.id)
+  })()
   const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
   res.json({ ok: true, response: shapeResponse(refreshed) })
 })
 
-// POST /by-token/:token/valve-blocks-checkout — Stripe Checkout pour les blocs
-// de 4 valves d'irrigation supplémentaires (achat unique à 400 $/bloc).
-//
-// Pourquoi seulement le one-time : modifier l'abonnement Stripe existant pour
-// ajouter une ligne 25 $/mois nécessite une intervention sur la subscription
-// (prorations, anchor billing, etc.) que le client ne peut pas approuver
-// facilement dans Checkout. Pour cette option, on lui demande de contacter
-// son conseiller — le frontend affiche le message correspondant.
-router.post('/by-token/:token/valve-blocks-checkout', async (req, res) => {
+// Les anciens onglets peuvent encore appeler cette route : aucun nouveau
+// paiement de valves n'est proposé dans le formulaire de découverte.
+router.post('/by-token/:token/valve-blocks-checkout', (req, res) => {
   const row = loadByToken(req.params.token)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-  if (row.status === 'submitted') return res.status(400).json({ error: 'Formulaire déjà soumis' })
-  if (!row.company_id) return res.status(400).json({ error: 'Aucune entreprise associée' })
-
-  const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
-  const blocksNeeded = computeValveBlocksNeeded(greenhouses)
-  if (blocksNeeded <= 0) {
-    return res.status(400).json({ error: 'Aucun bloc supplémentaire requis — toutes vos serres ont ≤ 4 zones' })
-  }
-
-  // Si on a déjà un pending_invoice payé pour ce form, refuser (évite les doublons).
-  if (row.extras_pending_invoice_id) {
-    const existing = db.prepare('SELECT status FROM pending_invoices WHERE id=?').get(row.extras_pending_invoice_id)
-    if (existing?.status === 'paid') {
-      return res.status(400).json({ error: 'Les blocs supplémentaires ont déjà été payés' })
-    }
-  }
-
-  const product = db.prepare("SELECT id, sku, name_fr, price_cad FROM products WHERE role='valve_block_onetime' AND active=1 LIMIT 1").get()
-  if (!product) return res.status(500).json({ error: 'Produit valve_block_onetime introuvable au catalogue' })
-  const unitPrice = Number(product.price_cad || 0)
-  if (unitPrice <= 0) return res.status(500).json({ error: 'Prix du bloc de valves non configuré au catalogue' })
-
-  // Résoudre la province/pays pour les taxes (depuis l'adresse de livraison déjà saisie).
-  const ship = row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null
-  const farm = row.farm_address_json ? JSON.parse(row.farm_address_json) : null
-  const province = ship?.province || farm?.province
-  const country = ship?.country || farm?.country || 'Canada'
-  if (!province) {
-    return res.status(400).json({ error: 'Adresse de livraison requise avant le paiement — complétez les sections du haut.' })
-  }
-
-  const items = [{
-    product_id: product.id,
-    qty: blocksNeeded,
-    unit_price: unitPrice,
-    description: `${blocksNeeded} × ${product.name_fr || 'Bloc 4 valves supplémentaires'}`,
-  }]
-
-  // Réutilise extras_pending_invoice_id si présent (et pas encore payé) pour
-  // éviter d'empiler des pending_invoices à chaque refresh du Checkout.
-  let pendingId = row.extras_pending_invoice_id
-  if (pendingId) {
-    db.prepare(`
-      UPDATE pending_invoices
-        SET items_json=?, currency='CAD', shipping_province=?, shipping_country=?,
-            status='sent', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
-      WHERE id=?
-    `).run(JSON.stringify(items), province, country, pendingId)
-  } else {
-    pendingId = newRecordId()
-    db.prepare(`
-      INSERT INTO pending_invoices (id, company_id, currency, items_json, shipping_province, shipping_country, due_days, status, created_by)
-      VALUES (?,?,?,?,?,?,?,?,?)
-    `).run(pendingId, row.company_id, 'CAD', JSON.stringify(items), province, country, 30, 'sent', null)
-    db.prepare('UPDATE customer_onboarding_responses SET extras_pending_invoice_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\',\'now\') WHERE id=?').run(pendingId, row.id)
-  }
-
-  const stripe = getStripeClient()
-  const { createOrRefreshCheckoutSession } = await import('../services/stripeInvoices.js')
-  const baseUrl = APP_URL
-  const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
-  const { url } = await createOrRefreshCheckoutSession({
-    stripe,
-    pending,
-    baseAppUrl: baseUrl,
-    successUrl: `${baseUrl}/erp/d/${row.public_token}?paid=1`,
-    cancelUrl: `${baseUrl}/erp/d/${row.public_token}?cancelled=1`,
-  })
-  await ensureStripeCustomerTraced(stripe, row.company_id, 'extras-by-token')
-
-  res.json({
-    ok: true,
-    pending_invoice_id: pendingId,
-    checkout_url: url,
-    blocks: blocksNeeded,
-    unit_price: unitPrice,
-    total: unitPrice * blocksNeeded,
+  return res.status(410).json({
+    error: 'Un vendeur vous contactera pour vos zones d’irrigation supplémentaires. Rechargez le formulaire pour envoyer vos réponses.',
+    code: 'valve_blocks_sales_followup',
   })
 })
 

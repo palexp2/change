@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from './shippedCost.js'
 import path from 'path'
 import fs from 'fs'
 import sharp from 'sharp'
@@ -82,7 +83,7 @@ export function returnCustomsItems(returnId) {
 export function shipmentCustomsItems(shipmentId) {
   const hsCol = productHsColumn()
   const rows = db.prepare(`
-    SELECT oi.qty, oi.unit_cost, p.name_en, p.name_fr, p.price_cad${hsCol ? `, p.${hsCol}` : ''}
+    SELECT oi.qty, ${pieceUnitCostSql('oi')} AS unit_cost, p.name_en, p.name_fr, p.price_cad${hsCol ? `, p.${hsCol}` : ''}
     FROM order_items oi
     LEFT JOIN products p ON p.id = oi.product_id
     WHERE oi.order_id = (SELECT order_id FROM shipments WHERE id = ?)

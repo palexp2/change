@@ -19,6 +19,7 @@
 // bancaire (import manuel, TRX_Orisha, ou Plaid en temps quasi réel — voir
 // services/plaidSync.js) coche automatiquement `cleared_at` via `autoClearFromBank`.
 import db from '../db/database.js'
+import { resolveVendorProfileId } from './vendorProfiles.js'
 import { newRecordId } from '../utils/recordId.js'
 import { qbGet } from '../connectors/quickbooks.js'
 
@@ -148,12 +149,16 @@ export function validatePayment(body, { partial = false } = {}) {
 
 export function createPayment(body, userId = null) {
   const id = newRecordId()
+  // Le destinataire reste affiché tel qu'il est saisi ; à côté, on pose le lien
+  // vers sa fiche. Sans ça, une faute de frappe coupait le paiement de tout ce
+  // que la fiche sait (moyen de paiement habituel, particularité, délai).
+  const vendorProfileId = resolveVendorProfileId(body.recipient) || resolveVendorProfileId(body.label)
   db.prepare(`
     INSERT INTO treasury_payments (
       id, payment_date, direction, amount, currency, account, label, achat_id,
       invoice_date, invoice_number, reference, method, notes, counterparty_account, recipient,
-      cleared_at, cleared_source, sheet_seen_at, source, import_key, created_by
-    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      cleared_at, cleared_source, sheet_seen_at, source, import_key, created_by, vendor_profile_id
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, dayOnly(body.payment_date), body.direction === 'in' ? 'in' : 'out', r2(body.amount),
     body.currency || 'CAD', body.account || 'BNC CAD', body.label || null, body.achat_id || null,
@@ -161,6 +166,7 @@ export function createPayment(body, userId = null) {
     body.counterparty_account || null, body.recipient || null,
     body.cleared_at || null, body.cleared_at ? (body.cleared_source || 'manual') : null,
     body.sheet_seen_at || null, body.source || 'manual', body.import_key || null, userId,
+    vendorProfileId,
   )
   return getPayment(id)
 }
@@ -511,22 +517,25 @@ export function learnPaymentNote(label, note) {
 const CLEAR_DAY_WINDOW = 5
 const amountsMatch = (a, b) => Math.abs(Math.abs(a) - Math.abs(b)) <= Math.max(1, Math.abs(b) * 0.01)
 
-export function autoClearFromBank({ accountName = null, source = 'bank' } = {}) {
+// L'appariement lui-même, SANS écriture : c'est cette fonction que le moteur de
+// propositions interroge. Extraite pour être testable et pour que « cocher »
+// redevienne un geste humain (services/bankProposals/).
+export function matchPaymentsToTxns({ accountName = null } = {}) {
   const pending = db.prepare(`
     SELECT * FROM treasury_payments
     WHERE deleted_at IS NULL AND cleared_at IS NULL
       AND (? IS NULL OR account = ?)
   `).all(accountName, accountName)
-  if (!pending.length) return { cleared: 0 }
-  let cleared = 0
+  if (!pending.length) return []
   const used = new Set(
     db.prepare('SELECT bank_txn_id FROM treasury_payments WHERE bank_txn_id IS NOT NULL AND deleted_at IS NULL')
       .all().map(r => r.bank_txn_id)
   )
+  const hits = []
   for (const p of pending) {
     const sign = p.direction === 'in' ? 1 : -1
     const rows = db.prepare(`
-      SELECT t.id, t.amount, t.txn_date FROM bank_transactions t
+      SELECT t.id, t.amount, t.txn_date, t.account_id FROM bank_transactions t
       JOIN bank_accounts b ON b.id = t.account_id
       WHERE t.deleted_at IS NULL AND b.deleted_at IS NULL AND b.name = ?
         AND COALESCE(t.pending, 0) = 0
@@ -536,7 +545,18 @@ export function autoClearFromBank({ accountName = null, source = 'bank' } = {}) 
       && Math.sign(t.amount) === sign && amountsMatch(t.amount, p.amount * sign))
     if (!hit) continue
     used.add(hit.id)
-    setCleared(p.id, true, { bankTxnId: hit.id, source })
+    hits.push({ payment: p, txn: hit })
+  }
+  return hits
+}
+
+// Cochage direct — conservé pour le bouton manuel « apparier au relevé » de la
+// page Paiements émis et pour l'import Pmt_Suivi. Le passage automatique, lui,
+// passe désormais par une proposition : voir services/bankProposals/producers.
+export function autoClearFromBank({ accountName = null, source = 'bank' } = {}) {
+  let cleared = 0
+  for (const { payment, txn } of matchPaymentsToTxns({ accountName })) {
+    setCleared(payment.id, true, { bankTxnId: txn.id, source })
     cleared++
   }
   return { cleared }

@@ -68,7 +68,7 @@ const ROUTES = [
   [/^\/inventaire-drive/, HardDrive],
   [/^\/dettes-lt/, Landmark],
   [/^\/budget-marketing/, Megaphone],
-  [/^\/prospects-instagram/, Instagram],
+  [/^\/instagram/, Instagram],
   [/^\/douanes/, Ship],
   [/^\/collecte-factures/, DownloadCloud],
   [/^\/abonnements/, RefreshCw],

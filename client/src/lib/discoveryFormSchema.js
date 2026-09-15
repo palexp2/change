@@ -24,12 +24,11 @@ import { normalizeQuestionImage } from './discoveryQuestionImages.js'
 
 export const DEFAULT_TEXTS = {
   'header.title': 'Formulaire technique',
-  'header.intro': 'Ces informations nous permettent de pré-programmer votre contrôleur et de préparer votre installation.',
 
   'order_type.title': 'Type de commande',
   'order_type.prompt': 'Cette commande est pour :',
   'controller_distance.title': 'Contrôleur central existant',
-  'controller_distance.prompt': 'Est-ce que la/les serres à automatiser seront situées à 250 pi ou moins du contrôleur central ?',
+  'controller_distance.prompt': 'À quelle distance du contrôleur central seront situées la/les serres à automatiser ?',
   'controller_distance.near': 'Aucun nouveau contrôleur central à fournir.',
   'controller_distance.far': 'Un nouveau contrôleur central sera fourni. Vos contrôleurs centraux devront être programmés en mode multi-contrôleurs.',
 
@@ -47,7 +46,7 @@ export const DEFAULT_TEXTS = {
   'network.mobile_title': 'Contrôleur Internet mobile',
   'network.mobile_needed_text': 'Votre connexion Ethernet ou Wi-Fi ne permet pas un branchement adéquat. Un contrôleur Internet mobile est à prévoir, sous réserve d’une couverture cellulaire suffisante.',
   'network.mobile_text': "Le contrôleur internet mobile est inclus dans votre commande — vous n'avez besoin d'aucun Wi-Fi local. Assurez-vous que l'endroit où sera installé le contrôleur central a une bonne couverture cellulaire.",
-  'network.wifi_prompt': 'Pour pré-programmer le contrôleur central, fournissez les infos Wi-Fi (optionnel mais recommandé) :',
+  'network.wifi_prompt': 'Pour pré-programmer le contrôleur central, fournissez les infos Wi-Fi :',
   'network.wifi_ssid_label': 'Nom du Wi-Fi (SSID)',
   'network.wifi_password_label': 'Mot de passe',
 
@@ -55,18 +54,16 @@ export const DEFAULT_TEXTS = {
   'greenhouses.count_label': 'Combien de serres voulez-vous automatiser avec Orisha ?',
 
   'greenhouse.length_label': 'Longueur de la serre (pi)',
-  'greenhouse.side_vents_label': 'Cette serre a-t-elle des côtés ouvrants à automatiser ?',
+  'greenhouse.side_vents_count_label': 'Combien de côtés ouvrants à automatiser ?',
+  'greenhouse.motors_label': 'Avez-vous déjà les moteurs ?',
   'greenhouse.side_vent_height_label': 'Hauteur des côtés ouvrants (pi)',
   'greenhouse.side_pipe_type_label': 'Type de tuyau de côté',
   'greenhouse.guide_pipes_label': 'Tuyaux guides',
   'greenhouse.diameter_other_label': 'Diamètre externe exact',
 
   'louvers.title': 'Louvres',
-  'louvers.present': 'Cette serre a-t-elle des louvres à automatiser ?',
-  'louvers.count': 'Nombre de louvres',
-  'louvers.voltage': 'Voltage de la louvre',
-  'louvers.voltage_other': 'Précisez le voltage',
-  'louvers.type': 'Type de commande',
+  'louvers.present': 'Combien de louvres à automatiser dans cette serre ?',
+  'louvers.type': 'Comment cette louvre est-elle commandée ?',
   'louvers.fan': 'Un ventilateur est-il associé à cette louvre ?',
   'louvers.fan_unavailable': 'Orisha ne propose pas de contrôle séparé pour ce ventilateur. Configuration à vérifier.',
   'humidity.title': 'Conservation de l’humidité',
@@ -75,6 +72,7 @@ export const DEFAULT_TEXTS = {
   'humidity.haf_count': 'Nombre de HAF à fournir',
   'chief.furnaces_heading': 'Fournaises',
   'chief.has_furnaces_label': 'Cette serre a-t-elle des fournaises à automatiser ?',
+  'chief.furnaces_count_label': 'Combien y a-t-il de fournaises à automatiser dans cette serre:',
   'chief.num_furnaces_label': 'Nombre de fournaises dans cette serre',
   'chief.irrigation_heading': 'Irrigation',
   'chief.irrigation_zones_label': "Combien de zones d'irrigation pour cette serre ?",
@@ -95,12 +93,26 @@ export const DEFAULT_TEXTS = {
 }
 
 export const DEFAULT_CHOICES = {
-  'louvers.voltages': [{ value: '110', label: '110 V' }, { value: '24', label: '24 V' }, { value: '12', label: '12 V' }, { value: 'other', label: 'Autre (préciser)' }],
-  'louvers.types': [{ value: 'spring_loaded', label: 'Spring loaded (rappel à ressort)' }, { value: 'open_close', label: 'Open/close signal (signaux ouvrir/fermer)' }, { value: 'other', label: 'Autre / Je ne sais pas' }],
+  // Une louvre se décrit par une seule question illustrée : les combinaisons
+  // offertes (voltage + commande) sont montrées en images, le voltage ne se
+  // demande plus à part. Valeurs lues par `LOUVER_COMBOS`.
+  'louvers.types': [
+    { value: 'spring_110', label: 'Spring loaded 110 V' },
+    { value: 'open_close_24', label: 'Piston ou moteur 24 V, signaux ouvrir/fermer' },
+    { value: 'other', label: 'Autre / Je ne sais pas' },
+  ],
 
   'order_type.options': [
     { value: 'new', label: 'Un nouveau site de production avec Orisha' },
     { value: 'add_to_existing', label: 'Ajouter à un site de production existant qui a déjà Orisha' },
+  ],
+  // Distance au contrôleur central déjà en place. `coax_350` porte la même
+  // rallonge que côté réseau : l'antenne montée en hauteur gagne 100 pi, donc
+  // aucun nouveau contrôleur central n'est à fournir jusqu'à 350 pi.
+  'controller_distance.options': [
+    { value: 'yes', label: '250 pi ou moins' },
+    { value: 'coax_350', label: '350 pi — avec câble coaxial', help: 'Nous fournirons un câble coaxial pour monter l’antenne en hauteur (+100 pi de portée).' },
+    { value: 'no', label: 'Plus de 350 pi' },
   ],
   'network.options': [
     { value: 'ethernet', label: 'Oui — câble Ethernet à moins de 250 pi' },
@@ -108,17 +120,28 @@ export const DEFAULT_CHOICES = {
     { value: 'wifi_350_coax', label: 'Non, mais 350 pi est possible — fournissez le câble coaxial', help: 'Nous fournirons un câble coaxial pour monter l’antenne en hauteur (+100 pi de portée).' },
     { value: 'mobile_controller', label: "Aucune des options ci-dessus — j'ai besoin d'un contrôleur internet mobile", help: "Nous l'ajouterons aux extras à la fin. Nécessite une bonne couverture cellulaire à l'endroit du contrôleur central." },
   ],
-  'greenhouse.side_vents_options': [
-    { value: 'yes', label: 'Oui, il y a des côtés ouvrants' },
-    { value: 'no', label: 'Non, pas de côtés ouvrants' },
+  'greenhouse.length_range_options': [
+    { value: 'up_to_200', label: '200 pi ou moins' },
+    { value: 'over_200', label: 'Plus de 200 pi' },
+  ],
+  'greenhouse.motors_options': [
+    { value: 'yes', label: "J'ai déjà mes moteurs" },
+    { value: 'no', label: "J'ai besoin de moteurs" },
+  ],
+  'greenhouse.side_vent_height_range_options': [
+    { value: 'up_to_6', label: '6 pi et moins' },
+    { value: 'over_6', label: 'Plus de 6 pi' },
+    { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'greenhouse.side_pipe_type_options': [
     { value: 'aluminum_C', label: 'Aluminium extrudé (profil C)' },
     { value: 'steel_O', label: 'Acier (profil rond / O)' },
+    { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'greenhouse.guide_pipes_options': [
     { value: 'present', label: 'Déjà présents' },
     { value: 'needed', label: 'À fournir' },
+    { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'chief.has_furnaces_options': [
     { value: 'yes', label: 'Oui, il y a des fournaises' },
@@ -177,7 +200,8 @@ export function sectionScope(section) {
 // `scope` dit où lire la réponse : racine du formulaire, ou carte de serre.
 export const CONDITION_SOURCES = [
   { field: 'is_new_site', scope: 'form', label: 'Type de commande', choices: 'order_type.options' },
-  { field: 'within_central_controller_range', scope: 'form', label: 'Serres à 250 pi ou moins du contrôleur central', bool: true },
+  { field: 'within_central_controller_range', scope: 'form', label: 'Serres à portée du contrôleur central', bool: true },
+  { field: 'central_controller_distance', scope: 'form', label: 'Distance du contrôleur central', choices: 'controller_distance.options' },
   { field: 'shipping_same_as_farm', scope: 'form', label: 'Livraison = ferme', bool: true },
   { field: 'network_access', scope: 'form', label: 'Accès réseau', choices: 'network.options' },
   { field: 'num_greenhouses', scope: 'form', label: 'Nombre de serres', number: true },
@@ -224,7 +248,6 @@ export const SCHEMA_GROUPS = [
     id: 'header', title: 'En-tête', short: 'En-tête', section: 'intro',
     items: [
       { id: 'header.title', kind: 'text', label: 'Titre' },
-      { id: 'header.intro', kind: 'textarea', label: 'Intro' },
     ],
   },
   {
@@ -235,6 +258,7 @@ export const SCHEMA_GROUPS = [
       { id: 'order_type.options', kind: 'choices', label: 'Choix', fixedValues: true },
       { id: 'controller_distance.title', kind: 'text', label: 'Titre (contrôleur existant)' },
       { id: 'controller_distance.prompt', kind: 'text', label: 'Question (distance du contrôleur)' },
+      { id: 'controller_distance.options', kind: 'choices', label: 'Choix (distance du contrôleur)', fixedValues: true },
       { id: 'controller_distance.near', kind: 'text', label: 'Réponse à 250 pi ou moins' },
       { id: 'controller_distance.far', kind: 'textarea', label: 'Réponse au-delà de 250 pi' },
     ],
@@ -278,12 +302,18 @@ export const SCHEMA_GROUPS = [
       { id: 'greenhouses.count_label', kind: 'text', label: 'Question (nombre de serres)' },
       { id: 'greenhouse.length', kind: 'group', label: 'Question longueur', hideable: true },
       { id: 'greenhouse.length_label', kind: 'text', label: 'Libellé longueur' },
+      { id: 'greenhouse.length_range_options', kind: 'choices', label: 'Choix longueur', fixedValues: true },
       { id: 'greenhouse.side_vents', kind: 'group', label: 'Bloc côtés ouvrants', hideable: true },
-      { id: 'greenhouse.side_vents_label', kind: 'text', label: 'Question côtés ouvrants' },
-      { id: 'greenhouse.side_vents_options', kind: 'choices', label: 'Choix côtés ouvrants', fixedValues: true },
+      // Les trois réponses (0, 1, 2 côtés) sont des images dessinées par le code.
+      { id: 'greenhouse.side_vents_count_label', kind: 'text', label: 'Question côtés ouvrants' },
       // `under` : ces questions ne paraissent que si le bloc masquable nommé est
       // affiché (l'éditeur les atténue quand il est masqué).
+      // Les deux réponses (moteurs déjà là, moteurs à fournir) sont des images.
+      { id: 'greenhouse.motors_label', kind: 'text', label: 'Question moteurs', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.motors_options', kind: 'choices', label: 'Choix moteurs', fixedValues: true, under: 'greenhouse.side_vents' },
+      // Les deux réponses (6 pi et moins, plus de 6 pi) sont des images.
       { id: 'greenhouse.side_vent_height_label', kind: 'text', label: 'Libellé hauteur', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.side_vent_height_range_options', kind: 'choices', label: 'Choix hauteur', fixedValues: true, under: 'greenhouse.side_vents' },
       { id: 'greenhouse.side_pipe_type_label', kind: 'text', label: 'Libellé type de tuyau', under: 'greenhouse.side_vents' },
       { id: 'greenhouse.side_pipe_type_options', kind: 'choices', label: 'Choix type de tuyau', fixedValues: true, under: 'greenhouse.side_vents' },
       { id: 'greenhouse.guide_pipes_label', kind: 'text', label: 'Libellé tuyaux guides', under: 'greenhouse.side_vents' },
@@ -293,7 +323,9 @@ export const SCHEMA_GROUPS = [
   },
   {
     id: 'louvers', title: 'Louvres et ventilateurs', short: 'Louvres', section: null,
-    items: ['title', 'present', 'count', 'voltage', 'voltage_other', 'type', 'fan', 'fan_unavailable'].map(key => ({ id: `louvers.${key}`, kind: key === 'fan_unavailable' ? 'textarea' : 'text', label: { title: 'Titre', present: 'Question louvres', count: 'Nombre', voltage: 'Voltage', voltage_other: 'Autre voltage', type: 'Type de commande', fan: 'Ventilateur associé', fan_unavailable: 'Ventilateur non pris en charge' }[key] })),
+    // Les réponses (0, 1, 2 louvres ; combinaisons de commande) sont des images
+    // dessinées par le code.
+    items: ['title', 'present', 'type', 'fan', 'fan_unavailable'].map(key => ({ id: `louvers.${key}`, kind: key === 'fan_unavailable' ? 'textarea' : 'text', label: { title: 'Titre', present: 'Question louvres', type: 'Question type de louvre', fan: 'Ventilateur associé', fan_unavailable: 'Ventilateur non pris en charge' }[key] })),
   },
   {
     id: 'humidity', title: 'Conservation de l’humidité', short: 'Humidité', section: null,
@@ -304,9 +336,7 @@ export const SCHEMA_GROUPS = [
     items: [
       { id: 'chief.furnaces', kind: 'group', label: 'Bloc fournaises', hideable: true },
       { id: 'chief.furnaces_heading', kind: 'text', label: 'Sous-titre fournaises' },
-      { id: 'chief.has_furnaces_label', kind: 'text', label: 'Question fournaises' },
-      { id: 'chief.has_furnaces_options', kind: 'choices', label: 'Choix fournaises', fixedValues: true },
-      { id: 'chief.num_furnaces_label', kind: 'text', label: 'Libellé nombre de fournaises' },
+      { id: 'chief.furnaces_count_label', kind: 'text', label: 'Question nombre de fournaises' },
       { id: 'chief.irrigation_heading', kind: 'text', label: 'Sous-titre irrigation' },
       { id: 'chief.irrigation_zones_label', kind: 'text', label: 'Question zones' },
       { id: 'chief.orisha_valves_label', kind: 'text', label: 'Question valves' },
@@ -469,6 +499,33 @@ export function isQuestionVisible(q, ctx) {
   return cond.match === 'any' ? cond.rules.some(test) : cond.rules.every(test)
 }
 
+/**
+ * Choix courant de la distance au contrôleur central. Les réponses d'avant le
+ * choix « 350 pi » ne portent que le booléen : il donne encore la réponse.
+ */
+export function controllerDistanceValue(response) {
+  if (response?.central_controller_distance) return String(response.central_controller_distance)
+  if (typeof response?.within_central_controller_range === 'boolean') return response.within_central_controller_range ? 'yes' : 'no'
+  return ''
+}
+
+/**
+ * Puissance combinée des deux ventilateurs de bout : la réponse est une plage,
+ * c'est tout ce dont le calcul d'équipement a besoin. Les réponses d'avant ne
+ * portent que le nombre exact de HP : il donne encore la plage.
+ */
+export const FANS_HP_RANGE_OPTIONS = [
+  { value: 'up_to_1', label: '1 HP et moins' },
+  { value: 'over_1', label: 'Plus de 1 HP' },
+]
+
+export function fansHpRangeValue(greenhouse) {
+  if (greenhouse?.fans_hp_range) return String(greenhouse.fans_hp_range)
+  const hp = greenhouse?.fans_combined_hp
+  if (hp === 'Je ne sais pas') return hp
+  return Number(hp) > 0 ? (Number(hp) > 1 ? 'over_1' : 'up_to_1') : ''
+}
+
 /** Champs pilotes proposés dans l'éditeur pour une question d'une section. */
 export function conditionSources(section, allCustom, selfId) {
   const scope = sectionScope(section)
@@ -544,6 +601,13 @@ export function buildForm(overrides) {
 /** Calque vide — point de départ de l'éditeur. */
 export function emptyOverrides() {
   return { images: {}, texts: {}, choices: {}, brands: null, hidden: {}, custom: [], equipment: { products: {} } }
+}
+
+// Une serre de niveau Helper n'automatise que ses côtés ouvrants : ventilateurs,
+// louvres et conservation de l'humidité ne lui sont ni demandés, ni dimensionnés
+// (miroir de la même règle côté serveur, services/discoveryEquipment.js).
+export function sideVentsOnly(permission) {
+  return permission === 'helper'
 }
 
 /** `true` si la réponse à une question personnalisée est considérée remplie. */

@@ -9,14 +9,14 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 
 // Vérifie le flow de suppression d'une interaction via l'UI :
 // - création d'une note via l'API
-// - ouverture du panneau détail dans /interactions
+// - ouverture de la fiche en panneau latéral dans /interactions
 // - clic sur "Supprimer" + confirmation
 // - vérification : l'interaction disparaît de la liste (deleted_at posé)
 //
 // Les pills par défaut filtrent (Courriels=email, Appels=call) — on crée donc
 // un pill temporaire sans filtre, on l'active via localStorage, et on le purge
 // en cleanup pour ne pas polluer les vues utilisateur.
-describe('Interactions — suppression via panneau détail', () => {
+describe('Interactions — suppression depuis le panneau latéral', () => {
   let browser, ctx, page, token
   const createdIds = []
   let tempPillId
@@ -87,7 +87,9 @@ describe('Interactions — suppression via panneau détail', () => {
     await row.waitFor({ timeout: 10000 })
     await row.click()
 
-    const deleteBtn = page.locator('button:has-text("Supprimer")').first()
+    await page.locator('[data-testid="record-peek-drawer"]').waitFor({ timeout: 8000 })
+
+    const deleteBtn = page.locator('[data-testid="delete-interaction"]')
     await deleteBtn.waitFor({ timeout: 5000 })
     await deleteBtn.click()
 

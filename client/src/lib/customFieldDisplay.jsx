@@ -437,7 +437,13 @@ export function parseLinkedKeys(value, { splitCommas = true } = {}) {
 // `navigable = false` : la pastille cesse d'être un lien. Pour un FORMULAIRE de
 // création, où ouvrir la fiche visée démonterait la modale et perdrait la saisie
 // en cours — le picker suffit, la navigation n'y a rien à apporter.
-export function LinkedRecordsValue({ field, value, byLabel = false, detail = false, onChange = null, saving = false, navigable = true }) {
+// `extraFilter` : conditions SUPPLÉMENTAIRES sur les candidats proposés, en plus
+// du filtre réglé sur le champ. Même forme que `record_link_filter`
+// ([{ column, op, value }], cf. server/src/services/linkFilter.js) — c'est ce
+// qu'une fiche pose quand la restriction dépend de l'enregistrement affiché et
+// non du champ : l'adresse de livraison d'une commande ne se choisit que parmi
+// les adresses de SON entreprise.
+export function LinkedRecordsValue({ field, value, byLabel = false, detail = false, onChange = null, saving = false, navigable = true, extraFilter = null }) {
   const keys = useMemo(() => parseLinkedKeys(value, { splitCommas: !byLabel }), [value, byLabel])
   const target = field?.record_link_target || null
   const resolved = useRecordLinks(keys, target, byLabel)
@@ -459,8 +465,11 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
     const multi = asArray && !field?.record_link_single
     const identity = field?.record_link_identity || null
     // Filtre du champ : la liste ne propose que le sous-ensemble voulu. Les
-    // liens DÉJÀ posés restent affichés, même hors filtre.
-    const filter = field?.record_link_filter || null
+    // liens DÉJÀ posés restent affichés, même hors filtre. La fiche peut y
+    // ajouter ses propres conditions (`extraFilter`), ET-liées comme les autres.
+    const own = field?.record_link_filter || []
+    const merged = extraFilter?.length ? [...own, ...extraFilter] : own
+    const filter = merged.length ? merged : null
     const commit = next => onChange(asArray ? JSON.stringify(next) : (next[0] ?? null))
     return (
       <div className="flex flex-wrap items-center gap-1.5" data-testid="cf-linked-records">

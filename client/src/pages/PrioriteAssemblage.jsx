@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import api from '../lib/api.js'
 import { useTable } from '../lib/dataStore.js'
 import { applyFilter, applyFilterGroup } from '../lib/tableFilters.js'
+import { ENVOI_PILL_LABEL, hasItemsToShip } from '../lib/ordersToShip.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -26,7 +27,8 @@ const AIRTABLE_RETOUR_CLIENT_URL =
 
 // Étape 3 — on réutilise telle quelle la vue « À envoyer » de la page Commandes
 // (un pill du DataTable orders) pour que les deux listes soient toujours identiques.
-const ENVOI_PILL_LABEL = 'À envoyer'
+// Le label du pill et l'exclusion des commandes sans article vivent dans
+// lib/ordersToShip.js — partagés avec la page Commandes.
 
 // Applique le filtre d'un pill à une row, en gérant les deux formes : groupe
 // { conjunction, rules } ou tableau de règles (legacy). Identique à useTableView.
@@ -353,6 +355,8 @@ export default function PrioriteAssemblage() {
         company_name: cById.get(o.company_id) || o.company_name,
         items_count: itemCountByOrder.get(o.id) || 0,
       }))
+      // Une commande sans article n'a rien à préparer : comme dans la vue.
+      .filter(hasItemsToShip)
       // Commandes urgentes en premier, puis par date de commande décroissante.
       .sort((a, b) => {
         const ua = a.priority === 'Urgent' ? 0 : 1

@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M60 150 130 96 200 150"/>
+    <path d="M170 122V102h13v28"/>
+    <path d="M76 150h108v118H76z"/>
+    <path d="M112 268v-40a18 18 0 0 1 36 0v40"/>
+    <path d="M90 168h26v26H90zM144 168h26v26h-26z"/>
+  </g>
+  <g>
+    <rect x="268" y="220" width="240" height="44" fill="#d9eef1"/>
+    <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M256 268V186c0-36 64-48 132-48s132 12 132 48v82"/>
+      <path d="M256 212h264"/>
+    </g>
+  </g>
+  <g>
+    <use href="#seedling" x="300" y="258"/>
+    <use href="#seedling" x="350" y="258"/>
+    <use href="#seedling" x="400" y="258"/>
+    <use href="#seedling" x="450" y="258"/>
+    <use href="#seedling" x="492" y="258"/>
+    <use href="#seedling" x="560" y="268"/>
+    <use href="#seedling" x="590" y="268"/>
+  </g>
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

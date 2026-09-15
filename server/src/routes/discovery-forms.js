@@ -1,3 +1,4 @@
+import { discoveryAddresses } from '../services/discoveryAddresses.js'
 // Formulaire de découverte technique — entité standalone.
 //
 // Pattern :
@@ -13,6 +14,7 @@
 // concept, juste accédé via une autre porte d'entrée que le flow Stripe Checkout.
 
 import { Router } from 'express'
+import { JWT_ROLES, isJwtProduct } from '../../../client/src/lib/discoveryEquipmentCatalog.js'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -54,9 +56,11 @@ function shapeForm(row) {
     helper_count: greenhouses.filter(g => g.permission_level === 'helper').length,
     is_new_site: row.is_new_site,
     within_central_controller_range: row.within_central_controller_range == null ? null : !!row.within_central_controller_range,
+    central_controller_distance: row.central_controller_distance || null,
     farm_address: row.farm_address_json ? JSON.parse(row.farm_address_json) : null,
     shipping_same_as_farm: row.shipping_same_as_farm == null ? null : !!row.shipping_same_as_farm,
     shipping_address: row.shipping_address_json ? JSON.parse(row.shipping_address_json) : null,
+    ...discoveryAddresses(row),
     network_access: row.network_access,
     wifi_ssid: row.wifi_ssid,
     wifi_password: row.wifi_password,
@@ -65,6 +69,7 @@ function shapeForm(row) {
     form_options: discoveryOptionsFromRow(row),
     verification: row.verification_json ? JSON.parse(row.verification_json) : {},
     generated_order_id: row.generated_order_id || null,
+    generated_order_number: row.generated_order_number ?? null,
     submitted_at: row.submitted_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -166,9 +171,10 @@ router.get('/', (req, res) => {
     limitSql = `LIMIT ${n}`
   }
   const sql = `
-    SELECT r.*, c.name AS company_name
+    SELECT r.*, c.name AS company_name, o.order_number AS generated_order_number
       FROM customer_onboarding_responses r
       LEFT JOIN companies c ON c.id = r.company_id
+      LEFT JOIN orders o ON o.id = r.generated_order_id
      ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
      ORDER BY r.created_at DESC
      ${limitSql}
@@ -180,9 +186,10 @@ router.get('/', (req, res) => {
 // GET /api/discovery-forms/:id — détail (admin).
 router.get('/:id', (req, res) => {
   const row = db.prepare(`
-    SELECT r.*, c.name AS company_name
+    SELECT r.*, c.name AS company_name, o.order_number AS generated_order_number
       FROM customer_onboarding_responses r
       LEFT JOIN companies c ON c.id = r.company_id
+      LEFT JOIN orders o ON o.id = r.generated_order_id
      WHERE r.id=?
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
@@ -195,6 +202,14 @@ function schemaRules() {
     const row = db.prepare("SELECT schema_json FROM discovery_form_schema WHERE id='default'").get()
     rules = row?.schema_json ? (JSON.parse(row.schema_json).equipment || {}) : {}
   } catch { /* valeurs par défaut */ }
+  // Une association devenue invalide doit apparaître parmi les produits
+  // manquants dans l'aperçu, jamais devenir un article matériel de permission.
+  for (const role of JWT_ROLES) {
+    const id = rules.products?.[role]
+    if (id && !isJwtProduct(db.prepare('SELECT type FROM products WHERE id=? AND deleted_at IS NULL AND active=1').get(id))) {
+      rules.products = { ...rules.products, [role]: null }
+    }
+  }
   // Réutiliser le produit exact du catalogue, sauf association explicite dans l'éditeur.
   const configured = rules.products?.central_controller
   const product = configured && db.prepare('SELECT id FROM products WHERE id=? AND active=1').get(configured)
@@ -223,6 +238,29 @@ router.patch('/:id/verification', (req, res) => {
   res.json({ ok: true, verification: next })
 })
 
+router.patch('/:id/addresses', (req, res) => {
+  const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  const changes = Object.entries(req.body || {}).filter(([key]) => ['farm_address_id', 'shipping_address_id'].includes(key))
+  if (!changes.length) return res.status(400).json({ error: 'Adresse requise' })
+  const selected = []
+  for (const [key, id] of changes) {
+    const address = typeof id === 'string' && db.prepare('SELECT * FROM adresses WHERE id=? AND company_id=?').get(id, row.company_id)
+    if (!address) return res.status(400).json({ error: 'Choisissez une adresse de cette entreprise' })
+    selected.push([key, address])
+  }
+  db.transaction(() => {
+    for (const [key, address] of selected) {
+      const jsonKey = key === 'farm_address_id' ? 'farm_address_json' : 'shipping_address_json'
+      db.prepare(`UPDATE customer_onboarding_responses SET ${key}=?, ${jsonKey}=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
+        .run(address.id, JSON.stringify(Object.fromEntries(['line1', 'city', 'province', 'postal_code', 'country'].map(field => [field, address[field]]))), row.id)
+      if (key === 'shipping_address_id') db.prepare('UPDATE customer_onboarding_responses SET shipping_same_as_farm=0 WHERE id=?').run(row.id)
+    }
+    discoveryAddresses(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id), { persist: true })
+  })()
+  res.json(shapeForm(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)))
+})
+
 router.post('/:id/create-order', (req, res) => {
   const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
@@ -234,14 +272,18 @@ router.post('/:id/create-order', (req, res) => {
   db.transaction(() => {
     // La commande doit exister avant de poser la clé étrangère. La liaison
     // conditionnelle reste dans la même transaction : un doublon annule tout.
-    db.prepare("INSERT INTO orders (id, order_number, company_id, status, notes, date_commande) VALUES (?,?,?,'Commande vide',?,date('now'))")
-      .run(orderId, orderNumber, row.company_id || null, [`System Builder #${row.id}`, ...calc.orderNotes].join('\n'))
+    const addresses = discoveryAddresses(row, { persist: true })
+    db.prepare("INSERT INTO orders (id, order_number, company_id, farm_address_id, address_id, status, notes, date_commande) VALUES (?,?,?,?,?,'Commande vide',?,date('now'))")
+      .run(orderId, orderNumber, row.company_id || null, addresses.farm_address_id, addresses.shipping_address_id, [`System Builder #${row.id}`, ...calc.orderNotes].join('\n'))
+    if (db.pragma('table_info(orders)').some(c => c.name === 'adresse_de_livraison')) {
+      const address = addresses.shipping_address
+      db.prepare('UPDATE orders SET adresse_de_livraison=? WHERE id=?').run(address?.id ? JSON.stringify([address.airtable_id || address.id]) : '', orderId)
+    }
     const claim = db.prepare("UPDATE customer_onboarding_responses SET generated_order_id=? WHERE id=? AND generated_order_id IS NULL").run(orderId, row.id)
     if (claim.changes !== 1) throw new Error('Une commande a déjà été créée pour ce formulaire')
     for (const item of calc.orderItems) {
-      const product = db.prepare('SELECT unit_cost FROM products WHERE id=?').get(item.product_id)
-      db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes) VALUES (?,?,?,?,?,'Non facturable',?)")
-        .run(newRecordId(), orderId, item.product_id, item.qty, product?.unit_cost || 0, `${item.greenhouse ? `Serre #${item.greenhouse}` : 'Site'}${item.note ? ` · ${item.note}` : ''}`)
+      db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes) VALUES (?,?,?,?,'Non facturable',?)")
+        .run(newRecordId(), orderId, item.product_id, item.qty, item.label)
     }
   })()
   res.status(201).json({ id: orderId, order_number: orderNumber, unconfigured: calc.unconfigured })

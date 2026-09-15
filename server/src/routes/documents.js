@@ -551,7 +551,7 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
 // Crée une commande à partir d'une soumission, en un clic. Les lignes du devis
 // (document_items) deviennent des order_items. Note : order_items est cost-centric
 // (le revenu vient des factures), donc le prix de vente du devis n'a pas
-// d'équivalent direct — unit_cost est repris du coût catalogue du produit, et la
+// d'équivalent direct. Le coût se lit sur le produit, et la
 // description de ligne du devis est conservée dans `notes` (utile pour les lignes
 // personnalisées sans produit). La commande pointe vers la soumission
 // (orders.soumission_id) pour la traçabilité quote-to-cash.
@@ -570,9 +570,8 @@ router.post('/soumissions/:id/convert-to-order', (req, res) => {
   }
 
   const items = db.prepare(`
-    SELECT di.*, p.unit_cost AS product_cost
+    SELECT di.*
     FROM document_items di
-    LEFT JOIN products p ON di.catalog_product_id = p.id
     WHERE di.document_id = ? AND di.document_type = 'soumission'
     ORDER BY di.sort_order
   `).all(req.params.id)
@@ -587,8 +586,8 @@ router.post('/soumissions/:id/convert-to-order', (req, res) => {
     VALUES (?, ?, ?, ?, 'Commande vide', ?, ?)
   `)
   const insertItem = db.prepare(`
-    INSERT INTO order_items (id, order_id, product_id, qty, unit_cost, item_type, notes, sort_order)
-    VALUES (?, ?, ?, ?, ?, 'Facturable', ?, ?)
+    INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes, sort_order)
+    VALUES (?, ?, ?, ?, 'Facturable', ?, ?)
   `)
   // Commande + lignes + accusé de conversion sur la soumission dans une seule
   // transaction : pas de commande à moitié peuplée si une ligne échoue.
@@ -602,7 +601,7 @@ router.post('/soumissions/:id/convert-to-order', (req, res) => {
         ? (it.description_en || it.description_fr || '')
         : (it.description_fr || it.description_en || '')
       insertItem.run(newRecordId(), orderId, it.catalog_product_id || null,
-        it.qty || 1, it.product_cost ?? 0, desc || null, i)
+        it.qty || 1, desc || null, i)
     }
     // Convertir un devis = il est accepté. On promeut Brouillon/Envoyée → Acceptée.
     if (soumission.status === 'Brouillon' || soumission.status === 'Envoyée') {

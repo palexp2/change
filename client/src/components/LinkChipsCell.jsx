@@ -27,7 +27,6 @@ import { useRecordLinks } from '../lib/useRecordLinks.js'
 export default function LinkChipsCell({ col, row, value, active, editing, onCommit, onOpenPicker }) {
   const multi = !!col.linkMulti
   const keys = useMemo(() => parseLinkedKeys(value), [value])
-  const resolved = useRecordLinks(keys, col.linkTarget || null)
 
   const optionLabels = useMemo(() => {
     const map = new Map()
@@ -37,16 +36,25 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
     return map
   }, [col.linkOptions])
 
+  // Ce que la page sait déjà dire de chaque lien. Tout connu → aucune
+  // résolution réseau à demander (une commande de 20 articles n'ouvre plus un
+  // appel juste pour retrouver des noms déjà présents dans la ligne).
+  const own = keys.map(key => ({
+    label: (typeof col.linkChipLabel === 'function' ? col.linkChipLabel(row, key) : null)
+      || optionLabels.get(String(key)) || null,
+    href: typeof col.linkChipHref === 'function' ? col.linkChipHref(row, key) : null,
+  }))
+  const needResolve = own.some(o => !o.label || !o.href)
+  const resolved = useRecordLinks(needResolve ? keys : [], col.linkTarget || null)
+
   const labelFor = (key, i) => {
-    const own = typeof col.linkChipLabel === 'function' ? col.linkChipLabel(row, key) : null
-    if (own) return own
-    const opt = optionLabels.get(String(key))
-    if (opt) return opt
+    if (own[i]?.label) return own[i].label
     const rec = resolved[i]
     if (rec === undefined) return '…'
     if (rec?.label) return rec.label
     return key.length > 12 ? `${key.slice(0, 8)}…` : key
   }
+  const hrefFor = (i) => own[i]?.href || resolved[i]?.url || null
 
   const serialize = (next) => (multi ? JSON.stringify(next) : (next[0] ?? null))
 
@@ -54,28 +62,31 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
   // table au repos reste une table de lecture. Pendant que la liste est ouverte,
   // on montre les pastilles sans « × » — on est en train de CHOISIR, et un
   // retrait sous le panneau laisserait l'éditeur sur une valeur périmée.
-  const showActions = active && !editing
-  const canAdd = multi || keys.length === 0
+  const showRemove = active && !editing
+  const showAdd = active && (multi || keys.length === 0)
 
-  if (!keys.length && !showActions) return null
-
+  // Cellule vide : le conteneur reste rendu (avec sa hauteur) même sans
+  // pastille. Un div réellement vide s'effondre à 0 px de haut — la case
+  // n'attrapait plus le clic, donc plus moyen de la sélectionner pour poser un
+  // premier lien.
   return (
     <div
-      className={`flex items-center gap-1 overflow-hidden${active ? '' : ' dt-inert-links'}`}
+      className={`flex min-h-[1.5rem] min-w-0 items-center gap-1 overflow-hidden${active ? '' : ' dt-inert-links'}`}
       data-testid="link-chips-cell"
     >
       {keys.map((key, i) => {
         const rec = resolved[i]
         const label = labelFor(key, i)
+        const href = hrefFor(i)
         const title = rec?.sub ? `${label} · ${rec.sub}` : label
-        const chip = rec?.url
-          ? <Link to={rec.url} onClick={e => e.stopPropagation()} title={title} className="chip-record">{label}</Link>
+        const chip = href
+          ? <Link to={href} onClick={e => e.stopPropagation()} title={title} className="chip-record">{label}</Link>
           : <span className="chip-record" title={title}>{label}</span>
-        if (!showActions) return <span key={`${key}-${i}`} className="min-w-0 truncate">{chip}</span>
+        if (!showRemove) return <span key={`${key}-${i}`} className="min-w-0 truncate">{chip}</span>
         return (
           <span
             key={`${key}-${i}`}
-            className="inline-flex min-w-0 items-center gap-0.5 rounded bg-brand-50 pr-0.5"
+            className={`inline-flex min-w-0 items-center gap-0.5 rounded pr-0.5 ${href ? 'bg-brand-50' : 'bg-slate-100'}`}
           >
             {chip}
             <button
@@ -88,14 +99,14 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
                 e.stopPropagation()
                 onCommit(serialize(keys.filter((_, j) => j !== i)))
               }}
-              className="shrink-0 rounded p-0.5 text-brand-700/60 hover:bg-white hover:text-red-600"
+              className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-white hover:text-red-600"
             >
               <X size={11} />
             </button>
           </span>
         )
       })}
-      {showActions && canAdd && (
+      {showAdd && (
         <button
           type="button"
           title="Associer un enregistrement"

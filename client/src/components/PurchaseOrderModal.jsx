@@ -221,7 +221,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">N° PO</label>
-              <input className={inp} value={po.po_number} onChange={e => setField('po_number', e.target.value)} />
+              <input className={inp} value={po.po_number} readOnly aria-label="Numéro du bon de commande" />
             </div>
             <div>
               <label className="block text-xs font-medium text-slate-500 uppercase mb-1">Date</label>

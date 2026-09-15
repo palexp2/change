@@ -1,4 +1,4 @@
-// Contrat des quatre files d'implémentation.
+// Contrat des files d'implémentation parallèles.
 //
 // `exec_lane` n'est pas qu'un compteur d'affichage : c'est lui qui désigne le
 // fichier PID d'une exécution (`.agent-pid`, `.agent-pid-1`…), donc le suivi repris
@@ -15,8 +15,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EXEC_LANES, execLaneOf, getExecLaneCount, getRunningTaskIds } from './taskRunner.js'
 
-test('quatre files, et le runner en expose le compte', () => {
-  assert.equal(EXEC_LANES, 4)
+test('deux files, et le runner en expose le compte', () => {
+  assert.equal(EXEC_LANES, 2)
   assert.equal(getExecLaneCount(), EXEC_LANES)
 })
 
@@ -36,7 +36,7 @@ test('file absente, nulle ou hors intervalle → file 0 (le fichier PID historiq
 })
 
 test('une file numérique en texte reste comprise (JSON relu du store)', () => {
-  assert.equal(execLaneOf({ exec_lane: '3' }), 3)
+  assert.equal(execLaneOf({ exec_lane: '1' }), 1)
 })
 
 test('jamais plus d\'une implémentation par file en cours', () => {

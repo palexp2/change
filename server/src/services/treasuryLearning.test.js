@@ -7,8 +7,26 @@
 import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  pickLearnedAmount, confirmAgainstTxns, periodicClusters,
+  pickLearnedAmount, confirmAgainstTxns, periodicClusters, isBankNoise,
 } from './treasuryLearning.js'
+
+describe('isBankNoise', () => {
+  test('le va-et-vient de la marge et les virements internes sont écartés', () => {
+    // Le libellé porte souvent le numéro du compte à la suite : sans ça, un
+    // remboursement de marge de 20 000 $ était proposé comme sortie récurrente
+    // et un virement interne était appris comme paiement de Mastercard.
+    for (const d of ['REMB. MCR', 'REMB. MCR 10281 060024937974', 'DEBOURSE MCR 10281 060024937974',
+      'TRF DT INTERNET C43920000000043', 'TRF CT INTERNET']) {
+      assert.equal(isBankNoise(d), true, d)
+    }
+  })
+
+  test('les intérêts de marge sont un vrai frais et restent comptés', () => {
+    assert.equal(isBankNoise('INTERETS MCR'), false)
+    assert.equal(isBankNoise('Interets Mcr'), false)
+    assert.equal(isBankNoise('PMTS ENTREPRISES'), false)
+  })
+})
 
 describe('pickLearnedAmount', () => {
   test('moins de 2 occurrences : aucune règle, la saisie reste', () => {

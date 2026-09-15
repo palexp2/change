@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M24 148 92 100 160 148"/>
+    <path d="M36 148h112v120H36z"/>
+    <path d="M58 268v-40a14 14 0 0 1 28 0v40"/>
+  </g>
+  <g>
+    <rect x="96" y="170" width="56" height="44" rx="9" fill="#fff" stroke="#94a3b8" stroke-width="2.4"/>
+    <circle cx="110" cy="184" r="4" fill="#22a34a"/>
+    <path d="M106 198h36M106 206h22" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <g fill="none" stroke="#22a34a" stroke-width="3.2" stroke-linecap="round">
+    <path d="M158 176a18 18 0 0 1 0 32"/>
+    <path d="M168 166a30 30 0 0 1 0 52"/>
+    <path d="M178 156a42 42 0 0 1 0 72"/>
+  </g>
+  <g>
+    <rect x="226" y="224" width="160" height="40" fill="#d9eef1"/>
+    <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M216 268v-72c0-30 46-40 90-40s90 10 90 40v72"/>
+      <path d="M216 216h180"/>
+    </g>
+    <use href="#seedling" x="252" y="260"/>
+    <use href="#seedling" x="292" y="260"/>
+    <use href="#seedling" x="332" y="260"/>
+    <use href="#seedling" x="370" y="260"/>
+  </g>
+  <g>
+    <rect x="438" y="224" width="160" height="40" fill="#d9eef1"/>
+    <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M428 268v-72c0-30 46-40 90-40s90 10 90 40v72"/>
+      <path d="M428 216h180"/>
+    </g>
+    <use href="#seedling" x="464" y="260"/>
+    <use href="#seedling" x="504" y="260"/>
+    <use href="#seedling" x="544" y="260"/>
+    <use href="#seedling" x="582" y="260"/>
+  </g>
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

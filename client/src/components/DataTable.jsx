@@ -114,17 +114,33 @@ function DynamicCell({ value, col, decimals }) {
     const declared = Array.isArray(col.options)
       ? col.options.find(o => o && typeof o === 'object' && o.color && String(o.value ?? o.label) === String(value))
       : null
+    // « Sans couleur » (NO_COLOR, posé par la modale de champ) = texte nu, pas
+    // une pastille grise : c'est un réglage explicite, pas une couleur manquante.
+    if (declared?.color === NO_COLOR) return <span className="text-slate-700 whitespace-nowrap">{value}</span>
     return <Badge color={declared ? declared.color : 'gray'} className="whitespace-nowrap">{value}</Badge>
   }
   if (type === 'multi_select') {
     let items = value
     try { items = JSON.parse(value) } catch {}
     if (!Array.isArray(items)) items = [items]
+    // Couleurs des choix quand la colonne les porte (options en objets — champ
+    // personnalisé, ou choix déclarés avec couleur) ; sinon pastilles neutres,
+    // comme avant.
+    const colored = Array.isArray(col.options) && col.options.some(o => o && typeof o === 'object' && o.color)
+    const colorOf = v => {
+      const c = col.options.find(o => o && typeof o === 'object' && String(o.value ?? o.label) === String(v))
+      return c?.color || 'gray'
+    }
     // Même règle que `renderCustomFieldValue` : hauteur de ligne fixe → pas de
     // retour à la ligne, sinon les pastilles débordent sur les lignes voisines.
     return (
       <div className="flex items-center gap-1 overflow-hidden" title={items.join(', ')}>
-        {items.map((v, i) => <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 shrink-0 whitespace-nowrap">{v}</span>)}
+        {items.map((v, i) => (colored
+          ? (colorOf(v) === NO_COLOR
+            ? <span key={i} className="text-slate-700 shrink-0 whitespace-nowrap">{v}</span>
+            : <Badge key={i} color={colorOf(v)} className="shrink-0 whitespace-nowrap">{v}</Badge>)
+          : <span key={i} className="text-xs px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 shrink-0 whitespace-nowrap">{v}</span>
+        ))}
       </div>
     )
   }
@@ -323,9 +339,16 @@ function RatingCellEditor({ value, onCommit, onCancel }) {
 // les colonnes dynamiques (Airtable) on délègue à DynamicCell, et pour les
 // colonnes standard type:'number' on applique le formatage décimal préféré de
 // l'utilisateur (`decimals`). Toute autre colonne : valeur brute.
-function renderCell(col, item, decimals) {
+function renderCell(col, item, decimals, selectBadges) {
   if (col.render) return col.render(item)
   const value = item[col.field]
+  // Colonne native de type Sélection, sur une table qui a demandé l'option
+  // `selectBadges` : pastille à la couleur du choix (les couleurs viennent du
+  // CHAMP, fusionnées dans col.options — cf. columnsWithOwnCf). Sans ça la
+  // valeur tombait dans le « valeur brute » du bas et s'affichait en texte nu.
+  if (selectBadges && (col.type === 'single_select' || col.type === 'multi_select')) {
+    return <DynamicCell value={value} col={col} decimals={decimals} />
+  }
   // Colonne date sans render() de page : formatage unifié via DynamicCell
   // (YYYY-MM-DD, cf. fmtDate) plutôt que l'ISO brut « 2025-11-14T00:00:00.000Z ».
   // Sans ça, toute colonne type:'date' dont la page n'a pas câblé de render
@@ -501,6 +524,7 @@ export function DataTable({
   recordOps,              // RecordOps | undefined — active le « deuxième type » de table : manipulable au niveau des données (clic droit sur une ligne = dupliquer/supprimer, « + » sous la dernière ligne = créer un enregistrement en ligne, sans formulaire). Voir lib/recordOps.js.
   onFieldsChanged,        // () => void — les pages qui gèrent elles-mêmes leurs champs (Pipeline, Factures) passent leur reload : le menu d'en-tête (duplication, masquage global) doit pouvoir rafraîchir leur liste.
   sortIndicator = false,  // bool — variante d'en-tête : quand la vue trie, une flèche ↑/↓ apparaît sur la ou les colonnes triées (ordre de la flèche = sens du tri). Opt-in par page.
+  selectBadges = false,   // bool — variante de cellule : une colonne NATIVE de type single_select/multi_select (déclarée dans tableDefs.js, sans render() de page) s'affiche en pastille à la couleur du choix, comme un champ custom. Sans ça, la valeur sort en texte nu et la couleur réglée sur le champ est ignorée. Opt-in par page (les colonnes custom, elles, sont déjà colorées partout).
 }) {
   // `height="auto"` : la table s'affiche en entier (pas d'ascenseur propre,
   // c'est le conteneur — fiche, panneau latéral — qui défile). Les lignes sont
@@ -2659,7 +2683,7 @@ export function DataTable({
                             // chercher un enregistrement et renvoyer son id).
                             typeof col.renderEditor === 'function' ? (
                               <>
-                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
                                 {col.renderEditor({
                                   row: item,
                                   col,
@@ -2689,7 +2713,7 @@ export function DataTable({
                                     onOpenPicker={() => {}}
                                   />
                                 ) : (
-                                  <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                  <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
                                 )}
                                 <LinkCellEditor
                                   col={col}
@@ -2714,7 +2738,7 @@ export function DataTable({
                               />
                             ) : (col.type === 'single_select' || col.type === 'multi_select') ? (
                               <>
-                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field))}</span>
+                                <span className="block truncate opacity-50 dt-inert-links">{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
                                 <SelectCellEditor
                                   col={col}
                                   value={item[col.field]}
@@ -2779,7 +2803,7 @@ export function DataTable({
                                 onOpenPicker={() => startEdit(item.id, col.id)}
                               />
                             ) : (
-                            <span className={`block truncate${editable ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field))}</span>
+                            <span className={`block truncate${editable ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
                             )
                           )}
                         </div>
@@ -2787,7 +2811,7 @@ export function DataTable({
                     }
                     return (
                       <div key={col.id} className={`px-4 truncate text-sm${flashing ? ' dt-cell-flash' : ''}`}>
-                        {renderCell(col, item, getDecimals(table, col.field))}
+                        {renderCell(col, item, getDecimals(table, col.field), selectBadges)}
                       </div>
                     )
                   })}

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <polygon points="-125 288 535 288 845 195 185 195" fill="#e9f6ec"/>
+  <g>
+    <use href="#seedling" transform="translate(332.5 281.8) scale(1.8)"/>
+    <use href="#seedling" transform="translate(362.5 272.8) scale(1.8)"/>
+    <use href="#seedling" transform="translate(392.5 263.8) scale(1.8)"/>
+  </g>
+  <path d="M270 178 C309 178 335 190 335 216 V258 L485 213 V171 C485 145 459 133 420 133 Z" fill="#eaf7f8" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <g fill="none" stroke="#b9e2e4" stroke-width="2.6" stroke-linecap="round">
+    <path d="M320 163 C359 163 385 175 385 201 V243"/>
+    <path d="M370 148 C409 148 435 160 435 186 V228"/>
+    <path d="M335 216 L485 171"/>
+  </g>
+  <path d="M205 258 V216 C205 190 231 178 270 178 C309 178 335 190 335 216 V258 Z" fill="#f6fcfd" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M250 258 V222 h40 V258" fill="#d9eef1" stroke="#7ecdd0" stroke-width="3" stroke-linejoin="round"/>
+  <g fill="none" stroke="#94a3b8" stroke-width="2.6" stroke-linecap="round">
+    <path d="M260.2 145.4 L410.2 100.4"/>
+    <path d="M263.1 155 L257.4 135.9"/>
+    <path d="M413.1 110 L407.4 90.9"/>
+  </g>
+  <text x="330.6" y="107.6" transform="rotate(-16.7 330.6 107.6)" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#475569">200 pi ou moins</text>
+</svg>

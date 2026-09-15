@@ -13,7 +13,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 describe('PurchaseDetail — picker FK Fournisseur (company)', () => {
   let browser, ctx, page
   let purchaseId
-  let original = {}   // { supplier_company_id, supplier }
+  let original = {}   // { supplier_company_id }
   let targetCompany   // { id, name } choisie dans le picker
 
   before(async () => {
@@ -42,7 +42,7 @@ describe('PurchaseDetail — picker FK Fournisseur (company)', () => {
       })
       if (!first || !company) return null
       return {
-        purchase: { id: first.id, supplier_company_id: first.supplier_company_id ?? null, supplier: first.supplier ?? null },
+        purchase: { id: first.id, supplier_company_id: first.supplier_company_id ?? null },
         company: { id: company.id, name: company.name },
       }
     })
@@ -60,7 +60,7 @@ describe('PurchaseDetail — picker FK Fournisseur (company)', () => {
         await fetch(`/erp/api/purchases/${id}`, {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({ supplier_company_id: orig.supplier_company_id, supplier: orig.supplier }),
+          body: JSON.stringify({ supplier_company_id: orig.supplier_company_id }),
         })
       }, { id: purchaseId, orig: original })
     }

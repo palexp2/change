@@ -132,6 +132,14 @@ export const MANUAL_RUNNERS = {
   // Rattachement des sorties connues au relevé : dry-run et run-now font la
   // même chose (le rattachement n'écrit qu'un lien, jamais une écriture
   // comptable) — on lance le passage et on rend ce qui a été rattaché.
+  // Le moteur du rapprochement : un passage de tous les producteurs. Simuler =
+  // produire sans rien enregistrer ; exécuter = enregistrer les propositions.
+  // Dans les deux cas, AUCUNE écriture comptable ne part d'ici : ce sont des
+  // propositions, et c'est un clic humain qui les applique.
+  sys_bank_engine: async ({ dryRun }) => {
+    const { runBankEngine } = await import('./bankProposals/engine.js')
+    return await runBankEngine({ dryRun })
+  },
   sys_bank_debit_link: async () => {
     const { linkKnownDebits, summarizeLinks } = await import('./bankDebitLink.js')
     const out = await linkKnownDebits()
@@ -284,6 +292,26 @@ export const MANUAL_RUNNERS = {
     const { previewCommentScrape, runCommentScrape } = await import('./instagramCommentScrape.js')
     if (dryRun) return previewCommentScrape()
     return await runCommentScrape({ force: true, trigger: 'manuel' })
+  },
+  sys_manychat_contacts: async ({ dryRun }) => {
+    const { previewManychatSync, runManychatSync } = await import('./manychatSync.js')
+    if (dryRun) return previewManychatSync()
+    return await runManychatSync({ force: true, trigger: 'manuel' })
+  },
+  sys_instagram_draft_write: async ({ dryRun }) => {
+    const { previewDraftWriting, runDraftWriting } = await import('./instagramDrafts.js')
+    if (dryRun) return previewDraftWriting()
+    return await runDraftWriting({ force: true, trigger: 'manuel' })
+  },
+  sys_instagram_draft_send: async ({ dryRun }) => {
+    const { previewDraftQueue, sendAllNow } = await import('./instagramDrafts.js')
+    if (dryRun) return previewDraftQueue()
+    return await sendAllNow()
+  },
+  sys_connector_session_health: async ({ dryRun }) => {
+    const { previewSessionHealth, runSessionHealthCheck } = await import('./sessionHealth.js')
+    if (dryRun) return previewSessionHealth()
+    return await runSessionHealthCheck({ force: true, trigger: 'manuel' })
   },
   sys_instagram_weekly_slack: async ({ dryRun }) => {
     const { previewWeeklyProspectDigest, runWeeklyProspectDigest } = await import('./instagramProspects.js')
@@ -801,6 +829,9 @@ export const SYSTEM_AUTOMATIONS = [
       audit_grace_days: '4',
       slack_anomalies: '0',
       slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+      // Appariements QuickBooks posés sans demander. Le reste devient une
+      // proposition à confirmer sur la page Rapprochement bancaire.
+      auto_apply_methods: 'exact,conversion',
     },
     configurable: true,
     default_active: 1,
@@ -809,7 +840,8 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_bank_debit_link',
     name: 'Comptabilité : reconnaître au relevé les sorties déjà connues',
     description:
-      "À chaque arrivée de transactions bancaires, rapproche du relevé les sorties d'argent que l'ERP attendait déjà : le débit de la paie (libellé Nethris, 2 à 4 jours après la fin de période) et les versements des dettes à long terme (BDC, Ville de Québec, DEC). " +
+      "À chaque arrivée de transactions bancaires, reconnaît au relevé les sorties d'argent que l'ERP attendait déjà : le débit de la paie (libellé Nethris, 2 à 4 jours après la fin de période) et les versements des dettes à long terme (BDC, Ville de Québec, DEC). " +
+      "DEPUIS LE 12 SEPTEMBRE 2026, ce passage ne rattache plus rien tout seul : il PROPOSE, et le rattachement se fait d'un clic sur la page Rapprochement bancaire (« C'est bien ça »). Le bouton « Lancer maintenant » ci-dessous, lui, reste un geste explicite et rattache directement. " +
       "La paie rattachée s'ouvre avec son montant et sa date déjà remplis dans « Comptabilisation de la paie » — le montant passé au compte BNC ne se recopie plus du relevé à la main. " +
       "AUCUNE écriture n'est publiée dans QuickBooks par ce passage : publier reste un geste humain, au clic. " +
       "Un versement de dette rattaché affiche « passé à la banque » sur la page Dettes à long terme, ce qui distingue enfin « l'écriture existe dans QuickBooks » de « l'argent est sorti ». " +
@@ -821,6 +853,32 @@ export const SYSTEM_AUTOMATIONS = [
       summary: "À chaque arrivée de transactions bancaires, quelle qu'en soit la source",
     },
     action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_engine',
+    name: 'Rapprochement bancaire : le moteur des propositions',
+    description:
+      "Repasse sur les comptes bancaires et prépare tout ce qui peut l'être, sans jamais rien comptabiliser tout seul : la pièce que l'ERP possède déjà et qui va avec une ligne du relevé, le débit de la paie, un versement de dette, le prélèvement d'assurance collective à ventiler dans les comptes de salaires, un paiement émis qui vient de passer au compte, et — en dernier recours — la dépense sans facture dont le dossier est complet (fournisseur reconnu et compte de dépense connu, par une règle, un profil ou l'habitude). " +
+      "TOUT RESTE UNE PROPOSITION : chaque trouvaille s'affiche sur la ligne du relevé avec sa preuve, et c'est un clic qui l'applique. Deux d'entre elles publient dans QuickBooks quand on les accepte (l'assurance collective et la dépense sans facture) — jamais sans ce clic. " +
+      "L'ordre des étapes compte : la pièce d'abord, les sorties connues d'avance ensuite, la dépense devinée en tout dernier ; chaque étape écarte les lignes qu'une précédente a déjà réclamées, pour qu'une même ligne ne reçoive jamais deux propositions contradictoires. " +
+      "Le prélèvement d'assurance collective d'un mois ne peut plus partir deux fois : sa période sert de clé. " +
+      "Un plafond de propositions ouvertes évite l'ensevelissement — au-delà, le moteur cesse de produire du dernier recours plutôt que d'empiler. " +
+      "Ce passage ne relit jamais le grand livre QuickBooks : c'est la sync du fichier TRX_Orisha qui en dispose, toutes les 20 minutes, et qui pose les liens aux écritures. " +
+      "« Simuler » montre ce qui serait proposé sans rien enregistrer.",
+    trigger_config: {
+      kind: 'schedule',
+      cron: '0 9 * * *',
+      timezone: 'UTC',
+      summary: 'Chaque nuit — rattrapage pour ce qui change sans nouvelle transaction',
+    },
+    action_config: {
+      kinds_enabled: 'doc_match,paie_debit,debt_payment,aga_repartition,payment_clear,vendor_expense',
+      min_confidence_doc: '0.8',
+      tie_margin: '0.05',
+      max_open: '200',
+    },
     configurable: true,
     default_active: 1,
   },
@@ -851,9 +909,11 @@ export const SYSTEM_AUTOMATIONS = [
   },
   {
     id: 'sys_plaid_sync',
-    name: 'Connexion bancaire : lecture des transactions et du solde (Plaid)',
+    name: 'Connexion bancaire : lecture du solde (Plaid)',
     description:
-      "Toutes les 30 minutes, relit auprès de Plaid les nouvelles transactions de chaque institution connectée (BNC, Desjardins) et les verse dans le rapprochement bancaire, puis note le solde du compte BNC CAD utilisé par la projection de trésorerie. " +
+      "Toutes les 30 minutes, relit auprès de Plaid le solde disponible du compte BNC CAD utilisé par la projection de trésorerie. " +
+      "LA LECTURE DES TRANSACTIONS EST COUPÉE depuis le 12 septembre 2026 : sur les dix comptes mappés, un seul recevait vraiment ses mouvements de la banque, et plus rien depuis le 31 août — c'est le fichier TRX_Orisha qui alimente le rapprochement bancaire, pour tous les comptes. Remettre « import_transactions » à 1 rallume la lecture des transactions (rien n'est perdu entre-temps : le curseur de la banque ne bouge pas). " +
+      "Quand elle est rallumée : relit les nouvelles transactions de chaque institution connectée (BNC, Desjardins) et les verse dans le rapprochement bancaire. " +
       "Plaid prévient normalement l'ERP tout de suite (webhook) — ce passage est le FILET : un webhook perdu, une signature refusée ou une coupure réseau et les transactions cessaient d'arriver sans que rien ne le signale (c'est ce qui s'est produit début septembre 2026). " +
       "Lecture seule : aucune capacité de virement ou de paiement n'est demandée à la banque. " +
       "« Simuler » n'appelle pas la banque, il affiche l'état de la connexion compte par compte — dont les comptes mappés qui n'ont AUCUNE transaction, signe que la lecture a commencé avant que le compte soit associé : il faut alors relire tout l'historique depuis la page Connecteurs.",
@@ -862,7 +922,11 @@ export const SYSTEM_AUTOMATIONS = [
       source: 'setInterval 30 min (index.js) → services/plaidSync.js + POST /api/plaid/sync/:itemId',
       summary: 'Lecture aux 30 minutes, en plus des avis instantanés de la banque (webhook)',
     },
-    action_config: {},
+    action_config: {
+      // '0' = Plaid ne touche plus à bank_transactions (décision du
+      // 2026-09-12 : la banque ne livrait pas). Seul le solde est lu.
+      import_transactions: '0',
+    },
     configurable: true,
     default_active: 1,
   },
@@ -1156,6 +1220,7 @@ export const SYSTEM_AUTOMATIONS = [
       "La tournée clôt la semaine ISO : à minuit dans la nuit de dimanche à lundi, tous les commentaires de la semaine écoulée sont déjà passés. " +
       "PRÉREQUIS : un cookie de session Instagram (« sessionid ») collé dans Connecteurs → Instagram — DevTools → Application → Cookies → instagram.com. Il expire environ une fois par an ; Instagram répond alors 401 et une ERREUR explicite est journalisée ci-dessous, jamais un silence. " +
       "PUBLICATIONS EN COLLAB : le champ « accounts » accepte plusieurs comptes séparés par des virgules (par défaut @orisha_auto et @growingformarketmagazine). Une publication en collaboration est un seul média avec un seul fil de commentaires, affiché sur les deux grilles — elle est donc dédoublonnée et lue une seule fois, peu importe lequel des deux comptes a publié. " +
+      "PUBLICATIONS DES PARTENAIRES : « our_accounts » (par défaut @orisha_auto) dit quelles publications nous concernent. Une publication n'est lue que si un de ces comptes en est l'auteur OU le co-auteur — donc nos publications seules et nos collaborations, jamais une publication que le partenaire a faite de son côté. C'est ce qui évite de ramasser les commentateurs de leurs concours (« Subscribe ») ou de leurs appels à leur infolettre, qui ne sont pas nos prospects. Vider ce champ désactive le filtre et lit tout. " +
       "« Simuler » montre l'état de la configuration sans appeler Instagram ; « Exécuter » lance une tournée immédiate.",
     trigger_config: {
       kind: 'schedule',
@@ -1165,11 +1230,112 @@ export const SYSTEM_AUTOMATIONS = [
     },
     action_config: {
       accounts: 'orisha_auto, growingformarketmagazine',
+      our_accounts: 'orisha_auto',
       keywords: 'coach',
       lookback_days: '7',
       own_accounts: 'orisha_auto, growingformarketmagazine',
       run_weekday: '1',
       run_hour: '0',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_manychat_contacts',
+    name: 'ManyChat : contacts et conversations',
+    description:
+      "Chaque matin, relit les contacts de ManyChat et rapatrie les conversations Instagram récentes dans Boréal. " +
+      "RÈGLE DE TRI : un contact n'entre dans la liste de Philippe que si son nom d'usager Instagram est connu. ManyChat ne le révèle qu'au moment où la personne RÉPOND à notre message ; avant ça, la fiche serait un fantôme que personne ne peut ouvrir ni contacter. Les autres restent suivis en coulisse et basculent d'eux-mêmes dans la liste dès leur première réponse. " +
+      "Les contacts déjà connus par la lecture des commentaires sont rapprochés par leur nom d'usager, jamais dédoublés — ManyChat et Instagram numérotent les mêmes personnes différemment, le nom d'usager est le seul lien fiable. " +
+      "Une tournée qui ne ramène aucun contact est signalée comme une panne, jamais comme un compte vide. " +
+      "PRÉREQUIS : une session ManyChat ouverte dans Connecteurs → ManyChat (sa page de connexion est protégée, on colle les témoins du navigateur). " +
+      "« Simuler » montre l'état connu sans appeler ManyChat ; « Exécuter » lance une tournée immédiate.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 9,10 * * * UTC (index.js) → services/manychatSync.js',
+      cron: '0 9,10 * * * UTC (5 h à Montréal)',
+      summary: 'Tous les matins, avant la liste hebdomadaire',
+    },
+    action_config: { max_threads: '60' },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_instagram_draft_write',
+    name: 'Instagram : écrire les messages d\u2019avance',
+    description:
+      "Chaque matin, écrit le message priv\u00e9 qui sera envoy\u00e9 \u00e0 chaque personne capt\u00e9e et qui n\u2019a pas encore \u00e9t\u00e9 contact\u00e9e. " +
+      "Le mod\u00e8le re\u00e7oit ce que la personne a fait (son commentaire, sa r\u00e9ponse \u00e0 une story, son message), la conversation d\u00e9j\u00e0 tenue, et les r\u00e8gles d\u2019\u00e9criture ci-dessous \u2014 \u00e9ditables. " +
+      "TRI AUTOMATIQUE : un message ordinaire part tout seul plus tard ; celui qui demande un jugement humain est mis de c\u00f4t\u00e9 et attend Philippe. Les cas mis de c\u00f4t\u00e9 se r\u00e8glent dans \u00ab review_rules \u00bb (retirer un mot = ce cas part tout seul). " +
+      "Un seul message vivant par personne : relancer la r\u00e9daction ne fabrique jamais deux messages qui partiraient tous les deux. " +
+      "\u00ab Simuler \u00bb dit combien de personnes attendent un message ; \u00ab Ex\u00e9cuter \u00bb lance une tourn\u00e9e d\u2019\u00e9criture imm\u00e9diate.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 10,11 * * * UTC (index.js) → services/instagramDrafts.js',
+      cron: '0 10,11 * * * UTC (6 h à Montréal)',
+      summary: 'Tous les matins, après la lecture de ManyChat',
+    },
+    action_config: {
+      model: 'gpt-4o',
+      temperature: '0.6',
+      max_per_run: '40',
+      rules:
+        "Tu écris à la place de Philippe, cofondateur d'Orisha (contrôle du climat en serre). " +
+        "Message privé Instagram : une ou deux phrases courtes, ton direct et chaleureux, tutoiement. " +
+        "Pars de ce que la personne vient de faire, pose UNE question ouverte, ne vends rien. " +
+        "Pas d'emoji en rafale, pas de lien sauf si on te le donne, pas de signature.",
+      review_rules: 'question,prix,probleme_precis,deja_client,autre_langue,relance_sans_reponse',
+    },
+    configurable: true,
+    default_active: 0,
+  },
+  {
+    id: 'sys_instagram_draft_send',
+    name: 'Instagram : faire partir les messages \u00e9crits',
+    description:
+      "RIEN ne part tout seul : c\u2019est le bouton \u00ab Envoyer maintenant \u00bb de la page Instagram qui lance la pile. Ce passage ne fait que la vider, un message \u00e0 la fois, espac\u00e9 de \u00ab spacing_seconds \u00bb secondes, pendant les heures et les jours indiqu\u00e9s. " +
+      "POURQUOI L\u2019ESPACEMENT : vingt messages identiques en quelques secondes, c\u2019est le profil d\u2019un compte qu\u2019Instagram bloque. Le d\u00e9lai laisse aussi le temps de retenir un message avant qu\u2019il parte. " +
+      "NE PARTENT JAMAIS SEULS : ceux mis de c\u00f4t\u00e9 \u00e0 l\u2019\u00e9criture, et ceux dont la fen\u00eatre de 24 h d\u2019Instagram est ferm\u00e9e \u2014 ils sont retenus avec la raison affich\u00e9e, jamais perdus. " +
+      "\u00ab plafond du jour \u00bb limite le nombre total de messages envoy\u00e9s dans une journ\u00e9e. " +
+      "\u00ab Simuler \u00bb montre la file sans rien envoyer ; \u00ab Ex\u00e9cuter \u00bb fait la m\u00eame chose que le bouton \u00ab Envoyer maintenant \u00bb.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron * * * * * (index.js) → services/instagramDrafts.js',
+      cron: 'chaque minute',
+      summary: 'En continu pendant les heures d’envoi',
+    },
+    action_config: {
+      spacing_seconds: '90',
+      start_hour: '8',
+      end_hour: '18',
+      weekdays: '1,2,3,4,5',
+      daily_cap: '40',
+    },
+    configurable: true,
+    default_active: 0,
+  },
+  {
+    id: 'sys_connector_session_health',
+    name: 'Connecteurs : santé des sessions (Instagram, ManyChat…)',
+    description:
+      "Chaque matin, vérifie que les connexions empruntées à un navigateur (aujourd'hui Instagram) répondent encore, en appelant une adresse qui EXIGE d'être connecté. " +
+      "POURQUOI : le fil public d'Instagram répond même avec un cookie mort — seule la lecture des commentaires est refusée. La tournée hebdomadaire se terminait donc en annonçant « 0 commentaire », statut succès, et trois semaines de prospects ont été perdues en silence (découvert le 12 septembre 2026). " +
+      "Désormais : toute redirection vers une page de connexion est traitée comme une panne de session, jamais comme un résultat vide ; l'état de chaque session est conservé et affiché dans Connecteurs ; et cette vérification tourne même les jours sans tournée. " +
+      "ALERTE : message privé Slack à Antoine Lambert (« slack_channel », résolu par courriel via le bot), le premier jour de panne puis une fois par jour tant que ce n'est pas réparé. RIEN n'est envoyé quand tout va bien — le silence veut dire que les connexions répondent. Un webhook reste possible en repli (« slack_webhook_url » / « slack_webhook_env »). " +
+      "Une panne réseau ponctuelle est enregistrée comme « erreur » et non comme « session expirée » : inutile de recoller un cookie pour une coupure passagère. " +
+      "« Simuler » montre le dernier état connu sans rien appeler ; « Exécuter » vérifie tout de suite.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 0 11 * * * UTC (index.js) → services/sessionHealth.js',
+      cron: '0 11 * * * UTC (7 h à Montréal en été, 6 h en hiver)',
+      summary: 'Tous les matins',
+    },
+    action_config: {
+      connectors: 'instagram',
+      slack_channel: 'antoine.lambert96@gmail.com',
+      recipient: 'Antoine Lambert',
+      slack_webhook_url: '',
+      slack_webhook_env: 'SLACK_WEBHOOK_PHILIPPE',
     },
     configurable: true,
     default_active: 1,

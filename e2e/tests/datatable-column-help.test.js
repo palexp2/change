@@ -1,12 +1,13 @@
 // Vérifie la fonctionnalité « descriptions/tooltips de colonnes » :
-// - une colonne dotée d'un champ `description` dans tableDefs.js affiche une
-//   icône « ? » (data-testid="datatable-col-help") dans son en-tête de DataTable
+// - une colonne dont le champ porte une description affiche une icône « ? »
+//   (data-testid="datatable-col-help") dans son en-tête de DataTable
 // - au survol de l'icône, une infobulle (role="tooltip") apparaît avec le texte
 //   de description
 //
 // Test 100% lecture seule : aucune création de record, aucune config écrasée.
-// Cible la page Entreprises, dont la colonne « Contacts » (contacts_count) est
-// visible par défaut et porte une description.
+// Cible la page Factures, dont « Avant taxes (CAD) », « Total » et « Solde dû »
+// sont visibles par défaut et portent une description (éditable depuis la
+// modale du champ — cf. migration 044).
 
 const { test, describe, before, after } = require('node:test')
 const assert = require('node:assert/strict')
@@ -35,7 +36,7 @@ describe('DataTable — infobulles de description de colonne', () => {
     await page.click('button:has-text("Se connecter")')
     await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 10000 })
 
-    await page.goto(`${URL}/companies`, { waitUntil: 'networkidle' })
+    await page.goto(`${URL}/factures`, { waitUntil: 'networkidle' })
     await page.waitForSelector('text=/\\d+\\s+lignes?/', { timeout: 10000 })
 
     // Au moins une icône d'aide doit être présente dans les en-têtes.
@@ -58,10 +59,10 @@ describe('DataTable — infobulles de description de colonne', () => {
     await tip.waitFor({ state: 'hidden', timeout: 3000 })
   })
 
-  test('la colonne « Contacts » expose sa description via aria-label', async () => {
-    // Le contenu de la description du flag est rendu dans l'aria-label de
-    // l'icône — on vérifie qu'au moins une icône d'aide porte une description
-    // non vide (couvre le câblage tableDefs.description → ColumnHelp).
+  test('une colonne expose sa description via aria-label', async () => {
+    // Le contenu de la description est rendu dans l'aria-label de l'icône — on
+    // vérifie qu'au moins une icône d'aide porte une description non vide
+    // (couvre le câblage description du champ → ColumnHelp).
     const labels = await page.locator('[data-testid="datatable-col-help"]').evaluateAll(
       els => els.map(e => e.getAttribute('aria-label') || '')
     )

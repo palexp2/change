@@ -418,7 +418,18 @@ function rescaleLineAmounts(amounts, target) {
 // l'écart résiduel en une ligne visible et éditable plutôt que de laisser la fiche
 // mentir. Au-delà de 25 % de la base, l'extraction est trop abîmée pour être rafistolée :
 // on laisse tel quel (l'écart reste visible dans la fiche) et on trace.
-const RESIDUAL_LINE_DESCRIPTION = 'Autres frais figurant sur la facture'
+// Libellé de la ligne d'écart. Un « Autres frais figurant sur la facture » nu
+// n'apprenait RIEN : ni le montant en cause, ni le sens de l'écart, ni ce qui a été
+// comparé — impossible de trancher sans rouvrir le PDF. Le libellé porte donc les
+// deux nombres qui le produisent : la somme des lignes extraites et la base hors
+// taxes de la facture. Reste court (il devient le libellé de la ligne dans
+// QuickBooks) et éditable comme n'importe quelle ligne.
+const fmtAmount = n => `${round2(n).toFixed(2).replace('.', ',')} $`
+
+export function residualLineDescription({ delta, lineSum, htBase }) {
+  const sens = delta > 0 ? 'frais non détaillés' : 'lignes en trop'
+  return `Écart avec la facture, ${sens} — lignes ${fmtAmount(lineSum)} vs facture ${fmtAmount(htBase)}`
+}
 
 export function reconcileItemsResidual(items, htBase) {
   const list = Array.isArray(items) ? items : []
@@ -429,9 +440,13 @@ export function reconcileItemsResidual(items, htBase) {
   const delta = round2(base - sum)
   if (Math.abs(delta) <= 0.02) return null
   if (Math.abs(delta) > Math.abs(base) * 0.25) return { items: list, delta, applied: false }
+  const description = residualLineDescription({ delta, lineSum: sum, htBase: base })
   return {
-    items: [...list, { description: RESIDUAL_LINE_DESCRIPTION, quantity: null, unit_price: null, total: delta }],
+    items: [...list, { description, quantity: null, unit_price: null, total: delta }],
     delta,
+    lineSum: sum,
+    htBase: base,
+    description,
     applied: true,
   }
 }
@@ -449,7 +464,7 @@ export function reconcileItemsResidual(items, htBase) {
 // simplement l'unique ligne à la cible (montant pièce - escompte + transport), sans
 // quoi le transport/escompte disparaît (incident Scale Instrument, facture à 1920 $
 // alors que le Grand Total imprimé incluant le fret était 2054,24 $).
-export function reconcileDiscountFreightProrata(items, { discount = 0, freight = 0 } = {}) {
+export function reconcileDiscountFreightProrata(items, { discount = 0, freight = 0, htBase = null } = {}) {
   const list = Array.isArray(items) ? items : []
   const priced = list.filter(it => it && it.total != null)
   if (!priced.length) return null
@@ -459,6 +474,17 @@ export function reconcileDiscountFreightProrata(items, { discount = 0, freight =
   const sum = round2(priced.reduce((s, it) => s + (Number(it.total) || 0), 0))
   if (!sum) return null
   const target = round2(sum - disc + frt)
+  // MONTANT DÉCLARÉ ≠ MONTANT FACTURÉ. Certaines factures impriment un fret qui n'est
+  // PAS une charge : DigiKey (port payé, Incoterm DDP) imprime « Valeur de fret (port
+  // payé) 15,00 » — une valeur déclarée en douane, déjà comprise dans le prix. Le
+  // répartir gonflait les lignes de 15 $ au-dessus du montant facturé, et le filet
+  // résiduel rajoutait aussitôt une ligne de −15 $ pour revenir au total : deux
+  // corrections qui s'annulent, et une ligne inexplicable dans la fiche.
+  // Arbitre : la base HORS TAXES imprimée. Si les lignes y retombent déjà et que la
+  // répartition les en écarterait, l'escompte/transport n'est pas une charge → on ne
+  // touche à rien.
+  const base = htBase == null ? null : round2(htBase)
+  if (base && Math.abs(round2(target - base)) > 0.02 && Math.abs(round2(sum - base)) <= 0.02) return null
   const scaled = rescaleLineAmounts(priced.map(it => Number(it.total) || 0), target)
   let k = 0
   const next = list.map(it => {
@@ -630,6 +656,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       const discFreight = reconcileDiscountFreightProrata(items, {
         discount: extracted.discount_amount,
         freight: extracted.freight_amount,
+        htBase: printedHtBase(extracted),
       })
       if (discFreight) {
         items = discFreight.items
@@ -673,6 +700,24 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     // inconnue ou type « vente » → ignorée). Signal « document » de fiscalDetection.js.
     const aiTxType = getTransactionType(extracted.transaction_type)
     const extractedTxType = aiTxType && aiTxType.side !== 'vente' ? extracted.transaction_type : null
+
+    // La fiche du fournisseur apprend dès la LECTURE, pas seulement à la
+    // publication : devise facturée, délai de paiement, nature fiscale. Champs
+    // encore vides uniquement — une saisie humaine ne s'écrase jamais.
+    if (profile) {
+      try {
+        const { learnFromExtractedReceipt } = await import('./vendorLearning.js')
+        const learned = learnFromExtractedReceipt({
+          company,
+          currency: extracted.currency || null,
+          termsDays: extractedTerms,
+          transactionType: extractedTxType,
+        })
+        if (learned) console.log(`Extraction ${saleReceiptId}: fiche ${company} complétée (${learned.filled.join(', ')})`)
+      } catch (e) {
+        console.warn(`Extraction ${saleReceiptId}: fiche fournisseur non complétée (${e.message})`)
+      }
+    }
 
     // Repas / représentation : configuration comptable toujours identique — le pourboire
     // est « Hors champ » (jamais taxé) et le repas « TPS/TVQ repas » (CTI/RTI 50 %). On
@@ -728,7 +773,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
         const residual = reconcileItemsResidual(items, printedHtBase(current))
         if (residual?.applied) {
           items = residual.items
-          console.warn(`Extraction ${saleReceiptId}: lignes incomplètes de ${residual.delta} $ — ligne « ${RESIDUAL_LINE_DESCRIPTION} » ajoutée pour retomber sur ${round2(current.total)} $`)
+          console.warn(`Extraction ${saleReceiptId}: écart de ${residual.delta} $ entre les lignes (${residual.lineSum} $) et la base HT de la facture (${residual.htBase} $) — ligne « ${residual.description} » ajoutée pour retomber sur ${round2(current.total)} $`)
         } else if (residual) {
           console.error(`Extraction ${saleReceiptId}: somme des lignes hors base HT de ${residual.delta} $ (>25 %) — extraction à vérifier manuellement`)
         }

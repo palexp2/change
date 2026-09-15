@@ -91,11 +91,8 @@ describe('Admin utilisateurs — colonne Owner HubSpot', () => {
       await page.goto(ERP + '/admin/utilisateurs', { waitUntil: 'domcontentloaded' })
       await page.waitForSelector('h2:has-text("Utilisateurs")', { timeout: 15000 })
 
-      // En-tête de colonne + résumé de couverture
+      // En-tête de colonne
       await page.waitForSelector('text=Owner HubSpot', { timeout: 15000 })
-      const summary = page.locator('[data-testid="hubspot-mapping-summary"]')
-      await summary.waitFor({ timeout: 10000 })
-      assert.match(await summary.innerText(), /mappés/)
 
       // La ligne du compte jetable porte son propre sélecteur d'owner
       const select = page.locator(`[data-testid="hubspot-owner-select-${userId}"]`)

@@ -14,7 +14,7 @@ import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { fmtDate } from '../lib/formatDate.js'
-import { fmtMoney } from '../utils/formatters.js'
+import { fmtMoney, fmtAddress } from '../utils/formatters.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
@@ -256,11 +256,7 @@ function ScanReminderModal({ serial, message, onConfirm }) {
 
 function AddItemModal({ orderId, onSave, onClose }) {
   const [products, setProducts] = useState([])
-  // `unit_cost` n'a plus de champ visible (le coût d'une ligne se lit dans
-  // « Coût total au moment de l'envoi ») mais reste dans le formulaire : il est
-  // pré-rempli avec le coût du produit choisi et posté à la création, sinon la
-  // ligne naîtrait à 0 et le gel du coût à l'envoi n'aurait rien à valoriser.
-  const [form, setForm] = useState({ product_id: '', qty: 1, unit_cost: '', item_type: 'Facturable' })
+  const [form, setForm] = useState({ product_id: '', qty: 1, item_type: 'Facturable' })
   const [saving, setSaving] = useState(false)
 
   useEffect(() => {
@@ -272,15 +268,14 @@ function AddItemModal({ orderId, onSave, onClose }) {
 
   function handleProductChange(newId) {
     const id = newId || ''
-    const product = products.find(p => p.id === id)
-    setForm(f => ({ ...f, product_id: id, unit_cost: product?.unit_cost || '' }))
+    setForm(f => ({ ...f, product_id: id }))
   }
 
   async function handleSubmit(e) {
     e.preventDefault()
     setSaving(true)
     try {
-      await api.orders.addItem(orderId, { ...form, qty: parseInt(form.qty), unit_cost: parseFloat(form.unit_cost) || 0 })
+      await api.orders.addItem(orderId, { ...form, qty: parseInt(form.qty) })
       onSave()
       onClose()
     } finally { setSaving(false) }
@@ -1403,6 +1398,17 @@ export default function OrderDetail({ recordId, onClose }) {
     if (!order?.project_id || projects.some(p => String(p.id) === String(order.project_id))) return projects
     return [{ id: order.project_id, name: order.project_name || 'Projet lié' }, ...projects]
   }, [projects, order?.project_id, order?.project_name])
+
+  // « Adresse de livraison » : on ne propose que les adresses de l'entreprise de
+  // la commande — les 1600+ adresses du miroir n'ont rien à faire dans cette
+  // liste. Sans entreprise liée, pas de restriction possible : la liste reste
+  // complète. L'adresse déjà posée reste affichée quoi qu'il arrive (règle des
+  // filtres de champ lien).
+  const orderFieldLinkFilters = useMemo(() => (
+    order?.company_id
+      ? { adresse_de_livraison: [{ column: 'company_id', op: 'is', value: String(order.company_id) }] }
+      : {}
+  ), [order?.company_id])
   const linkedFactureIds = new Set((order?.factures || []).map(f => f.id))
   const factureOptions = companyFactures.filter(f => !linkedFactureIds.has(f.id))
 
@@ -1520,13 +1526,6 @@ export default function OrderDetail({ recordId, onClose }) {
     }
     if (col.field === 'item_type' && !v) return // pas de type vide
     const payload = { [col.field]: v }
-    // Choix du produit sur une ligne qui n'a pas encore de coût : on emporte le
-    // coût du produit, comme le fait le formulaire d'ajout — sinon la ligne
-    // reste à 0 et le gel du coût à l'envoi n'a rien à valoriser.
-    if (col.field === 'product_id' && v && !Number(row.unit_cost)) {
-      const prod = products.find(p => String(p.id) === String(v))
-      if (prod?.unit_cost) payload.unit_cost = prod.unit_cost
-    }
     const updated = await api.orders.updateItem(id, row.id, payload)
     handlePatchItem(row.id, updated)
   }
@@ -1724,7 +1723,8 @@ export default function OrderDetail({ recordId, onClose }) {
   const ITEM_RENDERS = {
     // Colonne « Produit » (champ `product_id`, le lien vers la fiche produit) :
     // on affiche le NOM du produit, cliquable — jamais l'id brut. Les numéros de
-    // série assignés à la ligne ont leur propre colonne (`serials`).
+    // série de la ligne s'affichent dans « # de série » (champ Airtable
+    // `de_serie`), seul champ conservé depuis la migration 054.
     // Pastille de fiche liée (comme dans Airtable) : la cellule sélectionnée
     // offre le « × » qui dissocie et le « + » qui ouvre le catalogue — voir la
     // colonne `linkChips` plus bas et components/LinkChipsCell.jsx. Ce render
@@ -1736,18 +1736,6 @@ export default function OrderDetail({ recordId, onClose }) {
           : <span className="chip-record">{item.product_name || 'Produit inconnu'}</span>}
       </div>
     ),
-    serials: item => (item.serials?.length > 0
-      ? (
-        <div className="flex items-center gap-1 flex-wrap">
-          {item.serials.map(s => (
-            <Link key={s.id} to={`/serials/${s.id}`} onClick={e => e.stopPropagation()} className="inline-flex items-center gap-1 text-xs font-mono bg-slate-100 text-brand-700 hover:bg-brand-50 px-1.5 py-0.5 rounded border border-slate-200 hover:border-brand-300 transition-colors flex-shrink-0">
-              {s.serial}
-              {s.status && <span className="text-slate-400 text-[10px]">· {s.status}</span>}
-            </Link>
-          ))}
-        </div>
-      )
-      : <span className="text-slate-300">—</span>),
     qty: item => <span className="font-bold text-slate-900">{item.qty}</span>,
     item_type: item => item.item_type
       ? <Badge color={ITEM_TYPE_COLORS[item.item_type] || 'gray'}>{item.item_type}</Badge>
@@ -1827,9 +1815,10 @@ export default function OrderDetail({ recordId, onClose }) {
         linkTarget: 'products',
         linkOptions: productLinkOptions,
         linkChips: true,
-        // La ligne porte déjà le nom du produit : la pastille s'affiche sans
-        // attendre la résolution réseau du lien.
+        // La ligne porte déjà le nom du produit ET l'id de sa fiche : la
+        // pastille s'affiche sans attendre la résolution réseau du lien.
         linkChipLabel: item => item.product_name,
+        linkChipHref: item => (item.product_id ? `/products/${item.product_id}` : null),
       }
       : {}),
     ...(meta.id === 'item_type'
@@ -1964,6 +1953,7 @@ export default function OrderDetail({ recordId, onClose }) {
           className="card p-5 mb-4"
           testId="order-fields"
           onDeleted={onClose}
+          customFieldLinkFilters={orderFieldLinkFilters}
         >
           <DetailField id="status" label="Statut">
             <div><Badge color={orderStatusColor(order.status)}>{order.status}</Badge></div>
@@ -1993,6 +1983,18 @@ export default function OrderDetail({ recordId, onClose }) {
               getHref={c => `/companies/${c.id}`}
               saving={linkSaving}
               onChange={v => saveLink('company_id', v)}
+            />
+          </DetailField>
+          <DetailField id="farm_address_id" label="Adresse de la ferme" saving={linkSaving}>
+            <LinkedRecordField
+              name="farm_address_id"
+              value={order.farm_address_id}
+              options={order.farm_address_id ? [{ id: order.farm_address_id, name: fmtAddress(order.farm_address) || 'Adresse de la ferme' }] : []}
+              searchTarget="adresses"
+              searchFilter={order.company_id ? [{ column: 'company_id', op: 'is', value: order.company_id }] : null}
+              getHref={a => `/adresses/${a.id}`}
+              saving={linkSaving}
+              onChange={v => saveLink('farm_address_id', v)}
             />
           </DetailField>
           <DetailField id="project_id" label="Projet" saving={linkSaving}>

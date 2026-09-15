@@ -1,9 +1,8 @@
-// Rattachement « ligne de facture fournisseur ↔ achat LIA ». Depuis la migration
-// 035 (suppression définitive des champs Airtable gérés en code des achats), il
-// n'y a plus de scoring : la pièce, la quantité, le prix et les dates d'un achat
-// n'existent plus en colonne, donc plus aucun signal à comparer. Ce qui reste, et
-// que ces tests couvrent : le libellé LIA, la reconnaissance du fournisseur, et
-// le fait que rien ne soit JAMAIS proposé ni réécrit d'office.
+// Rattachement « ligne de facture fournisseur ↔ achat LIA ». Ces tests couvrent la
+// mécanique SANS base de données : libellé LIA, reconnaissance du fournisseur,
+// classement du sélecteur, et le fait qu'un candidat sans le moindre signal ne soit
+// jamais proposé ni réécrit d'office. Le scoring lui-même (et ce qui identifie
+// vraiment une pièce) est couvert par purchaseLiaIdentity.test.js.
 import test from 'node:test'
 import assert from 'node:assert'
 import {
@@ -31,9 +30,14 @@ test('description complétée : le séparateur est normalisé, le nom conservé'
   assert.equal(completeLiaDescription('Liaison série RS485'), 'Liaison série RS485')
 })
 
-test('code LIA seul : le nom ne se retrouve plus (colonne pièce droppée)', () => {
-  assert.equal(completeLiaDescription('LIA-1961'), 'LIA-1961')
-  assert.equal(completeLiaDescription('  lia-1961  '), 'LIA-1961')
+test('code LIA seul : le nom de la pièce est retrouvé en base, sinon le code seul', () => {
+  // Achat inexistant : rien à compléter, le code reste nu (et la casse est normalisée).
+  assert.equal(completeLiaDescription('LIA-999999'), 'LIA-999999')
+  assert.equal(completeLiaDescription('  lia-999999  '), 'LIA-999999')
+  // Achat existant : partNameByLiaRef() recolle le nom de la pièce derrière le code.
+  // Dépend de la base, donc on vérifie la FORME, pas un nom en particulier.
+  const filled = completeLiaDescription('LIA-1961')
+  assert.ok(filled === 'LIA-1961' || /^LIA-1961\t.+/.test(filled), filled)
 })
 
 test('clé fournisseur — suffixes de devise et formes juridiques ignorés', () => {
@@ -54,7 +58,11 @@ test('aucune proposition : chaque ligne revient sans appariement', () => {
   const { lines, candidates } = matchLines({ items, candidates: [candidat()] })
   assert.equal(lines.length, 1)
   assert.equal(lines[0].match, null)
-  assert.deepEqual(lines[0].candidates, [])
+  // Le candidat est bien passé au score, mais un achat sans pièce, sans quantité et
+  // sans prix ne porte aucun signal : score nul, et rien ne l'identifie.
+  assert.equal(lines[0].candidates.length, 1)
+  assert.equal(lines[0].candidates[0].score, 0)
+  assert.equal(lines[0].candidates[0].identity.kind, 'none')
   // Les candidats restent servis tels quels : c'est eux qui alimentent le
   // sélecteur manuel de la fiche reçu.
   assert.equal(candidates.length, 1)

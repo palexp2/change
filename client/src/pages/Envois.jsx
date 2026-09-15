@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { X, Truck } from 'lucide-react'
 import api from '../lib/api.js'
@@ -13,6 +13,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { weekStartOf, fmtWeekStart } from '../lib/isoWeek.js'
 import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
 import { shipmentTitle, shipmentSubtitle } from '../lib/shipmentLabel.js'
+import { trackingUrl } from '../lib/trackingUrl.js'
 
 
 const RENDERS = {
@@ -42,6 +43,11 @@ const RENDERS = {
       : <LinkedRecordsValue field={{ record_link_target: 'adresses' }} value={row.address_id} />
   },
   tracking_number: row => <span className="font-mono text-xs text-slate-700">{row.tracking_number || '—'}</span>,
+  // L'URL elle-même, cliquable : elle doit rester lisible/copiable (c'est le
+  // lien qu'on envoie au client), pas se cacher derrière un libellé.
+  tracking_url: row => row.tracking_url
+    ? <a href={row.tracking_url} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} className="link-record truncate block">{row.tracking_url}</a>
+    : <span className="text-slate-400">—</span>,
   carrier: row => <span className="text-slate-700">{row.carrier || '—'}</span>,
   pays: row => <span className="text-slate-700">{row.pays || '—'}</span>,
   shipped_at: row => <span className="text-slate-500">{fmtDate(row.shipped_at)}</span>,
@@ -82,9 +88,17 @@ export default function Envois() {
   // « Livraisons » (dashboard). Le graphique compte les envois par semaine de
   // `shipped_at` : on filtre sur le même champ et avec le même bucketing (lundi
   // en UTC), sinon la liste ne montre pas les records de la barre cliquée.
+  // Lien de suivi pré-calculé sur la ligne pour qu'il se trie, se filtre, se
+  // cherche et s'exporte comme un vrai champ (même pattern que le poids de ligne
+  // du tableau Articles). Chaîne vide quand le transporteur n'a pas d'URL connue.
+  const rows = useMemo(
+    () => envois.map(e => ({ ...e, tracking_url: trackingUrl(e.carrier, e.tracking_number) || '' })),
+    [envois],
+  )
+
   const displayedEnvois = weekFilter
-    ? envois.filter(e => weekStartOf(e.shipped_at) === weekFilter)
-    : envois
+    ? rows.filter(e => weekStartOf(e.shipped_at) === weekFilter)
+    : rows
 
   const weekLabel = weekFilter ? fmtWeekStart(weekFilter) : null
 

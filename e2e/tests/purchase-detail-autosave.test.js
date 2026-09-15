@@ -30,9 +30,7 @@ describe('PurchaseDetail — autosave', () => {
       if (!first) return null
       return {
         id: first.id,
-        status: first.status,
-        qty_received: first.qty_received,
-        notes: first.notes,
+        emplacement: first.emplacement,
       }
     })
     assert.ok(pick, 'besoin d\'un achat existant')
@@ -48,11 +46,7 @@ describe('PurchaseDetail — autosave', () => {
         await fetch(`/erp/api/purchases/${id}`, {
           method: 'PATCH',
           headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            status: orig.status,
-            qty_received: orig.qty_received,
-            notes: orig.notes,
-          }),
+          body: JSON.stringify({ emplacement: orig.emplacement }),
         })
       }, { id: purchaseId, orig: originals })
     }
@@ -66,47 +60,50 @@ describe('PurchaseDetail — autosave', () => {
       const patch = await fetch(`/erp/api/purchases/${id}`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'Reçu partiellement', qty_received: 42 }),
+        body: JSON.stringify({ emplacement: 'E2E-AUTOSAVE' }),
       })
       const after = await patch.json()
       return { before, after, status: patch.status }
     }, { id: purchaseId })
 
     assert.strictEqual(result.status, 200)
-    assert.strictEqual(result.after.status, 'Reçu partiellement')
-    assert.strictEqual(result.after.qty_received, 42)
-    // Les autres champs doivent être inchangés
-    assert.strictEqual(result.after.qty_ordered, result.before.qty_ordered)
-    assert.strictEqual(result.after.reference, result.before.reference)
-    assert.strictEqual(result.after.product_id, result.before.product_id)
+    assert.strictEqual(result.after.emplacement, 'E2E-AUTOSAVE')
+    // Les autres champs doivent être inchangés. `supplier_company_id` est la
+    // dernière colonne native modifiable à côté de l'emplacement : produit,
+    // référence, dates, quantités, prix et notes ont été droppés (migrations
+    // 035 et 036 pour « Qté reçue »).
+    assert.strictEqual(result.after.supplier_company_id, result.before.supplier_company_id)
+    assert.strictEqual(result.after.airtable_id, result.before.airtable_id)
   })
 
-  test('PATCH ignore les clés non whitelistées (product_id, id, ...)', async () => {
+  test('PATCH ignore les clés non whitelistées (qty_received droppé, id, ...)', async () => {
     const result = await page.evaluate(async ({ id }) => {
       const token = localStorage.getItem('erp_token')
       const before = await fetch(`/erp/api/purchases/${id}`, { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
       const r = await fetch(`/erp/api/purchases/${id}`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ product_id: 'should-not-change', status: 'Reçu' }),
+        body: JSON.stringify({ qty_received: 42, emplacement: 'E2E-WHITELIST' }),
       })
       const after = await r.json()
       return { status: r.status, after, before }
     }, { id: purchaseId })
 
     assert.strictEqual(result.status, 200)
-    assert.strictEqual(result.after.status, 'Reçu')
-    assert.strictEqual(result.after.product_id, result.before.product_id, 'product_id ne doit pas changer')
+    assert.strictEqual(result.after.emplacement, 'E2E-WHITELIST')
+    assert.ok(!('qty_received' in result.after), 'la colonne « Qté reçue » n\'existe plus (migration 036)')
   })
 
-  test('autosave UI — changer le statut via le select persiste', async () => {
+  // Le champ témoin était « Statut » (select) jusqu'à sa suppression — colonne
+  // droppée (migration 032). On pilote désormais « Emplacement », un texte
+  // autosauvegardé au blur par le même chemin.
+  test('autosave UI — changer l\'emplacement persiste', async () => {
     await page.goto(`${URL}/purchases/${purchaseId}`, { waitUntil: 'domcontentloaded' })
-    // attendre que le select statut soit rendu
-    const statusSelect = page.locator('select').first()
-    await statusSelect.waitFor({ timeout: 10000 })
+    const input = page.locator('[data-field-key="emplacement"] input')
+    await input.waitFor({ timeout: 10000 })
 
-    // Choisir "Annulé" (valeur improbable → témoin)
-    await statusSelect.selectOption('Annulé')
+    await input.fill('E2E-UI-AUTOSAVE')
+    await input.blur()
 
     // Laisser le temps au fetch de se terminer
     await page.waitForTimeout(800)
@@ -114,8 +111,8 @@ describe('PurchaseDetail — autosave', () => {
     const confirmed = await page.evaluate(async ({ id }) => {
       const token = localStorage.getItem('erp_token')
       const r = await fetch(`/erp/api/purchases/${id}`, { headers: { Authorization: `Bearer ${token}` } })
-      return (await r.json()).status
+      return (await r.json()).emplacement
     }, { id: purchaseId })
-    assert.strictEqual(confirmed, 'Annulé', 'changement de statut doit être persisté')
+    assert.strictEqual(confirmed, 'E2E-UI-AUTOSAVE', "changement d'emplacement doit être persisté")
   })
 })

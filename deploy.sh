@@ -18,9 +18,11 @@ export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 FORCE=0
 [ "$1" = "--force" ] && FORCE=1
 
-# L'agent travaille sur QUATRE files en parallèle : un fichier PID par file
-# (.agent-pid pour la file 0, puis .agent-pid-1..3). Il suffit qu'UNE exécution
-# tourne pour qu'un redémarrage la fasse passer en « bloquée » — on attend donc
+# L'agent travaille sur plusieurs files en parallèle : un fichier PID par file
+# (.agent-pid pour la file 0, puis .agent-pid-1..3 — les deux derniers ne servent
+# plus depuis le retour à deux files, mais un ancien peut encore traîner). Il
+# suffit qu'UNE exécution tourne pour qu'un redémarrage la fasse passer en
+# « bloquée » — on attend donc
 # qu'elles soient toutes terminées.
 agent_running_pids() {
   local f pid

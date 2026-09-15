@@ -10,11 +10,12 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 // Test data (confirmed in DB): Ferme entre ciel et terre has operational CC address 225
 const COMPANY_ID = '30d496b2-6cc5-4c6d-bcef-32f4ecff8095'
 const COMPANY_ID_2 = 'e36d1fd1-a2ef-41c7-87c6-34bf70e34c82' // other company w/ many serials
-const TICKET_ID = 'a9ae912b-74b7-496f-8099-af1fe35009ba'
 const EXPECTED_ADDRESS = '225'
 const EXPECTED_URL = `https://app.orisha.io/#admin/${EXPECTED_ADDRESS}`
 
-describe('Lien externe Orisha — fiche entreprise et billet', () => {
+// Le volet « fiche billet » est parti avec `tickets.company_id` (migration 040) :
+// un billet ne cite plus d'entreprise, donc plus de contrôleur central à ouvrir.
+describe('Lien externe Orisha — fiche entreprise', () => {
   let browser, ctx, page
 
   before(async () => {
@@ -43,17 +44,6 @@ describe('Lien externe Orisha — fiche entreprise et billet', () => {
     const cc = res.central_controllers.find(c => c.address === EXPECTED_ADDRESS)
     assert.ok(cc, `CC avec address ${EXPECTED_ADDRESS} doit être présent`)
     assert.ok(cc.product_name && cc.product_name.toLowerCase().startsWith('contrôleur central'), 'product_name doit être un contrôleur central')
-  })
-
-  test('API tickets/:id retourne central_controllers', async () => {
-    const res = await page.evaluate(async ({ id }) => {
-      const token = localStorage.getItem('erp_token')
-      const r = await fetch(`/erp/api/tickets/${id}`, { headers: { Authorization: `Bearer ${token}` } })
-      return r.json()
-    }, { id: TICKET_ID })
-    assert.ok(Array.isArray(res.central_controllers), 'central_controllers doit être un tableau sur le billet')
-    const cc = res.central_controllers.find(c => c.address === EXPECTED_ADDRESS)
-    assert.ok(cc, `CC avec address ${EXPECTED_ADDRESS} doit être présent sur le billet`)
   })
 
   test('UI — fiche entreprise affiche le lien Orisha vers l\'adresse du CC', async () => {
@@ -121,13 +111,4 @@ describe('Lien externe Orisha — fiche entreprise et billet', () => {
     assert.strictEqual(widthsB, widthsA, `les largeurs doivent être identiques d'une fiche à l'autre`)
   })
 
-  test('UI — fiche billet affiche le lien Orisha vers l\'adresse du CC', async () => {
-    await page.goto(`${URL}/tickets/${TICKET_ID}`, { waitUntil: 'networkidle' })
-    const link = page.locator(`a[href="${EXPECTED_URL}"]`).first()
-    await link.waitFor({ timeout: 10000 })
-    const target = await link.getAttribute('target')
-    assert.strictEqual(target, '_blank', 'le lien doit ouvrir un nouvel onglet')
-    const text = (await link.innerText()).trim()
-    assert.ok(text.toLowerCase().includes('orisha'), `texte visible doit mentionner Orisha, reçu: "${text}"`)
-  })
 })

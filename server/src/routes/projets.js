@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from '../services/shippedCost.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
@@ -1261,7 +1262,7 @@ router.get('/abonnement-events/:id/rachat-candidates', (req, res) => {
       o.id, o.order_number, o.status,
       COALESCE(o.date_commande, substr(o.created_at, 1, 10)) AS effective_date,
       o.date_commande,
-      (SELECT COALESCE(SUM(oi.qty * oi.unit_cost), 0)
+      (SELECT COALESCE(SUM(oi.qty * ${pieceUnitCostSql('oi')}), 0)
        FROM order_items oi WHERE oi.order_id = o.id) AS total_value
     FROM orders o
     WHERE o.company_id = ?

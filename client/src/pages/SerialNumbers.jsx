@@ -66,6 +66,10 @@ export default function SerialNumbers() {
       <DataTable
         table="serial_numbers"
         manageViews
+        // « Statut » est une colonne native de type Sélection : sans cette
+        // option, la valeur sortait en texte nu et la couleur réglée sur le
+        // champ (jaune, rose…) n'apparaissait nulle part dans la liste.
+        selectBadges
         columns={COLUMNS}
         data={serials}
         loading={loading}

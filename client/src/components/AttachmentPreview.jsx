@@ -117,6 +117,7 @@ export function AttachmentPreviewModal({ url, fileName, title, kind, downloadNam
 }
 
 const SIZES = {
+  compact: { width: 56, height: 56 },
   sm: { width: 92, height: 120 },
   md: { width: 154, height: 200 },
 }

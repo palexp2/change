@@ -13,7 +13,6 @@ import { useElementPicker, buildPageContext, PickerBanner } from '../lib/pageCon
 // tâche. Le placement dans la file (« au début / à la fin ») a été retiré d'ici :
 // une demande déposée à la main part à la fin, comme tout le reste.
 import { StartToggle, eveningStart } from '../lib/travauxQueue.jsx'
-import { CodexUsageStrip } from './ClaudeUsage.jsx'
 
 // Modèle qui traitera la demande, choisi ici même : deux choix seulement, Opus
 // (défaut) ou Astra. Les petits modèles (Sonnet, Haiku) ne sont plus proposés —
@@ -330,7 +329,6 @@ export function FeedbackFab({ contextRecord = '' }) {
             autoFocus
             className="input w-full resize-y"
           />
-          {model === 'codex' && <CodexUsageStrip />}
           {/* Sous le champ, deux réglages discrets : le modèle qui traitera la
               demande (bascule Opus / Astra, Opus par défaut) et le moment du
               départ (tout de suite, ou programmé à 19 h — même contrôle que

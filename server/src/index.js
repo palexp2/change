@@ -64,6 +64,7 @@ import vendorSubscriptionsRouter from './routes/vendor-subscriptions.js'
 import vendorProfilesRouter from './routes/vendor-profiles.js'
 import treasuryRouter from './routes/treasury.js'
 import bankRouter from './routes/bank.js'
+import bankRulesRouter from './routes/bankRules.js'
 import plaidRouter, { plaidWebhookRouter } from './routes/plaid.js'
 import prepaidRouter from './routes/prepaid.js'
 import ltDebtsRouter from './routes/lt-debts.js'
@@ -72,6 +73,7 @@ import carmRouter from './routes/carm.js'
 import scrapersRouter from './routes/scrapers.js'
 import fxRouter from './routes/fx.js'
 import monthEndRouter from './routes/month-end.js'
+import deferredRevenueRouter from './routes/deferred-revenue.js'
 import driveInventoryRouter from './routes/drive-inventory.js'
 import mapaqRouter from './routes/mapaq.js'
 import employeesRouter from './routes/employees.js'
@@ -419,6 +421,8 @@ app.use('/api/achats-fournisseurs', achatsFournisseursRouter)
 app.use('/api/vendor-subscriptions', vendorSubscriptionsRouter)
 app.use('/api/vendor-profiles', vendorProfilesRouter)
 app.use('/api/treasury', treasuryRouter)
+// Les règles bancaires avant le routeur général : /api/bank/rules lui est propre.
+app.use('/api/bank/rules', bankRulesRouter)
 app.use('/api/bank', bankRouter)
 app.use('/api/plaid', plaidRouter)
 app.use('/api/prepaid', prepaidRouter)
@@ -428,6 +432,7 @@ app.use('/api/carm', carmRouter)
 app.use('/api/scrapers', scrapersRouter)
 app.use('/api/fx', fxRouter)
 app.use('/api/month-end', monthEndRouter)
+app.use('/api/deferred-revenue', deferredRevenueRouter)
 app.use('/api/drive-inventory', driveInventoryRouter)
 app.use('/api/mapaq', mapaqRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
@@ -951,6 +956,14 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('carm alert cron:', e.message))
   })
 
+  // Relevés de carte de crédit déposés dans le Drive : le solde imprimé donne le
+  // montant exact du prélèvement à venir, sans avoir à le reconstituer.
+  cron.schedule('20 6 * * *', () => {
+    import('./services/cardStatementImport.js')
+      .then(({ importCardStatements }) => importCardStatements())
+      .catch(e => console.error('relevés de carte:', e.message))
+  })
+
   // Alerte trésorerie BNC : vérification quotidienne du solde projeté à 7h30
   // locale (le service court-circuite si sys_treasury_alert est inactive).
   cron.schedule('30 7 * * *', () => {
@@ -1100,6 +1113,21 @@ const server = app.listen(PORT, () => {
     } catch (e) { console.error('scrapers cron:', e.message) }
   })
 
+  // Le moteur du rapprochement, en rattrapage nocturne : la plupart des
+  // propositions naissent à l'arrivée des transactions, mais certaines changent
+  // sans qu'une ligne bouge (une facture extraite après coup, une règle créée
+  // hier, un paiement émis marqué depuis). Rien n'est comptabilisé ici — le
+  // passage ne fait que préparer ce qu'un clic appliquera.
+  cron.schedule('0 9 * * *', async () => {
+    try {
+      const { isSystemAutomationActive } = await import('./services/systemAutomations.js')
+      if (!isSystemAutomationActive('sys_bank_engine')) return
+      const { runBankEngine } = await import('./services/bankProposals/engine.js')
+      const res = await runBankEngine({})
+      if (res.produced) console.log('bankEngine:', res.summary)
+    } catch (e) { console.error('bankEngine cron:', e.message) }
+  })
+
   // DigiKey : rapatriement des commandes et de leurs factures PDF, une fois par
   // jour à 10h UTC (6h à Montréal) — juste après la collecte de portails, pour
   // que la journée comptable commence avec les brouillons déjà là.
@@ -1169,6 +1197,40 @@ const server = app.listen(PORT, () => {
     import('./services/instagramCommentScrape.js')
       .then(({ runCommentScrape }) => runCommentScrape({ trigger: 'cron nuit dimanche→lundi' }))
       .catch(e => console.error('instagram comment scrape cron:', e.message))
+  })
+
+  // ManyChat : contacts et conversations, tous les matins. Deux heures UTC
+  // pour couvrir l'été et l'hiver ; le service ne retient qu'un passage.
+  cron.schedule('0 9,10 * * *', () => {
+    import('./services/manychatSync.js')
+      .then(({ runManychatSync }) => runManychatSync({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('manychat sync cron:', e.message))
+  })
+
+  // Instagram : écriture des messages d'avance, tous les matins après la
+  // lecture de ManyChat. Deux heures UTC pour couvrir l'été et l'hiver.
+  cron.schedule('0 10,11 * * *', () => {
+    import('./services/instagramDrafts.js')
+      .then(({ runDraftWriting }) => runDraftWriting({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('instagram draft write cron:', e.message))
+  })
+
+  // Instagram : la file d'envoi. Chaque minute — le service décide seul s'il
+  // est l'heure, si le plafond du jour est atteint, et si le message suivant
+  // est dû ; hors de ces conditions le passage ne fait rien.
+  cron.schedule('* * * * *', () => {
+    import('./services/instagramDrafts.js')
+      .then(({ runDraftQueue }) => runDraftQueue({ trigger: 'file' }))
+      .catch(e => console.error('instagram draft queue cron:', e.message))
+  })
+
+  // Santé des sessions de connecteurs (Instagram aujourd'hui, ManyChat demain) :
+  // un passage quotidien, indépendant des tournées. C'est ce qui fait qu'une
+  // session morte se voit le lendemain et non trois semaines plus tard.
+  cron.schedule('0 11 * * *', () => {
+    import('./services/sessionHealth.js')
+      .then(({ runSessionHealthCheck }) => runSessionHealthCheck({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('session health cron:', e.message))
   })
 
   // Prospects Instagram : liste hebdo à Philippe, lundi 7h30 heure de Montréal

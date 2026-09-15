@@ -7,6 +7,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
 import { makeUpload } from '../utils/upload.js';
 import { buildPurchaseOrderPdf, fetchOrishaLogo } from '../services/purchaseOrderPdf.js';
+import { reservePurchaseOrderNumber, resolvePurchaseOrderNumber } from '../services/purchaseOrderNumber.js';
 import { sendEmail as sendGmail } from '../services/gmail.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { parseFiniteInt, parsePositiveInt, parseNonNegativeInt } from '../utils/validateNumbers.js';
@@ -322,7 +323,8 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
     `).all(product.supplier_company_id)
   }
 
-  const po_number = `PO-${Date.now().toString(36).toUpperCase()}`
+  const po_number = reservePurchaseOrderNumber(db, product.id)
+  res.setHeader('Cache-Control', 'no-store')
   const today = new Date().toISOString().slice(0, 10)
 
   const toLabel = (p) => p.manufacturier || p.name_fr || p.name_en || p.sku || ''
@@ -381,11 +383,11 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
   });
 });
 
-function normalizePoPayload(body) {
+function normalizePoPayload(body, productId) {
   const items = Array.isArray(body.items) ? body.items : []
   return {
     lang: body.lang === 'en' ? 'en' : 'fr',
-    po_number: String(body.po_number || '').trim() || `PO-${Date.now().toString(36).toUpperCase()}`,
+    po_number: resolvePurchaseOrderNumber(db, productId, body.po_number),
     date: body.date || new Date().toISOString().slice(0, 10),
     currency: body.currency || 'CAD',
     supplier: String(body.supplier || '').trim(),
@@ -408,7 +410,7 @@ router.post('/:id/purchase-order/pdf', async (req, res) => {
   const product = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
-  const po = normalizePoPayload(req.body)
+  const po = normalizePoPayload(req.body || {}, product.id)
   const logo = await fetchOrishaLogo()
   const pdf = await buildPurchaseOrderPdf({ ...po, logoBuffer: logo })
   res.setHeader('Content-Type', 'application/pdf')
@@ -424,7 +426,7 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
   const { to, cc, subject, body_html, from_account } = req.body || {}
   if (!to || !to.includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
 
-  const po = normalizePoPayload(req.body.po || {})
+  const po = normalizePoPayload(req.body.po || {}, product.id)
   const logo = await fetchOrishaLogo()
   const pdf = await buildPurchaseOrderPdf({ ...po, logoBuffer: logo })
 

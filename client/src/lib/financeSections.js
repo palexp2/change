@@ -1,6 +1,6 @@
 import {
-  Landmark, BookUser, Wallet, CalendarCheck,
-  Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, FlaskConical,
+  Landmark, BookUser, Wallet, CalendarCheck, CalendarClock,
+  Banknote, ArrowLeftRight, CreditCard, Ship, Megaphone, HardDrive, FlaskConical, Wand2, ListChecks,
 } from 'lucide-react'
 
 // Espace finance — les pages du suivi comptable quotidien, réunies derrière une
@@ -17,6 +17,8 @@ import {
 export const FINANCE_SECTIONS = [
   { to: '/paiements-emis',   label: 'Paiements émis',           icon: Banknote,       group: 'Trésorerie' },
   { to: '/rapprochement',    label: 'Rapprochement bancaire',   icon: ArrowLeftRight, group: 'Trésorerie' },
+  { to: '/propositions',     label: 'Propositions',             icon: ListChecks,     group: 'Trésorerie' },
+  { to: '/regles-bancaires', label: 'Règles bancaires',         icon: Wand2,          group: 'Trésorerie' },
   { to: '/stripe-payouts',   label: 'Stripe Payouts',           icon: CreditCard,     group: 'Trésorerie' },
   { to: '/comptes-prepayes', label: 'Comptes prépayés',         icon: Wallet,         group: 'Trésorerie' },
   // Le compte CARM de l'ASFC est un compte prépayé : il vit dans un onglet de
@@ -28,6 +30,7 @@ export const FINANCE_SECTIONS = [
   { to: '/budget-marketing', label: 'Budget marketing',         icon: Megaphone,      group: 'Fournisseurs & engagements' },
 
   { to: '/fin-de-mois',      label: 'Écritures de fin de mois', icon: CalendarCheck,  group: 'Écritures' },
+  { to: '/revenus-reportes', label: "Revenus perçus d'avance",   icon: CalendarClock,  group: 'Écritures' },
 
   { to: '/inventaire-drive', label: 'Inventaire Drive',         icon: HardDrive,      group: 'Pilotage' },
 

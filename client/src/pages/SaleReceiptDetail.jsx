@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import {
-  ChevronLeft, ChevronRight,
+  ChevronLeft, ChevronRight, ChevronDown,
   RefreshCw, AlertCircle, AlertTriangle, CheckCircle, Clock, BookOpen, ReceiptText,
   Plus, Trash2, Archive, ArchiveRestore, Pencil, Mail, Sparkles, FileX, Paperclip,
   ArrowLeftRight, Landmark,
@@ -59,6 +59,7 @@ function withRecomputedTotal(receipt, patch) {
 
 import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { ReceiptAttachment } from '../components/ReceiptAttachment.jsx'
 
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
@@ -1211,6 +1212,20 @@ function CurrencyField({ receipt, onUpdate }) {
         </select>
         {saving && <RefreshCw size={12} className="animate-spin text-slate-400" />}
       </div>
+      {/* Les montants du dossier ont été convertis : ils ne sont plus ceux du document.
+          Remettre ici la devise de la facture ferait reconvertir à la publication — la
+          publication le refuse, et on le dit avant d'en arriver là. */}
+      {receipt.fx_converted_to && (
+        receipt.fx_converted_to !== (receipt.currency || '').toUpperCase() ? (
+          <p className="mt-1 text-[11px] text-red-700" data-testid="receipt-fx-mismatch">
+            Montants convertis en {receipt.fx_converted_to} — remettez la devise à {receipt.fx_converted_to}.
+          </p>
+        ) : (
+          <p className="mt-1 text-[11px] text-slate-400">
+            Montants convertis de {receipt.fx_converted_from} @ {receipt.fx_rate}
+          </p>
+        )
+      )}
     </>
   )
 }
@@ -1379,36 +1394,30 @@ function liaPurchaseSummary(p) {
   if (!p) return ''
   const bits = []
   if (p.qty_ordered) bits.push(`${p.qty_ordered} u.`)
-  if (p.unit_cost) bits.push(fmtCad(Number(p.unit_cost)))
+  // Le coût unitaire d'Airtable est une MOYENNE sur les achats de la pièce : il ne
+  // retombe presque jamais sur le prix facturé. Annoncé comme tel, il informe sans
+  // inviter à une comparaison qui n'a pas de sens.
+  if (p.unit_cost) bits.push(`~${fmtCad(Number(p.unit_cost))}/u`)
   if (p.order_date) bits.push(fmtDate(p.order_date))
   if (p.supplier) bits.push(p.supplier)
   return bits.join(' · ')
 }
-
-// Tolérance de prix : au-delà de 5 % d'écart entre le prix unitaire facturé et
-// le prix unitaire Airtable, l'écart est jugé notable. Les quantités, elles,
-// doivent concorder exactement (une unité de différence est déjà un signal).
-const LIA_PRICE_TOL_PCT = 0.05
 
 function numOrNull(v) {
   const n = Number(v)
   return v != null && v !== '' && Number.isFinite(n) ? n : null
 }
 
-// Écart entre deux valeurs numériques ; null si l'une des deux manque (rien à
-// comparer, pas d'alerte). `tolPct` = tolérance relative (0 = doit être égal).
-function liaMismatch(a, b, tolPct = 0) {
+// Quantités : elles doivent concorder EXACTEMENT (une unité d'écart est déjà un
+// signal). null si l'une des deux manque — rien à comparer, pas d'alerte.
+function liaMismatch(a, b) {
   if (a == null || b == null) return null
-  if (tolPct === 0) return a !== b
-  const base = Math.max(Math.abs(a), Math.abs(b)) || 1
-  return Math.abs(a - b) / base > tolPct
+  return a !== b
 }
 
-// Normalisation légère (accents/casse/ponctuation) pour comparer deux libellés
-// sans dépendance serveur — repli quand `nameScore` (similarité déjà calculée
-// par purchaseLiaMatch.js, cf. `detail.name`) n'est pas disponible (achat
-// RATTACHÉ : la liste des candidats ne porte pas ce détail, seule la
-// suggestion scorée l'a).
+// Normalisation légère (accents/casse/ponctuation) pour comparer deux libellés sans
+// dépendance serveur — repli quand le verdict d'identité du serveur n'est pas
+// disponible (achat hors des candidats renvoyés).
 function normalizeLiaText(s) {
   return String(s || '')
     .normalize('NFD').replace(/[̀-ͯ]/g, '')
@@ -1429,47 +1438,68 @@ function nameLooksOff(invName, atName) {
   return !wordsA.some(w => wordsB.has(w))
 }
 
-// Comparaison compacte « Facture » (ligne extraite du reçu) vs « Airtable »
-// (achat suggéré ou rattaché) — nom, qté et prix unitaire, pour repérer un
-// écart sans faire l'aller-retour entre deux colonnes du tableau. `nameScore`
-// (0-1, cf. `suggestion.detail.name`) sert quand il est déjà connu ; sinon
-// repli sur une comparaison de texte simple.
+// Concordance entre la ligne de facture et l'achat Airtable.
 //
-// Un seul badge résumé quand tout concorde (le cas courant, pas de lecture
-// détaillée requise) ; grille 2 colonnes (Facture | Airtable) × 3 lignes
-// (Nom/Qté/Prix) seulement quand il y a un écart à arbitrer.
-function LiaCompare({ item, purchase, nameScore }) {
+// CE QUI NE SE COMPARE PAS : le prix unitaire. Airtable porte un coût MOYEN sur les
+// achats de la pièce, la facture porte le prix du jour — ils diffèrent presque toujours,
+// et l'écart affiché n'était que du bruit. Le nom non plus ne se compare pas
+// littéralement : le fournisseur emploie son propre vocabulaire, jamais le nom Orisha
+// de la pièce.
+//
+// CE QUI IDENTIFIE VRAIMENT la pièce, c'est le verdict du serveur (purchaseLiaMatch.js,
+// champ `identity`) : référence fabricant / n° de catalogue imprimé sur la facture, SKU,
+// ou libellé DÉJÀ EMPLOYÉ par ce fournisseur pour cette pièce sur une facture passée
+// (vocabulaire appris). Reste comparable côté chiffres : la quantité.
+const IDENTITY_TEXT = {
+  ref: ({ label }) => `réf. ${label} sur la facture`,
+  sku: ({ label }) => `SKU ${label} sur la facture`,
+  alias: () => 'libellé déjà vu chez ce fournisseur',
+  name: () => 'nom concordant',
+}
+
+function LiaCompare({ item, purchase, identity }) {
   if (!purchase) return null
   const invQty = numOrNull(item.quantity)
-  const invPrice = numOrNull(item.unit_price)
   const atQty = numOrNull(purchase.qty_ordered)
-  const atPrice = numOrNull(purchase.unit_cost)
-  const invName = item.description || ''
+  // Le libellé IMPRIMÉ par le fournisseur : après rattachement, `description` est
+  // devenue « LIA-xxxx⇥Nom de la pièce », le libellé d'origine vit dans
+  // `source_description`. C'est lui qu'il faut montrer et confronter.
+  const invName = item.source_description || item.description || ''
   const atName = purchase.part_name || purchase.part_name_en || ''
-  const qtyOff = liaMismatch(invQty, atQty, 0)
-  const priceOff = liaMismatch(invPrice, atPrice, LIA_PRICE_TOL_PCT)
-  const nameOff = nameScore != null ? nameScore < 0.35 : nameLooksOff(invName, atName)
-  const anyOff = qtyOff || priceOff || nameOff
-  const cellClass = off => off ? 'text-red-600 font-semibold' : 'text-slate-600'
-  const comparable = (invQty != null || invPrice != null || invName) && (atQty != null || atPrice != null || atName)
-  if (!comparable) return null
+  const qtyOff = liaMismatch(invQty, atQty)
+  // Verdict du serveur si disponible ; sinon repli sur une comparaison de texte (achat
+  // hors des candidats renvoyés : autre fournisseur, achat archivé).
+  const kind = identity?.kind || null
+  const nameOff = kind ? kind === 'none' : nameLooksOff(invName, atName) === true
+  const anyOff = qtyOff || nameOff
+  const detail = `Facture ${invName || '—'}${invQty != null ? ` · ${invQty} u.` : ''} · Airtable ${atName || '—'}${atQty != null ? ` · ${atQty} u.` : ''}`
+  // Quantité facturée / quantité commandée, TOUJOURS affichée : c'est le seul chiffre
+  // encore comparable entre la facture et Airtable (le prix y est une moyenne). Un tiret
+  // dit « non lue sur la facture » plutôt que de faire disparaître la comparaison.
+  const qtyPair = `qté ${invQty ?? '—'}/${atQty ?? '—'}`
+
   if (!anyOff) {
+    const why = kind && IDENTITY_TEXT[kind] ? IDENTITY_TEXT[kind](identity) : null
     return (
-      <span
-        className="inline-flex items-center gap-1 text-[11px] text-green-700"
-        title={`Facture ${invName || '—'} · ${invQty ?? '—'} × ${invPrice != null ? fmtCad(invPrice) : '—'} · Airtable ${atName || '—'} · ${atQty ?? '—'} × ${atPrice != null ? fmtCad(atPrice) : '—'}`}
-      >
+      <span className="inline-flex items-center gap-1 text-[11px] text-green-700" title={detail}>
         <CheckCircle size={10} className="shrink-0" />
-        tout concorde
+        <span className="truncate">
+          {why ? `même pièce — ${why}` : 'même pièce'}
+          {` · ${qtyPair}`}
+        </span>
       </span>
     )
   }
-  const offParts = [nameOff && 'nom', qtyOff && 'qté', priceOff && 'prix'].filter(Boolean)
+
   return (
     <div className="mt-0.5 border border-slate-200 rounded overflow-hidden text-[11px]">
       <div className="flex items-center gap-1 px-1.5 py-0.5 bg-red-50 text-red-600">
         <AlertTriangle size={10} className="shrink-0" />
-        <span>écart détecté : {offParts.join(' + ')}</span>
+        <span>
+          {nameOff ? 'rien n’identifie la même pièce' : ''}
+          {nameOff && qtyOff ? ' · ' : ''}
+          {qtyOff ? 'quantité différente' : ''}
+        </span>
       </div>
       <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 bg-slate-50 text-slate-400 border-t border-slate-100">
         <span></span>
@@ -1478,25 +1508,24 @@ function LiaCompare({ item, purchase, nameScore }) {
       </div>
       <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 items-center border-t border-slate-100">
         <span className="text-slate-400 shrink-0">Nom</span>
-        <span className={`truncate ${cellClass(nameOff)}`} title={invName || undefined}>{invName || '—'}</span>
-        <span className={`truncate ${cellClass(nameOff)}`} title={atName || undefined}>{atName || '—'}</span>
+        <span className={`truncate ${nameOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`} title={invName || undefined}>{invName || '—'}</span>
+        <span className={`truncate ${nameOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`} title={atName || undefined}>{atName || '—'}</span>
       </div>
       <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 items-center border-t border-slate-100">
         <span className="text-slate-400 shrink-0">Qté</span>
-        <span className={`tabular-nums ${cellClass(qtyOff)}`}>{invQty ?? '—'}</span>
-        <span className={`tabular-nums ${cellClass(qtyOff)}`}>{atQty ?? '—'}</span>
-      </div>
-      <div className="grid grid-cols-[2.75rem_1fr_1fr] gap-x-1 px-1.5 py-0.5 items-center border-t border-slate-100">
-        <span className="text-slate-400 shrink-0">P.U.</span>
-        <span className={`tabular-nums ${cellClass(priceOff)}`}>{invPrice != null ? fmtCad(invPrice) : '—'}</span>
-        <span className={`tabular-nums ${cellClass(priceOff)}`}>{atPrice != null ? fmtCad(atPrice) : '—'}</span>
+        <span className={`tabular-nums ${qtyOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{invQty ?? '—'}</span>
+        <span className={`tabular-nums ${qtyOff ? 'text-red-600 font-semibold' : 'text-slate-600'}`}>{atQty ?? '—'}</span>
       </div>
     </div>
   )
 }
 
-function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, onSelect }) {
+function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, linkCheck, onSelect }) {
   const reused = linkedPurchase?.linked_receipts || []
+  // Tout ce qui ne sert PAS à trancher « est-ce le bon achat ? » passe au survol :
+  // date de commande, fournisseur (toujours celui de la facture — les candidats sont
+  // filtrés dessus), coût moyen Airtable, nom de la pièce déjà recopié dans la
+  // description. Ne reste à l'écran que le code, la preuve d'identité et la quantité.
   const linkedSummary = liaPurchaseSummary(linkedPurchase)
   const suggestionSummary = liaPurchaseSummary(suggestion)
   // La ligne est rattachée à un achat que le serveur n'a pas renvoyé dans les
@@ -1516,38 +1545,22 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
         onChange={val => onSelect(val || null)}
       />
       {item.purchase_id && (
-        // Confirmation de l'appariement sur UNE ligne : lien vers l'achat, date,
-        // fournisseur, témoin de concordance. Le nom de la pièce n'est répété que
-        // s'il ne figure pas déjà dans la description de la ligne (le rattachement
-        // l'y recopie) — sinon c'est la même phrase deux fois. Le détail complet
-        // reste au survol.
         <div className="px-1 text-[11px] text-slate-500 flex items-baseline gap-x-1.5 gap-y-0.5 flex-wrap min-w-0">
-          <Link to={`/purchases/${item.purchase_id}`} className="link-record font-medium shrink-0">
+          <Link
+            to={`/purchases/${item.purchase_id}`}
+            className="link-record font-medium shrink-0"
+            title={[linkedPurchase?.part_name, linkedSummary, item.source_description && `Facture : ${item.source_description}`]
+              .filter(Boolean).join(' · ') || undefined}
+          >
             {item.lia_ref || 'Achat'}
           </Link>
-          {linkedPurchase?.part_name && !(item.description || '').includes(linkedPurchase.part_name) && (
-            <span className="text-slate-700 break-words" title={linkedSummary || linkedPurchase.part_name}>{linkedPurchase.part_name}</span>
-          )}
-          {linkedPurchase?.order_date && (
-            <span title={linkedSummary || undefined}>
-              {fmtDate(linkedPurchase.order_date)}{linkedPurchase.supplier ? ` · ${linkedPurchase.supplier}` : ''}
-            </span>
-          )}
-          <LiaCompare item={item} purchase={linkedPurchase} />
+          <LiaCompare item={item} purchase={linkedPurchase} identity={linkCheck?.identity} />
           {reused.length > 0 && (
             <span
               className="text-amber-600"
               title={`Déjà rattaché à ${reused.map(r => r.receipt_number || r.receipt_date || r.receipt_id).join(', ')}`}
             >
               déjà facturé ailleurs
-            </span>
-          )}
-          {/* Libellé imprimé sur la facture, remplacé par « code LIA + nom de la pièce »
-              dans la description : gardé visible (en secours au survol) pour que la ligne
-              reste identifiable à l'œil. */}
-          {item.source_description && (
-            <span className="text-slate-400 truncate max-w-full" title={item.source_description}>
-              Facture : {item.source_description}
             </span>
           )}
         </div>
@@ -1574,16 +1587,11 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
             {suggestion.pending_reception === false && <span>· reçu</span>}
             <span className="ml-auto shrink-0 tabular-nums opacity-70">{Math.round(suggestion.score * 100)}%</span>
           </span>
-          {/* Détails de l'achat servant à valider d'un coup d'œil : quantité, prix,
-              date de commande — équivalent de ce que la fiche Achats montrerait. */}
-          {suggestionSummary && (
-            <span className="pl-[15px] text-amber-600/80 tabular-nums">{suggestionSummary}</span>
-          )}
         </button>
       )}
       {!item.purchase_id && suggestion && (
         <div className="pl-px">
-          <LiaCompare item={item} purchase={suggestion} nameScore={suggestion.detail?.name} />
+          <LiaCompare item={item} purchase={suggestion} identity={suggestion.identity} />
         </div>
       )}
       {/* Aucune proposition parce que l'achat qui correspond le mieux est déjà facturé :
@@ -1644,6 +1652,12 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   function normalizeItems(list) {
     return list.map(it => ({
       description: it.description || '',
+      // Quantité et prix unitaire lus sur la facture : la fiche ne les édite pas, mais
+      // elle doit les CONSERVER. Omis ici, ils étaient remis à vide au premier
+      // enregistrement (rattacher un achat, changer un code de taxe…) — et la
+      // quantité facturée, seule donnée vraiment comparable à la commande, disparaissait.
+      quantity:    parseNum(it.quantity),
+      unit_price:  parseNum(it.unit_price),
       total:       parseNum(it.total),
       tax_code_id: it.tax_code_id || null,
       // Compte de dépense QB de la ligne — null = suit le compte du document.
@@ -1785,6 +1799,9 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   const liaOtherVendorOnly = liaCandidates.length > 0 && liaCandidates.every(c => c.other_vendor)
   const suggestionFor = i => (lia.lines.find(l => l.index === i)?.match) || null
   const blockedFor = i => (lia.lines.find(l => l.index === i)?.blocked_by) || null
+  // Contrôle du rattachement DÉJÀ posé sur la ligne : sur quoi le serveur fonde
+  // l'identification de la pièce (référence, SKU, libellé appris).
+  const linkCheckFor = i => (lia.lines.find(l => l.index === i)?.link_check) || null
   const candidateById = id => liaCandidates.find(c => c.id === id) || null
 
   // Aperçu de la ligne « Frais de conversion » que le push QB ajoutera (voir
@@ -1889,6 +1906,7 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                   suggestion={suggestionFor(i)}
                   blockedBy={blockedFor(i)}
                   linkedPurchase={candidateById(item.purchase_id)}
+                  linkCheck={linkCheckFor(i)}
                   onSelect={id => setLiaPurchase(i, id)}
                 />
               </div>
@@ -2169,6 +2187,112 @@ function ExtractedSummaryLine({ label, amount, documented, labels, strong }) {
   )
 }
 
+// ── Validation contre le PAPIER ───────────────────────────────────────────────
+// Le sommaire imprimé de la facture (relu du PDF côté serveur, sans IA) posé en regard
+// du dossier. Objectif : valider une facture de transport SANS dérouler le PDF — une
+// ligne verte quand tout concorde, le détail des écarts sinon.
+function usePrintedInvoiceSummary(receiptId) {
+  const [paper, setPaper] = useState(null)
+  useEffect(() => {
+    if (!receiptId) { setPaper(null); return }
+    let alive = true
+    api.saleReceipts.invoiceSummary(receiptId)
+      .then(r => { if (alive) setPaper(r?.available ? r : null) })
+      .catch(() => { if (alive) setPaper(null) })
+    return () => { alive = false }
+  }, [receiptId])
+  return paper
+}
+
+const sameMoney = (a, b) => a == null || b == null || Math.abs(round2(a) - round2(b)) < 0.02
+
+// Une ligne de la confrontation papier ↔ dossier.
+function PaperRow({ label, paper, filed, off }) {
+  return (
+    <div className={`grid grid-cols-[1fr_auto_auto] gap-x-3 items-baseline px-1.5 py-0.5 ${off ? 'bg-red-50' : ''}`}>
+      <span className={`truncate text-[11px] ${off ? 'text-red-700' : 'text-slate-500'}`}>{label}</span>
+      <span className={`tabular-nums text-xs text-right w-24 ${off ? 'text-red-700 font-semibold' : 'text-slate-600'}`}>{paper}</span>
+      <span className={`tabular-nums text-xs text-right w-24 ${off ? 'text-red-700 font-semibold' : 'text-slate-800'}`}>{filed}</span>
+    </div>
+  )
+}
+
+// Confrontation compacte : quand tout concorde (le cas courant), une seule ligne verte
+// qui récapitule ce qui a été vérifié — rien à lire de plus. Au moindre écart, la
+// grille « Facture | Dossier » s'ouvre d'office sur la ligne fautive.
+function PrintedInvoiceCheck({ receipt, paper, shipmentCount }) {
+  const [open, setOpen] = useState(false)
+  const filedTotal = computedTotal(receipt)
+  const filedSubtotal = effectiveSubtotal(receipt)
+  const rows = []
+
+  if (paper.invoice_number) {
+    const off = String(receipt.receipt_number || '').trim() !== String(paper.invoice_number).trim()
+    rows.push({ key: 'num', label: 'N° de facture', paper: paper.invoice_number, filed: receipt.receipt_number || '—', off })
+  }
+  if (paper.invoice_date) {
+    const off = (receipt.receipt_date || '').slice(0, 10) !== paper.invoice_date
+    rows.push({ key: 'date', label: 'Date', paper: fmtDate(paper.invoice_date), filed: receipt.receipt_date ? fmtDate(receipt.receipt_date) : '—', off })
+  }
+  if (shipmentCount != null && paper.shipment_count) {
+    const off = shipmentCount !== paper.shipment_count
+    rows.push({ key: 'ship', label: 'Expéditions', paper: paper.shipment_count, filed: shipmentCount, off })
+  }
+  rows.push({ key: 'sub', label: 'Sous-total', paper: fmtCad(paper.subtotal), filed: fmtCad(filedSubtotal), off: !sameMoney(paper.subtotal, filedSubtotal) })
+  for (const [field, label] of [['tps', 'TPS'], ['tvq', 'TVQ'], ['other_taxes', 'TVH']]) {
+    const p = paper[field] || 0, f = round2(receipt[field] || 0)
+    if (!p && !f) continue
+    rows.push({ key: field, label, paper: fmtCad(p), filed: fmtCad(f), off: !sameMoney(p, f) })
+  }
+  if (paper.total_due != null) {
+    rows.push({ key: 'total', label: 'Total dû', paper: fmtCad(paper.total_due), filed: fmtCad(filedTotal), off: !sameMoney(paper.total_due, filedTotal), strong: true })
+  }
+
+  const offCount = rows.filter(r => r.off).length
+  const show = open || offCount > 0
+
+  return (
+    <div
+      data-testid="receipt-paper-check"
+      data-status={offCount ? 'mismatch' : 'ok'}
+      className={`rounded-md border p-2 ${offCount ? 'border-red-300 bg-red-50/40' : 'border-green-300 bg-green-50/50'}`}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(o => !o)}
+        className="w-full flex items-baseline gap-1.5 text-left"
+        title="Sommaire imprimé sur la facture, relu du PDF — comparé au dossier"
+      >
+        {offCount
+          ? <AlertCircle size={13} className="text-red-600 shrink-0 relative top-px" />
+          : <CheckCircle size={13} className="text-green-600 shrink-0 relative top-px" />}
+        <span className={`text-xs font-semibold ${offCount ? 'text-red-700' : 'text-green-800'}`}>
+          {offCount ? `${offCount} écart${offCount > 1 ? 's' : ''} avec la facture` : 'Conforme à la facture'}
+        </span>
+        {!offCount && (
+          <span className="text-[11px] text-green-700/80 truncate">
+            {[paper.invoice_number && `n° ${paper.invoice_number}`,
+              paper.invoice_date && fmtDate(paper.invoice_date),
+              paper.shipment_count && `${paper.shipment_count} exp.`,
+              paper.total_due != null && fmtCad(paper.total_due)].filter(Boolean).join(' · ')}
+          </span>
+        )}
+        <ChevronDown size={12} className={`ml-auto shrink-0 text-slate-400 transition-transform ${show ? 'rotate-180' : ''}`} />
+      </button>
+      {show && (
+        <div className="mt-1.5 border-t border-slate-200 pt-1">
+          <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-1.5 text-[10px] uppercase tracking-wide text-slate-400">
+            <span></span>
+            <span className="text-right w-24">Facture</span>
+            <span className="text-right w-24">Dossier</span>
+          </div>
+          {rows.map(r => <PaperRow key={r.key} {...r} />)}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // Sommaire de la facture reconstruit à partir des expéditions extraites, présenté
 // DANS L'ORDRE du sommaire imprimé en haut des factures de transport multi-régions
 // (Novoxpress & co.) — sous-total, taxes par type, total dû — pour se comparer à
@@ -2176,6 +2300,7 @@ function ExtractedSummaryLine({ label, amount, documented, labels, strong }) {
 // le montant retenu au dossier. Toujours visible dès que `raw_data` contient des
 // `shipments` ; n'existe pas autrement.
 function ExtractedTaxDetail({ receipt }) {
+  const paper = usePrintedInvoiceSummary(receipt.id)
   const shipments = (() => {
     if (!receipt.raw_data) return null
     try {
@@ -2183,6 +2308,10 @@ function ExtractedTaxDetail({ receipt }) {
       return Array.isArray(parsed.shipments) && parsed.shipments.length ? parsed.shipments : null
     } catch { return null }
   })()
+  // Le sommaire IMPRIMÉ, quand il est lisible, remplace la reconstruction : c'est la
+  // facture elle-même qui valide le dossier, il n'y a plus rien à aller vérifier dans
+  // le PDF. La reconstruction reste le repli (facture scannée, sans couche texte).
+  if (paper) return <PrintedInvoiceCheck receipt={receipt} paper={paper} shipmentCount={shipments ? shipments.length : null} />
   if (!shipments) return null
 
   // Regroupe TOUTES les taxes de TOUTES les expéditions par label exact imprimé
@@ -3150,8 +3279,13 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
                 <DetailField id="currency" label="Devise">
                   <CurrencyField receipt={receipt} onUpdate={setReceipt} />
                 </DetailField>
-                <DetailField id="original_name" label="Fichier">
+                {/* Le nom du fichier nu attend dans « Ajouter un champ » : la
+                    pièce justificative ci-dessous le porte déjà, en cliquable. */}
+                <DetailField id="original_name" label="Fichier" defaultHidden>
                   <InfoField value={receipt.original_name} />
+                </DetailField>
+                <DetailField id="justificatif" label="Pièce justificative">
+                  <ReceiptAttachment receipt={receipt} compact={false} />
                 </DetailField>
               </DetailFieldGrid>
 

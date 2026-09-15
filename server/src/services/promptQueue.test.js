@@ -248,16 +248,17 @@ test('heure passée, vide ou illisible : aucun report', () => {
 // s'enchaîner dans UNE seule file.
 
 test('départ immédiat : la file la moins chargée, donc des départs simultanés', () => {
-  assert.equal(pickLane({ loads: [0, 0, 0, 0] }), 0)
-  assert.equal(pickLane({ loads: [1, 0, 0, 0] }), 1)
-  assert.equal(pickLane({ loads: [1, 1, 0, 0] }), 2)
-  assert.equal(pickLane({ loads: [1, 1, 1, 0] }), 3)
+  assert.equal(pickLane({ loads: [0, 0] }), 0)
+  assert.equal(pickLane({ loads: [1, 0] }), 1)
   // Toutes occupées : on repart sur la moins chargée, pas sur une file au hasard.
-  assert.equal(pickLane({ loads: [2, 2, 1, 2] }), 2)
+  assert.equal(pickLane({ loads: [2, 1] }), 1)
+  // Charge héritée des anciennes files (3 et 4) : elle ne compte plus, seules les
+  // files encore servies sont comparées.
+  assert.equal(pickLane({ loads: [1, 1, 0, 0] }), 0)
 })
 
 test('départ programmé : toujours la même file, quelle que soit la charge', () => {
   const at = '2030-01-01T23:00:00.000Z'
-  assert.equal(pickLane({ startAt: at, loads: [0, 0, 0, 0] }), SCHEDULED_LANE)
-  assert.equal(pickLane({ startAt: at, loads: [5, 0, 0, 0] }), SCHEDULED_LANE)
+  assert.equal(pickLane({ startAt: at, loads: [0, 0] }), SCHEDULED_LANE)
+  assert.equal(pickLane({ startAt: at, loads: [5, 0] }), SCHEDULED_LANE)
 })

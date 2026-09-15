@@ -67,7 +67,38 @@ test('valves : les autres longueurs sont au pied avec marettes, même avec un an
   }
 })
 
-test('marettes : deux pièces par filage personnalisé, séparées par serre', () => {
+test('valves : un câble standard par valve dans l’aperçu et la commande', () => {
+  for (const feet of [15, 25, '25']) {
+    for (const needs_orisha_valves of [true, false]) {
+      const role = `valve_wire_${feet}`
+      const r = calc([{ irrigation_zones: 4, valve_control_wire_feet: feet, needs_orisha_valves }], {}, { products: { [role]: 'WIRE' } })
+      assert.deepEqual(r.greenhouses[0].items.filter(i => i.role.startsWith('valve_wire')), [
+        { role, qty: 4, greenhouse: 1, note: '' },
+      ])
+      assert.deepEqual(r.orderItems.map(i => [i.product_id, i.qty]), [['WIRE', 4]])
+    }
+  }
+})
+
+test('valves : longueurs personnalisées et marettes multipliées par valve', () => {
+  const r = calc([{ irrigation_zones: 4, valve_control_wire_feet: 43 }], {}, {
+    products: { valve_wire_per_foot: 'WIRE', valve_wire_nuts: 'NUTS' },
+  })
+  assert.deepEqual(r.orderItems.map(i => [i.product_id, i.qty]), [['WIRE', 172], ['NUTS', 8]])
+})
+
+test('valves : cumul des câbles par serre, sans filage pour zéro valve ou Helper', () => {
+  const r = calc([
+    { irrigation_zones: 4, valve_control_wire_feet: 25 },
+    { irrigation_zones: 2, valve_control_wire_feet: 25 },
+    { irrigation_zones: 0, valve_control_wire_feet: 25 },
+    { irrigation_zones: 4, valve_control_wire_feet: 25, permission_level: 'helper' },
+  ], {}, { products: { valve_wire_25: 'WIRE' } })
+  assert.deepEqual(r.items.filter(i => i.role === 'valve_wire_25').map(i => [i.greenhouse, i.qty]), [[1, 4], [2, 2]])
+  assert.deepEqual(r.orderItems.map(i => [i.product_id, i.qty]), [['WIRE', 6]])
+})
+
+test('marettes : deux pièces par valve avec filage personnalisé, séparées par serre', () => {
   const productId = '1c66e98f-1877-4a29-a4c1-fdfdb9f38ae2'
   const r = calc([
     { irrigation_zones: 1, valve_control_wire_feet: 43 },
@@ -75,10 +106,21 @@ test('marettes : deux pièces par filage personnalisé, séparées par serre', (
     { irrigation_zones: 1, valve_control_wire_feet: 25 },
     { irrigation_zones: 0, valve_control_wire_feet: 43 },
   ], {}, { products: { valve_wire_nuts: productId } })
-  assert.deepEqual(r.orderItems, [
-    { role: 'valve_wire_nuts', qty: 2, greenhouse: 1, note: '', product_id: productId },
-    { role: 'valve_wire_nuts', qty: 2, greenhouse: 2, note: '', product_id: productId },
+  assert.deepEqual(r.items.filter(i => i.role === 'valve_wire_nuts'), [
+    { role: 'valve_wire_nuts', qty: 2, greenhouse: 1, note: '' },
+    { role: 'valve_wire_nuts', qty: 4, greenhouse: 2, note: '' },
   ])
+  // Un seul produit à la commande : les deux serres se cumulent sur une ligne.
+  assert.deepEqual(r.orderItems.map(i => [i.product_id, i.qty, i.greenhouse, i.label]), [[productId, 6, null, 'Serre #1 ; Serre #2']])
+})
+
+test('commande : les produits identiques tiennent sur une seule ligne', () => {
+  const louver = { voltage: '110', control_type: 'spring_loaded', has_fan: false }
+  const r = calc([{ has_louvers: true, louvers: [louver, louver, louver] }, { has_louvers: true, louvers: [louver] }], {}, {
+    products: { louver_spring_loaded_110: 'BOITIER110', activation_v2: 'V2' },
+  })
+  assert.deepEqual(r.orderItems.map(i => [i.product_id, i.qty]), [['BOITIER110', 4], ['V2', 2]])
+  assert.equal(r.orderItems[0].label, 'Serre #1 · Louvre #1, Louvre #2, Louvre #3 ; Serre #2 · Louvre #1')
 })
 
 test('fournaises : les longueurs standard existantes restent inchangées', () => {
@@ -93,11 +135,11 @@ test('louvres : chaque combinaison offerte utilise son produit', () => {
   const louvres = [
     { voltage: '110', control_type: 'spring_loaded', has_fan: false },
     { voltage: '24', control_type: 'open_close', has_fan: false },
-    { voltage: '24', control_type: 'spring_loaded', has_fan: true },
+    { voltage: '110', control_type: 'spring_loaded', has_fan: true },
     { voltage: '12', control_type: 'open_close', has_fan: false },
   ]
   const r = calc([{ has_louvers: true, louvers: louvres }])
-  assert.deepEqual(r.items.filter(i => i.role.startsWith('louver')).map(i => i.role), ['louver_spring_loaded_110', 'louver_open_close_24', 'louver_with_fan_24', 'louver_open_close_12'])
+  assert.deepEqual(r.items.filter(i => i.role.startsWith('louver')).map(i => i.role), ['louver_spring_loaded_110', 'louver_open_close_24', 'louver_with_fan_110', 'louver_open_close_12'])
   assert.equal(r.greenhouses[0].slots, 6)
   assert.equal(r.greenhouses[0].activation_modules, 2)
 })
@@ -115,7 +157,7 @@ test('open/close avec ventilateur : aucun contrôle séparé ni total V2, même 
     assert.equal(r.calculationComplete, false)
     assert.equal(r.greenhouses[0].slots, null)
     assert.equal(r.greenhouses[0].activation_modules, null)
-    assert.deepEqual(r.items.map(i => i.role), [`louver_open_close_${voltage}`])
+    assert.deepEqual(r.items.map(i => i.role), [`louver_open_close_${voltage}`, 'jwt_advanced_ventilation'])
     assert.deepEqual(r.orderItems.map(i => i.product_id), ['LOUVRE'])
     assert(!r.unconfigured.includes('louver_fan_control'))
     assert.equal(r.warnings.length, 1)
@@ -124,24 +166,26 @@ test('open/close avec ventilateur : aucun contrôle séparé ni total V2, même 
   }
 })
 
-test('louvre spring loaded avec ventilateur 12 V : retirée et jamais ajoutée, même avec un ancien produit configuré', () => {
-  assert(!EQUIPMENT_ROLES.includes('louver_with_fan_12'))
-  assert(!EQUIPMENT_PRODUCTS.some(([role]) => role === 'louver_with_fan_12'))
-  const r = calc([{ has_louvers: true, louvers: [{ voltage: '12', control_type: 'spring_loaded', has_fan: true }] }], {}, { products: { louver_with_fan_12: 'OLD' } })
-  assert.equal(r.calculationComplete, false)
-  assert.equal(r.greenhouses[0].slots, null)
-  assert.equal(r.greenhouses[0].activation_modules, null)
-  assert.deepEqual(r.items, [])
-  assert.deepEqual(r.orderItems, [])
-  assert.equal(r.warnings[0].code, 'louver_review')
-  assert.match(r.warnings[0].message, /12 V n’est pas proposé par Orisha/)
+test('louvre spring loaded avec ventilateur hors 110 V : retirée et jamais ajoutée, même avec un ancien produit configuré', () => {
+  for (const voltage of ['24', '12']) {
+    assert(!EQUIPMENT_ROLES.includes(`louver_with_fan_${voltage}`))
+    assert(!EQUIPMENT_PRODUCTS.some(([role]) => role === `louver_with_fan_${voltage}`))
+    const r = calc([{ has_louvers: true, louvers: [{ voltage, control_type: 'spring_loaded', has_fan: true }] }], {}, { products: { [`louver_with_fan_${voltage}`]: 'OLD' } })
+    assert.equal(r.calculationComplete, false)
+    assert.equal(r.greenhouses[0].slots, null)
+    assert.equal(r.greenhouses[0].activation_modules, null)
+    assert.deepEqual(r.items.map(i => i.role), ['jwt_advanced_ventilation'])
+    assert.deepEqual(r.orderItems, [])
+    assert.equal(r.warnings[0].code, 'louver_review')
+    assert.match(r.warnings[0].message, new RegExp(`${voltage} V n’est pas proposé par Orisha`))
+  }
 })
 
 test('louvres : les autres combinaisons restent disponibles', () => {
   for (const voltage of ['110', '24', '12']) {
     for (const control_type of ['spring_loaded', 'open_close']) {
       for (const has_fan of [false, true]) {
-        if (voltage === '12' && control_type === 'spring_loaded' && has_fan) continue
+        if (voltage !== '110' && control_type === 'spring_loaded' && has_fan) continue
         if (control_type === 'open_close' && (has_fan || voltage === '110')) continue
         const r = calc([{ has_louvers: true, louvers: [{ voltage, control_type, has_fan }] }])
         assert.equal(r.calculationComplete, true)
@@ -187,9 +231,27 @@ test('les capteurs sont comptés une fois au site, sans sorties V2 par serre', (
 test('mobile acheté ou requis : une seule unité, pas de double comptage', () => {
   for (const [bought, network] of [[true, null], [false, 'mobile_controller'], [true, 'mobile_controller']]) {
     const r = calculateDiscoveryEquipment({ greenhouses: [], form_options: { mobile_controller: bought }, network_access: network })
-    assert.equal(r.siteItems.filter(i => i.role === 'mobile_controller').length, 1)
+    assert.equal(r.siteItems.filter(i => i.role.startsWith('mobile_controller')).length, 1)
   }
   assert.equal(calculateDiscoveryEquipment({ network_access: 'ethernet' }).siteItems.length, 0)
+})
+
+test('contrôleur mobile : deux produits selon le pays, avec repli sur l’ancien rôle unique', () => {
+  const mobile = (address, products) => {
+    const r = calculateDiscoveryEquipment({ greenhouses: [], form_options: { mobile_controller: true }, ...address }, { products })
+    return [r.siteItems[0].role, r.orderItems[0]?.product_id ?? null]
+  }
+  const byCountry = { mobile_controller_ca: 'CA', mobile_controller_us: 'US' }
+  assert.deepEqual(mobile({ shipping_address: { country: 'Canada' } }, byCountry), ['mobile_controller_ca', 'CA'])
+  assert.deepEqual(mobile({}, byCountry), ['mobile_controller_ca', 'CA'])
+  for (const country of ['USA', 'United States', 'États-Unis', 'u.s.a.']) {
+    assert.deepEqual(mobile({ shipping_address: { country } }, byCountry), ['mobile_controller_us', 'US'])
+  }
+  // Livraison identique à la ferme : le pays vient de la ferme.
+  assert.deepEqual(mobile({ shipping_same_as_farm: true, farm_address: { country: 'USA' }, shipping_address: null }, byCountry), ['mobile_controller_us', 'US'])
+  // Association héritée (rôle unique) : toujours honorée tant que les deux produits ne sont pas associés.
+  assert.deepEqual(mobile({ shipping_address: { country: 'USA' } }, { mobile_controller: 'LEGACY' }), ['mobile_controller_us', 'LEGACY'])
+  assert.deepEqual(calculateDiscoveryEquipment({ greenhouses: [], form_options: { mobile_controller: true } }, { products: {} }).unconfigured, ['mobile_controller_ca'])
 })
 
 test('modules séparés par serre et sorties 0 explicitement configurées acceptées', () => {
@@ -198,12 +260,41 @@ test('modules séparés par serre et sorties 0 explicitement configurées accept
   assert.equal(calc([{ humidity_valve: true }], { humidity_retention: true }, { outputs: { humidity_valve: 0 } }).calculationComplete, true)
 })
 
+test('deux ventilateurs : la plage de puissance donne le nombre de boîtes', () => {
+  const boxes = g => calc([{ num_fans: 2, ...g }]).items.filter(i => i.role === 'fan_box_110v').reduce((n, i) => n + i.qty, 0)
+  assert.equal(boxes({ fans_hp_range: 'up_to_1' }), 1)
+  assert.equal(boxes({ fans_hp_range: 'over_1' }), 2)
+  // Réponses d'avant la plage : le nombre exact de HP la donne encore.
+  assert.equal(boxes({ fans_combined_hp: 0.75 }), 1)
+  assert.equal(boxes({ fans_combined_hp: 2 }), 2)
+  assert.equal(boxes({ fans_combined_hp: 'Je ne sais pas' }), 2)
+})
+
 test('validation des réponses visibles, autre voltage précisé accepté', () => {
   const g = { has_louvers: true, louvers: [{ voltage: 'other', voltage_other: '208 V', control_type: 'open_close', has_fan: true }] }
   assert.deepEqual(discoveryAnswerErrors({ greenhouses: [g] }), [])
+  // « Autre / Je ne sais pas » : l'image ne porte aucun voltage, rien de plus
+  // n'est exigé du client — le vérificateur l'appellera.
+  assert.deepEqual(discoveryAnswerErrors({ greenhouses: [{ has_louvers: true, louvers: [{ control_type: 'other', voltage: '', has_fan: false }] }] }), [])
   assert(discoveryAnswerErrors({ greenhouses: [{ ...g, louvers: [{}] }] }).length)
   assert(discoveryAnswerErrors({ greenhouses: [{ has_louvers: false }], form_options: { humidity_retention: true } }).length)
   assert.deepEqual(discoveryAnswerErrors({ greenhouses: [{ has_louvers: false, humidity_valve: false, humidity_haf: false }], form_options: { humidity_retention: true } }), [])
+})
+
+test('serre Helper : seuls les côtés ouvrants sont automatisés', () => {
+  const g = {
+    permission_level: 'helper', has_side_vents: true, length: 100, num_side_vent_motors: 2,
+    // Réponses héritées d'avant la règle : elles ne doivent plus rien dimensionner.
+    num_fans: 2, fans_combined_hp: 2, has_louvers: true, louvers: [{ voltage: '24', control_type: 'spring_loaded', has_fan: false }],
+    humidity_valve: true, humidity_haf: true, humidity_haf_count: 3,
+    furnaces: [{ control_wire_feet: 25 }], irrigation_zones: 2, needs_orisha_valves: true,
+  }
+  const r = calc([g], { humidity_retention: true })
+  assert.deepEqual(r.items.map(i => i.role).sort(), ['motor_wire_25', 'side_vent_module'])
+  assert.equal(r.greenhouses[0].slots, 0)
+  // Les questions n'étant pas posées à une serre Helper, rien n'est exigé.
+  assert.deepEqual(discoveryAnswerErrors({ greenhouses: [{ permission_level: 'helper' }], form_options: { humidity_retention: true } }), [])
+  assert.deepEqual(discoveryAnswerErrors({ permission_level: 'helper', greenhouses: [{}] }), [])
 })
 
 test('options : quantités de capteurs bornées et clés inconnues ignorées', () => {
@@ -227,9 +318,9 @@ test('ouvrir/fermer 110 V : refusé à la soumission et sans produit même avec 
     assert.equal(r.calculationComplete, false)
     assert.equal(r.greenhouses[0].slots, null)
     assert.equal(r.greenhouses[0].activation_modules, null)
-    assert.deepEqual(r.items, [])
+    assert.deepEqual(r.items.map(i => i.role), ['jwt_advanced_ventilation'])
     assert.deepEqual(r.orderItems, [])
-    assert.deepEqual(r.unconfigured, [])
+    assert.deepEqual(r.unconfigured, ['jwt_advanced_ventilation'])
     assert.equal(r.warnings[0].code, 'louver_review')
     assert.match(r.warnings[0].message, /ouvrir\/fermer en 110 V/)
   }
@@ -249,7 +340,7 @@ test('commande inconnue : réponse acceptée, appel ciblé et aucun équipement 
       assert.deepEqual(r.items.filter(i => i.role.startsWith('louver')).map(i => i.note), ['Louvre #1'])
       assert.deepEqual(r.warnings.map(w => [w.greenhouse, w.code]), [[2, 'louver_call_client']])
       assert.match(r.warnings[0].message, /Louvre #2.*appeler le client/)
-      greenhouses[1].louvers[1] = { voltage: '24', control_type: 'spring_loaded', has_fan }
+      greenhouses[1].louvers[1] = { voltage: has_fan ? '110' : '24', control_type: 'spring_loaded', has_fan }
       assert.equal(calc(greenhouses).calculationComplete, true)
       assert.deepEqual(calc(greenhouses).warnings, [])
     }

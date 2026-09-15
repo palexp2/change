@@ -1,5 +1,6 @@
 import { normalizeQuestionImage, QUESTION_IMAGES, QUESTION_IMAGE_UPLOAD_PREFIX } from '../../../client/src/lib/discoveryQuestionImages.js'
 import { OUTPUT_ROLES } from '../services/discoveryEquipment.js'
+import { JWT_ROLES, isJwtProduct } from '../../../client/src/lib/discoveryEquipmentCatalog.js'
 // Calque de surcharges du formulaire de découverte technique (System builder).
 //
 // Le serveur ne connaît pas le catalogue des questions : il est décrit côté
@@ -187,6 +188,12 @@ router.get('/', (req, res) => {
 // PUT /api/discovery-form-schema — remplace le calque.
 router.put('/', (req, res) => {
   const clean = sanitize(req.body?.schema ?? req.body)
+  for (const role of JWT_ROLES) {
+    const id = clean.equipment.products[role]
+    if (!id) continue
+    const product = db.prepare('SELECT type FROM products WHERE id=? AND deleted_at IS NULL').get(id)
+    if (!isJwtProduct(product)) return res.status(400).json({ error: 'Les permissions doivent être associées à un produit de type JWT.' })
+  }
   const json = JSON.stringify(clean)
   if (Buffer.byteLength(json, 'utf8') > MAX_BYTES) {
     return res.status(413).json({ error: 'Formulaire trop volumineux' })

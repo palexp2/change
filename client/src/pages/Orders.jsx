@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
@@ -11,6 +11,7 @@ import { useOrderFormFields } from '../components/OrderCreateModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { weekStartOf, fmtWeekStart } from '../lib/isoWeek.js'
+import { ENVOI_PILL_LABEL, hasItemsToShip } from '../lib/ordersToShip.js'
 
 
 const RENDERS = {
@@ -35,6 +36,9 @@ export default function Orders() {
   // Filtre temporaire posé par un clic sur une barre du graphique « Revenus
   // expédiés » (vue globale du dashboard) : lundi de la semaine, 'YYYY-MM-DD'.
   const shippedWeek = searchParams.get('shippedWeek')
+  // Vue active : useTableView l'écrit toujours dans l'URL (`?vue=<id>`).
+  const activeViewId = searchParams.get('vue')
+  const [envoiViewId, setEnvoiViewId] = useState(null)
 
   // Cache global : hydraté au login par /api/bootstrap, rafraîchi par delta
   // polling toutes les 10s. Pas de WS direct ici — lag max ~10s acceptable
@@ -45,6 +49,18 @@ export default function Orders() {
   const shipments = useTable('shipments')
 
   const formFields = useOrderFormFields(formOpen)
+
+  // Id du pill « À envoyer » — on ne le code pas en dur, il est éditable.
+  useEffect(() => {
+    let cancelled = false
+    api.views.get('orders')
+      .then(({ pills }) => {
+        if (cancelled) return
+        setEnvoiViewId((pills || []).find(p => p.label === ENVOI_PILL_LABEL)?.id || null)
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // Enrichissement : company_name, items_count — joints côté client depuis les
   // autres tables en cache (vs server-side LEFT JOIN). Le nom de l'assigné n'y
@@ -69,7 +85,11 @@ export default function Orders() {
   // article facturable (les commandes 100 % remplacement ne portent pas de
   // revenu et ne sont donc pas dans la barre).
   const displayedOrders = useMemo(() => {
-    if (!shippedWeek) return orders
+    if (!shippedWeek) {
+      // Vue « À envoyer » : les commandes sans article n'ont rien à expédier.
+      if (envoiViewId && activeViewId === envoiViewId) return orders.filter(hasItemsToShip)
+      return orders
+    }
     const lastShippedByOrder = new Map()
     for (const s of shipments) {
       if (!s.order_id || !s.shipped_at) continue
@@ -85,7 +105,7 @@ export default function Orders() {
       billable.has(o.id) &&
       weekStartOf(lastShippedByOrder.get(o.id)) === shippedWeek
     )
-  }, [orders, orderItems, shipments, shippedWeek])
+  }, [orders, orderItems, shipments, shippedWeek, activeViewId, envoiViewId])
 
   async function handleCreate(form) {
     const order = await api.orders.create(form)

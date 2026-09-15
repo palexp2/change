@@ -278,7 +278,11 @@ export async function pushAchatToQB(achatId) {
     if (row.qb_memo) purchase.PrivateNote = row.qb_memo
     const qbVendorId = await resolveQBVendor(row)
     if (qbVendorId) purchase.EntityRef = { value: qbVendorId, type: 'Vendor' }
-    if (row.reference) purchase.DocNumber = qbDocNumber(row.reference)
+    // Numéro de PIÈCE : celui du fournisseur (n° de facture, n° de chèque) quand
+    // on l'a. `reference` est un numéro de transaction bancaire — un repli, pas
+    // un numéro de pièce.
+    const docNumber = row.vendor_invoice_number || row.reference
+    if (docNumber) purchase.DocNumber = qbDocNumber(docNumber)
 
     const result = await qbPost('/purchase', purchase)
     const qbId = result.Purchase.Id
@@ -1034,6 +1038,21 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // On convertit au taux Banque du Canada de la date du reçu (même source que les
   // payouts Stripe) et on trace la conversion dans le mémo QB.
   const recCurrency = (rec.currency || 'CAD').toUpperCase()
+  // GARDE-FOU DOUBLE CONVERSION : le calculateur de conversion réécrit les montants du
+  // dossier dans la devise cible et mémorise laquelle. Si la devise du dossier ne
+  // correspond plus à celle des montants — typiquement remise à « USD » après coup,
+  // parce que la facture, elle, est en USD — la publication reconvertirait des montants
+  // déjà convertis. Cas réel : facture CircleCo 2821-6047, 195,33 $ CA réellement
+  // débités, publiés 269,51 $. On refuse plutôt que de comptabiliser un montant faux.
+  const fxTo = (rec.fx_converted_to || '').toUpperCase()
+  if (fxTo && fxTo !== recCurrency) {
+    throw fieldError(
+      `Les montants de ce dossier ont été convertis en ${fxTo}`
+      + `${rec.fx_rate ? ` (taux ${rec.fx_rate})` : ''}, mais la devise du dossier indique ${recCurrency}.`
+      + ` Remettez la devise à ${fxTo} — sinon QuickBooks reconvertirait des montants déjà convertis.`,
+      'currency',
+    )
+  }
   let fxNote = null
   if (recCurrency !== txnCurrency) {
     const { error: fxError } = resolveFxDirection(recCurrency, txnCurrency, vendorDisplayName || rec.company)

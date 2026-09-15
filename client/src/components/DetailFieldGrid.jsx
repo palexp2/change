@@ -89,6 +89,7 @@ function FieldLabel({ label, saving, field, recordId }) {
 
 const NO_SAVING = {}
 const NO_TAKEN = []
+const NO_LINK_FILTERS = {}
 
 export function DetailFieldGrid({
   entityType,
@@ -101,6 +102,13 @@ export function DetailFieldGrid({
   taken = NO_TAKEN,
   selectPills = false,
   onDeleted = null,
+  // Restriction des candidats d'un champ LIEN personnalisé, décidée par la
+  // fiche parce qu'elle dépend de l'enregistrement affiché (le filtre réglé sur
+  // le champ, lui, est fixe) : { [colonne]: [{ column, op, value }] }. La fiche
+  // Commande s'en sert pour ne proposer, en adresse de livraison, que les
+  // adresses de l'entreprise liée à la commande. Référence stable attendue
+  // (useMemo) — elle entre dans le calcul des blocs de champ.
+  customFieldLinkFilters = NO_LINK_FILTERS,
   // Enveloppe optionnelle autour de CHAQUE bloc de champ : (field, node) => node.
   // La fiche Facture s'en sert pour garder ses règles de visibilité
   // conditionnelle (<FieldGuard>) sur les champs qu'elles concernent — la carte
@@ -177,7 +185,7 @@ export function DetailFieldGrid({
         // `onSaveCustom`. Même règle que <CustomDetailFields>.
         const editable = f.type === 'attachment' || (isEditableCustomField(f) && onSaveCustom)
         const editor = editable
-          ? <CustomFieldEditor field={f} value={record[f.key]} saving={saving} onSave={onSaveCustom} recordId={record.id} selectPills={selectPills} />
+          ? <CustomFieldEditor field={f} value={record[f.key]} saving={saving} onSave={onSaveCustom} recordId={record.id} selectPills={selectPills} linkFilter={customFieldLinkFilters[f.key] || null} />
           : null
         return {
           key: f.key,
@@ -192,7 +200,7 @@ export function DetailFieldGrid({
         }
       }) : []),
     ],
-    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills],
+    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, customFieldLinkFilters],
   )
 
   const { fields, hiddenFields, applyOrder, hide, show } = useDetailFieldLayout(entityType, declared)

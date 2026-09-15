@@ -19,10 +19,12 @@
  */
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { findVendorProfile, profileDefaultsForCurrency } from './vendorProfiles.js'
-import { resolveVendorFromBankLabel } from './scrapers/vendorFromBankLabel.js'
+import { buildEntryDraft, vendorHistory, vendorFromPastPurchases } from './bankEntryDraft.js'
+import { stampRule } from './bankRules/store.js'
 import { deriveStatus } from './bankReconciliation.js'
 import { qbPost } from '../connectors/quickbooks.js'
+
+export { vendorHistory, vendorFromPastPurchases }
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100
@@ -54,124 +56,38 @@ const mainQbAccount = (account) =>
 
 // ── Ajouter : ce qu'on propose ───────────────────────────────────────────────
 
-// Comment on a comptabilisé ce fournisseur jusqu'ici. On ne regarde QUE les
-// achats réellement publiés dans QuickBooks : un brouillon n'est pas une
-// habitude. Renvoie les valeurs par fréquence décroissante, et dit si l'usage
-// est constant — c'est cette contradiction que l'utilisateur doit trancher.
-export function vendorHistory(vendorName, { limit = 24 } = {}) {
-  const name = String(vendorName || '').trim()
-  if (!name) return null
-  const rows = db.prepare(`
-    SELECT expense_account_id, tax_code_id, qb_memo, description, payment_method, lines, date_achat
-    FROM achats_fournisseurs
-    WHERE LOWER(TRIM(vendor)) = LOWER(TRIM(?)) AND quickbooks_id IS NOT NULL
-    ORDER BY date_achat DESC, created_at DESC
-    LIMIT ?
-  `).all(name, limit)
-  if (!rows.length) return null
-
-  // Un achat ancien porte son compte de dépense dans `lines[0].account_id`
-  // plutôt que dans la colonne — même repli que prepaid.js.
-  const accountOfRow = (r) => {
-    if (r.expense_account_id) return r.expense_account_id
-    try {
-      const first = JSON.parse(r.lines || '[]')[0]
-      return first?.account_id || null
-    } catch { return null }
-  }
-
-  const tally = (values) => {
-    const counts = new Map()
-    for (const v of values) {
-      if (v == null || v === '') continue
-      counts.set(v, (counts.get(v) || 0) + 1)
-    }
-    return [...counts.entries()]
-      .map(([value, n]) => ({ value, n }))
-      .sort((a, b) => b.n - a.n)
-  }
-
-  const expenseAccounts = tally(rows.map(accountOfRow))
-  const taxCodes = tally(rows.map((r) => r.tax_code_id || NO_TAX))
-  // Un mémo n'est une HABITUDE que s'il s'est répété. Les libellés uniques
-  // (titre de produit Amazon, numéro de facture) n'en sont pas : les proposer
-  // remplirait le champ d'un texte sans rapport avec la nouvelle dépense.
-  const memos = tally(rows.map((r) => (r.qb_memo || r.description || '').trim()))
-    .filter((m) => m.n >= 2 && m.value.length <= 80)
-  const paymentMethods = tally(rows.map((r) => r.payment_method))
-
-  return {
-    count: rows.length,
-    last_date: rows[0].date_achat,
-    expense_accounts: expenseAccounts,
-    tax_codes: taxCodes,
-    memos: memos.slice(0, 3),
-    payment_methods: paymentMethods,
-    // « Constant » = un seul compte de dépense ET un seul code de taxe sur tout
-    // l'historique retenu. Sinon l'UI affiche le partage des voix.
-    consistent: expenseAccounts.length <= 1 && taxCodes.length <= 1,
-  }
-}
-
-// Repli quand aucun profil ne reconnaît le libellé : chercher un fournisseur
-// déjà utilisé dont le nom apparaît tel quel dans le libellé du relevé.
-function vendorFromPastPurchases(label) {
-  const l = String(label || '').toLowerCase()
-  if (l.length < 3) return null
-  const rows = db.prepare(`
-    SELECT DISTINCT vendor FROM achats_fournisseurs
-    WHERE vendor IS NOT NULL AND TRIM(vendor) <> '' AND quickbooks_id IS NOT NULL
-      AND date_achat >= date('now', '-18 months')
-  `).all()
-  let best = null
-  for (const { vendor } of rows) {
-    const v = String(vendor).toLowerCase().trim()
-    if (v.length < 4) continue
-    if (l.includes(v) && (!best || v.length > best.length)) best = String(vendor).trim()
-  }
-  return best
-}
-
 /**
  * Ce que l'ERP propose de mettre dans l'écriture, et pourquoi.
  * Ne touche à rien : c'est le pré-remplissage du formulaire « Ajouter ».
+ *
+ * Le dossier complet (chaque champ avec sa source) vit dans
+ * `services/bankEntryDraft.js` ; on en projette ici les clés à plat pour le
+ * formulaire, et on joint le dossier entier pour ce que le rail affiche.
  */
 export function suggestAddDefaults(txn, account) {
-  const label = txnLabel(txn)
-  const currency = account?.currency || 'CAD'
-  const hit = resolveVendorFromBankLabel(label)
-  let vendor = hit?.profile?.name || null
-  let source = hit ? `profil (${hit.via})` : null
-
-  if (!vendor) {
-    vendor = vendorFromPastPurchases(label)
-    if (vendor) source = 'achat passé du même fournisseur'
-  }
-
-  const profile = vendor ? findVendorProfile(vendor) : null
-  const defaults = profileDefaultsForCurrency(profile, currency) || {}
-  const history = vendor ? vendorHistory(vendor) : null
-
-  // Profil d'abord (déclaré), historique ensuite (constaté).
-  const expenseAccountId = defaults.expense_account_id || history?.expense_accounts?.[0]?.value || null
-  const taxFromProfile = defaults.tax_code_id || null
-  const taxFromHistory = history?.tax_codes?.[0]?.value || null
-  const taxCodeId = taxFromProfile || taxFromHistory || null
-
+  const draft = buildEntryDraft(txn, account)
+  const f = draft.fields
   return {
-    vendor,
-    vendor_profile_id: profile?.id || null,
-    source,
-    label,
+    vendor: f.vendor.value,
+    vendor_profile_id: draft.vendor_profile_id,
+    source: f.vendor.source,
+    label: draft.label,
     amount: round2(Math.abs(txn.amount)),
-    currency,
-    expense_account_id: expenseAccountId,
+    currency: draft.currency,
+    expense_account_id: f.expense_account_id.value,
     // `__none__` remonte tel quel : « pas de taxe » est une décision, pas un vide.
-    tax_code_id: taxCodeId,
-    payment_account_id: defaults.payment_account_id || mainQbAccount(account),
-    payment_method: account?.kind === 'card' ? 'Carte de crédit' : 'Comptant',
-    memo: history?.memos?.[0]?.value || null,
-    history,
+    tax_code_id: f.tax_code_id.value,
+    payment_account_id: f.payment_account_id.value,
+    payment_method: f.payment_method.value,
+    memo: f.memo.value,
+    // La taxe réellement facturée sur le document apparié, quand il y en a un :
+    // le formulaire n'a alors plus à la recalculer au taux nominal.
+    tax_cad: f.tax.value,
+    doc_number: f.doc_number.value,
+    qb_type: f.qb_type.value,
+    due_date: f.due_date.value,
+    history: draft.history,
+    draft,
   }
 }
 
@@ -198,8 +114,9 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
 
   const total = round2(Math.abs(txn.amount))
   const taxCodeId = cleanTaxCode(body.tax_code_id)
-  // Le relevé donne le montant TTC : la taxe vient du formulaire (calculée au
-  // taux du code côté client) ; sans elle, l'écriture est simplement sans taxe.
+  // Le relevé donne le montant TTC : la taxe vient du dossier de préparation —
+  // le montant réellement facturé quand un document existe, sinon le calcul au
+  // taux du code fait à l'écran. Sans elle, l'écriture est simplement sans taxe.
   const taxCad = taxCodeId ? round2(body.tax_cad) : 0
   if (taxCad < 0 || taxCad >= total) throw new BankActionError('Montant de taxe incohérent avec le montant du relevé', { field: 'tax_cad' })
   const amountCad = round2(total - taxCad)
@@ -207,16 +124,32 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
   const memo = String(body.memo || '').trim() || txnLabel(txn) || vendor
   const achatId = newRecordId()
 
+  // Ce que le dossier a préparé et que le formulaire n'a pas à redemander.
+  const draft = buildEntryDraft(txn, account)
+  // Facture fournisseur seulement si c'est ainsi qu'on traite ce fournisseur :
+  // une sortie déjà passée au compte reste une dépense au comptant par défaut.
+  const type = ['purchase', 'bill', 'cc_credit'].includes(body.qb_type)
+    ? body.qb_type
+    : (['purchase', 'bill', 'cc_credit'].includes(draft.fields.qb_type.value) ? draft.fields.qb_type.value : 'purchase')
+  // Numéro de PIÈCE : celui du document ou du chèque. `txn.reference` est un
+  // numéro de transaction bancaire — il reste en référence interne, pas en pièce.
+  const docNumber = String(body.doc_number ?? draft.fields.doc_number.value ?? '').trim() || null
+  const paymentMethod = String(body.payment_method || '').trim()
+    || draft.fields.payment_method.value
+    || (account.kind === 'card' ? 'Carte de crédit' : 'Comptant')
+  const dueDate = type === 'bill' ? (body.due_date || draft.fields.due_date.value || null) : null
+
   const run = db.transaction(() => {
     db.prepare(`
       INSERT INTO achats_fournisseurs
-        (id, type, date_achat, vendor, description, qb_memo, reference, payment_method,
+        (id, type, date_achat, due_date, vendor, description, qb_memo, reference,
+         vendor_invoice_number, payment_method,
          amount_cad, tax_cad, total_cad, currency, status,
          expense_account_id, payment_account_id, tax_code_id, created_by)
-      VALUES (?, 'purchase', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Approuvé', ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Approuvé', ?, ?, ?, ?)
     `).run(
-      achatId, txn.txn_date, vendor, memo, memo, txn.reference || null,
-      account.kind === 'card' ? 'Carte de crédit' : 'Comptant',
+      achatId, type, txn.txn_date, dueDate, vendor, memo, memo, txn.reference || null,
+      docNumber, paymentMethod,
       amountCad, taxCad, total, account.currency || 'CAD',
       expenseAccountId,
       String(body.payment_account_id || '').trim() || mainQbAccount(account),
@@ -232,6 +165,9 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
       WHERE id=? AND matched_id IS NULL AND deleted_at IS NULL
     `).run(achatId, txn.id).changes
     if (linked !== 1) throw new BankActionError('Cette ligne vient d\'être liée ailleurs', { status: 409 })
+    // Trace : quelle règle a rempli ce dossier. Aucun état comptable ne
+    // dépend d'elle — on voit ce qui a servi, et on peut le défaire.
+    if (draft.rule?.id) stampRule(txn.id, draft.rule.id)
   })
   run()
 
@@ -295,8 +231,7 @@ export function findTransferCandidates(txn, { days = DAYS } = {}) {
 // ── Transfert : lier ─────────────────────────────────────────────────────────
 
 function statusAfter(row, patch) {
-  const acc = accountOf(row.account_id)
-  return deriveStatus({ ...row, ...patch }, { isPlaidAccount: !!acc?.plaid_account_id })
+  return deriveStatus({ ...row, ...patch })
 }
 
 /**

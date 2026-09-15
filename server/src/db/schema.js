@@ -1,7 +1,17 @@
+import { discoveryAddresses } from '../services/discoveryAddresses.js'
 import db from './database.js';
 import { newRecordId } from '../utils/recordId.js';
 
 export function initSchema() {
+  // Les numéros réservés restent enregistrés, même si le brouillon est fermé.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_order_numbers (
+      number INTEGER PRIMARY KEY CHECK (number >= 1000),
+      product_id TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
+
   // One-shot reshape: la 1ère version de serial_accounting_rules avait NOT NULL
   // sur debit/credit; la nouvelle forme tolère NULL pour les transitions skip.
   // La table étant introduite récemment et vide, on peut la déposer sans risque.
@@ -138,7 +148,6 @@ export function initSchema() {
       order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
       product_id TEXT REFERENCES products(id),
       qty INTEGER NOT NULL DEFAULT 1,
-      unit_cost REAL DEFAULT 0,
       item_type TEXT CHECK(item_type IN ('Facturable','Remplacement','Non facturable')),
       notes TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -223,6 +232,16 @@ export function initSchema() {
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
       UNIQUE(connector, account_key)
+    );
+
+    -- Santé des sessions empruntées à un navigateur (Instagram, ManyChat…)
+    CREATE TABLE IF NOT EXISTS connector_sessions (
+      connector TEXT PRIMARY KEY,
+      status TEXT NOT NULL,          -- 'ok' | 'expired' | 'error'
+      detail TEXT,
+      checked_at TEXT,
+      last_ok_at TEXT,
+      notified_at TEXT                -- dernière alerte envoyée (anti-répétition quotidienne)
     );
 
     -- Connector config (per-connector key-value)
@@ -963,6 +982,15 @@ export function initSchema() {
     // persisté comme le reste du brouillon de comptabilisation pour être retrouvé
     // quand on revient finaliser la facture plus tard.
     'ALTER TABLE sale_receipts ADD COLUMN bank_charged_total REAL',
+    // Conversion de devise APPLIQUÉE au dossier : les montants ci-dessus ne sont plus
+    // ceux du document, ils sont exprimés dans `fx_converted_to`. Sans cette trace,
+    // remettre la devise du document (USD) après coup passait inaperçu et la
+    // publication reconvertissait des montants déjà convertis (facture CircleCo
+    // 2821-6047 : 195,33 $ CA publiés 269,51 $).
+    'ALTER TABLE sale_receipts ADD COLUMN fx_converted_to TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN fx_converted_from TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN fx_rate REAL',
+    'ALTER TABLE sale_receipts ADD COLUMN fx_converted_at TEXT',
     // qualification_calls — colonnes additionnelles pour le module d'appel guidé
     'ALTER TABLE qualification_calls ADD COLUMN heard_about TEXT',
     'ALTER TABLE qualification_calls ADD COLUMN red_flags TEXT',
@@ -1503,7 +1531,6 @@ export function initSchema() {
   ]
 
   // Backfill shipped_unit_cost from Airtable's "Coût total au moment de l'envoi" (total cost / qty)
-  // Falls back to current unit_cost for shipped items without Airtable data
   try {
     db.prepare(`
       UPDATE order_items SET shipped_unit_cost = CAST(cout_total_au_moment_de_l_envoi AS REAL) / MAX(qty, 1)
@@ -1511,12 +1538,6 @@ export function initSchema() {
         AND cout_total_au_moment_de_l_envoi IS NOT NULL
         AND cout_total_au_moment_de_l_envoi != ''
         AND CAST(cout_total_au_moment_de_l_envoi AS REAL) > 0
-    `).run()
-  } catch {}
-  try {
-    db.prepare(`
-      UPDATE order_items SET shipped_unit_cost = unit_cost
-      WHERE shipment_id IS NOT NULL AND shipped_unit_cost IS NULL AND unit_cost > 0
     `).run()
   } catch {}
 
@@ -2388,6 +2409,8 @@ export function initSchema() {
           lookup_fk TEXT,
           lookup_target_table TEXT,
           lookup_target_column TEXT,
+          lookup_limit_n INTEGER,
+          lookup_limit_dir TEXT,
           result_type TEXT,
           rollup_target_table TEXT,
           rollup_target_fk TEXT,
@@ -3362,6 +3385,10 @@ export function initSchema() {
 
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN form_options_json TEXT') } catch {}
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN within_central_controller_range INTEGER') } catch {}
+  // Choix exact de la distance au contrôleur central (250 pi, 350 pi avec
+  // câble coaxial, plus loin). `within_central_controller_range` reste le
+  // booléen qui dit si un nouveau contrôleur central est à fournir.
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN central_controller_distance TEXT') } catch {}
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS slow_page_loads (
@@ -3374,6 +3401,20 @@ export function initSchema() {
     )
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_slow_page_loads_created_at ON slow_page_loads(created_at DESC)`) } catch {}
+
+  // Adresses liées au System Builder et à la commande générée.
+  for (const sql of [
+    'ALTER TABLE customer_onboarding_responses ADD COLUMN farm_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
+    'ALTER TABLE customer_onboarding_responses ADD COLUMN shipping_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
+    'ALTER TABLE orders ADD COLUMN farm_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
+  ]) { try { db.exec(sql) } catch {} }
+
+  // Les formulaires déjà soumis doivent aussi présenter leurs liens avant
+  // la création d'une commande. Ne pas retoucher les commandes existantes.
+  db.transaction(() => {
+    const forms = db.prepare("SELECT * FROM customer_onboarding_responses WHERE status='submitted' AND (farm_address_id IS NULL OR shipping_address_id IS NULL)").all()
+    for (const form of forms) discoveryAddresses(form, { persist: true })
+  })()
 
   // Index ajoutés pour éliminer SCAN TABLE + TEMP B-TREE FOR ORDER BY sur les list pages.
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at DESC)`) } catch {}
@@ -3813,6 +3854,27 @@ export function initSchema() {
   // à sortir de l'argent pour toujours. NULL = pas de borne de ce côté.
   try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN starts_on TEXT`) } catch {}
   try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN ends_on TEXT`) } catch {}
+  // card_statements : relevés de carte de crédit lus dans le Drive. Le solde du
+  // relevé EST le montant prélevé au compte — aucune estimation ne fait mieux.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS card_statements (
+      id TEXT PRIMARY KEY,
+      account_name TEXT NOT NULL,
+      statement_date TEXT NOT NULL,
+      due_date TEXT,
+      balance REAL,
+      drive_file_id TEXT,
+      file_name TEXT,
+      imported_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      UNIQUE(account_name, statement_date)
+    )
+  `)
+
+  // Paiement de carte de crédit : le montant se lit sur le relevé de la carte
+  // (compte du rapprochement bancaire + jour de fermeture du relevé) plutôt que
+  // de s'estimer sur la moyenne des paiements passés.
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN card_account TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE recurring_outflows ADD COLUMN statement_close_day INTEGER`) } catch {}
   // ⚠️ AUCUNE valeur seedée ici. Une tentative de lier « Loyer » aux factures
   // « Les Jardins D'Inverness » était FAUSSE : le loyer est un paiement
   // pré-autorisé (« PMTS ENTREPRISES », 5 863,69 $ vers le 4 du mois) et
@@ -3908,6 +3970,67 @@ export function initSchema() {
   // de /transactions/sync) — 0/NULL = postée. Les autres sources (collage,
   // TRX_Orisha) n'écrivent jamais de ligne pending : toujours déjà postée.
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN pending INTEGER DEFAULT 0`) } catch {}
+  // Ce que le relevé dit et qu'on jetait jusqu'ici. La catégorie de la banque
+  // est le SEUL indice de compte de dépense quand le fournisseur est inconnu ;
+  // le type/statut (onglets Venn) était concaténé dans la description ; le
+  // numéro de chèque et le montant d'origine en devise étrangère (« Montant
+  // initial en devise USD 37,49 », 84 lignes) se lisaient dans le libellé.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN bank_category TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN txn_type TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN check_number TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN orig_currency TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN orig_amount REAL`) } catch {}
+
+  // ── Règles bancaires ──────────────────────────────────────────────────────
+  // Ce que Charles tient déjà dans QuickBooks (Banque → Règles), rapatrié :
+  // des CONDITIONS (libellé, compte et sens, fourchette de montant, jour du
+  // mois) qui posent des VALEURS (fournisseur, compte de dépense, code de
+  // taxe, mémo, type d'écriture). Décision du 2026-09-12 : **une règle prépare,
+  // elle ne publie jamais** — pas de case « publier automatiquement », même
+  // règle par règle. Elle alimente le dossier de préparation
+  // (services/bankEntryDraft.js) et la ligne devient « prête à publier ».
+  //
+  // Table dédiée plutôt que le moteur de règles générique : bank_transactions
+  // n'est dans aucune de ses portes d'entrée, son `contains` n'existe pas, et
+  // la comparaison ici se fait par jetons normalisés, pas par LIKE.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_rules (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      priority INTEGER NOT NULL DEFAULT 100,
+      active INTEGER NOT NULL DEFAULT 1,
+      account_id TEXT REFERENCES bank_accounts(id),
+      direction TEXT NOT NULL DEFAULT 'sortie' CHECK(direction IN ('sortie','entree','tous')),
+      label_pattern TEXT,
+      amount_min REAL,
+      amount_max REAL,
+      day_of_month INTEGER,
+      tolerance_days INTEGER DEFAULT 3,
+      vendor_profile_id TEXT REFERENCES vendor_profiles(id),
+      vendor_name TEXT,
+      expense_account_id TEXT,
+      tax_code_id TEXT,
+      memo TEXT,
+      qb_type TEXT,
+      origin TEXT NOT NULL DEFAULT 'manuel',
+      hit_count INTEGER NOT NULL DEFAULT 0,
+      last_applied_at TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_rules_live ON bank_rules(active, priority) WHERE deleted_at IS NULL`)
+  // Quelle règle a rempli la ligne : on le voit, et on peut le défaire.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN applied_rule_id TEXT REFERENCES bank_rules(id)`) } catch {}
+  // Une vraie règle QuickBooks porte PLUSIEURS conditions reliées par ET ou par
+  // OU (« FRAIS FORFAIT » OU « PACKAGE FEE » OU « TRANS. EXCEDENT. »…), et des
+  // seuils de montant SIGNÉS (« moins de −1 000 » = un débit de plus de 1 000).
+  // Les colonnes simples ci-dessus couvrent le cas courant ; celle-ci porte la
+  // liste complète quand il y en a une, et fait alors autorité.
+  // Forme : { mode: 'all'|'any', terms: [{ field:'label'|'amount', op, value }] }
+  try { db.exec(`ALTER TABLE bank_rules ADD COLUMN conditions TEXT`) } catch {}
   // Seed du mapping (idempotent, ne touche pas un mapping déjà posé à la main).
   for (const [name, qbId] of [
     ['BNC CAD', '61'], ['BNC USD', '234,168'], ['BNC Épargne', '133'],
@@ -4961,7 +5084,12 @@ export function initSchema() {
       id TEXT PRIMARY KEY,
       prospect_id TEXT REFERENCES instagram_prospects(id),
       event_key TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK(kind IN ('comment','dm_sent','reply')),
+      -- Natures d'événement. 'comment'/'dm_sent'/'reply' viennent d'Instagram ;
+      -- 'follow'/'story_reaction'/'dm_in'/'contact' viennent de ManyChat, qui
+      -- connaît des gens captés autrement qu'en commentant. Ce littéral est le
+      -- JUMEAU de la migration 056 et de VALID_KINDS (instagramProspects.js) :
+      -- les trois doivent rester d'accord.
+      kind TEXT NOT NULL CHECK(kind IN ('comment','dm_sent','reply','follow','story_reaction','dm_in','contact')),
       payload TEXT,
       occurred_at TEXT,
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -5139,6 +5267,74 @@ export function initSchema() {
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     )
   `)
+  // ── Propositions du rapprochement bancaire ────────────────────────────────
+  //
+  // « Elle prépare, vous confirmez » (décision de Charles, 2026-09-12). Les
+  // moteurs du rapprochement écrivaient l'état comptable tout seuls : le lien
+  // QuickBooks était posé d'office, un paiement se cochait, une paie se
+  // rattachait. Ils déposent désormais une PROPOSITION, que l'humain accepte
+  // ou refuse d'un clic.
+  //
+  // Deux règles portent tout le reste :
+  //   • `fingerprint` ne contient NI la confiance NI l'écart — sinon un refus
+  //     serait contourné au passage suivant par un 0,82 qui devient 0,84 ;
+  //   • une proposition refusée n'est jamais supprimée : la ligne EST le « non »,
+  //     et c'est ce qui la rend définitive.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_proposals (
+      id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL CHECK(kind IN (
+        'qb_link','doc_match','vendor_expense','invoice_found',
+        'payment_clear','paie_debit','aga_repartition','debt_payment')),
+      bank_txn_id TEXT NOT NULL REFERENCES bank_transactions(id),
+      account_id TEXT REFERENCES bank_accounts(id),
+      target_type TEXT,
+      target_id TEXT,
+      -- Idempotence métier hors transaction : 'aga:2026-09', une paie, etc.
+      period_key TEXT,
+      amount REAL,
+      currency TEXT,
+      confidence REAL,
+      -- La preuve, en français, affichée telle quelle : [{label, detail}]
+      evidence TEXT,
+      -- Tout ce dont l'applicateur a besoin pour agir.
+      payload TEXT,
+      status TEXT NOT NULL DEFAULT 'proposee'
+        CHECK(status IN ('proposee','acceptee','refusee','perimee')),
+      fingerprint TEXT NOT NULL,
+      producer TEXT,
+      run_id TEXT,
+      last_seen_at TEXT,
+      decided_at TEXT,
+      decided_by TEXT REFERENCES users(id),
+      decision_note TEXT,
+      applied_result TEXT,
+      last_error TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  // Nombre de passages consécutifs où le moteur ne l'a PAS reproduite : au-delà
+  // du seuil, elle est périmée (la ligne a été traitée autrement, l'écriture a
+  // disparu). Compteur plutôt qu'une date : c'est le nombre de passages qui dit
+  // quelque chose, pas le temps écoulé.
+  try { db.exec(`ALTER TABLE bank_proposals ADD COLUMN runs_unseen INTEGER DEFAULT 0`) } catch {}
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_prop_fp ON bank_proposals(fingerprint)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_prop_open ON bank_proposals(status, kind, account_id)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_prop_txn ON bank_proposals(bank_txn_id, status)`) } catch {}
+  // Une ligne de relevé n'a qu'une proposition vivante par nature.
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_prop_taken
+             ON bank_proposals(bank_txn_id, kind)
+             WHERE status IN ('proposee','acceptee')`)
+  } catch {}
+  // Et un prélèvement mensuel ne peut être accepté qu'une fois.
+  try {
+    db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_prop_period
+             ON bank_proposals(kind, period_key)
+             WHERE period_key IS NOT NULL AND status='acceptee'`)
+  } catch {}
+
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_invoice_needs_txn ON invoice_needs(bank_txn_id)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_invoice_needs_account ON invoice_needs(scraper_account_id, status)`) } catch {}
 
@@ -5347,6 +5543,8 @@ export const INSTAGRAM_FIELD_MAP = {
   replied: 'A répondu',
   replied_at: 'Répondu le',
   first_reply_text: 'Réponse',
+  capture_kind: 'Origine',
+  manychat_tags: 'Tags Manychat',
   week_key: 'Semaine',
   notified_at: 'Annoncé le',
   follow_up_status: 'Suivi',

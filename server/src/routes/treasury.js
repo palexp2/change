@@ -17,6 +17,8 @@ import {
   enrichInvoiceDatesFromQb,
 } from '../services/treasuryPayments.js'
 
+import { refreshTreasuryBalance } from '../services/plaidSync.js'
+
 import {
   buildSchedule, payBill, unpayBill, deferBill, resumeBill, setVendorParticularites,
 } from '../services/paymentSchedule.js'
@@ -458,6 +460,21 @@ router.post('/balance', (req, res) => {
   res.status(201).json(created)
 })
 
+// Lire le solde à la banque tout de suite. La sync Plaid aux 30 min le fait
+// d'elle-même ; ce bouton sert juste après un virement, quand on ne veut pas
+// attendre le prochain passage.
+router.post('/balance/refresh-from-bank', async (req, res) => {
+  try {
+    const r = await refreshTreasuryBalance()
+    checkBalanceVariance(r.entry_id)
+      .then(() => checkTreasuryAlert({ trigger: 'solde lu à la banque' }))
+      .catch(() => {})
+    res.json(r)
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
 // ── Historique : ce que la projection annonçait, jour par jour ────────────────
 // Chaque exécution (cron quotidien + saisie de solde) laisse une photo. Sans
 // elle, une journée passée était irrécupérable — la projection repart toujours
@@ -573,9 +590,14 @@ router.delete('/balance/:id', (req, res) => {
 
 // ── Sorties récurrentes ──────────────────────────────────────────────────────
 
-const RECURRING_FIELDS = ['label', 'amount', 'frequency', 'day_of_month', 'anchor_date', 'active', 'notes', 'variable_amount', 'vendor_match', 'starts_on', 'ends_on']
+const RECURRING_FIELDS = ['label', 'amount', 'frequency', 'day_of_month', 'anchor_date', 'active', 'notes', 'variable_amount', 'vendor_match', 'starts_on', 'ends_on', 'card_account', 'statement_close_day']
 
 function validateRecurring(body, { partial = false } = {}) {
+  // Jour de fermeture du relevé de carte : 1-28 (les mois courts n'ont pas de 29).
+  if ('statement_close_day' in body && body.statement_close_day != null && body.statement_close_day !== '') {
+    const d = Number(body.statement_close_day)
+    if (!Number.isInteger(d) || d < 1 || d > 28) return 'statement_close_day invalide (1 à 28)'
+  }
   if (!partial && (!body.label || !String(body.label).trim())) return 'label requis'
   if ('frequency' in body && body.frequency != null &&
       !['weekly', 'biweekly', 'monthly', 'quarterly'].includes(body.frequency)) {

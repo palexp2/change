@@ -1,4 +1,4 @@
-import { EQUIPMENT_PRODUCT_GROUPS, EQUIPMENT_OUTPUTS } from '../lib/discoveryEquipmentCatalog.js'
+import { EQUIPMENT_PRODUCT_GROUPS, EQUIPMENT_OUTPUTS, isJwtProduct } from '../lib/discoveryEquipmentCatalog.js'
 import { useState, useEffect, useMemo, useId, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, Trash2, RotateCcw, Filter, Eye, EyeOff, ArrowUp, ArrowDown, Copy } from 'lucide-react'
@@ -519,7 +519,7 @@ const SECTION_DESCRIPTIONS = {
   shipping: 'Le lieu de livraison des équipements.',
   network: 'La connexion Internet et les identifiants Wi-Fi.',
   greenhouses: 'Questions répétées pour chaque serre.',
-  louvers: 'Le voltage, le type de commande et le ventilateur associé à chaque louvre.',
+  louvers: 'Le type de louvre (choisi en image) et le ventilateur associé.',
   humidity: 'Questions affichées uniquement avec l’option conservation de l’humidité.',
   chief: 'Chauffage et irrigation des serres Chef de culture.',
   furnace: 'Questions répétées pour chaque fournaise.',
@@ -599,7 +599,9 @@ export default function DiscoveryFormEditor() {
 
   // Quitter la page n'attend pas la pause de frappe : l'envoi part tout de suite.
   useEffect(() => () => { flush.current?.() }, [])
-  useEffect(() => { api.products.list({ limit: 500 }).then(r => setProducts(r.data || [])).catch(() => {}) }, [])
+  // `limit: 'all'` et pas 500 : le catalogue dépasse 500 pièces, la troncature
+  // coupait la fin de l'ordre alphabétique (les Wago, etc. introuvables ici).
+  useEffect(() => { api.products.list({ limit: 'all' }).then(r => setProducts(r.data || [])).catch(() => {}) }, [])
 
   useEffect(() => {
     const id = pendingFocus.current
@@ -680,7 +682,9 @@ export default function DiscoveryFormEditor() {
     patch(s => {
       s.custom.push({
         id,
-        section, type: 'text', label: 'Nouvelle question', help: '', required: false, options: [],
+        // Le formulaire ne pose que des questions obligatoires : une question
+        // ajoutée l'est aussi, sauf décochage explicite ici.
+        section, type: 'text', label: 'Nouvelle question', help: '', required: true, options: [],
       })
       return s
     })
@@ -876,9 +880,9 @@ export default function DiscoveryFormEditor() {
               {EQUIPMENT_OUTPUTS.map(([role, label]) => <label key={role} className="flex items-center justify-between gap-3 text-sm text-slate-700"><span>{label}</span><select className="input w-28" value={schema.equipment?.outputs?.[role] ?? ''} onChange={e => setEquipmentOutput(role, e.target.value)}><option value="">À définir</option>{Array.from({ length: 9 }, (_, i) => <option key={i} value={i}>{i}</option>)}</select></label>)}
             </fieldset>
             <div className="grid grid-cols-1 gap-3">
-              {EQUIPMENT_PRODUCT_GROUPS.map(group => <div key={group.label} className="space-y-3 border-t border-slate-100 pt-4 first:border-0 first:pt-0"><h3 className="text-sm font-semibold text-slate-900">{group.label}</h3>{group.products.map(([role, label]) => {
+              {EQUIPMENT_PRODUCT_GROUPS.map(group => <div key={group.label} className="space-y-3 border-t border-slate-100 pt-4 first:border-0 first:pt-0"><h3 className="text-sm font-semibold text-slate-900">{group.label}</h3>{group.help && <p className="text-xs text-slate-500">{group.help}</p>}{group.products.map(([role, label]) => {
                 const selected = schema.equipment?.products?.[role] || ''
-                return <div key={role} className="grid grid-cols-1 sm:grid-cols-[11rem_minmax(0,1fr)] gap-2 sm:gap-3 items-center"><span className="text-sm text-slate-600">{label}</span><div className="flex items-center gap-2"><SearchableSelect value={selected} options={products} onChange={v => setEquipmentProduct(role, v)} emptyOption="Aucun produit" placeholder="Choisir un produit" size="sm" getOptionValue={p => p.id} getOptionLabel={p => `${p.name_fr}${p.sku ? ` · ${p.sku}` : ''}`} /><>{selected && <Link to={`/products/${selected}`} className="link-record text-xs shrink-0">Fiche</Link>}</></div></div>
+                return <div key={role} className="grid grid-cols-1 sm:grid-cols-[11rem_minmax(0,1fr)] gap-2 sm:gap-3 items-center"><span className="text-sm text-slate-600">{label}</span><div className="flex items-center gap-2"><SearchableSelect value={selected} options={group.productType === 'JWT' ? products.filter(isJwtProduct) : products} onChange={v => setEquipmentProduct(role, v)} emptyOption="Aucun produit" placeholder="Choisir un produit" size="sm" getOptionValue={p => p.id} getOptionLabel={p => `${p.name_fr}${p.sku ? ` · ${p.sku}` : ''}`} /><>{selected && <Link to={`/products/${selected}`} className="link-record text-xs shrink-0">Fiche</Link>}</></div></div>
               })}</div>)}
             </div>
           </div>

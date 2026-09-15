@@ -144,6 +144,12 @@ const SYSTEM_EMAIL_AUTOMATIONS = new Set([
 // autorisées pour la condition de déclenchement (la première est le défaut).
 // Miroir de REVREC_ACCOUNT_OVERRIDES (quickbooks.js) pour les clés de comptes.
 const CONFIGURABLE_SYSTEM_SPECS = {
+  // Le moteur des propositions : quelles natures produire, à quel seuil, et
+  // combien de propositions ouvertes on tolère avant d'arrêter d'en produire.
+  sys_bank_engine: {
+    actionKeys: new Set(['kinds_enabled', 'min_confidence_doc', 'tie_margin', 'max_open']),
+    validateKey: () => null,
+  },
   sys_revenue_recognition: {
     allowedTables: ['shipments', 'factures'],
     actionKeys: new Set(['deferred_acctnum', 'sale_acctnum', 'ar_cad_acctnum', 'ar_usd_acctnum']),
@@ -206,7 +212,17 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // configurer côté action (les libellés vivent sur sys_paie_repartition et sur
   // les fiches de dettes), mais l'entrée doit exister — sans elle le PATCH
   // d'activation/désactivation répondrait 400 « lecture seule ».
-  sys_plaid_sync: { actionKeys: new Set() },
+  // Lecture bancaire Plaid : un seul réglage, la lecture des transactions
+  // (coupée depuis le 2026-09-12 — le fichier TRX_Orisha les fournit ; le
+  // solde, lui, continue d'être lu quoi qu'il arrive).
+  sys_plaid_sync: {
+    actionKeys: new Set(['import_transactions']),
+    validateKey(key, v) {
+      if (key === 'import_transactions' && v != null && !['0', '1', ''].includes(String(v).trim())) {
+        throw new Error('import_transactions : 0 (coupé) ou 1 (actif)')
+      }
+    },
+  },
   // Alerte « banque muette » : seuil, anti-spam, destinataires, canal Slack.
   sys_plaid_silence_alert: {
     actionKeys: new Set(['silence_hours', 'repeat_hours', 'notify_roles', 'slack_webhook_env']),
@@ -234,7 +250,19 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   sys_treasury_solde_sheet: { actionKeys: new Set() },
   sys_fiscal_anomalies_sheet: { actionKeys: new Set() },
   sys_invoice_collection: { actionKeys: new Set() },
-  sys_bank_trx_sheet: { actionKeys: new Set() },
+  // Sync TRX_Orisha : le seul réglage ouvert est la liste des appariements
+  // QuickBooks posés SANS demander. Les autres deviennent des propositions à
+  // confirmer ; vider la liste coupe tout appariement automatique.
+  sys_bank_trx_sheet: {
+    actionKeys: new Set(['auto_apply_methods']),
+    validateKey(key, v) {
+      if (key !== 'auto_apply_methods' || !v) return
+      const known = new Set(['exact', 'fenetre', 'devise', 'tolerance', 'conversion', 'autre_compte', 'agregat', 'agregat_inverse'])
+      for (const m of String(v).split(',').map((x) => x.trim()).filter(Boolean)) {
+        if (!known.has(m)) throw new Error(`auto_apply_methods : « ${m} » n'est pas une méthode d'appariement connue`)
+      }
+    },
+  },
   sys_work_suggestions: { actionKeys: new Set() },
   sys_month_end_provisions: { actionKeys: new Set() },
   sys_address_check: { actionKeys: new Set() },
@@ -462,12 +490,69 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   sys_instagram_prospect_intake: {
     actionKeys: new Set(['keywords']),
   },
+  sys_manychat_contacts: {
+    actionKeys: new Set(['max_threads']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'max_threads' && !/^([1-9]|[1-9]\d|[1-4]\d{2}|500)$/.test(v)) {
+        throw new Error('max_threads : un entier de 1 à 500 (conversations relues par tournée)')
+      }
+    },
+  },
+  sys_instagram_draft_write: {
+    actionKeys: new Set(['model', 'temperature', 'max_per_run', 'rules', 'review_rules']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'temperature' && !(Number(v) >= 0 && Number(v) <= 1.5)) {
+        throw new Error('temperature : entre 0 et 1,5')
+      }
+      if (key === 'max_per_run' && !/^([1-9]|[1-9]\d|100)$/.test(v)) {
+        throw new Error('max_per_run : un entier de 1 à 100')
+      }
+      if (key === 'review_rules' && !/^[a-z_]{3,32}(\s*,\s*[a-z_]{3,32})*$/.test(v)) {
+        throw new Error('review_rules : des mots en minuscules séparés par des virgules')
+      }
+    },
+  },
+  sys_instagram_draft_send: {
+    actionKeys: new Set(['spacing_seconds', 'start_hour', 'end_hour', 'weekdays', 'daily_cap']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'spacing_seconds' && !/^([5-9]|[1-9]\d{1,3})$/.test(v)) {
+        throw new Error('spacing_seconds : au moins 5 secondes entre deux messages')
+      }
+      if ((key === 'start_hour' || key === 'end_hour') && !/^([0-9]|1\d|2[0-3])$/.test(v)) {
+        throw new Error(`${key} : une heure de 0 à 23`)
+      }
+      if (key === 'weekdays' && !/^[1-7](\s*,\s*[1-7])*$/.test(v)) {
+        throw new Error('weekdays : des chiffres de 1 (lundi) à 7 (dimanche), séparés par des virgules')
+      }
+      if (key === 'daily_cap' && !/^([1-9]|[1-9]\d|[1-4]\d{2}|500)$/.test(v)) {
+        throw new Error('daily_cap : un entier de 1 à 500')
+      }
+    },
+  },
+  sys_connector_session_health: {
+    actionKeys: new Set(['connectors', 'slack_channel', 'recipient', 'slack_webhook_url', 'slack_webhook_env']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'connectors' && !/^[a-z_]{2,32}(\s*,\s*[a-z_]{2,32})*$/.test(v)) {
+        throw new Error('connectors : noms de connecteurs en minuscules, séparés par des virgules')
+      }
+      if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
+        throw new Error('slack_webhook_url doit commencer par https://hooks.slack.com/')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+    },
+  },
   sys_instagram_comment_scrape: {
-    actionKeys: new Set(['accounts', 'keywords', 'lookback_days', 'own_accounts', 'run_weekday', 'run_hour']),
+    actionKeys: new Set(['accounts', 'our_accounts', 'keywords', 'lookback_days', 'own_accounts', 'run_weekday', 'run_hour']),
     validateKey(key, v) {
       // `keywords` vide est légitime : cela capte tous les commentateurs.
       if (!v) return
-      if ((key === 'accounts' || key === 'own_accounts') && !/^@?[A-Za-z0-9._]{1,30}(\s*,\s*@?[A-Za-z0-9._]{1,30})*$/.test(v)) {
+      if ((key === 'accounts' || key === 'own_accounts' || key === 'our_accounts') && !/^@?[A-Za-z0-9._]{1,30}(\s*,\s*@?[A-Za-z0-9._]{1,30})*$/.test(v)) {
         throw new Error(`${key} : noms d'usager Instagram séparés par des virgules`)
       }
       if (key === 'lookback_days' && !/^([1-9]|[1-9]\d|[12]\d{2}|3[0-5]\d|36[0-5])$/.test(v)) {

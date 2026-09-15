@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from './shippedCost.js'
 import db from '../db/database.js'
 import path from 'path'
 import fs from 'fs'
@@ -488,7 +489,7 @@ export async function createLabel(shipment, erpShipmentId, { request_id, service
   const destCountry = details.recipient.address.country
   if (destCountry !== 'CA') {
     const items = db.prepare(`
-      SELECT oi.qty, oi.unit_cost
+      SELECT oi.qty, ${pieceUnitCostSql('oi')} AS unit_cost
       FROM order_items oi
       WHERE oi.order_id = (SELECT order_id FROM shipments WHERE id = ?)
     `).all(erpShipmentId)

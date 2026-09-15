@@ -1,3 +1,4 @@
+import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { EQUIPMENT_LABELS as ROLE_LABELS, EQUIPMENT_OUTPUTS, SENSOR_PRODUCTS } from '../lib/discoveryEquipmentCatalog.js'
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
@@ -10,7 +11,8 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtAddress } from '../utils/formatters.js'
-import { buildForm, CUSTOM_SECTIONS } from '../lib/discoveryFormSchema.js'
+import { buildForm, controllerDistanceValue, CUSTOM_SECTIONS, sideVentsOnly, FANS_HP_RANGE_OPTIONS, fansHpRangeValue } from '../lib/discoveryFormSchema.js'
+import { louverSummary } from '../components/LouverTypeChoice.jsx'
 
 // Fiche d'un formulaire de découverte : lecture des réponses telles que
 // remplies par le client (le formulaire lui-même vit sur /d/:token).
@@ -26,6 +28,11 @@ const NETWORK_LABELS = {
   wifi_250: 'Wi-Fi (< 250 pi, ligne de vue)',
   wifi_350_coax: '350 pi — câble coaxial fourni',
   mobile_controller: 'Contrôleur internet mobile requis',
+}
+// Plage de puissance des deux ventilateurs ; une vieille réponse chiffrée s'y ramène.
+const fansHpLabel = g => {
+  const range = fansHpRangeValue(g)
+  return FANS_HP_RANGE_OPTIONS.find(o => o.value === range)?.label || range || null
 }
 const PIPE_LABELS = {
   aluminum_C: 'Aluminium (profil C)',
@@ -87,10 +94,41 @@ function customRows(questions, answers) {
     })
 }
 
+function ResponseGroup({ title, children, checks = [], verification, onCheck, saving }) {
+  const verified = checks.length > 0 && checks.every(([key]) => verification?.[key])
+  return (
+    <section aria-label={title} className={`min-w-0 rounded-lg border p-3 ${verified ? 'border-green-600 ring-1 ring-green-600' : 'border-slate-200'}`}>
+      <h4 className="text-xs font-semibold text-slate-700 mb-3">{title}</h4>
+      {children}
+      {checks.length > 0 && <fieldset disabled={saving} aria-busy={saving} className="mt-3 border-t border-slate-100 pt-1 disabled:opacity-60">
+        <legend className="sr-only">Vérification — {title}</legend>
+        {checks.map(([key, label]) => <label key={key} className="flex min-h-11 items-center gap-3 text-sm text-slate-700 cursor-pointer">
+          <input type="checkbox" className="h-4 w-4 shrink-0 rounded accent-green-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-green-600" checked={!!verification?.[key]} onChange={e => onCheck(key, e.target.checked)} />{label}
+        </label>)}
+      </fieldset>}
+    </section>
+  )
+}
+
 function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) {
   const perm = PERMISSION_LABELS[g.permission_level]
+  // Serre Helper : côtés ouvrants seulement — les autres automatisations ne lui
+  // sont pas demandées, inutile de montrer leurs lignes.
+  const helperOnly = sideVentsOnly(g.permission_level || response.permission_level)
   const zones = Number(g.irrigation_zones) || 0
   const furnaces = Array.isArray(g.furnaces) ? g.furnaces : []
+  // Garder les clés existantes pour retrouver les vérifications déjà enregistrées.
+  // Seuls les équipements du client nécessitent une vérification.
+  const checkProps = checks => ({
+    checks: equipment ? checks.filter(Boolean).map(([key, label]) => [`g${idx + 1}:${key}`, label]) : [],
+    verification: response.verification,
+    onCheck,
+    saving,
+  })
+  const extraRows = [
+    ...customRows(form.custom('greenhouse'), g.custom),
+    ...(g.permission_level === 'chief_grower' ? customRows(form.custom('greenhouse_chief'), g.custom) : []),
+  ]
   return (
     <section className="card p-4 sm:p-5" aria-label={`Serre #${idx + 1}`}>
       <div className="flex items-center gap-2 mb-4">
@@ -100,9 +138,14 @@ function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) 
       <div className={equipment ? 'system-greenhouse-grid' : undefined}>
       <div className="min-w-0">
       <h3 className="text-xs font-semibold text-slate-500 mb-3">Réponses du client</h3>
-      <div className="system-response-grid">
-        <Row label="Longueur (pi)">{g.length || null}</Row>
-        <Row label="Côtés ouvrants">{yesNo(g.has_side_vents)}</Row>
+      <div className="space-y-3">
+        {g.has_side_vents === true && <Row label="Longueur (pi)">{g.length || null}</Row>}
+        <ResponseGroup title="Côtés" {...checkProps([
+          g.has_side_vents && g.has_existing_side_vent_motors && ['motors', 'Moteurs du client vérifiés'],
+          g.has_side_vents && (g.side_pipe_diameter || g.guide_pipe_diameter) && ['pipes', 'Diamètre des tuyaux vérifié'],
+        ])}>
+        <div className="system-response-grid">
+        <Row label="Côtés ouvrants">{g.has_side_vents === true ? (g.num_side_vent_motors || 'Oui') : yesNo(g.has_side_vents)}</Row>
         {g.has_side_vents === true && (
           <>
             <Row label="Hauteur côtés (pi)">{g.side_vent_height || (g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : null)}</Row>
@@ -113,48 +156,60 @@ function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) 
             {g.wants_compatible_guide_pipes && <Row label="Guides compatibles">À fournir</Row>}
           </>
         )}
-        {g.permission_level === 'chief_grower' && (
-          <>
-            <Row label="Fournaises">{yesNo(g.has_furnaces)}</Row>
-            <Row label="Zones d'irrigation">{zones || null}</Row>
-            {zones > 0 && <Row label="Valves 1 po par Orisha">{yesNo(g.needs_orisha_valves)}</Row>}
-          </>
-        )}
-        <Row label="Ventilateurs">{g.num_fans || null}</Row>
-        {Number(g.num_fans) === 2 && <Row label="Puissance ventilateurs">{g.fans_combined_hp ? `${g.fans_combined_hp} HP` : null}</Row>}
-        {g.has_side_vents && <Row label="Moteurs de côtés">{g.num_side_vent_motors || null}</Row>}
         {g.has_existing_side_vent_motors && <Row label="Moteurs déclarés">{[g.side_vent_motor_brand, g.side_vent_motor_model].filter(Boolean).join(' ') || null}</Row>}
-        <Row label="Louvres">{g.has_louvers === false ? 'Aucune' : g.louvers?.length || null}</Row>
-        {response.form_options?.humidity_retention && <><Row label="Valve humidité">{yesNo(g.humidity_valve)}</Row><Row label="HAF à fournir">{g.humidity_haf ? g.humidity_haf_count : 0}</Row></>}
-        {customRows(form.custom('greenhouse'), g.custom)}
-        {g.permission_level === 'chief_grower' && customRows(form.custom('greenhouse_chief'), g.custom)}
-      </div>
-      {g.has_louvers && g.louvers?.map((l, i) => <div key={i} className="mt-3 border-t border-slate-100 pt-3 system-response-grid"><Row label={`Louvre #${i + 1}`}>{l.control_type === 'spring_loaded' ? 'Spring loaded' : l.control_type === 'open_close' ? 'Open/close signal' : l.control_type === 'other' ? 'Autre / Je ne sais pas — Appeler le client' : null}</Row><Row label="Voltage">{l.voltage === 'other' ? l.voltage_other : l.voltage ? `${l.voltage} V` : null}</Row><Row label="Ventilateur associé">{yesNo(l.has_fan)}</Row>{l.has_fan && l.control_type === 'open_close' && <Row label="Commande">Contrôle séparé du ventilateur non proposé — à vérifier</Row>}</div>)}
-      {furnaces.length > 0 && (
-        <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+        </div>
+        </ResponseGroup>
+        {!helperOnly && <>
+          {!g.has_louvers || !g.louvers?.length ? <ResponseGroup title="Louvres">
+          <Row label="Louvres">{g.has_louvers === false ? 'Aucune' : g.louvers?.length || null}</Row>
+          </ResponseGroup> : g.louvers.map((l, i) => <ResponseGroup key={i} title={`Louvre #${i + 1}`} {...checkProps([[`louver:${i}`, `Louvre #${i + 1} vérifiée`]])}>
+            <div className="system-response-grid"><Row label="Louvre">{louverSummary(l) || null}</Row><Row label="Ventilateur associé">{yesNo(l.has_fan)}</Row>{l.has_fan && l.control_type === 'open_close' && <Row label="Commande">Contrôle séparé du ventilateur non proposé — à vérifier</Row>}</div>
+          </ResponseGroup>)}
+        </>}
+        {!helperOnly && <ResponseGroup title="Ventilateurs">
+          <div className="system-response-grid">
+            <Row label="Ventilateurs">{g.num_fans || null}</Row>
+            {Number(g.num_fans) === 2 && <Row label="Puissance ventilateurs">{fansHpLabel(g)}</Row>}
+          </div>
+        </ResponseGroup>}
+        {g.permission_level === 'chief_grower' && furnaces.length === 0 && <ResponseGroup title="Fournaises">
+          <Row label="Fournaises">{yesNo(g.has_furnaces)}</Row>
+        </ResponseGroup>}
           {furnaces.map((f, i) => (
-            <div key={i} className="rounded-lg border border-slate-200 p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
-              <Row label={`Fournaise #${i + 1}`}>{[f.brand, f.model === 'Autre' ? f.model_other : f.model].filter(Boolean).join(' ') || null}</Row>
+            <ResponseGroup key={i} title={`Fournaise #${i + 1}`} {...checkProps([[`furnace:${i}`, `Fournaise #${i + 1} vérifiée`]])}>
+            <div className="system-response-grid">
+              <Row label="Marque / modèle">{[f.brand, f.model === 'Autre' ? f.model_other : f.model].filter(Boolean).join(' ') || null}</Row>
               <Row label="Filage (pi)">{f.control_wire_feet || null}</Row>
               <Row label="Thermostat de secours">{yesNo(f.backup_thermostat)}</Row>
             </div>
+            </ResponseGroup>
           ))}
-        </div>
-      )}
+        {g.permission_level === 'chief_grower' && <ResponseGroup title="Irrigation" {...checkProps([
+          zones > 0 && g.needs_orisha_valves === false && ['valves', 'Valves du client vérifiées'],
+        ])}>
+          <div className="system-response-grid">
+            <Row label="Zones d'irrigation">{zones || null}</Row>
+            {zones > 0 && <Row label="Valves 1 po par Orisha">{yesNo(g.needs_orisha_valves)}</Row>}
+          </div>
+        </ResponseGroup>}
+        {!helperOnly && response.form_options?.humidity_retention && <ResponseGroup title="Rétention d’humidité">
+          <div className="system-response-grid">
+            <Row label="Valve humidité">{yesNo(g.humidity_valve)}</Row>
+            <Row label="HAF à fournir">{g.humidity_haf ? g.humidity_haf_count : 0}</Row>
+          </div>
+        </ResponseGroup>}
+        {extraRows.length > 0 && <ResponseGroup title="Autres réponses">
+          <div className="system-response-grid">{extraRows}</div>
+        </ResponseGroup>}
       </div>
-      {equipment && <EquipmentPreview equipment={equipment} form={response} onCheck={onCheck} saving={saving} />}
+      </div>
+      {equipment && <EquipmentPreview equipment={equipment} />}
       </div>
     </section>
   )
 }
 
-function EquipmentPreview({ equipment: g, form, onCheck, saving }) {
-  const checks = []
-  if (g.items.some(x => x.role === 'side_vent_module' || x.role === 'side_vent_controller_24v')) checks.push([`g${g.greenhouse}:motors`, 'Moteurs vérifiés'])
-  for (const [i] of (form.greenhouses?.[g.greenhouse - 1]?.furnaces || []).entries()) checks.push([`g${g.greenhouse}:furnace:${i}`, `Fournaise #${i + 1} vérifiée`])
-  if (Number(form.greenhouses?.[g.greenhouse - 1]?.irrigation_zones) > 0) checks.push([`g${g.greenhouse}:valves`, 'Valves vérifiées'])
-  for (const [i] of (form.greenhouses?.[g.greenhouse - 1]?.louvers || []).entries()) checks.push([`g${g.greenhouse}:louver:${i}`, `Louvre #${i + 1} vérifiée`])
-  const checked = checks.filter(([key]) => form.verification?.[key]).length
+function EquipmentPreview({ equipment: g }) {
   return <div className="system-greenhouse-equipment min-w-0">
     <h3 className="text-sm font-semibold text-slate-900">Équipements suggérés</h3>
     <p className="text-xs text-slate-500 mt-1 mb-3">{g.slots == null ? 'Dimensionnement à compléter' : `${g.slots} sortie${g.slots !== 1 ? 's' : ''} · ${g.activation_modules} module${g.activation_modules !== 1 ? 's' : ''} V2`}</p>
@@ -166,16 +221,6 @@ function EquipmentPreview({ equipment: g, form, onCheck, saving }) {
         <td className="py-2 pl-3 text-right align-top font-medium tabular-nums text-slate-900">{item.qty}</td>
       </tr>)}</tbody>
     </table> : <p className="text-sm text-slate-500">Aucun équipement à ajouter.</p>}
-    {checks.length > 0 && <fieldset disabled={saving} aria-busy={saving} className="mt-4 border-t border-slate-200 pt-3 disabled:opacity-60">
-      <legend className="sr-only">Vérification des équipements de la serre #{g.greenhouse}</legend>
-      <div className="flex items-center justify-between gap-2 mb-1">
-        <span className="text-xs font-semibold text-slate-700">Vérifications</span>
-        <span role="status" className={`text-xs tabular-nums ${checked === checks.length ? 'text-green-700' : 'text-slate-500'}`}>{checked === checks.length ? 'Tout vérifié' : `${checked} / ${checks.length}`}</span>
-      </div>
-      {checks.map(([key, label]) => <label key={key} className="flex min-h-11 items-center gap-3 text-sm text-slate-700 cursor-pointer">
-        <input type="checkbox" className="h-4 w-4 rounded accent-brand-600 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600" checked={!!form.verification?.[key]} onChange={e => onCheck(key, e.target.checked)} />{label}
-      </label>)}
-    </fieldset>}
   </div>
 }
 
@@ -236,9 +281,20 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
       setSavingVerification(false)
     }
   }
+  async function saveAddress(key, value) {
+    if (savingVerification) return
+    setSavingVerification(true)
+    try {
+      await api.discoveryForms.saveAddresses(id, { [key]: value })
+      await reload()
+      setPreviewAttempt(n => n + 1)
+    } catch (err) {
+      addToast({ message: err.message || 'Enregistrement impossible', type: 'error' })
+    } finally { setSavingVerification(false) }
+  }
   async function createOrder() {
     setCreatingOrder(true)
-    try { const order = await api.discoveryForms.createOrder(id); setRecord(current => current?.id === form.id ? { ...current, generated_order_id: order.id } : current); addToast({ message: `Commande #${order.order_number} créée`, type: 'success' }); reload() }
+    try { const order = await api.discoveryForms.createOrder(id); setRecord(current => current?.id === form.id ? { ...current, generated_order_id: order.id, generated_order_number: order.order_number } : current); addToast({ message: `Commande #${order.order_number} créée`, type: 'success' }); reload() }
     catch (err) { addToast({ message: err.message || 'Création impossible', type: 'error' }) }
     finally { setCreatingOrder(false) }
   }
@@ -262,6 +318,11 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
             {form.company_id && <Link to={`/companies/${form.company_id}`} className="link-record">{form.company_name || 'Entreprise'}</Link>}
             <span>Créé le {fmtDate(form.created_at)}</span>
             {form.submitted_at && <span>Soumis le {fmtDate(form.submitted_at)}</span>}
+            {form.generated_order_id && (
+              <Link to={`/orders/${form.generated_order_id}`} className="link-record inline-flex items-center gap-1">
+                <ShoppingCart size={11} /> Commande{form.generated_order_number ? ` #${form.generated_order_number}` : ''}
+              </Link>
+            )}
             {form.public_url && (
               <a href={form.public_url} target="_blank" rel="noopener noreferrer" className="link-record inline-flex items-center gap-1">
                 <ExternalLink size={11} /> Formulaire
@@ -271,7 +332,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
         ),
         actions: (
           <div className="flex flex-wrap items-center gap-2">
-            {form.generated_order_id ? <Link to={`/orders/${form.generated_order_id}`} className="btn-secondary btn-sm"><ShoppingCart size={14} /> Commande</Link> : <button onClick={createOrder} disabled={creatingOrder || preview?.calculationComplete === false} className="btn-primary btn-sm"><ShoppingCart size={14} /> {creatingOrder ? 'Création…' : 'Créer une commande'}</button>}
+            {!form.generated_order_id && <button onClick={createOrder} disabled={creatingOrder || savingVerification || preview?.calculationComplete === false} className="btn-primary btn-sm"><ShoppingCart size={14} /> {creatingOrder ? 'Création…' : 'Créer une commande'}</button>}
             <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer" aria-label="Supprimer ce système"><Trash2 size={16} /></button>
           </div>
         ),
@@ -282,14 +343,30 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
       <Section title="Site">
         <Row label="Type">{choiceLabel(formSchema, 'order_type.options', form.is_new_site, SITE_LABELS)}</Row>
         {form.is_new_site === 'add_to_existing' && !form.form_options?.mobile_controller && <>
-          <Row label="À 250 pi ou moins du contrôleur">{form.within_central_controller_range == null ? 'À compléter' : form.within_central_controller_range ? 'Oui' : 'Non'}</Row>
+          <Row label="Distance du contrôleur">{choiceLabel(formSchema, 'controller_distance.options', controllerDistanceValue(form), {}) || 'À compléter'}</Row>
           {typeof form.within_central_controller_range === 'boolean' && <Row label="Contrôleur central">{formSchema.t(form.within_central_controller_range ? 'controller_distance.near' : 'controller_distance.far')}</Row>}
         </>}
         <Row label="Serres">{form.num_greenhouses || null}</Row>
-        <Row label="Adresse de la ferme">{fmtAddress(form.farm_address) || null}</Row>
-        <Row label="Adresse de livraison">
-          {sameShipping ? 'Même que la ferme' : (fmtAddress(form.shipping_address) || null)}
-        </Row>
+        {[["farm", "Adresse de la ferme"], ["shipping", "Adresse de livraison"]].map(([kind, label]) => {
+          const address = form[`${kind}_address`]
+          const addressId = form[`${kind}_address_id`]
+          return <Row key={kind} label={label}>
+            <LinkedRecordField
+              name={`${kind}_address_id`}
+              value={addressId}
+              options={addressId ? [{ id: addressId, name: fmtAddress(address) || label }] : []}
+              searchTarget="adresses"
+              searchFilter={[{ column: 'company_id', op: 'is', value: form.company_id }]}
+              getHref={a => `/adresses/${a.id}`}
+              allowClear={false}
+              saving={savingVerification}
+              disabled={savingVerification || creatingOrder}
+              onChange={value => saveAddress(`${kind}_address_id`, value)}
+            />
+            {!addressId && fmtAddress(address) && <span>{fmtAddress(address)}</span>}
+            {kind === 'shipping' && sameShipping && <span className="text-xs text-slate-500">Même que la ferme</span>}
+          </Row>
+        })}
       </Section>
 
       <Section title="Réseau">

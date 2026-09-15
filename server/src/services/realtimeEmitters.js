@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from './shippedCost.js'
 // Single source of truth for the realtime payloads of the pilot entities
 // (orders, companies). The shape returned here MUST match what the
 // corresponding list page / detail page consumes — keep in sync with the
@@ -19,7 +20,7 @@ function buildOrderListRow(id) {
   // GET /api/orders (voir nativeFieldConversions.js).
   return db.prepare(
     `SELECT o.*,
-      (SELECT SUM(oi.qty * oi.unit_cost) FROM order_items oi WHERE oi.order_id = o.id) as total_value
+      (SELECT SUM(oi.qty * ${pieceUnitCostSql('oi')}) FROM order_items oi WHERE oi.order_id = o.id) as total_value
      FROM ${readRelation('orders')} o
      WHERE o.id = ?`
   ).get(id)

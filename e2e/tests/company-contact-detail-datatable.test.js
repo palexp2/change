@@ -5,7 +5,10 @@ const { chromium } = require('playwright')
 const URL = process.env.ERP_URL || 'https://customer.orisha.io/erp'
 const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
-if (!PASS) throw new Error('ERP_PASS env var required')
+// `ERP_TOKEN` : JWT injecté en localStorage quand le mot de passe n'est pas
+// disponible.
+const TOKEN = process.env.ERP_TOKEN
+if (!PASS && !TOKEN) throw new Error('ERP_PASS ou ERP_TOKEN requis')
 
 // Migration des sous-tableaux liés de CompanyDetail (contacts, commandes,
 // support, envois, factures, abonnements, tâches, achats, retours) et des tâches
@@ -20,13 +23,17 @@ describe('CompanyDetail / ContactDetail — sous-tableaux migrés en DataTable',
 
   before(async () => {
     browser = await chromium.launch()
-    ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } })
+    // Panneau au layout CRM : il lui faut de la place pour ses 3 colonnes.
+    ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 } })
+    if (TOKEN) await ctx.addInitScript(t => localStorage.setItem('erp_token', t), TOKEN)
     page = await ctx.newPage()
-    await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
-    await page.fill('input[type="email"]', EMAIL)
-    await page.fill('input[type="password"]', PASS)
-    await page.click('button:has-text("Se connecter")')
-    await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
+    if (!TOKEN) {
+      await page.goto(URL + '/login', { waitUntil: 'domcontentloaded' })
+      await page.fill('input[type="email"]', EMAIL)
+      await page.fill('input[type="password"]', PASS)
+      await page.click('button:has-text("Se connecter")')
+      await page.waitForURL(u => !u.toString().includes('/login'), { timeout: 15000 })
+    }
 
     // Cherche une entreprise ayant au moins un contact (pour tester le clic-nav).
     const found = await page.evaluate(async () => {
@@ -50,25 +57,24 @@ describe('CompanyDetail / ContactDetail — sous-tableaux migrés en DataTable',
 
   after(async () => { await browser?.close() })
 
-  // Onglets toujours présents dans CompanyDetail (achats est conditionnel au
-  // quickbooks_vendor_id, donc exclu de la boucle).
-  const TABS = ['contacts', 'commandes', 'support', 'envois', 'factures', 'abonnements', 'tâches', 'retours']
+  // Groupes de records liés toujours présents dans CompanyDetail (achats est
+  // conditionnel au quickbooks_vendor_id, donc exclu de la boucle). Depuis le
+  // layout CRM, chacun est une carte de la colonne de droite dont le titre
+  // ouvre le tableau complet au centre.
+  const TABS = ['contacts', 'projets', 'commandes', 'envois', 'factures', 'abonnements', 'tâches', 'retours']
 
-  // Le nav latéral des onglets de CompanyDetail contient l'onglet "Informations"
-  // (absent de la nav globale du Layout) → on s'en sert pour cibler sans ambiguïté
-  // les boutons d'onglet (certains noms, ex. "Envois", collisionnent avec la nav globale).
-  const companyTabNav = () => page.locator('nav').filter({ hasText: 'Informations' })
+  const openRelated = (key) => page.locator(`[data-testid="crm-card-${key}"] button`).nth(1).click()
 
   for (const tab of TABS) {
-    test(`onglet ${tab} : DataTable rendu (recherche) + aucun <table> brut`, async () => {
+    test(`groupe ${tab} : DataTable rendu (recherche) + aucun <table> brut`, async () => {
       await page.goto(`${URL}/companies/${companyId}`, { waitUntil: 'domcontentloaded' })
       await page.waitForLoadState('networkidle')
 
-      await companyTabNav().getByRole('button', { name: new RegExp(`^${tab}`, 'i') }).first().click()
+      await openRelated(tab)
 
-      // La ViewToolbar de la DataTable rend toujours le champ de recherche,
-      // même quand l'onglet est vide (état vide géré par la DataTable elle-même).
-      await page.locator('input[placeholder="Rechercher..."]').first()
+      // La DataTable rend toujours sa barre de lignes, même vide (l'état vide
+      // est géré par la DataTable elle-même).
+      await page.locator('[data-testid="datatable-grid-bar"]').first()
         .waitFor({ state: 'visible', timeout: 10000 })
 
       const tableCount = await page.locator('table').count()
@@ -80,7 +86,7 @@ describe('CompanyDetail / ContactDetail — sous-tableaux migrés en DataTable',
     if (!contactId) { t.skip('aucune entreprise avec contact trouvée'); return }
     await page.goto(`${URL}/companies/${companyId}`, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle')
-    await companyTabNav().getByRole('button', { name: /^contacts/i }).first().click()
+    await openRelated('contacts')
 
     const row = page.locator('[data-row-id]').first()
     await row.waitFor({ state: 'visible', timeout: 8000 })
@@ -90,8 +96,10 @@ describe('CompanyDetail / ContactDetail — sous-tableaux migrés en DataTable',
     await row.click()
     await page.waitForURL(u => /\/contacts\/\d+/.test(u.toString()), { timeout: 8000 })
 
-    // ContactDetail : la section Tâches est désormais une DataTable.
-    await page.locator('input[placeholder="Rechercher..."]').first()
+    // ContactDetail : les tâches sont une DataTable, ouverte au centre depuis
+    // la carte « Tâches » de la colonne de droite.
+    await page.locator('[data-testid="crm-card-tâches"] button').nth(1).click()
+    await page.locator('[data-testid="datatable-grid-bar"]').first()
       .waitFor({ state: 'visible', timeout: 10000 })
     const tableCount = await page.locator('table').count()
     assert.equal(tableCount, 0, `ContactDetail ne doit plus contenir de <table> HTML (trouvé ${tableCount})`)

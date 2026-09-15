@@ -50,7 +50,7 @@ function laneOfRow(row) {
   return Number.isInteger(n) && n >= 0 && n < EXEC_LANES ? n : 0
 }
 // File du soir : TOUS les départs programmés y vont, donc ils s'enchaînent l'un
-// après l'autre au lieu de saturer les quatre postes à 19 h.
+// après l'autre au lieu de saturer tous les postes à 19 h.
 export const SCHEDULED_LANE = 0
 
 /**
@@ -552,7 +552,7 @@ export function reorderPrompts(ids) {
  * même face à l'autre espace, l'exécuteur étant partagé. File en pause ou agent
  * désactivé : simple repositionnement, rien n'est confié au runner.
  *
- * Avec quatre files parallèles, « premier » impose aussi de CHANGER de file quand
+ * Avec plusieurs files parallèles, « premier » impose aussi de CHANGER de file quand
  * celle de l'item est occupée par un chantier réellement en cours : sinon la carte
  * s'affichait « 1re » tout en attendant la fin d'un long travail alors qu'un autre
  * poste était libre. La file d'origine était tirée au sort, la remplacer par une

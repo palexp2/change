@@ -100,3 +100,34 @@ test('ids inconnus : rien à purger, rien ne casse', () => {
   assert.deepEqual(out, { purged: 0, blocked: [], dropped: [], tombstones: 0, backups: [] })
   assert.deepEqual(purgeFields([]).dropped, [])
 })
+
+test('purge avec filtres groupés, anciens filtres et regroupements multiples', () => {
+  db.exec('ALTER TABLE projects ADD COLUMN cf_purge_filters REAL')
+  trashedField({ id: 'f-filters', column: 'cf_purge_filters', name: 'À purger' })
+  const removed = { field: 'cf_purge_filters', op: 'equals', value: 12 }
+  const kept = { field: 'name', op: 'contains', value: 'Projet' }
+  const fixtures = [
+    [{ conjunction: 'AND', rules: [removed, { conjunction: 'OR', rules: [removed, kept] }] },
+      { conjunction: 'AND', rules: [{ conjunction: 'OR', rules: [kept] }] }],
+    [{ conjunction: 'OR', rules: [{ conjunction: 'AND', rules: [removed] }, kept] },
+      { conjunction: 'OR', rules: [kept] }],
+    [[removed, kept], [kept]],
+    [{ conjunction: 'AND', rules: [removed] }, []],
+    [null, null],
+  ]
+  for (const [i, [filters]] of fixtures.entries()) {
+    db.prepare(`INSERT INTO table_view_pills
+      (id, table_name, label, filters, group_by, column_widths, visible_columns, sort, color_rules)
+      VALUES (?, 'projects', 'Test purge', ?, ?, 'null', 'null', 'null', 'null')`)
+      .run(`purge-filter-${i}`, JSON.stringify(filters), JSON.stringify(['cf_purge_filters', 'name']))
+  }
+  const out = purgeFields(['f-filters'])
+  assert.equal(out.purged, 1)
+  assert.equal(cfExists('f-filters'), false)
+  assert.equal(columns('projects').has('cf_purge_filters'), false)
+  for (const [i, [, expected]] of fixtures.entries()) {
+    const pill = db.prepare('SELECT filters, group_by FROM table_view_pills WHERE id=?').get(`purge-filter-${i}`)
+    assert.deepEqual(JSON.parse(pill.filters), expected)
+    assert.deepEqual(JSON.parse(pill.group_by), ['name'])
+  }
+})

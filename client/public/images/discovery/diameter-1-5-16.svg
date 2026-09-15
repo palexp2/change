@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <rect width="640" height="300" fill="#fff"/>
+
+  <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+    <path d="M124 48h132"/>
+    <path d="M124 40v16M256 40v16"/>
+    <path d="M124 152V52M256 152V52" stroke-dasharray="5 7"/>
+  </g>
+
+  <!-- Tuyau rond vu en bout -->
+  <circle cx="190" cy="158" r="58" fill="none" stroke="#7ecdd0" stroke-width="16"/>
+
+  <text x="450" y="186" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="66" font-weight="600" fill="#475569">1 5/16"</text>
+
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

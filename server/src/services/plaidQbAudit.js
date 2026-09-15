@@ -14,6 +14,8 @@
 import db from '../db/database.js'
 import { refreshStatuses } from './bankReconciliation.js'
 import { buildLedgerIndex, searchAccount, persistMatches, verifyConversions } from './bankQbSearch.js'
+import { pickQbProposals } from './bankProposals/qbLink.js'
+import { reconcileAndPersist } from './bankProposals/store.js'
 import { logSync } from './syncLog.js'
 import { shiftDate } from '../utils/datetime.js'
 
@@ -65,15 +67,25 @@ async function auditAccounts(accounts, { sinceDays, trigger }) {
 
       let linked = 0
       let matchedCount = 0
+      let proposed = 0
       if (bankTxns.length) {
+        const txnById = new Map(bankTxns.map((t) => [t.id, t]))
         const { matches } = searchAccount(account, bankTxns, index)
-        await verifyConversions(matches, new Map(bankTxns.map((t) => [t.id, t])))
-        linked = persistMatches(matches)
+        await verifyConversions(matches, txnById)
+        // Même règle que la sync TRX_Orisha : seul l'appariement certain se
+        // pose tout seul, le reste attend un clic (services/bankProposals/).
+        const { auto, proposals } = pickQbProposals(matches, { account, txnById })
+        linked = persistMatches(auto)
+        try {
+          proposed = reconcileAndPersist(proposals, { accountId: account.id, kinds: ['qb_link'] }).inserted
+        } catch (e) {
+          console.error('bankProposals(qb_link/plaid):', e.message)
+        }
         matchedCount = matches.size
       }
       refreshStatuses(account.id)
       logSync('plaid_qb_audit', trigger, { status: 'success', modified: linked, durationMs: Date.now() - t0 })
-      results.push({ account_id: account.id, account_name: account.name, scanned: bankTxns.length, matched: matchedCount, linked })
+      results.push({ account_id: account.id, account_name: account.name, scanned: bankTxns.length, matched: matchedCount, linked, proposed })
     } catch (e) {
       logSync('plaid_qb_audit', trigger, { status: 'error', error: e.message, durationMs: Date.now() - t0 })
       results.push({ account_id: account.id, account_name: account.name, error: e.message })

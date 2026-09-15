@@ -11,8 +11,10 @@
 // natif — ce test vérifie la NON-régression de la branche ≤ 10 sur chaque page :
 //   - le contrôle reste un <select> natif (pas un bouton SearchableSelect),
 //   - il liste l'option vide « — » + toutes les options configurées.
-// La branche > 10 → SearchableSelect est, elle, déjà couverte par
-// companies-form-type-searchable-select.test.js (props et composant identiques).
+// La branche SearchableSelect est, elle, déjà couverte par
+// companies-form-phase-searchable-select.test.js (même composant, mêmes props).
+// (Le champ « Type » de l'entreprise, qui couvrait la branche > 10, a été
+// supprimé avec sa colonne — migration 045.)
 //
 // Test en lecture seule : ne crée ni ne modifie aucun record (pas de cleanup requis).
 

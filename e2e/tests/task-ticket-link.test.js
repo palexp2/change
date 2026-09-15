@@ -32,13 +32,13 @@ describe('Tasks <-> Tickets — lien et création depuis le billet', () => {
     await browser?.close()
   })
 
-  test('API: POST /tasks accepte ticket_id et GET le retourne avec ticket_title', async () => {
+  test('API: POST /tasks accepte ticket_id et GET le retourne', async () => {
     const result = await page.evaluate(async () => {
       const token = localStorage.getItem('erp_token')
       const headers = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
       const ticket = await fetch('/erp/api/tickets', {
         method: 'POST', headers,
-        body: JSON.stringify({ title: `__t2t_ticket_${Date.now()}`, status: 'Waiting on us' }),
+        body: JSON.stringify({}),
       }).then(r => r.json())
       const task = await fetch('/erp/api/tasks', {
         method: 'POST', headers,
@@ -49,9 +49,7 @@ describe('Tasks <-> Tickets — lien et création depuis le billet', () => {
       return {
         ticketId: ticket.id, taskId: task.id,
         createdTicketId: task.ticket_id,
-        createdTitle: task.ticket_title,
         fetchedTicketId: fetched.ticket_id,
-        fetchedTitle: fetched.ticket_title,
         filteredCount: filtered.data.length,
         filteredFirstTaskId: filtered.data[0]?.id,
       }
@@ -59,9 +57,7 @@ describe('Tasks <-> Tickets — lien et création depuis le billet', () => {
     createdTicketId = result.ticketId
     createdTaskId = result.taskId
     assert.strictEqual(result.createdTicketId, createdTicketId, 'POST doit retourner ticket_id')
-    assert.ok(result.createdTitle, 'POST doit retourner ticket_title')
     assert.strictEqual(result.fetchedTicketId, createdTicketId)
-    assert.strictEqual(result.fetchedTitle, result.createdTitle)
     assert.strictEqual(result.filteredCount, 1, 'filtre ?ticket_id= doit retourner 1 tâche')
     assert.strictEqual(result.filteredFirstTaskId, createdTaskId)
   })

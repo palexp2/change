@@ -174,6 +174,15 @@ router.delete('/prospects/:id', requireAuth, (req, res) => {
     WHERE id = ? AND deleted_at IS NULL
   `).run(req.params.id)
   if (!info.changes) return res.status(404).json({ error: 'Prospect introuvable' })
+  // La fiche disparaît aussi d'Airtable : Philippe y travaille, une fiche
+  // écartée d'un seul côté lui revient dans les mains. Non bloquant.
+  import('../services/instagramProspects.js')
+    .then(({ deleteFromAirtable }) => deleteFromAirtable(req.params.id))
+    .catch(() => {})
+  // Un message écrit d'avance ne doit jamais partir vers une fiche écartée.
+  import('../services/instagramDrafts.js')
+    .then(({ dropOpenDrafts }) => dropOpenDrafts(req.params.id))
+    .catch(() => {})
   res.json({ ok: true })
 })
 
@@ -181,10 +190,17 @@ router.delete('/prospects/:id', requireAuth, (req, res) => {
 // La liste de travail vit dans l'ERP ET dans Airtable : les deux sont le même
 // enregistrement, `contacted` remonte dans les deux sens (cf. syncInstagramProspects).
 
+/** Dernier état connu de la session Instagram (vérifié chaque matin). */
+function sessionStatus() {
+  try { return db.prepare("SELECT status, detail FROM connector_sessions WHERE connector='instagram'").get() || null }
+  catch { return null }
+}
+
 const LIST_COLS = `
   id, ig_username, full_name, profile_url, keyword, has_keyword,
   first_comment_text, first_comment_at, first_post_url,
   last_comment_text, last_comment_at, last_post_url, comment_count,
+  capture_kind, capture_label, capture_url, last_event_kind, last_event_at, manychat_tags, manychat_url,
   dm_sent, dm_sent_at, replied, replied_at, first_reply_text,
   contacted, contacted_at, contacted_by, contacted_source, follow_up_status, notes,
   week_key, source, airtable_id
@@ -240,9 +256,97 @@ router.get('/weeks', requireAuth, (req, res) => {
       accounts: cfg.accounts,
       keywords: cfg.keywords,
       lookback_days: cfg.lookback_days,
-      session_ok: !!getSessionCookie().sessionid,
+      // Présence ≠ validité : un cookie mort laissait la page afficher un état
+      // rassurant pendant que rien n'était capté. On rend l'état vérifié.
+      session_ok: !!getSessionCookie().sessionid && sessionStatus()?.status !== 'expired',
+      session_detail: sessionStatus()?.status === 'ok' ? null : sessionStatus()?.detail || null,
     },
   })
+})
+
+// ── Conversations ManyChat ─────────────────────────────────────────────────
+//
+// Philippe lit et répond depuis Boréal ; ManyChat reste la plomberie.
+router.get('/conversations', requireAuth, (req, res) => {
+  const onlyNamed = String(req.query.all || '') !== '1'
+  const rows = db.prepare(`
+    SELECT t.user_id, t.ig_username, t.full_name, t.status, t.optin, t.subscribed_at,
+           t.last_message_text, t.last_message_at, t.last_direction, t.last_incoming_at,
+           t.prospect_id, p.contacted
+    FROM manychat_threads t
+    LEFT JOIN instagram_prospects p ON p.id = t.prospect_id AND p.deleted_at IS NULL
+    ${onlyNamed ? 'WHERE t.ig_username IS NOT NULL' : ''}
+    ORDER BY COALESCE(t.last_message_at, t.subscribed_at) DESC
+    LIMIT 200
+  `).all()
+  res.json({ conversations: rows, count: rows.length })
+})
+
+router.get('/conversations/:userId/messages', requireAuth, async (req, res) => {
+  const refresh = String(req.query.refresh || '') === '1'
+  if (refresh) {
+    try {
+      const { syncThreadMessages } = await import('../services/manychatSync.js')
+      await syncThreadMessages(req.params.userId)
+    } catch (e) { return res.status(502).json({ error: e.message }) }
+  }
+  const messages = db.prepare(`
+    SELECT id, direction, text, kind, sent_at, link_url FROM manychat_messages
+    WHERE user_id = ? ORDER BY sent_at
+  `).all(req.params.userId)
+  const thread = db.prepare('SELECT * FROM manychat_threads WHERE user_id=?').get(req.params.userId) || null
+  res.json({ thread, messages })
+})
+
+/**
+ * Envoi d'un message. Instagram n'autorise une réponse que dans les 24 h
+ * suivant le dernier message de la personne : on laisse ManyChat trancher et
+ * on remonte son refus tel quel plutôt que de deviner.
+ */
+router.post('/conversations/:userId/send', requireAuth, async (req, res) => {
+  const text = String(req.body?.text || '').trim()
+  if (!text) return res.status(400).json({ error: 'Message vide' })
+  try {
+    const { sendManychatMessage } = await import('../services/manychat.js')
+    const { syncThreadMessages } = await import('../services/manychatSync.js')
+    const out = await sendManychatMessage(req.params.userId, text)
+    if (out?.state === false) {
+      const msg = out?.$errors?.[0]?.message || out?.errors?.[0] || 'ManyChat a refusé l’envoi'
+      return res.status(422).json({ error: msg })
+    }
+    let messages = []
+    try {
+      const { dropDraftsForThread } = await import('../services/instagramDrafts.js')
+      dropDraftsForThread(req.params.userId)
+    } catch { /* le message est parti, c'est l'essentiel */ }
+    try { await syncThreadMessages(req.params.userId) } catch {}
+    messages = db.prepare('SELECT id, direction, text, kind, sent_at, link_url FROM manychat_messages WHERE user_id=? ORDER BY sent_at').all(req.params.userId)
+    res.json({ ok: true, messages })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
+/**
+ * Rattrapage : retire d'Airtable toutes les fiches écartées qui y sont encore.
+ * Sert après un écartement en masse, ou quand Airtable était injoignable au
+ * moment du clic.
+ */
+router.post('/prospects/purge-airtable', requireAdmin, async (req, res) => {
+  const rows = db.prepare(`
+    SELECT id FROM instagram_prospects WHERE deleted_at IS NOT NULL AND airtable_id IS NOT NULL
+  `).all()
+  const { deleteFromAirtable } = await import('../services/instagramProspects.js')
+  let deleted = 0
+  const errors = []
+  for (const r of rows) {
+    // Rythme volontaire : Airtable plafonne à 5 requêtes/seconde par base.
+    await new Promise(res2 => setTimeout(res2, 250))
+    const out = await deleteFromAirtable(r.id)
+    if (out?.ok) deleted++
+    else if (out?.error) errors.push(out.error)
+  }
+  res.json({ candidates: rows.length, deleted, errors: errors.slice(0, 5) })
 })
 
 /**
@@ -283,6 +387,14 @@ router.patch('/prospects/:id', requireAuth, (req, res) => {
   args.push(row.id)
   db.prepare(`UPDATE instagram_prospects SET ${sets.join(', ')} WHERE id = ?`).run(...args)
 
+  // Cocher « contactée » retire le message écrit d'avance : quelqu'un s'en est
+  // occupé autrement, le brouillon ferait doublon.
+  if (changed.includes('contacted') && req.body.contacted) {
+    import('../services/instagramDrafts.js')
+      .then(({ dropOpenDrafts }) => dropOpenDrafts(row.id, 'Marquée contactée à la main'))
+      .catch(() => {})
+  }
+
   // Miroir Airtable hors du chemin critique : la case doit se cocher
   // instantanément même si Airtable est en panne.
   pushToAirtable(row.id).catch(() => {})
@@ -321,6 +433,80 @@ router.put('/session', requireAdmin, (req, res) => {
     put.run('ds_user_id', dsUserId)
   })()
   res.json({ ok: true, configured: !!sessionid })
+})
+
+// ── Messages écrits d'avance et file d'envoi ───────────────────────────────
+
+/** La liste unique : qui attend quelque chose, avec son message et son fil. */
+router.get('/workbench', requireAuth, async (req, res) => {
+  const { workbench } = await import('../services/instagramDrafts.js')
+  res.json(workbench({ all: String(req.query.all || '') === '1' }))
+})
+
+router.get('/drafts', requireAuth, async (req, res) => {
+  const { listDrafts } = await import('../services/instagramDrafts.js')
+  res.json(listDrafts())
+})
+
+/** Écrit (ou réécrit) le message d'une personne. */
+router.post('/drafts/write', requireAuth, async (req, res) => {
+  const { writeDraft } = await import('../services/instagramDrafts.js')
+  try {
+    const out = await writeDraft(String(req.body?.prospect_id || ''), {
+      instructions: req.body?.instructions,
+      force: req.body?.force !== false,
+    })
+    res.json(out)
+  } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+/** Tournée d'écriture pour tout le monde qui attend encore un message. */
+router.post('/drafts/write-all', requireAuth, async (req, res) => {
+  const { runDraftWriting } = await import('../services/instagramDrafts.js')
+  res.json(await runDraftWriting({ force: true, trigger: 'bouton' }))
+})
+
+/** Le bouton : tout ce qui est prêt part maintenant, espacé. */
+router.post('/drafts/send-now', requireAuth, async (req, res) => {
+  const { sendAllNow } = await import('../services/instagramDrafts.js')
+  res.json(await sendAllNow())
+})
+
+/** Retenir toute la file. */
+router.post('/drafts/hold-all', requireAuth, async (req, res) => {
+  const { holdAll } = await import('../services/instagramDrafts.js')
+  res.json(holdAll())
+})
+
+/** Un seul message : texte, mise en file, retenue, envoi immédiat, abandon. */
+router.patch('/drafts/:id', requireAuth, async (req, res) => {
+  const { getDraft, queueDrafts, runDraftQueue } = await import('../services/instagramDrafts.js')
+  const d = getDraft(req.params.id)
+  if (!d) return res.status(404).json({ error: 'Message introuvable' })
+  if (d.status === 'sent') return res.status(409).json({ error: 'Ce message est déjà parti' })
+
+  const text = req.body?.text != null ? String(req.body.text).trim() : null
+  if (text != null) {
+    if (!text) return res.status(400).json({ error: 'Message vide' })
+    db.prepare("UPDATE instagram_drafts SET text=?, edited=1, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+      .run(text, d.id)
+  }
+  const action = String(req.body?.action || '')
+  if (action === 'hold') {
+    db.prepare("UPDATE instagram_drafts SET status='held', scheduled_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(d.id)
+  } else if (action === 'drop') {
+    db.prepare("UPDATE instagram_drafts SET status='dropped', scheduled_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(d.id)
+  } else if (action === 'approve') {
+    db.prepare("UPDATE instagram_drafts SET status='draft', review_reason=NULL, error=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(d.id)
+    queueDrafts({ ids: [d.id] })
+  } else if (action === 'send') {
+    db.prepare("UPDATE instagram_drafts SET status='draft', review_reason=NULL, error=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(d.id)
+    const q = queueDrafts({ ids: [d.id], now: true })
+    if (!q.queued) return res.status(422).json({ error: getDraft(d.id)?.error || 'Envoi impossible', draft: getDraft(d.id) })
+    db.prepare("UPDATE instagram_drafts SET scheduled_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(d.id)
+    await runDraftQueue({ force: true, trigger: 'bouton' })
+  }
+  res.json({ ok: true, draft: getDraft(d.id) })
 })
 
 export default router

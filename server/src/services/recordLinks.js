@@ -184,6 +184,72 @@ function rowsForLabels(table, spec, labels) {
   }
 }
 
+// ── Fournisseurs : une table Airtable sans miroir ERP ───────────────────────
+//
+// Le champ lien « Fournisseur » d'un achat pointe vers la table Airtable
+// « Fournisseurs », qu'AUCUNE table ERP ne miroite : la résolution échouait
+// donc et la colonne affichait l'identifiant brut (« recNF19v… ») au lieu du
+// nom du fournisseur. Ces records vivent quand même en local, dans
+// `airtable_vendor_links` (nom exact du fournisseur QuickBooks + id du vendor),
+// alimenté par la sync des achats — on s'en sert comme d'un miroir de plus.
+//
+// La pastille mène à la fiche entreprise quand le nom en désigne une ; sinon
+// elle affiche le nom sans lien, ce qui reste lisible.
+function resolveVendorLinks(keys) {
+  const recs = keys.filter(k => REC_ID.test(k))
+  if (!recs.length) return {}
+  let vendors = []
+  let candidates = []
+  try {
+    vendors = db.prepare(`
+      SELECT airtable_id, name FROM airtable_vendor_links
+      WHERE airtable_id IN (${recs.map(() => '?').join(',')})
+    `).all(...recs).filter(v => (v.name || '').trim())
+    if (!vendors.length) return {}
+    const names = [...new Set(vendors.map(v => v.name.trim().toLowerCase()))]
+    candidates = db.prepare(`
+      SELECT c.id AS id, c.name AS name,
+             (SELECT COUNT(*) FROM purchases p WHERE p.supplier_company_id = c.id) AS refs
+      FROM companies c
+      WHERE LOWER(TRIM(c.name)) IN (${names.map(() => '?').join(',')})
+        ${hasDeletedAt('companies') ? 'AND c.deleted_at IS NULL' : ''}
+    `).all(...names)
+  } catch {
+    return {}
+  }
+
+  // Doublons d'entreprises homonymes (« DigiKey » / « Digikey »…) : on désigne
+  // la même que le reste de l'app — casse identique d'abord, puis la plus
+  // référencée par les achats, puis l'id pour rester déterministe.
+  const byName = new Map()
+  for (const c of candidates) {
+    const k = (c.name || '').trim().toLowerCase()
+    if (!byName.has(k)) byName.set(k, [])
+    byName.get(k).push(c)
+  }
+  const pick = (name) => {
+    const pool = byName.get(name.trim().toLowerCase()) || []
+    if (pool.length < 2) return pool[0] || null
+    return [...pool].sort((a, b) => (
+      (b.name === name) - (a.name === name) || b.refs - a.refs || (a.id < b.id ? -1 : 1)
+    ))[0]
+  }
+
+  const out = {}
+  for (const v of vendors) {
+    const label = v.name.trim()
+    const company = pick(label)
+    out[v.airtable_id] = {
+      table: company ? 'companies' : null,
+      id: company ? company.id : null,
+      label,
+      sub: null,
+      url: company ? `/companies/${company.id}` : null,
+    }
+  }
+  return out
+}
+
 // Résout des clés (ids ERP et/ou record IDs Airtable, mélangés) vers
 // { [clé demandée]: { table, id, label, sub, url } }.
 //
@@ -231,6 +297,18 @@ export function resolveRecordKeys(keys, { hint = null, byLabel = false } = {}) {
       }
     }
     if (hit.size) remaining = remaining.filter(k => !hit.has(k))
+  }
+
+  // Dernier miroir interrogé : les fournisseurs Airtable, qui n'ont pas de
+  // table ERP à eux (cf. resolveVendorLinks). Après les tables miroir, pour
+  // qu'un recId d'une vraie table garde la priorité.
+  if (remaining.length) {
+    const vendors = resolveVendorLinks(remaining)
+    const hit = Object.keys(vendors)
+    if (hit.length) {
+      Object.assign(out, vendors)
+      remaining = remaining.filter(k => !vendors[k])
+    }
   }
 
   if (byLabel && hint && SPECS[hint] && remaining.length) {

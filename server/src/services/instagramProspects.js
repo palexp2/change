@@ -173,7 +173,8 @@ const PROSPECT_COLS = `
   last_comment_text, last_comment_at, last_post_url, comment_count,
   dm_sent, dm_sent_at, replied, replied_at, first_reply_text, reply_count,
   follow_up_status, notes, week_key, notified_at, notified_week, airtable_id, created_at,
-  contacted, contacted_at, contacted_by, contacted_source
+  contacted, contacted_at, contacted_by, contacted_source,
+  capture_kind, capture_label, capture_url, last_event_kind, last_event_at, manychat_tags, manychat_url
 `
 
 /**
@@ -192,8 +193,15 @@ export function resolveProspect(fields) {
   const byIgsid = igsid
     ? db.prepare(`SELECT ${PROSPECT_COLS} FROM instagram_prospects WHERE dedup_key=? AND deleted_at IS NULL`).get(`igsid:${igsid}`)
     : null
+  // Deux recherches par nom d'usager, pas une : la clé « user:… » d'abord,
+  // puis la COLONNE ig_username. Sans la seconde, une fiche née d'un
+  // commentaire (clé « igsid:… ») et le même humain arrivant de ManyChat — qui
+  // ne donne jamais l'identifiant Instagram, seulement le nom d'usager — se
+  // retrouvaient en deux fiches. Le nom d'usager est le seul lien entre les
+  // deux sources, qui numérotent les mêmes personnes différemment.
   const byUser = username
     ? db.prepare(`SELECT ${PROSPECT_COLS} FROM instagram_prospects WHERE dedup_key=? AND deleted_at IS NULL`).get(`user:${username.toLowerCase()}`)
+      || db.prepare(`SELECT ${PROSPECT_COLS} FROM instagram_prospects WHERE lower(ig_username)=? AND deleted_at IS NULL ORDER BY created_at LIMIT 1`).get(username.toLowerCase())
     : null
 
   if (byIgsid && byUser && byIgsid.id !== byUser.id) return mergeProspects(byIgsid, byUser)
@@ -248,7 +256,17 @@ function mergeProspects(a, b) {
 
 // ── Ingestion ───────────────────────────────────────────────────────────────
 
-const VALID_KINDS = new Set(['comment', 'dm_sent', 'reply'])
+// Natures d'événement acceptées. JUMEAU du CHECK de instagram_prospect_events
+// (schema.js + migration 056) : les trois doivent rester d'accord, sinon
+// l'insertion de l'événement échoue après que la fiche a été écrite.
+//   comment / dm_sent / reply  — Instagram (commentaire, DM envoyé, réponse)
+//   follow / story_reaction / dm_in / contact — ManyChat, qui connaît des gens
+//   captés autrement qu'en commentant ('contact' = « il est dans l'audience,
+//   on ne sait pas par quoi »).
+const VALID_KINDS = new Set(['comment', 'dm_sent', 'reply', 'follow', 'story_reaction', 'dm_in', 'contact'])
+
+/** Natures qui ne portent ni texte de commentaire ni publication. */
+export const NON_COMMENT_KINDS = new Set(['follow', 'story_reaction', 'dm_in', 'contact'])
 
 /**
  * Traite un appel de ManyChat. Synchrone (better-sqlite3), tout sous
@@ -316,8 +334,9 @@ function createProspect(fields) {
       first_comment_text, first_comment_at, first_post_url, keyword, has_keyword,
       last_comment_text, last_comment_at, last_post_url, comment_count,
       dm_sent, dm_sent_at, replied, replied_at, first_reply_text, reply_count,
-      follow_up_status, week_key, source
-    ) VALUES (?,?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?)
+      follow_up_status, week_key, source,
+      capture_kind, capture_label, capture_url, last_event_kind, last_event_at, manychat_tags, manychat_url
+    ) VALUES (?,?,?,?,?,?,?, ?,?,?,?,?, ?,?,?,?, ?,?,?,?,?,?, ?,?,?, ?,?,?,?,?,?,?)
   `).run(
     id, fields.dedupKey, username, clean(fields.ig_user_id, 64), clean(fields.manychat_subscriber_id, 64),
     clean(fields.full_name, 200), username ? `https://instagram.com/${username}` : null,
@@ -328,6 +347,9 @@ function createProspect(fields) {
     isReply ? 1 : 0, isReply ? fields.occurredAt : null,
     isReply ? fields.text : null, isReply ? 1 : 0,
     'À contacter', isoWeekKey(localDay(new Date(fields.occurredAt))), clean(fields.source, 20) || 'manychat',
+    fields.kind, clean(fields.capture_label, 300), clean(fields.capture_url, 500),
+    fields.kind, fields.occurredAt,
+    clean(fields.manychat_tags, 500), clean(fields.manychat_url, 500),
   )
   return db.prepare(`SELECT ${PROSPECT_COLS} FROM instagram_prospects WHERE id=?`).get(id)
 }
@@ -354,6 +376,14 @@ function applyEvent(prospect, ev) {
     username, username ? `https://instagram.com/${username}` : prospect.profile_url,
     clean(ev.full_name, 200), clean(ev.manychat_subscriber_id, 64), clean(ev.ig_user_id, 64),
   ]
+
+  // Dernière activité, quelle que soit la nature : une fiche captée par une
+  // réaction de story n'a pas de date de commentaire à faire bouger, et sans
+  // ça elle paraîtrait figée au jour de sa création.
+  sets.push('last_event_kind = ?', 'last_event_at = ?')
+  args.push(ev.kind, ev.occurredAt)
+  if (ev.manychat_tags) { sets.push('manychat_tags = ?'); args.push(clean(ev.manychat_tags, 500)) }
+  if (ev.manychat_url) { sets.push('manychat_url = COALESCE(manychat_url, ?)'); args.push(clean(ev.manychat_url, 500)) }
 
   if (ev.kind === 'comment') {
     sets.push('comment_count = comment_count + 1')
@@ -426,6 +456,51 @@ export async function pushToAirtable(prospectId) {
       : await createInAirtable('instagram', prospectId)
   } catch (e) {
     console.error('instagram prospect → airtable:', e.message)
+    return { error: e.message }
+  }
+}
+
+/**
+ * Retire la fiche de la table Airtable.
+ *
+ * Écarter un prospect dans l'ERP (spam, bot, publication d'un partenaire) doit
+ * le faire disparaître des DEUX côtés : Philippe travaille dans Airtable, une
+ * fiche écartée qui y reste lui revient dans les mains. Best-effort — l'échec
+ * est journalisé, jamais propagé : l'écartement côté ERP a déjà eu lieu.
+ */
+export async function deleteFromAirtable(prospectId) {
+  try {
+    const row = db.prepare('SELECT airtable_id FROM instagram_prospects WHERE id=?').get(prospectId)
+    if (!row?.airtable_id) return { skipped: 'jamais poussée dans Airtable' }
+    const cfg = db.prepare("SELECT base_id, table_id FROM airtable_module_config WHERE module='instagram'").get()
+    if (!cfg?.base_id || !cfg?.table_id) return { skipped: 'config Airtable absente' }
+    const { getAccessToken } = await import('../connectors/airtable.js')
+    const token = await getAccessToken()
+    if (!token) return { skipped: 'aucun jeton Airtable' }
+    const res = await fetch(`https://api.airtable.com/v0/${cfg.base_id}/${cfg.table_id}/${row.airtable_id}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(20_000),
+    })
+    // 429 : Airtable plafonne à 5 requêtes/seconde par base. On attend et on
+    // retente une fois plutôt que d'abandonner la fiche — un écartement en
+    // masse dépasse forcément ce plafond.
+    if (res.status === 429) {
+      await new Promise(r => setTimeout(r, 1500))
+      const retry = await fetch(`https://api.airtable.com/v0/${cfg.base_id}/${cfg.table_id}/${row.airtable_id}`, {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(20_000),
+      })
+      if (!retry.ok && retry.status !== 404) return { error: `Airtable a répondu ${retry.status}` }
+    } else if (!res.ok && res.status !== 404) {
+      // 404 = déjà partie : c'est le résultat voulu, pas une erreur.
+      return { error: `Airtable a répondu ${res.status}` }
+    }
+    db.prepare("UPDATE instagram_prospects SET airtable_id = NULL WHERE id = ?").run(prospectId)
+    return { ok: true, deleted: row.airtable_id }
+  } catch (e) {
+    console.error('instagram prospect ✕ airtable:', e.message)
     return { error: e.message }
   }
 }
@@ -520,6 +595,16 @@ export function weekRangeLabel(weekKey) {
   return `du ${fmt(monday, !sameMonth)} au ${fmt(sunday, true)}`
 }
 
+// Libellés de la ventilation par origine du message hebdomadaire : [nature,
+// singulier, pluriel]. L'ordre est celui de l'affichage.
+const CAPTURE_KIND_ORDER = [
+  ['comment', 'commentaire', 'commentaires'],
+  ['follow', 'abonné', 'abonnés'],
+  ['dm_in', 'message privé', 'messages privés'],
+  ['story_reaction', 'réaction de story', 'réactions de story'],
+  ['contact', 'contact ManyChat', 'contacts ManyChat'],
+]
+
 /**
  * Message Slack. Fonction pure → testable sans DB.
  *
@@ -529,34 +614,58 @@ export function weekRangeLabel(weekKey) {
  * défiler, périmé dès qu'une case est cochée.
  */
 export function buildWeeklyMessage(prospects, { dayIso, url = null, erpUrl = null, backlogCount = 0 } = {}) {
-  const header = `:camera_with_flash: *Prospects Instagram — semaine ${weekRangeLabel(coveredWeek(dayIso || localDay()))}*`
+  // « du 7 au 13 septembre » → « 7 au 13 septembre » : le titre porte déjà le
+  // contexte, l'article ne sert qu'à allonger la ligne.
+  const range = weekRangeLabel(coveredWeek(dayIso || localDay())).replace(/^du /, '')
   const links = [
-    erpUrl ? `<${erpUrl}|Ouvrir la liste dans l'ERP>` : null,
-    url ? `<${url}|Ouvrir dans Airtable>` : null,
+    erpUrl ? `<${erpUrl}|ERP>` : null,
+    url ? `<${url}|Airtable>` : null,
   ].filter(Boolean)
   const footer = links.length ? `\n${links.join(' · ')}` : ''
   // Arriéré = prospects jamais annoncés mais captés avant la semaine couverte
   // (envoi manqué, marquage tardif...). Toujours inclus dans l'annonce et
-  // marqué notified avec le lot, mais compté à part pour ne pas gonfler le
-  // portrait de LA semaine.
-  const backlogNote = backlogCount > 0
-    ? `\n(+${backlogCount} des semaines précédentes, déjà inclus dans la liste)`
-    : ''
+  // compté à part pour ne pas gonfler le portrait de LA semaine.
+  const backlogLine = backlogCount > 0 ? [`+${backlogCount} des semaines passées`] : []
 
   if (!prospects.length) {
-    return `${header}\nAucun nouveau prospect cette semaine.${backlogNote}${footer}`
+    return [
+      `:camera_with_flash: *Prospects Instagram · ${range}*`,
+      '• Personne de nouveau cette semaine.',
+      ...backlogLine.map(l => `• ${l}`),
+    ].join('\n') + footer
   }
 
+  const keyword = prospects.filter(p => p.has_keyword).length
   const dmCount = prospects.filter(p => p.dm_sent).length
   const replied = prospects.filter(p => p.replied).length
-  const keyword = prospects.filter(p => p.has_keyword).length
 
-  const bits = [`${prospects.length} prospect(s)`]
-  if (keyword && keyword !== prospects.length) bits.push(`dont ${keyword} avec le mot-clé`)
-  bits.push(`${dmCount} DM envoyé(s)`)
-  bits.push(`${replied} ${replied === 1 ? 'a répondu' : 'ont répondu'}`)
+  // Une puce par origine : c'est ce qui se scanne le plus vite, et une origine
+  // à zéro ne prend pas de ligne.
+  const byKind = new Map()
+  for (const p of prospects) {
+    const k = p.capture_kind || 'comment'
+    byKind.set(k, (byKind.get(k) || 0) + 1)
+  }
+  const lines = CAPTURE_KIND_ORDER
+    .filter(([kind]) => byKind.get(kind))
+    .map(([kind, one, many]) => {
+      const n = byKind.get(kind)
+      const label = `${n} ${n > 1 ? many : one}`
+      // Le mot-clé ne qualifie que des commentaires : il s'accroche à leur
+      // ligne. « dont tous » n'apprend rien → on se tait quand ils l'ont tous.
+      return kind === 'comment' && keyword && keyword < n ? `${label} — dont ${keyword} « coach »` : label
+    })
 
-  return `${header}\n${bits.join(' · ')}${backlogNote}${footer}`
+  const activity = []
+  if (dmCount) activity.push(`${dmCount} DM envoyé${dmCount > 1 ? 's' : ''}`)
+  if (replied) activity.push(`${replied} ${replied === 1 ? 'a répondu' : 'ont répondu'}`)
+  if (activity.length) lines.push(activity.join(' · '))
+
+  return [
+    `:camera_with_flash: *${prospects.length} prospect${prospects.length > 1 ? 's' : ''} · ${range}*`,
+    ...lines.map(l => `• ${l}`),
+    ...backlogLine.map(l => `• ${l}`),
+  ].join('\n') + footer
 }
 
 function alreadySentThisWeek(dayIso) {

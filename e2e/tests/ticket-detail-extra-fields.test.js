@@ -30,7 +30,7 @@ describe('TicketDetail — nouveaux champs', () => {
       const r = await fetch('/erp/api/tickets', {
         method: 'POST',
         headers: { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: `E2E extra fields ${Date.now()}`, type: 'Support', status: 'Waiting on us' }),
+        body: JSON.stringify({}),
       })
       return { status: r.status, data: await r.json() }
     }, token)

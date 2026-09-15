@@ -1,3 +1,4 @@
+import { pieceUnitCostSql } from './shippedCost.js'
 // Helper pour enregistrer les événements d'abonnement (création, churn,
 // upgrade, downgrade, etc.) dans la table `subscription_events`.
 //
@@ -155,13 +156,13 @@ export async function recordEvent(args) {
 //   - Exclusion : commandes-abonnement (is_subscription = 1) — ce sont des
 //     renouvellements, pas des rachats.
 //   - Exclusion : commandes soft-deleted (deleted_at IS NOT NULL).
-//   - Seuil "gros achat" : valeur de la commande (SUM qty*unit_cost sur
+//   - Seuil "gros achat" : valeur de la commande (somme quantité × coût produit sur
 //     order_items) >= 12 × previous_amount_cad. Fallback >= 1500 CAD si
 //     previous_amount_cad NULL.
 //   - On retient la commande la plus proche du churn (premier match temporel).
 //
 // Choix du champ "valeur" : orders n'a pas de colonne value/total dédiée, donc
-// on agrège order_items.qty * order_items.unit_cost — c'est ce que l'API
+// on agrège la quantité multipliée par le coût produit — c'est ce que l'API
 // orders.list renvoie déjà comme `total_value`. C'est la valeur des items
 // commandés au coût enregistré sur la ligne (≈ valeur de la commande).
 //
@@ -185,7 +186,7 @@ const detectRachatStmt = () => (detectRachatStmtCached ??= db.prepare(`
     o.id,
     o.order_number,
     COALESCE(o.date_commande, substr(o.created_at, 1, 10)) AS effective_date,
-    (SELECT COALESCE(SUM(oi.qty * oi.unit_cost), 0)
+    (SELECT COALESCE(SUM(oi.qty * ${pieceUnitCostSql('oi')}), 0)
      FROM order_items oi WHERE oi.order_id = o.id) AS total_value
   FROM orders o
   WHERE o.company_id = ?

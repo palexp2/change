@@ -21,6 +21,14 @@ db.exec(`CREATE TABLE IF NOT EXISTS orders (
 db.exec(`CREATE TABLE IF NOT EXISTS paies (
   id TEXT PRIMARY KEY, number TEXT, period_end TEXT, airtable_id TEXT
 )`)
+// Fournisseurs Airtable : table SANS miroir ERP, ses records ne vivent que dans
+// ce cache — plus `purchases` pour départager deux entreprises homonymes.
+db.exec(`CREATE TABLE IF NOT EXISTS airtable_vendor_links (
+  airtable_id TEXT PRIMARY KEY, name TEXT, qb_vendor_id TEXT
+)`)
+db.exec(`CREATE TABLE IF NOT EXISTS purchases (
+  id TEXT PRIMARY KEY, supplier_company_id TEXT
+)`)
 
 db.prepare('INSERT INTO companies (id, name, city, airtable_id) VALUES (?,?,?,?)')
   .run('c-1', 'Ferme Test', 'Québec', 'recAAAAAAAAAAAAAA')
@@ -28,6 +36,18 @@ db.prepare('INSERT INTO orders (id, order_number, company_id, airtable_id) VALUE
   .run('o-1', '634', 'c-1', 'recBBBBBBBBBBBBBB')
 db.prepare('INSERT INTO paies (id, number, period_end, airtable_id) VALUES (?,?,?,?)')
   .run('p-1', '2026-07', '2026-07-15', 'recCCCCCCCCCCCCCC')
+
+// Deux entreprises homonymes (casse différente) : la fiche visée doit être
+// celle que les achats utilisent déjà, pas la première venue.
+db.prepare('INSERT INTO companies (id, name, city, airtable_id) VALUES (?,?,?,?)')
+  .run('c-2', 'DigiKey', 'Thief River Falls', null)
+db.prepare('INSERT INTO companies (id, name, city, airtable_id) VALUES (?,?,?,?)')
+  .run('c-3', 'Digikey', null, null)
+db.prepare('INSERT INTO purchases (id, supplier_company_id) VALUES (?,?)').run('a-1', 'c-3')
+db.prepare('INSERT INTO airtable_vendor_links (airtable_id, name, qb_vendor_id) VALUES (?,?,?)')
+  .run('recDDDDDDDDDDDDDD', 'Digikey', '1')
+db.prepare('INSERT INTO airtable_vendor_links (airtable_id, name, qb_vendor_id) VALUES (?,?,?)')
+  .run('recEEEEEEEEEEEEEE', 'Fournisseur Sans Fiche', '2')
 
 const { resolveRecordKeys, searchRecords } = await import('./recordLinks.js')
 
@@ -62,6 +82,21 @@ test('une table sans fiche détail résout un libellé mais aucune URL', () => {
 
 test('un record ID inconnu est simplement absent du résultat', () => {
   assert.deepEqual(resolveRecordKeys(['recZZZZZZZZZZZZZZ']), {})
+})
+
+// ── Fournisseurs Airtable (table sans miroir ERP) ───────────────────────────
+
+test('un fournisseur Airtable rend son nom et pointe vers la fiche entreprise', () => {
+  const out = resolveRecordKeys(['recDDDDDDDDDDDDDD'])
+  assert.equal(out['recDDDDDDDDDDDDDD'].label, 'Digikey')
+  // Homonymes : celle que les achats référencent déjà, pas « DigiKey ».
+  assert.equal(out['recDDDDDDDDDDDDDD'].url, '/companies/c-3')
+})
+
+test('un fournisseur sans entreprise correspondante garde son nom, sans lien', () => {
+  const out = resolveRecordKeys(['recEEEEEEEEEEEEEE'])
+  assert.equal(out['recEEEEEEEEEEEEEE'].label, 'Fournisseur Sans Fiche')
+  assert.equal(out['recEEEEEEEEEEEEEE'].url, null)
 })
 
 test('clés vides / doublons tolérés', () => {
@@ -119,8 +154,8 @@ test('la recherche porte aussi sur le contexte (sub)', () => {
 })
 
 test('sans terme, la recherche liste la table (bornée)', () => {
-  assert.deepEqual(searchRecords('companies', '').map(r => r.id), ['c-1'])
-  assert.equal(searchRecords('companies', '', 0).length, 1)
+  assert.deepEqual(searchRecords('companies', '').map(r => r.id), ['c-2', 'c-3', 'c-1'])
+  assert.equal(searchRecords('companies', '', 1).length, 1)
 })
 
 test('une table hors registre ne rend rien (pas de SQL construit)', () => {

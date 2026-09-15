@@ -22,8 +22,11 @@ import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { importTransactions, autoMatchAccount, refreshStatuses, parseAmount } from './bankReconciliation.js'
 import { buildLedgerIndex, searchAccount, persistMatches, verifyConversions, MATCH_LABELS } from './bankQbSearch.js'
+import { pickQbProposals, parseAutoMethods } from './bankProposals/qbLink.js'
+import { reconcileAndPersist } from './bankProposals/store.js'
 import { sendSlackWebhook } from './slack.js'
 import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
+import { extractForeignAmount, extractCheckNumber } from './bankTxnFacts.js'
 
 export const TRX_SHEET_AUTOMATION_ID = 'sys_bank_trx_sheet'
 
@@ -50,6 +53,10 @@ export const TRX_SHEET_DEFAULT_CONFIG = {
   // journal de l'automation. Mettre à '1' pour réactiver l'envoi.
   slack_anomalies: '0',
   slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
+  // Méthodes d'appariement QuickBooks posées SANS demander (les autres
+  // deviennent des propositions à confirmer — services/bankProposals/).
+  // Vider la liste coupe tout appariement automatique.
+  auto_apply_methods: 'exact,conversion',
 }
 
 export function getTrxSheetConfig() {
@@ -358,21 +365,37 @@ export function parseTrxTab(rows, spec, { todayIso, colorAt } = {}) {
     }
     let description = String(row[cols.description] ?? '').trim()
     // Onglets Venn : Description + Transaction Type (+ Status si non complété),
-    // comme l'historique déjà en base (« STRIPE — Inbound Transfer »).
+    // comme l'historique déjà en base (« STRIPE — Inbound Transfer »). Le type
+    // reste AUSSI dans sa propre colonne : concaténé, il n'était plus
+    // exploitable pour préparer l'écriture.
+    let txnType = cols.type != null ? String(row[cols.type] ?? '').trim() || null : null
     if (cols.type != null) {
-      const type = String(row[cols.type] ?? '').trim()
+      const type = txnType || ''
       if (type && strip(type) !== strip(description)) description = description ? `${description} — ${type}` : type
       const status = String(row[cols.status] ?? '').trim()
       if (status && !/^complete/i.test(strip(status))) description += ` — ${status}`
     }
+    // La catégorie de la banque n'est retenue que si elle dit autre chose que
+    // la description (elle lui sert parfois de repli — voir mapColumns).
+    let bankCategory = cols.category != null && cols.category !== cols.description
+      ? String(row[cols.category] ?? '').trim() || null
+      : null
+    const details = cols.details != null ? (String(row[cols.details] ?? '').trim() || null) : null
+    const reference = cols.reference != null ? (String(row[cols.reference] ?? '').trim() || null) : null
+    const foreign = extractForeignAmount(`${description} ${details || ''}`)
     out.push({
       txn_date: txnDate,
       sheet_color: colorAt ? rowColor(colorAt, r, cols) : null,
       description: description || null,
-      details: cols.details != null ? (String(row[cols.details] ?? '').trim() || null) : null,
-      reference: cols.reference != null ? (String(row[cols.reference] ?? '').trim() || null) : null,
+      details,
+      reference,
       amount,
       balance: cols.balance != null ? parseTrxAmount(row[cols.balance]) : null,
+      bank_category: bankCategory,
+      txn_type: txnType,
+      check_number: extractCheckNumber(description, reference),
+      orig_currency: foreign?.currency || null,
+      orig_amount: foreign ? (amount < 0 ? -foreign.amount : foreign.amount) : null,
     })
   }
   return { rows: out, warnings }
@@ -540,9 +563,11 @@ function explainMissingQb(entry, unmatchedBank) {
 }
 
 function clearStaleLinks(unmatchedBank) {
-  // Un lien posé À LA MAIN (virement publié depuis l'ERP) n'est pas une trace
-  // périmée du fichier : le sync ne doit pas l'effacer.
-  const stale = unmatchedBank.filter((t) => !t.virtual && t.qb_txn_id && t.qb_match_method !== 'manuel')
+  // Un lien posé À LA MAIN (virement publié depuis l'ERP) ou CONFIRMÉ par un
+  // humain (proposition acceptée) n'est pas une trace périmée du fichier : le
+  // sync ne doit pas l'effacer. Il ne se défait qu'au clic « Ce n'est pas ça ».
+  const KEPT = new Set(['manuel', 'proposition'])
+  const stale = unmatchedBank.filter((t) => !t.virtual && t.qb_txn_id && !KEPT.has(t.qb_match_method))
   if (!stale.length) return 0
   const clear = db.prepare(`
     UPDATE bank_transactions
@@ -584,9 +609,24 @@ export async function auditAccountVsQb(account, cfg, { index, extraTxns = [], ap
   // Une conversion de devise n'est retenue comme telle qu'après vérification du
   // taux sur la transaction QuickBooks elle-même.
   await verifyConversions(matches, new Map(bankTxns.map((t) => [t.id, t])))
+  // Ce qui est certain se pose ; le reste devient une proposition à confirmer
+  // (« elle prépare, vous confirmez » — voir services/bankProposals/).
+  const txnById = new Map(bankTxns.map((t) => [t.id, t]))
+  const { auto, proposals } = pickQbProposals(matches, {
+    autoMethods: parseAutoMethods(cfg.auto_apply_methods),
+    account, txnById,
+  })
   let linked = 0
+  let proposed = 0
   if (apply) {
-    linked = persistMatches(new Map([...matches].filter(([id]) => !String(id).startsWith('à-importer-'))))
+    linked = persistMatches(auto)
+    try {
+      const r = reconcileAndPersist(proposals, { accountId: account.id, kinds: ['qb_link'] })
+      proposed = r.inserted
+    } catch (e) {
+      // Une proposition ratée ne doit pas faire échouer l'audit lui-même.
+      console.error('bankProposals(qb_link):', e.message)
+    }
     // Un lien posé par un passage antérieur sur une ligne que la recherche
     // approfondie ne retrouve PLUS pointe vers une écriture supprimée dans QB
     // ou vers un mauvais appariement : on l'efface plutôt que de laisser un
@@ -693,7 +733,7 @@ export async function auditAccountVsQb(account, cfg, { index, extraTxns = [], ap
   const methods = {}
   for (const [, m] of matches) methods[m.method] = (methods[m.method] || 0) + 1
   return {
-    anomalies, to_book: toBook, gaps, methods, linked,
+    anomalies, to_book: toBook, gaps, methods, linked, proposed,
     bank_count: bankTxns.length,
     ledger_count: (index.byAccount.get(account.id) || []).length,
     matched: matches.size,
@@ -765,14 +805,13 @@ export async function syncTrxSheet({ trigger = 'manual', apply = true, userId = 
         tabs.push({ tab: tabName, status: 'ignoré', detail: spec ? `compte « ${spec.account} » introuvable` : 'onglet non mappé à un compte' })
         continue
       }
-      // Compte branché à Plaid : Plaid alimente déjà bank_transactions en temps
-      // réel (services/plaidSync.js) et la vérification QuickBooks robuste vient
-      // de services/plaidQbAudit.js — TRX_Orisha ne doit plus y toucher (deux
-      // sources avec des clés de dédup différentes, risque de doublons).
-      if (account.plaid_account_id) {
-        tabs.push({ tab: tabName, account: account.name, status: 'ignoré', detail: 'compte branché à Plaid — TRX_Orisha désactivé pour ce compte' })
-        continue
-      }
+      // Les comptes branchés à Plaid étaient sautés ici : la banque était censée
+      // les alimenter toute seule. Elle ne le fait pas (2026-09-12 : un seul des
+      // dix comptes recevait vraiment ses transactions, et plus rien depuis le
+      // 31 août). TRX_Orisha redevient la source de TOUS les onglets ; le risque
+      // de doublon est couvert par la dédup (date + montant signé), qui compte
+      // les lignes déjà posées par Plaid, et la lecture des transactions Plaid
+      // est coupée en face (services/plaidSync.js).
       const grid = xlsx.utils.sheet_to_json(wb.Sheets[tabName], { header: 1, blankrows: true, raw: false })
       const parsed = parseTrxTab(grid, spec, { todayIso, colorAt: colorReader(wb.Sheets[tabName]) })
       const plan = planImport(account, parsed.rows, cfg)
@@ -863,12 +902,28 @@ export async function syncTrxSheet({ trigger = 'manual', apply = true, userId = 
       }
     }
 
+    // ── Le relevé nourrit directement la projection ───────────────────────
+    // Un paiement émis retrouvé au relevé est sorti : il ne doit plus être
+    // projeté. Sans ce rapprochement ici, il fallait attendre le passage
+    // suivant d'une autre synchronisation pour que la projection du solde en
+    // tienne compte — le relevé et la trésorerie n'étaient reliés qu'en différé.
+    let cleared = 0
+    if (apply && imported > 0) {
+      try {
+        const { autoClearFromBank } = await import('./treasuryPayments.js')
+        cleared = autoClearFromBank({ accountName: 'BNC CAD' })?.cleared || 0
+      } catch (e) {
+        console.warn(`Relevé → paiements émis : rapprochement impossible (${e.message})`)
+      }
+    }
+
     const result = {
       summary: (apply
         ? `${imported} transaction(s) importée(s) · ${autoMatched} appariée(s) auto · ${qbLinked} liée(s) à QB · ${anomalies.length} anomalie(s)`
         : `Simulation : ${tabs.reduce((s, t) => s + (t.new || 0), 0)} transaction(s) à importer · ${anomalies.length} anomalie(s)`)
         + (newAnomalies.length ? ` (${newAnomalies.length} nouvelle(s))` : '')
-        + (toBook.length ? ` · ${toBook.length} à comptabiliser` : ''),
+        + (toBook.length ? ` · ${toBook.length} à comptabiliser` : '')
+        + (cleared ? ` · ${cleared} paiement(s) émis passé(s) à la banque` : ''),
       tabs,
       anomalies,
       to_book: toBook,

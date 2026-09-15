@@ -56,17 +56,17 @@ describe('Comptabilité — trésorerie scannable et apprise du relevé', () => 
     const txt = (await section.innerText()).replace(/\s+/g, ' ')
     assert.match(txt, /Solde BNC noté/i)
 
-    // Replié par défaut : le détail (état du fichier, anomalies, propositions)
-    // ne s'affiche pas tant qu'on ne le demande pas.
+    // Replié par défaut : le détail (propositions, montants appris) ne
+    // s'affiche pas tant qu'on ne le demande pas.
     await page.waitForSelector('[data-testid="treasury-attention-toggle"]', { timeout: 10000 })
-    assert.equal(await page.locator('[data-testid="treasury-sheet-sync"]').count(), 0,
-      'le détail du fichier ne doit pas être visible carte fermée')
+    assert.equal(await page.locator('[data-testid="treasury-attention-trace-toggle"]').count(), 0,
+      'le détail ne doit pas être visible panneau fermé')
 
     // La description bavarde de la carte a disparu.
     assert.doesNotMatch(txt, /Rentrées certaines uniquement/i)
 
     await page.click('[data-testid="treasury-attention-toggle"]')
-    await page.waitForSelector('[data-testid="treasury-sheet-sync"]', { state: 'visible', timeout: 10000 })
+    await page.waitForSelector('[data-testid="treasury-attention-trace-toggle"]', { state: 'visible', timeout: 10000 })
   })
 
   test('la projection prend les montants vus au compte', async () => {

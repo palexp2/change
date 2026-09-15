@@ -412,11 +412,13 @@ export function scoreLine(line, purchase, ctx = {}) {
   // pièce (« Achat de PCBs et Pièces » chez Fabrique Manic) : le nom du produit ne
   // sera jamais dans leur libellé, mais leur propre formulation, elle, se répète.
   const aliases = ctx.aliasesByPart?.get(partKey(purchase)) || []
-  const nameSim = Math.max(
-    tokenSimilarity(line?.description, haystack),
-    ...aliases.map(a => tokenSimilarity(line?.description, a)),
-    0,
-  )
+  const nameSimDirect = tokenSimilarity(line?.description, haystack) || 0
+  let aliasBest = 0, aliasLabel = null
+  for (const a of aliases) {
+    const sim = tokenSimilarity(line?.description, a) || 0
+    if (sim > aliasBest) { aliasBest = sim; aliasLabel = a }
+  }
+  const nameSim = Math.max(nameSimDirect, aliasBest, 0)
   // Un SKU / une référence fabricant présent tel quel dans la description vaut une
   // concordance parfaite : c'est l'identifiant de la pièce, pas un mot du libellé.
   // Les SKU internes d'Orisha sont des nombres à 4 chiffres (1030, 1459) qui ne figurent
@@ -432,11 +434,26 @@ export function scoreLine(line, purchase, ctx = {}) {
   const identified = skuHit || !!refMatched
   const nameScore = identified ? 1 : nameSim
 
+  // SUR QUOI REPOSE L'IDENTIFICATION de la pièce, en clair. Le nom Orisha d'une pièce
+  // n'est presque jamais celui imprimé par le fournisseur : comparer les deux libellés
+  // à l'œil ne prouve rien. Ce verdict dit ce qui, lui, prouve quelque chose —
+  // référence fabricant, SKU, ou libellé déjà employé par CE fournisseur pour CETTE
+  // pièce sur une facture passée (vocabulaire appris). L'UI l'affiche tel quel.
+  const identity = refMatched
+    ? { kind: 'ref', label: purchase.part_mpn || refMatched, score: 1 }
+    : skuHit
+      ? { kind: 'sku', label: purchase.part_sku, score: 1 }
+      : (aliasBest > nameSimDirect && aliasBest >= NAME_GATE)
+        ? { kind: 'alias', label: aliasLabel, score: Math.round(aliasBest * 100) / 100 }
+        : nameSim >= NAME_GATE
+          ? { kind: 'name', label: null, score: Math.round(nameSimDirect * 100) / 100 }
+          : { kind: 'none', label: null, score: Math.round(nameSim * 100) / 100 }
+
   // GARDE-FOU : sans le moindre recouvrement de libellé, un couple ne peut pas être
   // proposé — même si le prix et la quantité coïncident. Sans cette garde, une facture
   // Amazon (« MoKo MagSafe Tripod Mount ») se faisait apparier à un achat de thermostat
   // au montant voisin : le prix seul n'identifie pas une pièce.
-  if (!identified && nameScore < NAME_GATE) return { score: 0, reasons: [], detail: { name: Math.round(nameScore * 100) / 100 } }
+  if (!identified && nameScore < NAME_GATE) return { score: 0, reasons: [], identity, detail: { name: Math.round(nameScore * 100) / 100 } }
 
   const expectedTotal = num(purchase.unit_cost) && num(purchase.qty_ordered)
     ? num(purchase.unit_cost) * num(purchase.qty_ordered) : null
@@ -449,7 +466,7 @@ export function scoreLine(line, purchase, ctx = {}) {
   // 2 431 $ pour une ligne de 10 230 $. Un SKU exact ou un libellé vraiment proche
   // (≥ 0,5) passe outre : c'est alors l'identification qui prime sur le montant.
   if (!identified && nameScore < 0.5 && expectedTotal && lineAmt && lineAmt > expectedTotal * OVERBILL_VETO) {
-    return { score: 0, reasons: [], detail: { name: Math.round(nameScore * 100) / 100, total: 0 } }
+    return { score: 0, reasons: [], identity, detail: { name: Math.round(nameScore * 100) / 100, total: 0 } }
   }
 
   add('name', 0.45, nameScore, refMatched
@@ -531,7 +548,7 @@ export function scoreLine(line, purchase, ctx = {}) {
   }
 
   const totalWeight = signals.reduce((s, x) => s + x.weight, 0)
-  if (!totalWeight) return { score: 0, reasons: [], detail }
+  if (!totalWeight) return { score: 0, reasons: [], identity, detail }
   let score = signals.reduce((s, x) => s + x.weight * x.value, 0) / totalWeight
 
   // Achat dont la facture est déjà entrée : matchReceiptItems l'écarte en amont du scoring
@@ -540,7 +557,7 @@ export function scoreLine(line, purchase, ctx = {}) {
   if (purchase.linked_receipts?.length) { score -= 0.10; reasons.push('déjà rattaché à une autre facture') }
   if (purchase.already_expensed) score -= 0.05
 
-  return { score: Math.max(0, Math.min(1, score)), reasons, detail }
+  return { score: Math.max(0, Math.min(1, score)), reasons, identity, detail }
 }
 
 // ───────────────────────────── candidats en base ─────────────────────────────
@@ -666,11 +683,18 @@ const rank = candidateTier
 // Index achat → factures qui le référencent déjà (hors reçu courant). Le rattachement
 // vit dans le JSON `items` du reçu : le volume (quelques centaines de reçus) permet de
 // le scanner directement plutôt que de dupliquer le lien dans une table dédiée.
+//
+// Les documents à 0 $ sont écartés : un courriel fournisseur porte souvent la facture ET
+// une pièce annexe (certificat de conformité, bordereau) que l'extracteur entre comme un
+// reçu sans montant. Cette annexe rattachait le code LIA avant la vraie facture, qui se
+// retrouvait ensuite sans proposition (« LIA-xxxx correspond, mais est déjà facturé »).
+// Un document sans montant ne facture rien : il ne consomme plus l'achat.
 export function linkedPurchaseIndex(excludeReceiptId = null) {
   const rows = db.prepare(`
     SELECT id, receipt_number, receipt_date, company, items
     FROM sale_receipts
     WHERE deleted_at IS NULL AND items LIKE '%purchase_id%'
+      AND COALESCE(total, 0) <> 0
   `).all()
   const index = new Map()
   for (const r of rows) {
@@ -794,6 +818,23 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       .sort((a, b) => b.score - a.score)
     lines[index].candidates = scored.slice(0, 25)
     lines[index].locked = locked
+    // CONTRÔLE DU RATTACHEMENT DÉJÀ FAIT : la ligne porte un achat (choisi par
+    // l'opérateur ou écrit d'office). On rejoue le score contre CET achat pour dire à
+    // l'UI sur quoi repose l'identification — la fiche n'a alors plus à deviner en
+    // comparant deux libellés qui, par nature, ne se ressemblent pas.
+    if (line?.purchase_id) {
+      const linkedTo = candidates.find(c => String(c.id) === String(line.purchase_id))
+      if (linkedTo) {
+        // Le rattachement a réécrit la description en « LIA-xxxx⇥Nom de la pièce » :
+        // la comparer au nom de la pièce serait circulaire. C'est le libellé IMPRIMÉ
+        // par le fournisseur (conservé dans source_description) qui doit prouver
+        // quelque chose.
+        const printed = String(line.source_description || '').trim()
+        const probe = printed ? { ...line, description: printed } : line
+        const s = scoreLine(probe, linkedTo, ctx)
+        lines[index].link_check = { score: Math.round(s.score * 100) / 100, identity: s.identity || null }
+      }
+    }
     if (locked) return
 
     // CADRAGE STRICT « À RECEVOIR » : `openCandidates` (donc `scored`) ne contient déjà que
@@ -842,6 +883,7 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       score: Math.round(p.score * 100) / 100,
       auto: isConfidentMatch(p, p.runnerUp),
       detail: p.detail,
+      identity: p.identity || null,
       reasons: p.reasons,
       reused: p.purchase.linked_receipts,
       already_expensed: p.purchase.already_expensed,

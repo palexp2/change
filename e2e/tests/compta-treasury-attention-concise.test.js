@@ -40,10 +40,15 @@ describe('Comptabilité — panneau d\'attention trésorerie concis', () => {
     await page.goto(URL + '/comptabilite', { waitUntil: 'domcontentloaded' })
     await page.waitForSelector('[data-testid="treasury-attention-toggle"]', { timeout: 30000 })
     // Le panneau peut déjà être ouvert d'office (anomalie dure) — ne pas le refermer.
-    if (await page.locator('[data-testid="treasury-sheet-sync"]').count() === 0) {
+    if (await page.locator('[data-testid="treasury-attention-trace-toggle"]').count() === 0) {
       await page.click('[data-testid="treasury-attention-toggle"]')
     }
-    await page.waitForSelector('[data-testid="treasury-sheet-sync"]', { state: 'visible', timeout: 15000 })
+    // Les traces (montants appris, sorties confirmées, propositions, relevé de
+    // carte) sont repliées derrière « Détails » : le panneau ne montre d'emblée
+    // que ce qui demande une décision. On les déplie pour vérifier que rien
+    // n'est perdu.
+    await page.click('[data-testid="treasury-attention-trace-toggle"]')
+    await page.waitForSelector('[data-testid="treasury-attention-trace-toggle"] + div, [data-testid="treasury-suggestions"], [data-testid="treasury-learned"]', { state: 'visible', timeout: 15000 })
     panelText = (await page.locator('[data-testid="treasury-attention"]').innerText()).replace(/\s+/g, ' ')
     proj = await apiFetch('/treasury/projection')
     learning = await apiFetch('/treasury/learning')
@@ -59,7 +64,6 @@ describe('Comptabilité — panneau d\'attention trésorerie concis', () => {
       /Confirmés? passés? au compte/i,
       /Montant à saisir/i,
       /exclu\(s\) de la projection/i,
-      /du fichier ne sont pas comptés/i,
       /sorties? encore dues? depuis le solde/i,
     ]
     for (const re of banned) {
@@ -72,15 +76,13 @@ describe('Comptabilité — panneau d\'attention trésorerie concis', () => {
   test('chaque bloc porte une étiquette courte', async () => {
     const labels = await page.locator('[data-testid="treasury-attention"] .uppercase').allInnerTexts()
     assert.ok(labels.length > 0, 'aucune étiquette de rubrique dans le panneau')
-    const known = ['LECTURE', 'ENCORE DÛ', 'RENTRÉES', 'À SAISIR', 'RELEVÉ', 'PASSÉS',
-      'JAMAIS VU', 'PROPOSÉ', 'AJUSTÉ', 'FICHIER']
+    const known = ['ENCORE DÛ', 'RENTRÉES', 'À SAISIR', 'RELEVÉ', 'PASSÉS',
+      'JAMAIS VU', 'PROPOSÉ', 'CARTE']
     for (const l of labels) {
       const up = l.trim().toUpperCase()
       assert.ok(known.includes(up), `étiquette inattendue : « ${l} »`)
       assert.ok(up.length <= 12, `étiquette trop longue : « ${l} »`)
     }
-    // Le fichier est toujours en bas du panneau : la rubrique existe donc.
-    assert.ok(labels.some(l => l.trim().toUpperCase() === 'FICHIER'))
   })
 
   test('aucune information essentielle perdue', async () => {
@@ -95,7 +97,7 @@ describe('Comptabilité — panneau d\'attention trésorerie concis', () => {
     // Rentrées comptées / écartées, avec leur motif.
     const inflows = proj.inflows || {}
     if ((inflows.counted || []).length) {
-      assert.match(panelText, new RegExp(`Rentrées\\s+${inflows.counted.length} comptée`, 'i'))
+      assert.match(panelText, new RegExp(`${inflows.counted.length} comptée`, 'i'))
     }
     for (const p of inflows.excluded || []) {
       assert.ok(panelText.includes(p.reason.slice(0, 30)), `motif d'exclusion disparu : ${p.reason}`)
@@ -110,6 +112,10 @@ describe('Comptabilité — panneau d\'attention trésorerie concis', () => {
     }
     if (shown.length) {
       assert.ok(await page.locator('[data-testid="treasury-suggestions"] button:has-text("ajouter")').count() > 0)
+    }
+    // Paiements de carte chiffrés sur le relevé de la carte.
+    for (const c of proj.card_statements || []) {
+      assert.ok(panelText.includes(c.label), `paiement de carte disparu : ${c.label}`)
     }
     // Sorties encore dues : la date du solde reste lisible quelque part.
     if ((proj.late_events || []).length) {

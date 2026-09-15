@@ -34,6 +34,7 @@ import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { paymentEvents, achatIdsWithPayment, coveredBillIds, recurringCoverage, autoClearFromBank } from './treasuryPayments.js'
 import { learnedRecurringMap, bankConfirmedOutflows } from './treasuryLearning.js'
+import { statementAmount } from './cardStatement.js'
 import { sendSlackWebhook } from './slack.js'
 
 export const TREASURY_AUTOMATION_ID = 'sys_treasury_alert'
@@ -619,6 +620,8 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
   // Occurrences remplacées par la vraie facture / le vrai paiement du fournisseur
   // (recurring_outflows.vendor_match) — exposées pour que la page l'explique.
   const covered_recurring = []
+  // Occurrences dont le montant vient du relevé de la carte (trace lisible).
+  const card_statements = []
   for (const raw of recurring) {
     const lrn = learnedMap.get(raw.id) || null
     // Montant appris : il remplace la saisie. Cas particulier des montants
@@ -644,25 +647,51 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
         estimated: !!(staleVariable && learnedAmount),
       })
     }
-    if (!(Number(r.amount) > 0)) continue
+    // ── Paiement de carte : le montant est sur le relevé de la carte ────────
+    // Une sortie rattachée à une carte (compte + jour de fermeture du relevé) ne
+    // se devine plus : le rapprochement bancaire contient chaque achat porté à
+    // la carte, donc le montant exact de la période que ce paiement règle.
+    const card = raw.card_account && Number(raw.statement_close_day) > 0
+      ? { account: raw.card_account, closeDay: Number(raw.statement_close_day) }
+      : null
+    if (!card && !(Number(r.amount) > 0)) continue
     const base = {
-      amount: -Number(r.amount), label: r.label, kind: 'recurring', ref: r.id,
+      label: r.label, kind: 'recurring', ref: r.id,
       learned: lrn ? { from: lrn.configured_amount, n: lrn.n } : null,
     }
-    const dates = r.variable_amount
+    // Avec un relevé de carte, chaque occurrence a son propre montant : plus
+    // besoin de se limiter à une seule (règle des montants variables).
+    const dates = r.variable_amount && !card
       // Montant valable pour une seule occurrence (voir variableOccurrence).
       ? [variableOccurrence(r, pendingFromIso, toIso)].filter(Boolean)
       : expandRecurring(r, pendingFromIso, toIso)
     for (const date of dates) {
+      let amount = Number(r.amount) || 0
+      if (card) {
+        const st = statementAmount({
+          accountName: card.account, closeDay: card.closeDay, paymentDate: date, today,
+        })
+        if (st) {
+          // Période encore ouverte : elle ne peut que grossir, le montant lu
+          // sert de plancher — sous-estimer une sortie coûte un découvert.
+          amount = st.closed ? st.amount : Math.max(st.amount, amount)
+          card_statements.push({
+            id: raw.id, label: r.label, date, amount,
+            from: st.from, to: st.to, closed: st.closed, lines: st.lines,
+            source: st.source || null,
+          })
+        }
+      }
+      if (!(amount > 0)) continue
       const cover = r.vendor_match ? recurringCoverage(r.vendor_match, date) : null
       if (cover) {
         covered_recurring.push({
-          label: r.label, date, amount: -Number(r.amount),
+          label: r.label, date, amount: -amount,
           covered_by: cover.by, covered_label: cover.label, covered_amount: cover.amount, covered_date: cover.date,
         })
         continue
       }
-      push(dated(date, base))
+      push(dated(date, { ...base, amount: -amount }))
     }
   }
 
@@ -785,6 +814,8 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
     auto_cleared,
     // Montants / jours substitués par l'historique bancaire (apprentissage).
     learned,
+    // Paiements de carte chiffrés sur le relevé de la carte, avec leur période.
+    card_statements,
     balance_age_days: balanceAgeDays,
     balance_stale_days: staleDays,
     balance_stale: balanceAgeDays == null || balanceAgeDays >= staleDays,
@@ -841,7 +872,11 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
 // écrasent tout : le net d'une journée tombe à ±0,50 $ et « ce qui est sorti »
 // devient illisible. Ils restent listés (c'est le relevé), mais hors totaux.
 // « INTERETS MCR » n'est PAS un transfert : c'est un vrai frais, il compte.
-const MARGIN_RE = /^(?:deboursé?|debourse|remb)[.,]?\s*mcr$/i
+// Le libellé porte souvent le numéro de compte de la marge à la suite
+// (« REMB. MCR 10281 060024937974 ») : la reconnaissance s'arrête donc au mot
+// « MCR », sans ancre de fin. Avec l'ancre, 120 k$ de va-et-vient repassaient
+// dans les totaux et rendaient « ce qui est sorti » illisible.
+const MARGIN_RE = /^(?:deboursé?|debourse|remb)[.,]?\s*mcr\b/i
 export const TREASURY_BANK_ACCOUNT = 'BNC CAD'
 
 // ── Couche « attendu » du passé ──────────────────────────────────────────────

@@ -9,12 +9,15 @@
 import { createHash } from 'crypto'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
-import { autoClearFromBank } from './treasuryPayments.js'
+import { producePaymentClears, producePaieDebits } from './bankProposals/producers.js'
+import { reconcileAndPersist } from './bankProposals/store.js'
+import { dedupeClaims } from './bankProposals/model.js'
 import { detectBankReceipts } from './wageSubsidyReceipts.js'
 import { detectTwilioBankRecharges } from './prepaid.js'
 import { shiftDate, daysBetween } from '../utils/datetime.js'
 import { isSystemAutomationActive } from './systemAutomations.js'
 import { BANK_DEBIT_LINK_AUTOMATION_ID } from './bankDebitLink.js'
+import { txnFacts } from './bankTxnFacts.js'
 
 // ── Seed des comptes (onglets du xlsx TRX_Orisha) ────────────────────────────
 
@@ -195,8 +198,9 @@ export function importTransactions(accountId, rows, userId) {
   const batchId = newRecordId()
   const insert = db.prepare(`
     INSERT OR IGNORE INTO bank_transactions
-      (id, account_id, txn_date, description, details, reference, amount, balance, dedup_key, import_batch_id, sheet_color)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)
+      (id, account_id, txn_date, description, details, reference, amount, balance, dedup_key, import_batch_id, sheet_color,
+       bank_category, txn_type, check_number, orig_currency, orig_amount)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
   `)
   let inserted = 0
   const counters = new Map()
@@ -205,10 +209,19 @@ export function importTransactions(accountId, rows, userId) {
       const sig = [row.txn_date, row.amount, (row.description || '').toLowerCase(), (row.reference || '').toLowerCase()].join('|')
       const occurrence = counters.get(sig) || 0
       counters.set(sig, occurrence + 1)
+      // Les faits du relevé (catégorie, type, chèque, devise d'origine) ne sont
+      // pas dans la clé de dédup : ils décrivent la ligne, ils ne l'identifient
+      // pas. Un collage manuel qui ne les porte pas les relit du libellé.
+      const facts = txnFacts(row)
       const res = insert.run(
         newRecordId(), accountId, row.txn_date, row.description, row.details || null, row.reference,
         row.amount, row.balance, dedupKey(accountId, row, occurrence), batchId,
-        row.sheet_color || null
+        row.sheet_color || null,
+        row.bank_category || null,
+        row.txn_type || null,
+        row.check_number || facts.check || null,
+        row.orig_currency || facts.foreign?.currency || null,
+        row.orig_amount ?? (facts.foreign ? (row.amount < 0 ? -facts.foreign.amount : facts.foreign.amount) : null),
       )
       inserted += res.changes
     }
@@ -226,12 +239,22 @@ export function importTransactions(accountId, rows, userId) {
 // (collage manuel, sync TRX_Orisha, Plaid — voir services/plaidSync.js) :
 // appariement des paiements émis, détection subventions et recharges Twilio.
 // Aucun ne doit faire échouer l'import appelant.
-export function runPostImportHooks(accountId, { source = 'bank' } = {}) {
+export function runPostImportHooks(accountId, { source: _source = 'bank' } = {}) {
+  // Les paiements émis, la paie et les versements de dettes ne se cochent plus
+  // tout seuls : ils PROPOSENT, et c'est un clic qui écrit. Les gestes
+  // explicites (bouton « apparier au relevé », fiche de dette) écrivent encore
+  // directement — voir services/bankProposals/producers.js.
   try {
     const account = db.prepare('SELECT name FROM bank_accounts WHERE id=?').get(accountId)
-    if (account) autoClearFromBank({ accountName: account.name, source })
+    if (account) {
+      const props = [
+        ...producePaymentClears({ accountName: account.name, accountId }),
+        ...producePaieDebits(),
+      ]
+      reconcileAndPersist(dedupeClaims(props), { kinds: ['payment_clear', 'paie_debit'] })
+    }
   } catch (e) {
-    console.error('bankReconciliation.autoClearFromBank:', e.message)
+    console.error('bankReconciliation.proposeClears:', e.message)
   }
   try {
     detectBankReceipts()
@@ -243,13 +266,28 @@ export function runPostImportHooks(accountId, { source = 'bank' } = {}) {
   } catch (e) {
     console.error('bankReconciliation.detectTwilioBankRecharges:', e.message)
   }
+  // Chaque ligne appariée à un document apprend à la fiche du fournisseur le
+  // visage qu'il prend au relevé — c'est ce qui le fera reconnaître la fois
+  // suivante AVANT d'avoir sa facture (services/vendorLearning.js).
+  // Import paresseux : vendorLearning remonte jusqu'ici (normalizeLabel), un
+  // import statique fermerait le cycle.
+  import('./vendorLearning.js')
+    .then(({ learnBankLabelsFromMatches }) => {
+      const r = learnBankLabelsFromMatches()
+      if (r.learned.length) {
+        console.log(`vendorLearning: ${r.learned.length} motif(s) de relevé appris — ${r.learned.map(l => `${l.vendor} « ${l.pattern} »`).join(', ')}`)
+      }
+    })
+    .catch(e => console.error('bankReconciliation.learnBankLabels:', e.message))
   // Sorties déjà connues de l'ERP qui viennent d'apparaître au relevé : le
   // débit de la paie, les versements de dettes. Asynchrone et non bloquant —
   // l'import ne doit jamais attendre (ni échouer sur) ce rattachement.
   if (isSystemAutomationActive(BANK_DEBIT_LINK_AUTOMATION_ID)) {
-    import('./bankDebitLink.js')
-      .then(({ linkKnownDebits }) => linkKnownDebits())
-      .catch(e => console.error('bankReconciliation.linkKnownDebits:', e.message))
+    import('./bankProposals/producers.js')
+      .then(async ({ produceDebtPayments }) => {
+        reconcileAndPersist(await produceDebtPayments(), { kinds: ['debt_payment'] })
+      })
+      .catch(e => console.error('bankReconciliation.proposeDebtPayments:', e.message))
   }
 }
 
@@ -402,14 +440,14 @@ function matchedDocQbId(matchedType, matchedId) {
 // Sans ça, 67 lignes vertes (comptabilisées ET rapprochées) restaient
 // « à traiter » et remontaient en anomalie « facture manquante ».
 //
-// `sheet_color` ne fait PLUS foi sur un compte branché à Plaid : TRX_Orisha
-// n'y est plus synchronisé (voir bankTrxSheet.js), donc la couleur qui traîne
-// encore dessus est un vestige — seule une preuve QuickBooks réelle compte
-// (voir services/plaidQbAudit.js, qui alimente qb_txn_id sur tout l'historique).
-export function deriveStatus(txn, { isPlaidAccount = false } = {}) {
+// La couleur a un temps été ignorée sur les comptes branchés à Plaid, parce
+// que TRX_Orisha n'y était plus synchronisé. Il l'est de nouveau depuis le
+// 2026-09-12 (la banque ne livrait pas) : la couleur redevient une preuve sur
+// TOUS les comptes, comme avant.
+export function deriveStatus(txn) {
   if (txn.status === 'ignore') return 'ignore'
   if (txn.reconciled_at) return 'rapproche'
-  const sheetColor = isPlaidAccount ? null : txn.sheet_color
+  const sheetColor = txn.sheet_color
   if (sheetColor === 'vert' && txn.qb_txn_id) return 'rapproche'
   const docInQb = txn.matched_id ? !!matchedDocQbId(txn.matched_type, txn.matched_id) : false
   if (docInQb || txn.qb_txn_id || sheetColor === 'jaune') return 'comptabilise'
@@ -423,8 +461,6 @@ export function deriveStatus(txn, { isPlaidAccount = false } = {}) {
 // Recalcule le statut des transactions non figées d'un compte : une facture
 // poussée à QB après le matching fait passer la ligne bleu → jaune sans action.
 export function refreshStatuses(accountId) {
-  const account = db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=?').get(accountId)
-  const isPlaidAccount = !!account?.plaid_account_id
   const rows = db.prepare(`
     SELECT id, status, matched_type, matched_id, reconciled_at, sheet_color, qb_txn_id, transfer_txn_id
     FROM bank_transactions
@@ -435,7 +471,7 @@ export function refreshStatuses(accountId) {
   `)
   let changed = 0
   for (const t of rows) {
-    const next = deriveStatus(t, { isPlaidAccount })
+    const next = deriveStatus(t)
     if (next !== t.status) { update.run(next, t.id); changed++ }
   }
   return changed
@@ -445,7 +481,6 @@ export function refreshStatuses(accountId) {
 // ambiguïté au sommet) ; le reste passe par les suggestions dans l'UI.
 export function autoMatchAccount(accountId) {
   invalidateVendorProfilesCache()
-  const isPlaidAccount = !!db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=?').get(accountId)?.plaid_account_id
   const txns = db.prepare(`
     SELECT * FROM bank_transactions
     WHERE account_id=? AND deleted_at IS NULL AND matched_id IS NULL AND status IN ('a_traiter')
@@ -464,7 +499,7 @@ export function autoMatchAccount(accountId) {
     if (!best || best.confidence < 0.8) continue
     if (candidates[1] && candidates[1].confidence >= best.confidence - 0.05) continue
     takenThisRun.add(`${best.type}:${best.id}`)
-    const status = deriveStatus({ ...txn, matched_type: best.type, matched_id: best.id }, { isPlaidAccount })
+    const status = deriveStatus({ ...txn, matched_type: best.type, matched_id: best.id })
     update.run(best.type, best.id, best.confidence, status, txn.id)
     matched++
   }
@@ -535,8 +570,7 @@ export function autoMatchReceipt(receiptId) {
   if (eligible.length !== 1) return { scanned: txns.length, matched: 0, ambiguous: eligible.length > 1 }
 
   const { txn, confidence } = eligible[0]
-  const isPlaidAccount = !!db.prepare('SELECT plaid_account_id FROM bank_accounts WHERE id=?').get(txn.account_id)?.plaid_account_id
-  const status = deriveStatus({ ...txn, matched_type: 'receipt', matched_id: String(receipt.id) }, { isPlaidAccount })
+  const status = deriveStatus({ ...txn, matched_type: 'receipt', matched_id: String(receipt.id) })
   db.prepare(`
     UPDATE bank_transactions
     SET matched_type='receipt', matched_id=?, match_method='auto', match_confidence=?,

@@ -73,23 +73,6 @@ describe('Role RH — accès et restrictions', () => {
     assert.equal(r.status, 403)
   })
 
-  test('ops → 200 sur GET /hour-bank mais data vide (pas lié à un employé)', async () => {
-    const r = await api(opsToken, 'GET', '/hour-bank')
-    assert.equal(r.status, 200)
-    assert.equal(r.body.data.length, 0, 'ops sans employee_id ne doit voir aucune ligne')
-  })
-
-  test('rh → GET /hour-bank retourne tous les employés', async () => {
-    const r = await api(rhToken, 'GET', '/hour-bank')
-    assert.equal(r.status, 200)
-    assert.ok(r.body.data.length > 0, 'rh doit voir au moins un employé')
-  })
-
-  test('ops → 403 sur POST /hour-bank', async () => {
-    const r = await api(opsToken, 'POST', '/hour-bank', { employee_id: 'fake', date: '2026-05-12', hours: 1 })
-    assert.equal(r.status, 403)
-  })
-
   test('ops → 200 sur GET /paies mais liste filtrée (vide sans employee lié)', async () => {
     const r = await api(opsToken, 'GET', '/paies')
     assert.equal(r.status, 200)

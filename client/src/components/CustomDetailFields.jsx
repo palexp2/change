@@ -64,13 +64,16 @@ export function isLinkCustomField(f) {
 // `selectPills` : variante d'affichage d'une Sélection — la valeur choisie et
 // les options du menu portent la pastille de couleur configurée sur le champ,
 // comme dans les tableaux. Par défaut l'éditeur reste en texte simple.
-export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false }) {
+//
+// `linkFilter` : pour un champ LIEN, restriction supplémentaire des candidats
+// proposés, décidée par la fiche (cf. LinkedRecordsValue → `extraFilter`).
+export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false, linkFilter = null }) {
   const commit = v => onSave?.(field.key, v)
   // Champ lien : la valeur est un (ou des) identifiant(s) de fiche — pastille
   // cliquable + picker recherchable de la table cible, le même dans toutes les
   // fiches. Traité avant le switch : son type STOCKÉ est 'text'.
   if (isLinkCustomField(field)) {
-    return <LinkedRecordsValue field={field.field} value={value} detail onChange={commit} saving={saving} />
+    return <LinkedRecordsValue field={field.field} value={value} detail onChange={commit} saving={saving} extraFilter={linkFilter} />
   }
   switch (field.type) {
     // Attachement : s'écrit tout seul par sa route de dépôt (les octets partent

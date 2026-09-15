@@ -999,7 +999,6 @@ export const CORE_PLANS = {
       order:     ['order_id', 'link_order'],
       product:   ['product_id', 'link_product_order_item'],
       qty:       ['qty', 'qtyInt1'],
-      unit_cost: ['unit_cost', 'floatClean0'],
       notes:     ['notes', 'text'],
     },
     // Un item dont la commande n'est pas (encore) importée est sauté :
@@ -1535,8 +1534,17 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
  * 'legacy' pour annuler, prend effet immédiatement, sans redémarrage.
  */
 export async function routeSync(mirrorId, changes, legacyFn) {
-  if (usesUnifiedEngine(mirrorId)) return syncMirror(mirrorId, changes)
-  return legacyFn(changes)
+  const out = usesUnifiedEngine(mirrorId) ? await syncMirror(mirrorId, changes) : await legacyFn(changes)
+  // Les achats créés à l'instant arrivent sans leur code LIA (formule Airtable pas
+  // encore calculée au moment du webhook). On le récupère tout de suite après le
+  // sync — sans quoi l'achat reste invisible du rattachement des factures.
+  if (mirrorId === 'achats') {
+    try {
+      const { healMissingLiaCodes } = await import('./purchaseLiaCodeHeal.js')
+      await healMissingLiaCodes()
+    } catch (e) { console.warn(`Achats : récupération des codes LIA impossible (${e.message})`) }
+  }
+  return out
 }
 
 // Exposé UNIQUEMENT pour les tests. Les deux comportements que le moteur

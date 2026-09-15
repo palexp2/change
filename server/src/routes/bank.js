@@ -15,6 +15,9 @@ import { summarizeAccount, compareWithQb } from '../services/bankReconcileSummar
 import { auditPlaidAccountVsQb } from '../services/plaidQbAudit.js'
 import { planRepair, applyRepair } from '../services/bankImportRepair.js'
 import { mergeSheetDuplicates, countSheetDuplicates } from '../services/plaidSync.js'
+import { resolveVendorFromBankLabel, invalidateBankLabelCache } from '../services/scrapers/vendorFromBankLabel.js'
+import { proposalsForTxn, proposalSummary, decode as decodeProposal } from '../services/bankProposals/store.js'
+import { acceptProposal, refuseProposal } from '../services/bankProposals/apply.js'
 import {
   BankActionError, suggestAddDefaults, addExpenseFromTxn,
   findTransferCandidates, linkTransfer, unlinkTransfer, pushTransferToQB,
@@ -110,10 +113,19 @@ router.get('/accounts/:id/transactions', (req, res) => {
     FROM bank_transactions t JOIN bank_accounts a ON a.id = t.account_id
     WHERE t.id = ?
   `)
+  // Le fournisseur derrière le libellé, pour les lignes SANS document : c'est
+  // la seule information qui manquait pour lire le relevé sans l'interpréter
+  // (« COMPTE DIVERS DT NETHRIS PAIE » ne dit pas « Nethris »). La résolution
+  // est locale et mise en cache côté service ; `null` dès que deux profils
+  // revendiquent le libellé avec la même force — on ne devine pas.
   for (const t of rows) {
     // Lien direct trouvé via le grand livre QB (linkAccountToQb) — prioritaire,
     // et seul disponible pour l'historique rapproché sans document ERP.
     t.qb_url = storedQbUrl(t)
+    if (!t.matched_id && !t.transfer_txn_id) {
+      const hit = resolveVendorFromBankLabel(t.label)
+      if (hit) t.resolved_vendor = { profile_id: hit.profile.id, name: hit.profile.name, via: hit.via }
+    }
     if (t.transfer_txn_id) {
       const o = transferInfo.get(t.transfer_txn_id)
       t.transfer_account_id = o?.account_id || null
@@ -141,6 +153,16 @@ router.get('/accounts/:id/transactions', (req, res) => {
     }
     t.matched_label = doc?.vendor || null
   }
+  // Une seule colonne « Fournisseur » à l'écran : le document apparié fait foi,
+  // sinon le nom deviné du libellé. Champ à plat pour que le tri, la recherche
+  // et les filtres du tableau fonctionnent comme sur n'importe quelle colonne.
+  for (const t of rows) t.vendor_name = t.matched_label || t.resolved_vendor?.name || null
+  // Ce qui attend une décision sur cette ligne (une requête pour tout le compte).
+  const pending = new Map(db.prepare(`
+    SELECT bank_txn_id, COUNT(*) n FROM bank_proposals
+    WHERE status='proposee' AND account_id=? GROUP BY bank_txn_id
+  `).all(account.id).map((r) => [r.bank_txn_id, r.n]))
+  for (const t of rows) t.proposal_count = pending.get(t.id) || 0
   res.json(rows)
 })
 
@@ -148,13 +170,10 @@ router.get('/accounts/:id/transactions', (req, res) => {
 router.post('/accounts/:id/import', (req, res) => {
   const account = getAccount(req.params.id)
   if (!account) return res.status(404).json({ error: 'Not found' })
-  // Compte branché à Plaid : la banque alimente déjà la table, et la clé de
-  // dédup d'un collage (signature date+montant) ne voit pas les clés Plaid
-  // (plaid:<transaction_id>) — coller un relevé y créerait un doublon par
-  // ligne. Même règle que la sync TRX_Orisha (bankTrxSheet.js).
-  if (account.plaid_account_id) {
-    return res.status(409).json({ error: `« ${account.name} » est branché à la banque (Plaid) — les transactions arrivent toutes seules, un collage créerait des doublons.` })
-  }
+  // Le collage était refusé sur un compte branché à Plaid (doublon garanti :
+  // les deux sources ne partagent pas leur clé de dédup). Plaid n'écrit plus
+  // dans la table depuis le 2026-09-12 (services/plaidSync.js) — le collage
+  // redevient permis partout, comme la sync TRX_Orisha.
   let rows = []
   let parseErrors = []
   if (Array.isArray(req.body.rows)) {
@@ -360,6 +379,140 @@ router.post('/transactions/reconcile', (req, res) => {
   res.json({ changed })
 })
 
+// ── Propositions ────────────────────────────────────────────────────────────
+// « Elle prépare, vous confirmez » : les moteurs déposent ici ce qu'ils ont
+// trouvé, l'humain tranche. Un refus est définitif (voir bankProposals/model).
+
+router.get('/proposals', (req, res) => {
+  const { status = 'proposee', kind, account_id: accountId, limit } = req.query
+  const where = ['p.status = ?']
+  const args = [status]
+  if (kind) { where.push('p.kind = ?'); args.push(kind) }
+  if (accountId) { where.push('p.account_id = ?'); args.push(accountId) }
+  const rows = db.prepare(`
+    SELECT p.*, t.txn_date, t.amount AS txn_amount,
+           COALESCE(NULLIF(t.details,''), t.description) AS txn_label,
+           a.name AS account_name, a.currency
+    FROM bank_proposals p
+    JOIN bank_transactions t ON t.id = p.bank_txn_id
+    LEFT JOIN bank_accounts a ON a.id = p.account_id
+    WHERE ${where.join(' AND ')}
+    ORDER BY t.txn_date DESC
+    LIMIT ?
+  `).all(...args, Math.min(Number(limit) || 200, 500))
+  res.json(rows.map(decodeProposal))
+})
+
+router.get('/proposals/summary', (req, res) => {
+  res.json(proposalSummary(req.query.account_id || null))
+})
+
+router.get('/transactions/:id/proposals', (req, res) => {
+  res.json(proposalsForTxn(req.params.id))
+})
+
+router.post('/proposals/:id/accept', async (req, res) => {
+  try {
+    res.json(await acceptProposal(req.params.id, req.user?.id))
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+router.post('/proposals/:id/refuse', (req, res) => {
+  try {
+    res.json(refuseProposal(req.params.id, req.user?.id, req.body?.note || null))
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+// En lot : chaque proposition est indépendante — un échec QuickBooks sur l'une
+// ne doit pas annuler les autres.
+router.post('/proposals/accept', async (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : []
+  const accepted = []
+  const failed = []
+  for (const id of ids) {
+    try { accepted.push((await acceptProposal(id, req.user?.id)).id) }
+    catch (e) { failed.push({ id, error: e.message }) }
+  }
+  res.json({ accepted: accepted.length, failed })
+})
+
+router.post('/proposals/refuse', (req, res) => {
+  const ids = Array.isArray(req.body?.ids) ? req.body.ids : []
+  let refused = 0
+  const failed = []
+  for (const id of ids) {
+    try { refuseProposal(id, req.user?.id, req.body?.note || null); refused++ }
+    catch (e) { failed.push({ id, error: e.message }) }
+  }
+  res.json({ refused, failed })
+})
+
+// « Ce libellé, c'est ce fournisseur » : apprend un motif de relevé sur la
+// fiche du fournisseur, depuis la ligne bancaire. Sans ça il fallait ouvrir
+// /fournisseurs, retrouver le profil et y coller le motif à la main.
+// Le cache de résolution est vidé tout de suite — sinon le motif met jusqu'à
+// 30 secondes à prendre effet et l'utilisateur croit que ça n'a pas marché.
+router.post('/transactions/:id/vendor-pattern', (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  const profileId = String(req.body?.profile_id || '').trim()
+  const pattern = String(req.body?.pattern || '').trim()
+  if (!profileId || pattern.length < 3) {
+    return res.status(400).json({ error: 'profile_id et un motif d\'au moins 3 caractères sont requis' })
+  }
+  const profile = db.prepare('SELECT id, name, bank_label_patterns FROM vendor_profiles WHERE id=?').get(profileId)
+  if (!profile) return res.status(404).json({ error: 'Fournisseur introuvable' })
+  let patterns = []
+  try { patterns = JSON.parse(profile.bank_label_patterns || '[]') } catch { patterns = [] }
+  if (!patterns.some((p) => String(p).toLowerCase() === pattern.toLowerCase())) patterns.push(pattern)
+  db.prepare(`UPDATE vendor_profiles SET bank_label_patterns=?, updated_at=${NOW} WHERE id=?`)
+    .run(JSON.stringify(patterns), profile.id)
+  invalidateBankLabelCache()
+  res.json({ ok: true, vendor: profile.name, patterns })
+})
+
+// L'écriture QuickBooks de la ligne, telle que QuickBooks l'affiche — pour
+// confirmer sans aller-retour dans QBO. Lecture seule, et le lien direct vers
+// QBO est toujours renvoyé même quand le détail ne se lit pas.
+router.get('/transactions/:id/qb-entry', async (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  if (!txn.qb_txn_id || !txn.qb_txn_type) {
+    return res.status(404).json({ error: 'Aucune écriture QuickBooks liée à cette ligne' })
+  }
+  const { fetchQbEntry } = await import('../services/qbEntry.js')
+  res.json({
+    ...(await fetchQbEntry(txn.qb_txn_type, txn.qb_txn_id)),
+    match_method: txn.qb_match_method || null,
+    match_delta: txn.qb_match_delta ?? null,
+    match_account: txn.qb_match_account || null,
+    match_rate: txn.qb_match_rate || null,
+    bank_amount: txn.amount,
+    bank_date: txn.txn_date,
+  })
+})
+
+// « Ce n'est pas ça » : le lien proposé est refusé. On efface le lien, PAS
+// l'écriture QuickBooks — elle existe, elle appartient juste à une autre
+// ligne. La recherche approfondie pourra en proposer une autre.
+router.delete('/transactions/:id/qb-link', (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  db.prepare(`
+    UPDATE bank_transactions
+    SET qb_txn_type=NULL, qb_txn_id=NULL, qb_match_method=NULL, qb_match_delta=NULL,
+        qb_match_account=NULL, qb_match_rate=NULL, reconciled_at=NULL, reconciled_by=NULL,
+        updated_at=${NOW}
+    WHERE id=?
+  `).run(txn.id)
+  refreshStatuses(txn.account_id)
+  res.json(getTxn(txn.id))
+})
+
 // Édition libre : commentaire, statut ignore, date/montant (correction de collage).
 const TXN_FIELDS = ['comment', 'txn_date', 'description', 'details', 'reference', 'amount', 'balance']
 
@@ -408,7 +561,8 @@ router.get('/transactions/:id/add-defaults', (req, res) => {
 })
 
 // Comptabilise une ligne sans document : crée l'achat puis le publie.
-// body: { vendor, expense_account_id, tax_code_id?, tax_cad?, memo?, payment_account_id?, push_qb=true }
+// body: { vendor, expense_account_id, tax_code_id?, tax_cad?, memo?, payment_account_id?,
+//         qb_type?, doc_number?, payment_method?, due_date?, push_qb=true }
 router.post('/transactions/:id/add-expense', async (req, res) => {
   const txn = getTxn(req.params.id)
   if (!txn) return res.status(404).json({ error: 'Not found' })
@@ -434,7 +588,9 @@ router.post('/transactions/:id/add-expense', async (req, res) => {
         learnFromPush({
           company: String(req.body.vendor).trim(),
           txnCurrency: account.currency || 'CAD',
-          type: 'purchase',
+          // Le type publié, pas « purchase » en dur : si ce fournisseur se
+          // traite en facture fournisseur, le profil doit l'apprendre.
+          type: ['purchase', 'bill', 'cc_credit'].includes(req.body.qb_type) ? req.body.qb_type : 'purchase',
           expenseAccountId: req.body.expense_account_id,
           paymentAccountId: req.body.payment_account_id || null,
           taxCodeId: req.body.tax_code_id || null,

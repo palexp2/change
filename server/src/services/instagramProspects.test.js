@@ -17,6 +17,32 @@ test("normalizeUsername : retire l'arrobas et les espaces, garde la casse", () =
   assert.equal(normalizeUsername(null), null)
 })
 
+test('buildWeeklyMessage : ventile par origine dès qu’un prospect ne vient pas d’un commentaire', () => {
+  const day = '2026-09-14'
+  const commentOnly = buildWeeklyMessage(
+    [{ capture_kind: 'comment' }, { capture_kind: 'comment' }], { dayIso: day }
+  )
+  // Une seule origine = une seule puce, et le total vit dans le titre.
+  assert.ok(commentOnly.includes('*2 prospects · '), commentOnly)
+  assert.ok(commentOnly.includes('\n• 2 commentaires'), commentOnly)
+
+  const mixed = buildWeeklyMessage(
+    [
+      { capture_kind: 'comment' }, { capture_kind: 'comment' },
+      { capture_kind: 'follow' }, { capture_kind: 'dm_in' }, { capture_kind: 'story_reaction' },
+    ],
+    { dayIso: day }
+  )
+  assert.ok(mixed.includes('\n• 2 commentaires'), mixed)
+  assert.ok(mixed.includes('\n• 1 abonné'), mixed)
+  assert.ok(mixed.includes('\n• 1 message privé'), mixed)
+  assert.ok(mixed.includes('\n• 1 réaction de story'), mixed)
+
+  // Semaine vide : même forme, une puce.
+  const empty = buildWeeklyMessage([], { dayIso: day })
+  assert.ok(empty.includes('• Personne de nouveau cette semaine.'), empty)
+})
+
 test('dedupKeyFor : IGSID prioritaire, repli sur le nom d’usager en minuscules', () => {
   assert.equal(dedupKeyFor({ ig_user_id: '17841', ig_username: 'Jean' }), 'igsid:17841')
   assert.equal(dedupKeyFor({ ig_username: '@Jean' }), 'user:jean')
@@ -61,9 +87,9 @@ test('weekRangeLabel : dates en clair, y compris à cheval sur deux mois', () =>
 
 test('buildWeeklyMessage : liste vide → message explicite (un silence = panne)', () => {
   const msg = buildWeeklyMessage([], { dayIso: '2026-08-24' })
-  assert.match(msg, /Aucun nouveau prospect/)
+  assert.match(msg, /Personne de nouveau cette semaine/)
   // Le numéro ISO ne parle à personne : l'en-tête doit porter les dates.
-  assert.match(msg, /du 17 au 23 août/)
+  assert.match(msg, /17 au 23 août/)
   assert.equal(msg.includes('2026-W'), false)
 })
 
@@ -82,14 +108,14 @@ test('buildWeeklyMessage : résumé chiffré seulement, jamais la liste des pros
     erpUrl: 'https://customer.orisha.io/erp/prospects-instagram',
   })
 
-  assert.match(msg, /3 prospect\(s\) · dont 2 avec le mot-clé · 1 DM envoyé\(s\) · 1 a répondu/)
+  assert.match(msg, /3 prospects ·/)
   // Le détail vit dans l'ERP et Airtable : aucun nom d'usager ni commentaire
   // ne doit se retrouver dans Slack.
   assert.equal(msg.includes('@jardin.serre'), false)
   assert.equal(msg.includes('beau produit'), false)
   assert.equal(msg.includes('Mot-clé'), false)
-  assert.match(msg, /<https:\/\/customer\.orisha\.io\/erp\/prospects-instagram\|Ouvrir la liste dans l'ERP>/)
-  assert.match(msg, /<https:\/\/airtable\.com\/appX\/tblY\|Ouvrir dans Airtable>/)
+  assert.match(msg, /<https:\/\/customer\.orisha\.io\/erp\/prospects-instagram\|ERP>/)
+  assert.match(msg, /<https:\/\/airtable\.com\/appX\/tblY\|Airtable>/)
 })
 
 test('buildWeeklyMessage : « dont N avec le mot-clé » disparaît quand tous en ont un', () => {
@@ -117,8 +143,8 @@ test('splitByWeek : sépare la semaine couverte de l’arriéré', () => {
 test('buildWeeklyMessage : mentionne l’arriéré sans le compter dans le portrait de la semaine', () => {
   const prospects = [{ ig_username: 'a', has_keyword: 0, dm_sent: 1, replied: 0 }]
   const msg = buildWeeklyMessage(prospects, { dayIso: '2026-08-24', backlogCount: 3 })
-  assert.match(msg, /^:camera_with_flash:.*\n1 prospect\(s\)/)
-  assert.match(msg, /\(\+3 des semaines précédentes, déjà inclus dans la liste\)/)
+  assert.match(msg, /^:camera_with_flash: \*1 prospect ·/)
+  assert.match(msg, /• \+3 des semaines passées/)
 })
 
 test('buildWeeklyMessage : aucune mention d’arriéré quand il n’y en a pas', () => {

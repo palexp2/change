@@ -87,6 +87,14 @@ const ROLLUP_AGG_OPTIONS = [
   { value: 'ARRAY', label: 'ARRAY' },
   { value: 'ARRAYUNIQUE', label: 'UNIQUE' },
 ]
+
+// Lookup : nombre d'enregistrements liés récupérés (borne serveur : 1 à 50).
+const LOOKUP_LIMIT_MAX = 50
+function clampLookupLimit(v) {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return 1
+  return Math.min(LOOKUP_LIMIT_MAX, Math.max(1, n))
+}
 const isArrayAgg = agg => agg === 'ARRAY' || agg === 'ARRAYUNIQUE'
 
 // Styles d'un champ Bouton (alignés sur BUTTON_STYLES serveur + BUTTON_STYLE_CLS client).
@@ -1159,6 +1167,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         lookup_fk: editing.lookup_fk || '',
         lookup_target_table: editing.lookup_target_table || '',
         lookup_target_column: editing.lookup_target_column || '',
+        lookup_limit_n: editing.lookup_limit_n ?? null,
+        lookup_limit_dir: editing.lookup_limit_dir || null,
         rollup_target_table: editing.rollup_target_table || '',
         rollup_target_fk: editing.rollup_target_fk || '',
         rollup_target_column: editing.rollup_target_column || '',
@@ -1232,6 +1242,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setLookupFk(editing.lookup_fk || '')
       setLookupTargetTable(editing.lookup_target_table || '')
       setLookupTargetColumn(editing.lookup_target_column || '')
+      setLookupLimitDir(editing.lookup_limit_n ? (editing.lookup_limit_dir || 'first') : '')
+      setLookupLimitN(String(editing.lookup_limit_n || 1))
       setRollupSource(editing.rollup_target_table ? `${editing.rollup_target_table}::${editing.rollup_target_fk}` : '')
       setRollupColumn(editing.rollup_target_column || '')
       setRollupAgg(editing.rollup_agg || 'SUM')
@@ -1271,6 +1283,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setLookupFk('')
       setLookupTargetTable('')
       setLookupTargetColumn('')
+      setLookupLimitDir('')
+      setLookupLimitN('1')
       setRollupSource('')
       setRollupColumn('')
       setRollupAgg('SUM')
@@ -1695,6 +1709,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         lookup_fk: lookupFk,
         lookup_target_table: lookupTargetTable,
         lookup_target_column: lookupTargetColumn,
+        lookup_limit_n: lookupLimitDir ? clampLookupLimit(lookupLimitN) : null,
+        lookup_limit_dir: lookupLimitDir || null,
       })
     } else if (kind === 'rollup') {
       if (!rollupTable || !rollupFk) { setError('Choisir une table liée'); return }
@@ -1750,6 +1766,22 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
 
   // Autosave d'un rollup en édition : ne PATCH que si la config est complète et
   // a changé. Les valeurs sont passées explicitement (setState est asynchrone).
+  // Limite « N premiers / derniers enregistrements liés » d'un lookup. Valeurs
+  // passées explicitement (setState asynchrone), à la Rollup. Rien ne part tant
+  // que la config du lookup est incomplète : le serveur la rejetterait.
+  function maybeAutosaveLookupLimit({ dir = lookupLimitDir, n = lookupLimitN } = {}) {
+    if (!editing) return
+    if (!lookupFk || !lookupTargetTable || !lookupTargetColumn) return
+    const payload = {
+      lookup_limit_n: dir ? clampLookupLimit(n) : null,
+      lookup_limit_dir: dir || null,
+    }
+    const ls = lastSaved.current
+    if ((ls.lookup_limit_n ?? null) === payload.lookup_limit_n &&
+        (ls.lookup_limit_dir ?? null) === payload.lookup_limit_dir) return
+    autosave(payload)
+  }
+
   function maybeAutosaveRollup({ agg = rollupAgg, table = rollupTable, fk = rollupFk, column = rollupColumn }) {
     if (!editing) return
     if (!table || !fk) return
@@ -1865,6 +1897,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           lookup_fk: lookupFk,
           lookup_target_table: lookupTargetTable,
           lookup_target_column: lookupTargetColumn,
+          ...(lookupLimitDir
+            ? { lookup_limit_n: clampLookupLimit(lookupLimitN), lookup_limit_dir: lookupLimitDir }
+            : {}),
           // Format déduit du champ récupéré, côté serveur.
           ...descPayload,
         })
@@ -2308,6 +2343,45 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                   Format : {RESULT_TYPE_LABELS[lookupFormat] || RESULT_TYPE_LABELS.text}
                 </p>
               )}
+            </div>
+            {/* Un champ de référence peut porter PLUSIEURS enregistrements liés
+                (champ lien Airtable). Sans limite, seul un lien direct est suivi ;
+                avec, on garde les n premiers / derniers de la liste. */}
+            <div>
+              <label className="label">Enregistrements liés</label>
+              <div className="flex items-center gap-1.5">
+                <select
+                  value={lookupLimitDir}
+                  onChange={e => {
+                    const dir = e.target.value
+                    setLookupLimitDir(dir)
+                    maybeAutosaveLookupLimit({ dir })
+                  }}
+                  className="input text-sm"
+                  data-testid="cf-lookup-limit-dir"
+                >
+                  <option value="">Tous</option>
+                  <option value="first">Les n premiers</option>
+                  <option value="last">Les n derniers</option>
+                </select>
+                {lookupLimitDir && (
+                  <input
+                    type="number" min="1" max={LOOKUP_LIMIT_MAX}
+                    value={lookupLimitN}
+                    onChange={e => setLookupLimitN(e.target.value)}
+                    onBlur={() => {
+                      const n = clampLookupLimit(lookupLimitN)
+                      setLookupLimitN(String(n))
+                      maybeAutosaveLookupLimit({ n })
+                    }}
+                    className="input text-sm w-20"
+                    data-testid="cf-lookup-limit-n"
+                  />
+                )}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Ordre du champ de référence. Au-delà de 1, valeurs listées.
+              </p>
             </div>
           </>
         )}

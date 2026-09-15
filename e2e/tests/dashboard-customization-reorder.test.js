@@ -74,8 +74,6 @@ describe('Dashboard — Personnalisation : réordonner les cartes', () => {
       'section_shipping_costs',
       'section_top_products',
       'section_inventory_valuation',
-      'section_tickets_monthly',
-      'section_support_weekly',
       'section_project_goal',
     ]
     await page.evaluate((order) => {

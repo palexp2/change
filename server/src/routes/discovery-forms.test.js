@@ -27,8 +27,13 @@ test('distance du contrôleur : validation, persistance, aperçu et commande', a
     const invalid = await api('POST', path + '/save', { within_central_controller_range: 'false' }, true)
     assert.equal(invalid.body.response.within_central_controller_range, null)
     await api('POST', path + '/save', { within_central_controller_range: !answer }, true)
-    const saved = await api('POST', path + '/save', { within_central_controller_range: answer }, true)
+    // Le choix exact (250 pi, 350 pi avec coaxial, plus loin) voyage à côté du
+    // booléen qui décide du contrôleur central à fournir.
+    const distance = answer ? 'coax_350' : 'no'
+    const saved = await api('POST', path + '/save', { within_central_controller_range: answer, central_controller_distance: distance }, true)
     assert.equal(saved.body.response.within_central_controller_range, answer)
+    assert.equal(saved.body.response.central_controller_distance, distance)
+    assert.equal((await api('GET', `/discovery-forms/${form.id}`)).body.central_controller_distance, distance)
     assert.equal((await api('GET', path, undefined, true)).body.response.within_central_controller_range, answer)
     assert.equal((await api('GET', `/discovery-forms/${form.id}`)).body.within_central_controller_range, answer)
     const preview = await api('GET', `/discovery-forms/${form.id}/equipment-preview`)
@@ -184,4 +189,69 @@ test('commande de louvre inconnue : sauvegarde, envoi et signalement au vérific
   assert.equal(preview.body.calculationComplete, false)
   assert.match(preview.body.warnings.find(w => w.code === 'louver_call_client').message, /Louvre #1.*appeler le client/)
   assert.equal((await api('POST', `/discovery-forms/${form.id}/create-order`)).status, 422)
+})
+
+test('irrigation : envoi sans paiement et ancien checkout désactivé', async () => {
+  db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('irrigation-company', 'Irrigation fixture')
+  for (const zones of [[0], [4], [5], [9], [3, 3], [2, 5]]) {
+    const created = await api('POST', '/discovery-forms', { company_id: 'irrigation-company', chief_count: zones.length })
+    assert.equal(created.status, 201, JSON.stringify(created.body))
+    const path = `/customer/post-payment/by-token/${created.body.public_token}`
+    const greenhouses = zones.map(irrigation_zones => ({ permission_level: 'chief_grower', has_louvers: false, irrigation_zones }))
+    const saved = await api('POST', path + '/save', { is_new_site: 'new', greenhouses }, true)
+    assert.equal(saved.status, 200)
+    assert.equal(saved.body.response.valve_blocks_paid, false)
+    const invoicesBefore = db.prepare('SELECT COUNT(*) AS count FROM pending_invoices').get().count
+    const checkout = await api('POST', path + '/valve-blocks-checkout', { pricing: 'one_time' }, true)
+    assert.equal(checkout.status, 410)
+    assert.equal(checkout.body.code, 'valve_blocks_sales_followup')
+    assert.equal(checkout.body.checkout_url, undefined)
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM pending_invoices').get().count, invoicesBefore)
+    const sent = await api('POST', path + '/submit', undefined, true)
+    assert.equal(sent.status, 200, JSON.stringify(sent.body))
+    assert.equal(sent.body.response.status, 'submitted')
+    assert.equal(sent.body.response.extras_pending_invoice_id, null)
+    const detail = await api('GET', `/discovery-forms/${created.body.id}`)
+    assert.deepEqual(detail.body.greenhouses.map(g => g.irrigation_zones), zones)
+    assert.equal((await api('POST', path + '/submit', undefined, true)).body.already_submitted, true)
+  }
+  assert.equal((await api('POST', '/customer/post-payment/by-token/missing-irrigation/valve-blocks-checkout', {}, true)).status, 404)
+})
+
+test('JWT : association typée, persistance, aperçu mixte et programmation dans la commande', async () => {
+  // La colonne de corbeille est normalement ajoutée par les migrations au
+  // démarrage ; ce harnais initialise uniquement schema.js sur une DB jetable.
+  if (!db.pragma('table_info(products)').some(c => c.name === 'deleted_at')) db.exec('ALTER TABLE products ADD COLUMN deleted_at TEXT')
+  db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('jwt-company', 'JWT fixture')
+  for (const [id, type] of [['jwt-ventilation', 'JWT'], ['jwt-prevention', 'JWT'], ['jwt-wrong-type', 'Pièce']]) {
+    db.prepare('INSERT INTO products (id, name_fr, type, active) VALUES (?, ?, ?, 1)').run(id, id, type)
+  }
+  for (const id of ['jwt-wrong-type', 'jwt-nonexistent']) {
+    const invalid = await api('PUT', '/discovery-form-schema', { equipment: { products: { jwt_disease_prevention: id } } })
+    assert.equal(invalid.status, 400, JSON.stringify(invalid.body))
+  }
+  const products = { jwt_advanced_ventilation: 'jwt-ventilation', jwt_disease_prevention: 'jwt-prevention' }
+  assert.equal((await api('PUT', '/discovery-form-schema', { equipment: { products } })).status, 200)
+  assert.deepEqual((await api('GET', '/discovery-form-schema')).body.schema.equipment.products, products)
+  const created = await api('POST', '/discovery-forms', { company_id: 'jwt-company', chief_count: 2, helper_count: 1 })
+  const form = created.body
+  const save = await api('POST', `/customer/post-payment/by-token/${form.public_token}/save`, {
+    is_new_site: 'new', greenhouses: [
+      { permission_level: 'chief_grower', num_fans: 2, has_roof_vents: true },
+      { permission_level: 'chief_grower' },
+      { permission_level: 'helper', num_fans: 2, has_roof_vents: true },
+    ],
+  }, true)
+  assert.equal(save.status, 200)
+  const preview = await api('GET', `/discovery-forms/${form.id}/equipment-preview`)
+  assert.deepEqual(preview.body.orderItems.map(i => [i.product_id, i.qty]), [['jwt-ventilation', 1], ['jwt-prevention', 2]])
+  const order = await api('POST', `/discovery-forms/${form.id}/create-order`)
+  assert.equal(order.status, 201)
+  const items = db.prepare('SELECT product_id, qty, notes FROM order_items WHERE order_id=?').all(order.body.id)
+  assert.deepEqual(items.map(i => [i.product_id, i.qty]), [['jwt-ventilation', 1], ['jwt-prevention', 2]])
+  assert(items.every(i => /programmer.*contrôleur central.*montage/.test(i.notes)))
+  db.prepare("UPDATE products SET type='Pièce' WHERE id='jwt-prevention'").run()
+  const invalidated = await api('GET', `/discovery-forms/${form.id}/equipment-preview`)
+  assert(invalidated.body.unconfigured.includes('jwt_disease_prevention'))
+  assert(!invalidated.body.orderItems.some(i => i.product_id === 'jwt-prevention'))
 })

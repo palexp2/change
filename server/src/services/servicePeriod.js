@@ -165,7 +165,10 @@ const valid = p => p && p.y >= 2000 && p.y <= 2100 && p.m >= 1 && p.m <= 12 && p
 // Cherche une période EXPLICITEMENT imprimée dans un texte (texte du PDF, descriptions
 // d'articles…). Deux formes : une phrase introduite par un mot-clé de période, ou un
 // intervalle « du X au Y ». Rien trouvé → null (on n'invente pas).
-export function findPeriodInText(text, receiptDate = null) {
+// Retourne les deux bornes en triplets {y,m,d} INCLUSIVES — `findPeriodInText` en
+// donne le libellé, les calculs d'étalement (revenus perçus d'avance) ont besoin
+// des dates.
+export function findPeriodRangeInText(text, receiptDate = null) {
   const src = norm(text)
   if (!src) return null
   const fallbackYear = parseIsoDate(receiptDate)?.y || new Date().getUTCFullYear()
@@ -191,9 +194,14 @@ export function findPeriodInText(text, receiptDate = null) {
     // Garde-fou : une « période » de plus de 18 mois n'en est pas une (on est
     // probablement tombé sur deux dates sans rapport).
     if ((end.y * 12 + end.m) - (start.y * 12 + start.m) > 18) continue
-    return formatPeriodRange(start, end)
+    return { start, end }
   }
   return null
+}
+
+export function findPeriodInText(text, receiptDate = null) {
+  const range = findPeriodRangeInText(text, receiptDate)
+  return range ? formatPeriodRange(range.start, range.end) : null
 }
 
 // ─── 3. Cycle de facturation déclaré (/abonnements-fournisseurs) ──────────────

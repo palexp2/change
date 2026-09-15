@@ -72,6 +72,7 @@ export const TABLE_LABELS = {
   ops_issues: "Problèmes d'opérations",
   payments: 'Paiements',
   bank_transactions: 'Rapprochement bancaire',
+  revenus_reportes: "Revenus perçus d'avance",
 }
 
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible?, description? }
@@ -148,6 +149,22 @@ export const TABLE_COLUMN_META = {
     { id: 'type',      label: 'Nature',     field: 'type',      type: 'single_select', options: ['Nouveauté', 'Amélioration', 'Correction'] },
     { id: 'requester', label: 'Demandé par', field: 'requester', type: 'user' },
     { id: 'summary',   label: 'Détail',     field: 'summary' },
+  ],
+
+  // Revenus perçus d'avance (/revenus-reportes) — lignes calculées par le
+  // serveur pour le mois choisi, pas une table de la base. Les montants sont en
+  // CAD, convertis au taux de l'encaissement.
+  revenus_reportes: [
+    { id: 'company_name',          label: 'Client',         field: 'company_name', width: 180 },
+    { id: 'document_number',       label: 'Facture',        field: 'document_number', width: 150 },
+    { id: 'source',                label: 'Source',         field: 'source', type: 'single_select', options: ['Stripe', 'Facture ERP'], width: 100 },
+    { id: 'periode',               label: 'Période',        field: 'periode', width: 195 },
+    { id: 'total_ht_cad',          label: 'Total HT',       field: 'total_ht_cad', type: 'number' },
+    { id: 'recognized_before_cad', label: 'Déjà constaté',  field: 'recognized_before_cad', type: 'number' },
+    { id: 'to_recognize_cad',      label: 'À constater',    field: 'to_recognize_cad', type: 'number' },
+    { id: 'remaining_cad',         label: 'Report restant', field: 'remaining_cad', type: 'number' },
+    { id: 'deferral_acctnum',      label: 'Compte report',  field: 'deferral_acctnum' },
+    { id: 'etat',                  label: 'État',           field: 'etat', type: 'single_select', options: ['Constaté', 'À constater', 'Reporté'] },
   ],
 
   // Codes d'activité — page de gestion (feuilles de temps). Édition inline via
@@ -331,10 +348,8 @@ export const TABLE_COLUMN_META = {
     // « Série remplacée » (colonne replaced_serial) retirée le 2026-09-03 :
     // redondante avec le champ Airtable « # de série remplacé » (de_serie_remplace),
     // seul conservé. La colonne SQL et son écriture serveur (retours) restent.
-    // « Coût unitaire » retirée le 2026-09-03 : le coût d'une ligne se lit dans
-    // « Coût total au moment de l'envoi », gelé à l'expédition. La colonne SQL
-    // unit_cost reste alimentée par Airtable et sert de base à ce gel pour les
-    // pièces sans numéro de série — elle n'est simplement plus affichée.
+    // « Coût unitaire actuel » supprimé définitivement (migration 068).
+    // Le coût des articles reste consultable au moment de l’envoi.
     // « Notes » (colonne notes) retirée le 2026-09-03 : les notes se prennent sur
     // la commande, pas ligne par ligne. Colonne SQL et écritures serveur intactes.
     // Retirées le 2026-09-03 (champs supprimés) : « Produit » (product_name —
@@ -711,6 +726,12 @@ export const TABLE_COLUMN_META = {
     { id: 'order_id',        label: 'Commande',     field: 'order_id',   defaultVisible: false },
     { id: 'address_id',      label: 'Adresse de livraison', field: 'address_id', defaultVisible: false },
     { id: 'tracking_number', label: 'N° de suivi',  field: 'tracking_number' },
+    // Lien de suivi chez le transporteur : champ DÉRIVÉ (transporteur + n° de
+    // suivi, voir lib/trackingUrl.js), calculé sur la ligne dans Envois.jsx pour
+    // être triable / filtrable / exportable comme un vrai champ. Aucune colonne
+    // SQL : vide quand le transporteur n'a pas d'URL connue (cueillette sur
+    // place, livraison en personne…).
+    { id: 'tracking_url',    label: 'Lien de suivi', field: 'tracking_url', type: 'url' },
     { id: 'carrier',         label: 'Transporteur', field: 'carrier' },
     { id: 'shipped_at',      label: 'Envoyé le',    field: 'shipped_at',  type: 'date' },
   ],
@@ -728,6 +749,9 @@ export const TABLE_COLUMN_META = {
     { id: 'amount',       label: 'Montant',     field: 'amount',      type: 'number', width: 120, defaultVisible: false },
     { id: 'balance',      label: 'Solde',       field: 'balance',     type: 'number', width: 124 },
     { id: 'status',       label: 'Statut',      field: 'status',      type: 'single_select', width: 132, options: ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore'] },
+    // Fournisseur : le document apparié quand il existe, sinon le fournisseur
+    // reconnu derrière le libellé du relevé (résolu côté serveur).
+    { id: 'vendor',       label: 'Fournisseur', field: 'vendor_name', width: 180 },
     { id: 'matched_label', label: 'Document',   field: 'matched_label', width: 200 },
     { id: 'match_confidence', label: 'Confiance', field: 'match_confidence', type: 'number', defaultVisible: false },
     // Rarement rempli, et il poussait les boutons d'action hors de l'écran.
@@ -1063,6 +1087,7 @@ export const TABLE_COLUMN_META = {
 
   public_files: [
     { id: 'original_name',    label: 'Nom du fichier',  field: 'original_name' },
+    { id: 'attachment',       label: 'Attachement',     field: 'token', type: 'attachment', width: 120, sortable: false, filterable: false, groupable: false, description: 'Aperçu du fichier. Cliquez sur la miniature pour l’agrandir.' },
     { id: 'folder',           label: 'Dossier',         field: 'folder' },
     { id: 'description',      label: 'Description',     field: 'description' },
     { id: 'tags',             label: 'Étiquettes',      field: 'tags', sortable: false },
@@ -1083,6 +1108,9 @@ export const TABLE_COLUMN_META = {
     { id: 'status',          label: 'Statut',         field: 'status', type: 'single_select', options: ['pending', 'processing', 'done', 'error'] },
     { id: 'quickbooks_id',   label: 'QuickBooks',     field: 'quickbooks_id' },
     { id: 'original_name',   label: 'Fichier',        field: 'original_name', defaultVisible: false },
+    // Le fichier récupéré lui-même, rendu comme un attachement (pastille/vignette
+    // cliquable, une par page). Dérivé de `pages` — aucune colonne SQL.
+    { id: 'justificatif',    label: 'Pièce justificative', field: 'justificatif', type: 'attachment', width: 170, sortable: false, filterable: false, groupable: false, description: 'Le document récupéré (courriel, portail, téléversement). Clic = ouvrir le fichier.' },
     { id: 'created_at',      label: 'Téléversé le',   field: 'created_at', type: 'date', defaultVisible: false },
     { id: 'archived_at',     label: 'Archivé le',     field: 'archived_at', type: 'date', defaultVisible: false },
     { id: 'read_at',         label: 'Lu le',          field: 'read_at', type: 'date', defaultVisible: false },

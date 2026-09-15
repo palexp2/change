@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-09-10T22:42:29.383Z",
+  "generatedAt": "2026-09-15T14:18:22.249Z",
   "stats": {
-    "routes": 82,
-    "pages": 73,
+    "routes": 88,
+    "pages": 76,
     "groups": 6,
-    "api": 102,
-    "tables": 159,
+    "api": 104,
+    "tables": 164,
     "connectors": 9
   },
   "groups": [
@@ -88,12 +88,12 @@ export const architectureManifest = {
           "api": "/api/discovery-forms"
         },
         {
-          "to": "/prospects-instagram",
-          "label": "Prospects Instagram",
-          "component": "InstagramProspects",
+          "to": "/instagram",
+          "label": "Instagram",
+          "component": "Instagram",
           "adminOnly": false,
           "hrOnly": false,
-          "api": null
+          "api": "/api/instagram"
         }
       ]
     },
@@ -501,6 +501,14 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/revenus-reportes",
+      "label": "RevenusReportes",
+      "component": "RevenusReportes",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/travaux",
       "label": "Travaux",
       "component": "Travaux",
@@ -544,6 +552,22 @@ export const architectureManifest = {
       "to": "/rapprochement",
       "label": "RapprochementBancaire",
       "component": "RapprochementBancaire",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/regles-bancaires",
+      "label": "ReglesBancaires",
+      "component": "ReglesBancaires",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/propositions",
+      "label": "Propositions",
+      "component": "Propositions",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -648,6 +672,7 @@ export const architectureManifest = {
     "/api/auth",
     "/api/automations",
     "/api/bank",
+    "/api/bank/rules",
     "/api/bons-livraison",
     "/api/bootstrap",
     "/api/calls",
@@ -662,6 +687,7 @@ export const architectureManifest = {
     "/api/custom-fields",
     "/api/customer/post-payment",
     "/api/dashboard",
+    "/api/deferred-revenue",
     "/api/digikey",
     "/api/discovery-form-schema",
     "/api/discovery-forms",
@@ -769,6 +795,8 @@ export const architectureManifest = {
     "automations",
     "bank_accounts",
     "bank_import_batches",
+    "bank_proposals",
+    "bank_rules",
     "bank_transactions",
     "base_connector_configs",
     "base_interaction_attachments",
@@ -779,11 +807,13 @@ export const architectureManifest = {
     "card_ceiling_alerts",
     "card_ceilings",
     "card_payment_dues",
+    "card_statements",
     "carm_allocations",
     "carm_transactions",
     "companies",
     "connector_config",
     "connector_oauth",
+    "connector_sessions",
     "contact_companies",
     "contacts",
     "custom_field_links",
@@ -839,6 +869,7 @@ export const architectureManifest = {
     "products",
     "projects",
     "public_files",
+    "purchase_order_numbers",
     "purchases",
     "qb_attachments",
     "qualification_calls",

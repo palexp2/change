@@ -24,40 +24,26 @@ describe('Achats — suppression d\'une ligne', () => {
   after(async () => { await browser?.close() })
 
   test('DELETE /api/purchases/:id supprime la ligne', async () => {
+    // L'achat supprimé est CRÉÉ par le test : aucune vraie donnée n'est touchée.
+    // Depuis la migration 035, POST /purchases n'exige plus rien — un achat naît
+    // vide, on n'y pose qu'un emplacement pour le reconnaître.
     const result = await page.evaluate(async () => {
       const token = localStorage.getItem('erp_token')
-      // Trouver un product_id pour rattacher un achat jetable
-      const prods = await fetch('/erp/api/products?limit=all', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
-      const list = prods.data || prods
-      const pid = list[0]?.id
-      if (!pid) return { error: 'no product' }
+      const h = { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
 
-      // Pas d'endpoint POST purchases → on crée via le path existant: envoyer un faux PO n'est pas possible sans Gmail.
-      // À la place, on vérifie le DELETE sur un achat existant en le recréant d'abord.
-      // Comme il n'y a pas de create endpoint, on se contente d'utiliser un achat existant et de vérifier le 404 après DELETE.
-      const all = await fetch('/erp/api/purchases?limit=all', { headers: { Authorization: `Bearer ${token}` } }).then(r => r.json())
-      const rows = all.data || all
-      if (!rows.length) return { error: 'no purchase to delete in DB' }
-
-      // On choisit un achat avec reference = "TEST*" pour ne pas supprimer de la vraie donnée.
-      // Si aucun, on skip la partie destructive.
-      const victim = rows.find(r => (r.reference || '').startsWith('TEST-'))
-      if (!victim) return { skipped: true, reason: 'aucun achat de test trouvé — DELETE non testé destructivement' }
-
-      const del = await fetch(`/erp/api/purchases/${victim.id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
+      const created = await fetch('/erp/api/purchases', {
+        method: 'POST', headers: h, body: JSON.stringify({ emplacement: 'E2E-DELETE' }),
       })
+      if (created.status !== 201) return { error: `création impossible (${created.status})` }
+      const victim = await created.json()
+
+      const del = await fetch(`/erp/api/purchases/${victim.id}`, { method: 'DELETE', headers: h })
       const delBody = await del.json().catch(() => ({}))
 
-      const getAfter = await fetch(`/erp/api/purchases/${victim.id}`, { headers: { Authorization: `Bearer ${token}` } })
+      const getAfter = await fetch(`/erp/api/purchases/${victim.id}`, { headers: h })
       return { delStatus: del.status, delBody, getAfterStatus: getAfter.status, victimId: victim.id }
     })
 
-    if (result.skipped) {
-      console.log('skipped:', result.reason)
-      return
-    }
     assert.ok(!result.error, `setup: ${result.error}`)
     assert.strictEqual(result.delStatus, 200, 'DELETE doit renvoyer 200')
     assert.strictEqual(result.delBody.success, true)

@@ -481,6 +481,59 @@ router.put('/config/:connector', requireAuth, (req, res) => {
   res.json({ ok: true })
 })
 
+// ── Santé des sessions empruntées à un navigateur (Instagram, ManyChat…)
+//
+// Une session morte ne se voit pas dans les résultats : le connecteur répond
+// « rien trouvé » au lieu de « je ne suis plus connecté ». Ces deux routes
+// donnent l'état conservé, et permettent de le vérifier à la demande depuis la
+// page Connecteurs.
+router.get('/session-health', requireAuth, async (req, res) => {
+  const { getSessionStatus } = await import('../services/sessionHealth.js')
+  res.json({ sessions: getSessionStatus() })
+})
+
+router.post('/session-health/check', requireAuth, async (req, res) => {
+  const { SESSION_PROBES } = await import('../services/sessionHealth.js')
+  const connector = String(req.body?.connector || '').toLowerCase()
+  const probe = SESSION_PROBES[connector]
+  if (!probe) return res.status(400).json({ error: `Aucune vérification pour « ${connector} »` })
+  try { res.json(await probe()) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ── ManyChat : compte + session importée
+//
+// Pas de connexion pilotée : la page de connexion de ManyChat est derrière le
+// contrôle anti-robot de Cloudflare, qu'un navigateur de serveur ne franchit
+// pas. On importe la session du navigateur de l'utilisateur, comme pour Wix.
+router.get('/manychat', requireAuth, async (req, res) => {
+  const { publicManychatAccount } = await import('../services/manychat.js')
+  res.json(publicManychatAccount())
+})
+
+router.put('/manychat', requireAdmin, async (req, res) => {
+  const { saveManychatAccount, publicManychatAccount } = await import('../services/manychat.js')
+  saveManychatAccount({
+    username: req.body?.username != null ? String(req.body.username).trim() : null,
+    password: req.body?.password ? String(req.body.password) : null,
+  })
+  res.json(publicManychatAccount())
+})
+
+router.post('/manychat/session', requireAdmin, async (req, res) => {
+  const { importManychatSession, publicManychatAccount } = await import('../services/manychat.js')
+  try {
+    const out = importManychatSession(req.body?.payload)
+    res.json({ ...out, account: publicManychatAccount() })
+  } catch (e) {
+    res.status(400).json({ error: e.message })
+  }
+})
+
+router.delete('/manychat/session', requireAdmin, async (req, res) => {
+  const { forgetManychatSession } = await import('../services/manychat.js')
+  res.json(forgetManychatSession())
+})
+
 // ── Airtable: list bases
 router.get('/airtable/bases', requireAuth, async (req, res) => {
   try {
@@ -1595,11 +1648,7 @@ const CORE_FIELD_SPECS = {
       // ligne se lit dans « Coût total au moment de l'envoi »). Sans la clé,
       // /champs/order_items ne rend plus de ligne pour la colonne (cf.
       // `fromCore` dans FieldConfig.jsx).
-      // ATTENTION : la colonne `order_items.unit_cost` reste ALIMENTÉE par
-      // Airtable — son entrée du field_map (`unit_cost`) survit hors spec grâce
-      // à la préservation des clés inconnues dans le PUT core-map ci-dessous.
-      // Elle sert de base au gel du coût à l'envoi (services/shippedCost.js) et
-      // au calcul des COGS (routes/orders.js).
+      // unit_cost a été supprimé définitivement par la migration 068.
     ],
   },
   paie_items: {
@@ -1768,7 +1817,7 @@ router.put('/airtable/module-fields/:module/core-map', requireAdmin, (req, res) 
   const allowed = new Set(spec.fields.map(f => f.key))
   // Clés du field_map enregistré qui ne sont PLUS dans la spec (champ retiré de
   // /champs/:table alors que le sync continue de lire la colonne, ex.
-  // `order_items.unit_cost`) : elles sont préservées telles quelles. La modale
+  // `order_items.notes`) : elles sont préservées telles quelles. La modale
   // renvoie le draft entier, filtré aux clés de la spec par le GET — sans cette
   // reprise, mapper n'importe quel autre champ effacerait leur mapping.
   let stored = {}

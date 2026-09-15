@@ -469,6 +469,11 @@ export const api = {
   // Connectors
   connectors: {
     list: () => get('/connectors'),
+    sessionHealth: () => getFresh('/connectors/session-health'),
+    manychat: () => getFresh('/connectors/manychat'),
+    saveManychat: (data) => put('/connectors/manychat', data),
+    importManychatSession: (payload) => post('/connectors/manychat/session', { payload }),
+    checkSession: (connector) => post('/connectors/session-health/check', { connector }),
     disconnect: (id) => del(`/connectors/accounts/${id}`),
     saveConfig: (connector, data) => put(`/connectors/config/${connector}`, data),
     syncGmail: () => post('/connectors/sync/gmail'),
@@ -880,6 +885,7 @@ export const api = {
     create: (data) => post('/discovery-forms', data),
     delete: (id) => del(`/discovery-forms/${id}`),
     equipmentPreview: (id) => get(`/discovery-forms/${id}/equipment-preview`),
+    saveAddresses: (id, data) => patch(`/discovery-forms/${id}/addresses`, data),
     saveVerification: (id, verification) => patch(`/discovery-forms/${id}/verification`, { verification }),
     createOrder: (id) => post(`/discovery-forms/${id}/create-order`, {}),
     // Accès public au formulaire via short token (sans auth) — utilisé par la page client.
@@ -1054,6 +1060,9 @@ export const api = {
     updateConfig: (data) => put('/treasury/config', data),
     balances: () => get('/treasury/balances'),
     noteBalance: (balance) => post('/treasury/balance', { balance }),
+    // Lecture immédiate du solde à la banque (la sync Plaid le fait déjà aux
+    // 30 min ; ce bouton évite d'attendre le prochain passage).
+    refreshBalanceFromBank: () => post('/treasury/balance/refresh-from-bank', {}),
     // Passé réel : mouvements du relevé bancaire BNC CAD, jour par jour
     // (même forme que projection.days — alimente la remontée dans le passé).
     actuals: (params = {}) => get('/treasury/actuals?' + new URLSearchParams(params)),
@@ -1177,6 +1186,50 @@ export const api = {
     transfer: (txnId, data) => post(`/bank/transactions/${txnId}/transfer`, data),
     unlinkTransfer: (txnId) => del(`/bank/transactions/${txnId}/transfer`),
     reconcile: (ids, unreconcile = false) => post('/bank/transactions/reconcile', { ids, unreconcile }),
+    // L'écriture QuickBooks de la ligne, mise en forme comme QuickBooks
+    // l'affiche — pour confirmer l'appariement sans ouvrir QBO.
+    qbEntry: (txnId) => getFresh(`/bank/transactions/${txnId}/qb-entry`),
+    clearQbLink: (txnId) => del(`/bank/transactions/${txnId}/qb-link`),
+    // « Ce libellé, c'est ce fournisseur » : apprend un motif de relevé sur la
+    // fiche du fournisseur, depuis la ligne bancaire.
+    learnVendorPattern: (txnId, data) => post(`/bank/transactions/${txnId}/vendor-pattern`, data),
+    // Propositions : ce que les moteurs ont trouvé et qui attend un clic.
+    txnProposals: (txnId) => getFresh(`/bank/transactions/${txnId}/proposals`),
+    acceptProposal: (id) => post(`/bank/proposals/${id}/accept`, {}),
+    refuseProposal: (id, note) => post(`/bank/proposals/${id}/refuse`, note ? { note } : {}),
+    acceptProposals: (ids) => post('/bank/proposals/accept', { ids }),
+    // Toutes les propositions d'un coup, pour l'écran dédié.
+    proposals: (params = {}) => getFresh('/bank/proposals?' + new URLSearchParams(params)),
+    proposalsSummary: () => getFresh('/bank/proposals/summary'),
+    // Règles bancaires : des conditions qui préparent l'écriture. Elles ne
+    // publient jamais — c'est toujours un clic humain qui écrit.
+    rules: {
+      list: () => getFresh('/bank/rules'),
+      suggestions: () => getFresh('/bank/rules/suggestions'),
+      preview: (rule) => post('/bank/rules/preview', rule),
+      draftFromTxn: (txnId) => get(`/bank/rules/draft-from-txn/${txnId}`),
+      create: (rule) => post('/bank/rules', rule),
+      update: (id, data) => patch(`/bank/rules/${id}`, data),
+      remove: (id) => del(`/bank/rules/${id}`),
+      verify: (id) => getFresh(`/bank/rules/${id}/verify`),
+      relax: (id) => post(`/bank/rules/${id}/relax`, {}),
+      repair: () => post('/bank/rules/repair', {}),
+      // L'atelier : les habitudes que le relevé raconte.
+      habits: () => getFresh('/bank/rules/habits'),
+      // Le ménage : doublons, illisibles, sans trace, débordantes.
+      housekeeping: () => getFresh('/bank/rules/housekeeping'),
+      archive: (ids) => post('/bank/rules/archive', { ids }),
+      restore: (ids) => post('/bank/rules/restore', { ids }),
+      // Au fil de l'eau : ce libellé mérite-t-il une règle ?
+      opportunity: (txnId) => get(`/bank/rules/opportunity/${txnId}`),
+      // L'API QuickBooks ne donne pas les règles : on lit le fichier exporté.
+      previewQbFile: (file) => {
+        const fd = new FormData()
+        fd.append('file', file)
+        return uploadRequest('/bank/rules/import-qb/preview', fd)
+      },
+      importQb: (rules) => post('/bank/rules/import-qb/commit', { rules }),
+    },
     updateTransaction: (id, data) => patch(`/bank/transactions/${id}`, data),
     deleteTransaction: (id) => del(`/bank/transactions/${id}`),
     // Doublons hérités de TRX_Orisha sur un compte branché à Plaid.
@@ -1249,6 +1302,18 @@ export const api = {
     piecesSlackSend: (month) => post(`/month-end/pieces/${month}/slack`, {}),
   },
 
+  // Revenus perçus d'avance : le mois calculé, le rapprochement QuickBooks
+  // (séparé, plus lent), le brouillon d'écriture et sa comptabilisation.
+  deferredRevenue: {
+    month: (month) => get(`/deferred-revenue/month/${month}`),
+    qb: (month) => get(`/deferred-revenue/month/${month}/qb`),
+    propose: (month, aggregated) => post(`/deferred-revenue/month/${month}/draft`, { aggregated: !!aggregated }),
+    saveDraft: (month, data) => put(`/deferred-revenue/month/${month}/draft`, data),
+    deleteDraft: (month) => del(`/deferred-revenue/month/${month}/draft`),
+    publish: (month) => post(`/deferred-revenue/month/${month}/publish`, {}),
+    unmark: (id) => del(`/deferred-revenue/${id}`),
+  },
+
   marketingBudget: {
     expenses: (status = 'all') => get(`/marketing-budget/expenses?status=${status}`),
     decide: (id, status) => patch(`/marketing-budget/expenses/${id}`, { status }),
@@ -1268,7 +1333,17 @@ export const api = {
     remove: (id) => del(`/instagram/prospects/${id}`),
     scrape: (days) => post('/instagram/scrape', days ? { days } : {}),
     session: () => get('/instagram/session'),
+    conversations: () => getFresh('/instagram/conversations'),
+    conversationMessages: (userId, refresh = false) => getFresh(`/instagram/conversations/${userId}/messages${refresh ? '?refresh=1' : ''}`),
+    sendMessage: (userId, text) => post(`/instagram/conversations/${userId}/send`, { text }),
     setSession: (data) => put('/instagram/session', data),
+    workbench: (all = false) => getFresh(`/instagram/workbench${all ? '?all=1' : ''}`),
+    drafts: () => getFresh('/instagram/drafts'),
+    writeDraft: (prospectId, data = {}) => post('/instagram/drafts/write', { prospect_id: prospectId, ...data }),
+    writeAllDrafts: () => post('/instagram/drafts/write-all', {}),
+    sendDraftsNow: () => post('/instagram/drafts/send-now', {}),
+    holdDrafts: () => post('/instagram/drafts/hold-all', {}),
+    updateDraft: (id, data) => patch(`/instagram/drafts/${id}`, data),
   },
   ltDebts: {
     list: () => get('/lt-debts'),
@@ -1614,6 +1689,11 @@ export const api = {
     transactionTypes: () => get('/sale-receipts/transaction-types'),
     get: (id) => get(`/sale-receipts/${id}`),
     fileBlob: (id) => apiBlob(`/sale-receipts/${id}/file`),
+    // URL de service d'une page du document, pour un <a href> ou un <img src> :
+    // le token passe en query param (une balise ne porte pas d'en-tête
+    // Authorization — cf. requireAuth). page 0 = page 1.
+    fileUrl: (id, page = 0) =>
+      `/erp/api/sale-receipts/${id}/file?page=${page}&token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
     update: (id, body) => patch(`/sale-receipts/${id}`, body),
     delete: (id) => del(`/sale-receipts/${id}`),
     archive: (id) => post(`/sale-receipts/${id}/archive`),
@@ -1631,6 +1711,7 @@ export const api = {
     reExtract: (id) => post(`/sale-receipts/${id}/re-extract`),
     // Vérifie qu'un montant est bien celui imprimé sur le document (relecture du PDF).
     amountCheck: (id, amount) => get(`/sale-receipts/${id}/amount-check?` + new URLSearchParams({ amount })),
+    invoiceSummary: id => get(`/sale-receipts/${id}/invoice-summary`),
     upload: (formData) => uploadRequest('/sale-receipts/upload', formData),
   },
 

@@ -12,6 +12,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
+import { once } from 'node:events'
 import jwt from 'jsonwebtoken'
 import { WebSocket } from 'ws'
 import { JWT_SECRET } from '../config/secrets.js'
@@ -45,7 +46,13 @@ async function client(port, channels) {
 
 test('emit : un message, tous les canaux auxquels la socket est abonnée', async (t) => {
   const http = createServer()
-  createRealtimeServer(http)
+  const wss = createRealtimeServer(http)
+  t.after(async () => {
+    const closed = once(wss, 'close')
+    for (const ws of wss.clients) ws.terminate()
+    http.close()
+    await closed
+  })
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve))
   const port = http.address().port
 
@@ -55,11 +62,6 @@ test('emit : un message, tous les canaux auxquels la socket est abonnée', async
   const michel = await client(port, ['orders:list'])
   // Celui d'Émilie : une autre page, qui ne doit rien recevoir.
   const emilie = await client(port, ['contact:list'])
-
-  t.after(() => {
-    for (const c of [antoine, michel, emilie]) c.ws.close()
-    http.close()
-  })
 
   emit(['orders:list', 'order:42'], { type: 'order:updated', payload: { id: '42' }, source: 'airtable', fields: ['status'] })
   await new Promise(resolve => setTimeout(resolve, 100))

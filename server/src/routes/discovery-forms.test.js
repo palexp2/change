@@ -99,7 +99,7 @@ test('options créées → lecture publique → réponses → commande, avec DB 
 })
 
 test('soumission refusée pour louvre incomplète et commande sans dimensionnement refusée', async () => {
-  const r = await api('POST', '/discovery-forms', { company_id: 'discovery-company', helper_count: 1 })
+  const r = await api('POST', '/discovery-forms', { company_id: 'discovery-company', chief_count: 1 })
   const form = r.body
   const path = `/customer/post-payment/by-token/${form.public_token}`
   await api('POST', path + '/save', { is_new_site: 'add_to_existing', within_central_controller_range: true, greenhouses: [{ has_louvers: true, louvers: [{}] }] }, true)
@@ -111,18 +111,18 @@ test('soumission refusée pour louvre incomplète et commande sans dimensionneme
 
 test('images des questions : conservation, lecture publique et retour automatique', async () => {
   const { buildForm } = await import('../../../client/src/lib/discoveryFormSchema.js')
-  const images = { 'greenhouse.length_label': 'pipe-c.png', 'network.prompt': 'none', 'farm.title': '../invalid.png', unknown: 'site.webp' }
+  const images = { 'greenhouse.length_label': 'pipe-c.png', 'network.image_ethernet': 'none', 'farm.title': '../invalid.png', unknown: 'site.webp' }
   const custom = [{ id: 'image-test', label: 'Question illustrée', section: 'end', image: 'shipping.webp' }]
   const saved = await api('PUT', '/discovery-form-schema', { images, custom })
   assert.equal(saved.status, 200)
-  assert.deepEqual(saved.body.schema.images, { 'greenhouse.length_label': 'pipe-c.png', 'network.prompt': 'none' })
+  assert.deepEqual(saved.body.schema.images, { 'greenhouse.length_label': 'pipe-c.png', 'network.image_ethernet': 'none' })
   const read = await api('GET', '/discovery-form-schema')
   assert.equal(read.body.schema.custom[0].image, 'shipping.webp')
   const created = await api('POST', '/discovery-forms', { company_id: 'discovery-company', helper_count: 1 })
   const pub = await api('GET', `/customer/post-payment/by-token/${created.body.public_token}`, undefined, true)
   const form = buildForm(pub.body.form_schema)
   assert.equal(form.image('greenhouse.length_label'), 'pipe-c.png')
-  assert.equal(form.image('network.prompt'), 'none')
+  assert.equal(form.image('network.image_ethernet'), 'none')
   assert.equal(form.image('farm.title'), '')
   assert.equal(form.custom('end')[0].image, 'shipping.webp')
   await api('PUT', '/discovery-form-schema', { images: {}, custom: [{ ...custom[0], image: 'none' }] })
@@ -176,7 +176,7 @@ test('dépôt d’image : validation, fichier public, sauvegarde et retrait', as
 
 test('commande de louvre inconnue : sauvegarde, envoi et signalement au vérificateur', async () => {
   db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('louvre-company', 'Louvre fixture')
-  const created = await api('POST', '/discovery-forms', { company_id: 'louvre-company', helper_count: 1 })
+  const created = await api('POST', '/discovery-forms', { company_id: 'louvre-company', chief_count: 1 })
   assert.equal(created.status, 201, JSON.stringify(created.body))
   const form = created.body
   const path = `/customer/post-payment/by-token/${form.public_token}`

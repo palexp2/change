@@ -34,6 +34,7 @@ const DETAIL_PAGES = new Map([
   ['AutomationDetail.jsx',    'automations'],
   ['CompanyDetail.jsx',       'companies'],
   ['ContactDetail.jsx',       'contacts'],
+  ['DiscoveryFormDetail.jsx', null], // réponses au formulaire public, configurées par discovery-form-schema, hors tableDefs
   ['DirectDepositDetail.jsx', null], // dépôt direct d'une paie : pas de table dans tableDefs
   ['EmployeeDetail.jsx',      'employees'],
   ['EnvoisDetail.jsx',        'shipments'],
@@ -55,6 +56,7 @@ const DETAIL_PAGES = new Map([
 // Libellés en dur tolérés : ce ne sont PAS des champs de la table, ils portent
 // juste le même mot. Clé : `Page.jsx::Libellé`.
 const ALLOWED = new Map([
+  ['InteractionDetail.jsx::Résumé', 'Résumé de transcription joint depuis calls.summary ; la colonne virtuelle interactions.summary affiche téléphone/objet/titre, pas ce texte'],
   ['SaleReceiptDetail.jsx::Fournisseur', 'Sélecteur du fournisseur QuickBooks dans le panneau de publication, pas la colonne `company` du reçu'],
   ['SaleReceiptDetail.jsx::Type',        'Choix du type de transaction QuickBooks (Purchase/Bill/CC), pas un champ du reçu'],
   ['SaleReceiptDetail.jsx::Total',       'Ligne de sommaire des articles extraits (total calculé), pas la colonne `total`'],

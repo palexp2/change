@@ -26,13 +26,15 @@ creerPurgedFields(db)
 
 const { getCachedTableSpec, invalidateColumnsCache } = await import('./changeLog.js')
 
+const { isSnapshotKept } = await import('./snapshotFields.js')
+
 const colonnes = (table) => new Set(getCachedTableSpec(table).columns)
 
 // Colonne physique quelconque de `contacts`, hors exceptions : on la supprime en
 // tant que champ et on vérifie qu'elle disparaît du snapshot.
 const CIBLE = db.pragma('table_info(contacts)')
   .map(c => c.name)
-  .find(c => !['id', 'created_at', 'updated_at', 'deleted_at'].includes(c))
+  .find(c => !isSnapshotKept('contacts', c))
 
 function supprimerChamp(table, column) {
   db.prepare(`
@@ -62,6 +64,20 @@ test('une exception de snapshotFields reste envoyée', () => {
   assert.ok(colonnes('orders').has('date_commande'))
 })
 
+test('les liens de commande et libellés récents restent disponibles après suppression', () => {
+  for (const [table, column] of [
+    ['order_items', 'order_id'], ['purchases', 'at_id'],
+    ['purchases', 'numero_de_commande'], ['returns', 'autonumber'],
+  ]) {
+    // Certains libellés Airtable sont ajoutés par migration, hors initSchema.
+    if (!db.pragma(`table_info(${table})`).some(c => c.name === column)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`)
+    }
+    supprimerChamp(table, column)
+    assert.ok(colonnes(table).has(column), `${table}.${column} doit rester`)
+  }
+})
+
 test('les colonnes de structure ne partent jamais', () => {
   for (const c of ['id', 'created_at', 'updated_at']) {
     if (!db.pragma('table_info(contacts)').some(x => x.name === c)) continue
@@ -71,8 +87,11 @@ test('les colonnes de structure ne partent jamais', () => {
 })
 
 test('un champ purgé (pierre tombale) sort aussi du snapshot', () => {
-  const autre = db.pragma('table_info(tickets)').map(c => c.name)
-    .find(c => !['id', 'created_at', 'updated_at', 'deleted_at'].includes(c))
+  // Une base neuve n'a que les colonnes structurelles des billets : créer
+  // explicitement un champ de donnée, comme le fait l'éditeur de champs.
+  const autre = 'cf_snapshot_purge_test'
+  db.exec(`ALTER TABLE tickets ADD COLUMN ${autre} TEXT`)
+  invalidateColumnsCache()
   assert.ok(colonnes('tickets').has(autre))
   db.prepare(`INSERT INTO purged_fields (erp_table, column_name, label) VALUES (?, ?, ?)`)
     .run('tickets', autre, autre)

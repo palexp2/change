@@ -29,6 +29,11 @@ const SNAPSHOT_KEEP = {
   // La liste des commandes calcule la semaine d'expédition à partir des envois du
   // cache (dernier `shipped_at` par commande). Voir pages/Orders.jsx.
   shipments: ['shipped_at'],
+  // Orders et PrioriteAssemblage joignent les articles du cache à leur commande.
+  order_items: ['order_id'],
+  // Libellés des records récents (useRecentRecords), et titre mobile des achats.
+  purchases: ['at_id', 'numero_de_commande'],
+  returns: ['autonumber'],
 }
 
 // Colonnes dont le NOM apparaît dans un fichier du cache, vérifié à la main comme
@@ -49,7 +54,7 @@ const SNAPSHOT_REVIEWED = {
   // mais la table n'a PAS cette colonne — le nom est joint depuis `company_id`.
   // Rien à envoyer, donc rien à garder.
   contacts: ['company_name', 'mois', 'today'],
-  order_items: ['actions', 'autonumber', 'entreprise', 'lieu', 'product_name', 'serials'],
+  order_items: ['at_id', 'actions', 'autonumber', 'entreprise', 'lieu', 'product_name', 'serials'],
   // `orders.signature` : le nom n'apparaît que comme variable locale
   // (useRecordLinks) et dans l'analyseur de courriels — jamais sur une commande.
   // `address_id` : nommé par le champ « Adresse de livraison » du formulaire de
@@ -61,10 +66,27 @@ const SNAPSHOT_REVIEWED = {
   // `documents`, `signature`, `types` retirés de cette liste le 2026-09-03 : les
   // colonnes elles-mêmes sont détruites (drop-orders-airtable-only-cols.js),
   // il n'y a plus de cas à examiner.
-  orders: ['address_id', 'assigned_name'],
+  // items_count est recalculé depuis order_items dans Orders et PrioriteAssemblage.
+  orders: ['address_id', 'assigned_name', 'items_count'],
   projects: ['annule', 'autonumber', 'orders', 'soumission', 'version'],
   shipments: ['commande', 'company_name', 'order_number', 'shipping_id_novoxpress', 'status'],
   tickets: ['mois', 'semaine'],
+  // Les assemblages viennent de l'API ; leur sku est joint au produit. Les
+  // autres noms ne sont que des commentaires, attributs JSX ou variables.
+  assemblages: ['image', 'mois', 'semaine', 'sku'],
+  paies: ['items_count', 'number'],
+  // supplier_link est lu dans PrioriteAssemblage sur api.products.list(),
+  // pas sur useTable('products'). Les autres noms concernent routes, textes
+  // et statuts d'autres tables (commandes, tâches et incidents).
+  products: ['changelog', 'compte', 'documents', 'orisha', 'status', 'supplier_link'],
+  // emplacement est un champ du formulaire de création envoyé à l'API ;
+  // les autres noms ne sont pas lus sur les achats du cache.
+  purchases: ['autonumber', 'depenses', 'emplacement', 'image', 'mois'],
+  // Les noms de colonnes des retours apparaissent pour d'autres entités
+  // (contacts, commandes, produits), dans des URLs ou du texte français.
+  return_items: ['action', 'autonumber', 'client', 'commande', 'contact', 'product_name', 'sku', 'valeur'],
+  returns: ['envoi', 'expedition', 'facture', 'type'],
+  serial_numbers: ['assemblage', 'image'],
 }
 
 // Colonnes de structure : jamais retirées du snapshot, quoi qu'il arrive à leur

@@ -18,6 +18,7 @@ const ROUTES_DIR = dirname(fileURLToPath(import.meta.url))
 // can exist. Keep the matcher STRICT (exact method + exact path). Anything
 // new must land here with a justification, or a reviewer will push back.
 const PUBLIC_ROUTES = new Map([
+  ['GET /api/discovery-form-schema/images/:filename', 'Illustrations publiques du formulaire client ; nom UUID validé, dépôt protégé par requireAuth'],
   ['POST /api/auth/login',                           'login endpoint (credentials)'],
   ['POST /api/auth/setup',                           'first-run setup (guarded by existing-user count check)'],
   ['POST /api/stripe-webhooks/',                     'Stripe webhook (verifies stripe-signature, fail-closed if secret missing)'],
@@ -61,6 +62,8 @@ const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin', 'requireHROrAdmin'])
 // Mount paths, must stay in sync with index.js. Derived from routes/ filenames
 // where trivial (e.g. companies.js → /api/companies), overridden for the rest.
 const MOUNTS = {
+  'bankRules.js':               '/api/bank/rules',
+  'discovery-form-schema.js':   '/api/discovery-form-schema',
   'achats-fournisseurs.js':     '/api/achats-fournisseurs',
   'scrapers.js':                '/api/scrapers',
   'fx.js':                      '/api/fx',

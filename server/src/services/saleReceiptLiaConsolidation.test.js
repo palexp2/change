@@ -72,3 +72,13 @@ test('mot commençant par « Lia » sans numéro — pas considéré LIA', () =>
   const out = consolidateSoleLiaItem(items)
   assert.equal(out.length, 2, 'aucun code LIA réel → intouché')
 })
+
+test('un article sans référence LIA reste distinct même en présence de frais', () => {
+  const items = [
+    { description: 'LIA-1968 LTE dongle', total: 435 },
+    { description: 'USB cable', total: 12 },
+    { description: 'JACS FedEx Ground to Canada', total: 75 },
+    { description: 'Credit Card Processing Fee', total: 16.58 },
+  ]
+  assert.deepEqual(consolidateSoleLiaItem(items), items)
+})

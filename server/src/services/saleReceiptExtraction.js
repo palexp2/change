@@ -319,7 +319,7 @@ async function callOpenAI(apiKey, messages) {
 // LIA-2012 + « HEX STANDOFF M3X0.5 NYLON 11MM » — un second composant, pas un frais :
 // le fusionner effaçait purement et simplement le libellé de cette pièce).
 const LIA_REF = /^\s*lia-\d+/i
-const FEE_LINE = /\b(transport|freight|shipping|frais|surcharge|handling|card\s*fee)\b/i
+const FEE_LINE = /\b(transport|freight|shipping|frais|surcharge|handling|card\s*(?:processing\s*)?fee|fedex\s+ground)\b/i
 
 // Alias de fournisseurs : nom imprimé sur le document → nom canonique à enregistrer.
 // « Groupe Alliances et Privilèges » (marque NovoXpress) correspond au fournisseur

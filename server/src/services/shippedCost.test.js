@@ -1,13 +1,41 @@
-// Tests du gel du coût total au moment de l'envoi. Read-only contre la vraie
-// DB : on exerce le calcul sur de vraies lignes (une sérialisée, une non
-// sérialisée) et l'expression SQL servie aux consommateurs. Aucune écriture —
-// freezeShippedTotalCost n'est jamais appelé ici (la DB de dev EST la prod).
-
-import test from 'node:test'
+// Calcul des coûts sur une base jetable : les réglages Airtable et les
+// lignes de production ne doivent pas déterminer le résultat des tests.
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
-import db from '../db/database.js'
-import { computeShippedTotalCost, shippedCostSql, SHIPPED_COST_COLUMN } from './shippedCost.js'
+const dir = mkdtempSync(join(tmpdir(), 'erp-shipped-cost-'))
+process.env.DATABASE_PATH = join(dir, 'test.db')
+const db = (await import('../db/database.js')).default
+const { computeShippedTotalCost, shippedCostSql, SHIPPED_COST_COLUMN } = await import('./shippedCost.js')
+const { up: disableShippedCostImport } = await import('../db/migrations/012-shipped-cost-owned-by-erp.js')
+after(() => { db.close(); rmSync(dir, { recursive: true, force: true }) })
+
+db.exec(`
+  CREATE TABLE products (id TEXT PRIMARY KEY, unit_cost REAL, cout_unitaire TEXT);
+  CREATE TABLE order_items (id TEXT PRIMARY KEY, product_id TEXT, qty REAL,
+    shipped_unit_cost REAL, cout_total_au_moment_de_l_envoi TEXT);
+  CREATE TABLE serial_numbers (id TEXT PRIMARY KEY, serial TEXT, order_item_id TEXT,
+    manufacture_value REAL, deleted_at TEXT);
+  CREATE TABLE airtable_field_mappings (erp_table TEXT, column_name TEXT,
+    import_disabled INTEGER, updated_at TEXT);
+  INSERT INTO products VALUES ('piece', 2, '4.5'), ('fifo', 7, NULL);
+  INSERT INTO order_items VALUES
+    ('serialized', 'piece', 2, NULL, NULL),
+    ('piece-cost', 'piece', 3, NULL, NULL),
+    ('fifo-cost', 'fifo', 2, NULL, NULL),
+    ('frozen', 'piece', 1, NULL, '99'),
+    ('mixed', 'piece', 3, NULL, NULL);
+  INSERT INTO serial_numbers VALUES
+    ('s1', 'SN1', 'serialized', 12, NULL),
+    ('s2', 'SN2', 'serialized', 18, NULL),
+    ('s3', 'SN3', 'mixed', 10, NULL);
+  INSERT INTO airtable_field_mappings VALUES
+    ('order_items', 'cout_total_au_moment_de_l_envoi', 0, NULL),
+    ('order_items', 'qty', 0, NULL);
+`)
 
 test('ligne inexistante → null', () => {
   assert.equal(computeShippedTotalCost('oi-inexistante-test'), null)
@@ -22,7 +50,7 @@ test('ligne sérialisée : total = Σ des valeurs de fabrication', () => {
     HAVING COUNT(sn.id) = oi.qty
     LIMIT 1
   `).get()
-  if (!row) return // aucune ligne entièrement sérialisée — skip silencieux
+  assert.ok(row, 'fixture sérialisée présente')
   const c = computeShippedTotalCost(row.id)
   const expected = db.prepare(
     'SELECT COALESCE(SUM(manufacture_value), 0) AS t FROM serial_numbers WHERE order_item_id = ? AND deleted_at IS NULL'
@@ -42,7 +70,7 @@ test('ligne sans numéro de série : total = quantité × coût de la pièce', (
       AND NOT EXISTS (SELECT 1 FROM serial_numbers sn WHERE sn.order_item_id = oi.id)
     LIMIT 1
   `).get()
-  if (!row) return
+  assert.ok(row, 'fixture de coût présente')
   const c = computeShippedTotalCost(row.id)
   assert.equal(c.serial_count, 0)
   assert.equal(c.basis, 'cout_unitaire')
@@ -61,7 +89,7 @@ test('coût de la pièce : repli sur le coût unitaire FIFO quand « Cout unitai
       AND NOT EXISTS (SELECT 1 FROM serial_numbers sn WHERE sn.order_item_id = oi.id)
     LIMIT 1
   `).get()
-  if (!row) return
+  assert.ok(row, 'fixture de coût présente')
   assert.equal(computeShippedTotalCost(row.id).unit_cost, row.fifo)
 })
 
@@ -88,10 +116,12 @@ test('shippedCostSql : coût gelé prioritaire, repli sur la même règle aux co
   }
 })
 
-test("l'import Airtable de la colonne est bien coupé (migration 012)", () => {
-  const m = db.prepare(
+test("la migration 012 coupe uniquement l'import du coût figé et reste idempotente", () => {
+  assert.equal(disableShippedCostImport(db).mappings_disabled, 1)
+  const mapping = db.prepare(
     'SELECT import_disabled FROM airtable_field_mappings WHERE erp_table = ? AND column_name = ?'
   ).get('order_items', SHIPPED_COST_COLUMN)
-  if (!m) return // mapping absent (base neuve) — rien à couper
-  assert.equal(m.import_disabled, 1, "le sync Airtable ne doit plus écrire cette colonne")
+  assert.equal(mapping.import_disabled, 1, 'le sync Airtable ne doit plus écrire cette colonne')
+  assert.equal(disableShippedCostImport(db).mappings_disabled, 0)
+  assert.equal(db.prepare("SELECT import_disabled FROM airtable_field_mappings WHERE column_name = 'qty'").get().import_disabled, 0)
 })

@@ -78,8 +78,12 @@ export function createRealtimeServer(httpServer) {
   }, 30000)
 
   wss.on('close', () => clearInterval(heartbeat))
+  // Le serveur HTTP ne ferme pas le WebSocketServer attaché : libérer aussi
+  // son heartbeat quand l'application (ou un test) ferme le serveur HTTP.
+  httpServer.once('close', () => wss.close())
 
   console.log('Realtime WebSocket: enabled on /erp/ws')
+  return wss
 }
 
 /**

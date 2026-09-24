@@ -10,17 +10,21 @@ import { useSectionNav } from '../lib/useSectionNav.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { PurchaseOrderModal } from '../components/PurchaseOrderModal.jsx'
 import PurchaseDetail from './PurchaseDetail.jsx'
+import ProductPurchaseModal from './ProductPurchaseModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
-import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { TABLE_COLUMN_META, STOCK_MOVEMENT_TYPES, STOCK_MOVEMENT_TYPE_COLORS, stockMovementSignedQty } from '../lib/tableDefs.js'
+import ErrorBanner from '../components/ErrorBanner.jsx'
+import { useFieldOverrides, parseNativeChoices } from '../lib/fieldOverrides.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { formatBytes, fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import { Field as GatedField } from '../components/Field.jsx'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { columnChoiceValues } from '../lib/customFieldDisplay.jsx'
@@ -36,9 +40,6 @@ const PRODUCT_FIELDS = [
   // Sélection : les choix ne sont pas codés ici, ils viennent du registre des
   // champs (/champs/products) — ajouter un type là-bas suffit.
   { key: 'type',               label: 'Type',               type: 'select' },
-  // Codes-barres du fournisseur/fabricant collés sur l'article (UPC, EAN, ASIN…),
-  // séparés par des virgules : le scan d'une commande les accepte comme le SKU.
-  { key: 'scan_codes',         label: 'Codes-barres',       type: 'text', span2: true },
   { key: 'name_fr',            label: 'Nom (FR)',           type: 'text', span2: true },
   { key: 'name_en',            label: 'Nom (EN)',           type: 'text', span2: true },
   { key: 'unit_cost',          label: 'Coût unitaire (CAD)',type: 'number', step: '0.01' },
@@ -72,8 +73,8 @@ const TAKEN_ELSEWHERE = [
   'lien_pdf_remplacement_en', 'lien_pdf_remplacement_en_local',
 ]
 
-const movTypeColor = { in: 'green', out: 'red', adjustment: 'blue' }
-const movTypeLabel = { in: 'Entrée', out: 'Sortie', adjustment: 'Ajustement' }
+const ADJUST_REASON = 'raison_de_l_ajustement_manuel'
+
 
 const BOM_RENDERS = {
   component_image: row => (
@@ -196,12 +197,11 @@ const money = n => fmtMoney(n, 'CAD', { fallback: <span className="text-slate-30
 
 const MOVEMENT_RENDERS = {
   created_at:     m => <span className="text-slate-500 text-xs">{fmtDateTime(m.created_at)}</span>,
-  type:           m => <Badge color={movTypeColor[m.type] || 'gray'}>{movTypeLabel[m.type] || m.type}</Badge>,
-  // Nombre rendu comme partout ailleurs (cf. la colonne « Qté » de
-  // /mouvements-inventaire) : format fr-CA, tabular-nums, pas de signe ni de
-  // couleur — le sens du mouvement est déjà porté par la colonne « Type ».
-  qty:            m => <span className="tabular-nums">{fmtNumber(m.qty, { fallback: <span className="text-slate-300">—</span> })}</span>,
-  reason:         m => <span className="text-slate-600">{m.reason || '—'}</span>,
+  type:           m => m.reason
+    ? <Badge color={STOCK_MOVEMENT_TYPE_COLORS[m.reason] || 'gray'}>{m.reason}</Badge>
+    : <span className="text-slate-400">—</span>,
+  // Quantité signée, comme « Changement » dans Airtable et sur /stock-movement.
+  qty:            m => <span className="tabular-nums">{fmtNumber(stockMovementSignedQty(m), { fallback: <span className="text-slate-300">—</span> })}</span>,
   user_name:      m => <span className="text-slate-500 text-xs">{m.user_name || '—'}</span>,
   unit_cost:      m => money(m.unit_cost),
   movement_value: m => money(m.movement_value),
@@ -241,6 +241,7 @@ function Field({ label, children, span2 = false }) {
 
 const SECTION_LABELS = {
   info: 'Informations',
+  ajustement: "Ajustement d'inventaire",
   mouvements: 'Mouvements',
   achats: 'Achats',
   bom: 'BOM',
@@ -251,15 +252,37 @@ const SECTION_LABELS = {
 // (stock_movements + stock_qty), même route que l'ancien modal orphelin de
 // la liste Produits.
 function StockAdjustForm({ product, onSaved, onClose }) {
-  const [form, setForm] = useState({ type: 'adjustment', qty: product.stock_qty ?? 0, reason: '' })
+  const current = product.stock_qty ?? 0
+  // « Type » d'Airtable ; `target` : la quantité saisie est le nouveau stock,
+  // sinon la variation signée (« Changement » dans Airtable).
+  const [form, setForm] = useState({ reason: 'Ajustement (augmentation)', target: true, qty: String(current) })
   const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  const n = parseInt(form.qty, 10)
+  const change = Number.isFinite(n) ? (form.target ? n - current : n) : 0
+  // Les deux libellés d'ajustement ne diffèrent que par le sens : un seul choix,
+  // le serveur prend le bon d'après le signe.
+  const adjusting = /ajustement/i.test(form.reason)
+  // Choix et couleurs du champ « Type » tels que configurés, sinon ceux d'Airtable.
+  const { overrides } = useFieldOverrides('stock_movements')
+  const configured = parseNativeChoices(overrides.get('type'))
+  const types = (configured.length ? configured : STOCK_MOVEMENT_TYPES.map(v => ({ value: v, label: v, color: null })))
+    .map(c => ({ ...c, color: c.color || STOCK_MOVEMENT_TYPE_COLORS[c.value] || 'gray' }))
+    .filter(c => c.value !== 'Ajustement (diminution)')
+    .map(c => (c.value === 'Ajustement (augmentation)' ? { ...c, label: 'Ajustement' } : c))
+  const typeBadge = c => <Badge color={c.color}>{c.label}</Badge>
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!change) return
     setSaving(true)
+    setError(null)
     try {
-      await onSaved({ ...form, qty: parseInt(form.qty, 10) })
+      await onSaved({ reason: form.reason, change })
       onClose()
+    } catch (err) {
+      setError(err?.message || 'Erreur')
     } finally {
       setSaving(false)
     }
@@ -267,28 +290,38 @@ function StockAdjustForm({ product, onSaved, onClose }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="bg-slate-50 rounded-lg p-3 text-sm">
-        Stock actuel : <strong>{product.stock_qty}</strong>
+      <div>
+        <label className="label">Type</label>
+        <SearchableSelect
+          value={form.reason}
+          options={types}
+          onChange={v => setForm(f => ({ ...f, reason: v }))}
+          renderOption={typeBadge}
+          renderValue={typeBadge}
+          className="input w-full"
+          size="sm"
+        />
       </div>
       <div>
-        <label className="label">Type de mouvement</label>
-        <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} className="select">
-          <option value="in">Entrée (+)</option>
-          <option value="out">Sortie (-)</option>
-          <option value="adjustment">Ajustement (= valeur exacte)</option>
-        </select>
+        <div className="flex gap-1 mb-1">
+          {[[true, 'Nouveau stock'], [false, 'Variation']].map(([v, l]) => (
+            <button key={l} type="button"
+              onClick={() => setForm(f => ({ ...f, target: v, qty: v ? String(current + change) : String(change) }))}
+              className={`btn-sm ${form.target === v ? 'btn-primary' : 'btn-secondary'}`}>{l}</button>
+          ))}
+        </div>
+        <input type="number" min={form.target ? 0 : undefined} value={form.qty}
+          onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className="input" required autoFocus />
       </div>
-      <div>
-        <label className="label">Quantité *</label>
-        <input type="number" min="0" value={form.qty} onChange={e => setForm(f => ({ ...f, qty: e.target.value }))} className="input" required />
+      <div className="bg-slate-50 rounded-lg p-3 text-sm tabular-nums">
+        {current} → <strong>{current + change}</strong>
+        <span className={`ml-2 ${change < 0 ? 'text-red-600' : 'text-emerald-700'}`}>({change > 0 ? '+' : ''}{change})</span>
+        {adjusting && change !== 0 && <span className="ml-2 text-slate-500">{change < 0 ? 'Ajustement (diminution)' : 'Ajustement (augmentation)'}</span>}
       </div>
-      <div>
-        <label className="label">Raison</label>
-        <input value={form.reason} onChange={e => setForm(f => ({ ...f, reason: e.target.value }))} className="input" />
-      </div>
+      {error && <ErrorBanner>{error}</ErrorBanner>}
       <div className="flex justify-end gap-3 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">Annuler</button>
-        <button type="submit" disabled={saving} className="btn-primary">{saving ? '...' : 'Enregistrer'}</button>
+        <button type="submit" disabled={saving || !change} className="btn-primary">{saving ? '...' : 'Enregistrer'}</button>
       </div>
     </form>
   )
@@ -363,6 +396,7 @@ export default function ProductDetail({ recordId, onClose }) {
   const [purchases, setPurchases] = useState([])
   const [companies, setCompanies] = useState([])
   const [showPoModal, setShowPoModal] = useState(false)
+  const [showPurchaseModal, setShowPurchaseModal] = useState(false)
   const [showStockAdjust, setShowStockAdjust] = useState(false)
   const [showRefreshDocsModal, setShowRefreshDocsModal] = useState(false)
   const [refreshingDocs, setRefreshingDocs] = useState(false)
@@ -401,7 +435,6 @@ export default function ProductDetail({ recordId, onClose }) {
         name_fr: data.name_fr || '',
         name_en: data.name_en || '',
         type: data.type || '',
-        scan_codes: data.scan_codes || '',
         unit_cost: data.unit_cost ?? 0,
         price_cad: data.price_cad ?? 0,
         price_usd: data.price_usd ?? 0,
@@ -506,7 +539,30 @@ export default function ProductDetail({ recordId, onClose }) {
     setImageBusy(false)
   }
 
-  const sections = useMemo(() => ['info', 'mouvements', 'achats', 'bom', 'docs'], [])
+  // Section « Ajustement d'inventaire » (comme la fiche Pièce d'Airtable) : la
+  // raison part vers Airtable. Le champ « Ajustement manuel » a été retiré de
+  // la fiche — l'inventaire s'ajuste par « Ajuster l'inventaire ».
+  const [adjust, setAdjust] = useState({ [ADJUST_REASON]: '' })
+  const adjustTimers = useRef({})
+  useEffect(() => {
+    if (!product) return
+    setAdjust({ [ADJUST_REASON]: product[ADJUST_REASON] || '' })
+  }, [product?.[ADJUST_REASON]]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Un minuteur par champ : choisir la raison ne doit pas annuler la
+  // sauvegarde encore en attente de l'ajustement saisi juste avant.
+  function saveAdjust(key, val, delay = 0) {
+    clearTimeout(adjustTimers.current[key])
+    adjustTimers.current[key] = setTimeout(() => {
+      save(async () => {
+        const { airtable, ...updated } = await api.products.update(id, { [key]: val === '' ? null : val })
+        setProduct(p => (p ? { ...p, ...updated } : updated))
+        if (airtable?.error) throw new Error(`Airtable : ${airtable.error}`)
+      })
+    }, delay)
+  }
+
+  const sections = useMemo(() => ['info', 'ajustement', 'mouvements', 'achats', 'bom', 'docs'], [])
   const { activeSection, goToSection, registerSection } = useSectionNav(sections, { ready: !loading && !!product })
 
   const change = (key, val) => {
@@ -539,7 +595,8 @@ export default function ProductDetail({ recordId, onClose }) {
   // plus que l'éditeur.
   function fieldEditor(field) {
     if (field.type === 'readonly') {
-      return <div className={`${inp} bg-slate-50 cursor-default`}>{product[field.key] ?? 0}</div>
+      // Non modifiable : texte nu, sans le cadre blanc d'un champ de saisie.
+      return <div className="text-sm text-slate-900 py-1.5 tabular-nums">{product[field.key] ?? 0}</div>
     }
     if (field.type === 'checkbox') {
       return (
@@ -635,7 +692,7 @@ export default function ProductDetail({ recordId, onClose }) {
         ),
         status: <SaveStatus status={saveState} />,
         meta: <span>Stock: <strong>{product?.stock_qty}</strong> / min: {form.min_stock || 0}</span>,
-        actions: form.buy_via_po && form.supplier_company_id && (
+        actions: form.buy_via_po && (
           <button
             onClick={() => setShowPoModal(true)}
             className="btn-primary flex items-center gap-1.5 text-sm"
@@ -656,6 +713,7 @@ export default function ProductDetail({ recordId, onClose }) {
               personnalisés de la table s'y posent seuls — d'où `record`. */}
           <DetailFieldGrid
             entityType="products"
+            linkifyTextUrls
             record={product}
             taken={TAKEN_ELSEWHERE}
             className="card p-6"
@@ -677,6 +735,32 @@ export default function ProductDetail({ recordId, onClose }) {
           </DetailFieldGrid>
         </Section>
 
+        <Section id="ajustement" label={SECTION_LABELS.ajustement} registerRef={registerSection('ajustement')}>
+          <div className="card p-6 grid grid-cols-2 gap-4" data-testid="product-adjustment">
+            <GatedField table="products" id="stock_qty" label="Quantité en inventaire" className="col-span-2">
+              <div className="text-sm text-slate-900 py-1.5 tabular-nums">{product.stock_qty ?? '—'}</div>
+            </GatedField>
+            <GatedField table="products" id={ADJUST_REASON} label="Raison de l'ajustement manuel">
+              {(() => {
+                const declared = registryChoices[ADJUST_REASON] || []
+                const current = adjust[ADJUST_REASON]
+                const options = current && !declared.includes(current) ? [current, ...declared] : declared
+                return (
+                  <select className={inp} value={current} onChange={e => {
+                      const v = e.target.value
+                      setAdjust(a => ({ ...a, [ADJUST_REASON]: v }))
+                      saveAdjust(ADJUST_REASON, v)
+                    }}
+                    data-testid={`product-field-${ADJUST_REASON}`}>
+                    <option value="">—</option>
+                    {options.map(o => <option key={o} value={o}>{o}</option>)}
+                  </select>
+                )
+              })()}
+            </GatedField>
+          </div>
+        </Section>
+
         <Section
           id="mouvements"
           label={SECTION_LABELS.mouvements}
@@ -692,13 +776,16 @@ export default function ProductDetail({ recordId, onClose }) {
             table="product_movements"
             columns={MOVEMENT_COLUMNS}
             data={product.movements || []}
-            searchFields={['type', 'reason', 'user_name', 'reference_id']}
+            searchFields={['type', 'reason', 'user_name']}
             height={stackedTableHeight(product.movements?.length)}
             emptyState={{ icon: ArrowLeftRight, title: 'Aucun mouvement', description: "Aucune entrée, sortie ou ajustement de stock n'a encore été enregistré pour ce produit." }}
           />
         </Section>
 
-        <Section id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}>
+        <Section id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}
+          action={<button type="button" onClick={() => setShowPurchaseModal(true)} className="btn-secondary btn-sm flex items-center gap-1.5">
+            <ShoppingCart size={14} /> Ajouter un achat
+          </button>}>
           <DataTable
             table="product_purchases"
             columns={PURCHASE_COLUMNS}
@@ -724,6 +811,17 @@ export default function ProductDetail({ recordId, onClose }) {
             data={bomSummary.rows}
             searchFields={['component_name', 'component_sku', 'ref_des']}
             height={stackedTableHeight(bomSummary.rows.length)}
+            // Clic sur une ligne → fiche du composant en side-peek.
+            peek={{
+              title: row => row.component_name || 'Composant',
+              subtitle: row => row.component_sku || '',
+              to: row => row.component_id ? `/products/${row.component_id}` : undefined,
+              key: 'products',
+              width: 720,
+              render: (row, { close }) => row.component_id
+                ? <ProductDetail recordId={row.component_id} embedded onClose={close} />
+                : <div className="p-6 text-sm text-slate-400">—</div>,
+            }}
             emptyState={{ icon: Hammer, title: 'Aucune nomenclature', description: "Ce produit n'a aucun composant de nomenclature (BOM)." }}
           />
         </Section>
@@ -930,6 +1028,11 @@ export default function ProductDetail({ recordId, onClose }) {
           </Modal>
         )
       })()}
+      {showPurchaseModal && <ProductPurchaseModal key={id} productId={id} onClose={() => setShowPurchaseModal(false)}
+        onCreated={purchase => {
+          setPurchases(rows => [purchase, ...rows.filter(row => row.id !== purchase.id)])
+          if (purchase.airtable.status === 'success') addToast({ message: 'Achat ajouté et synchronisé avec Airtable.' })
+        }} />}
     </DetailShell>
   )
 }

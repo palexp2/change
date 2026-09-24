@@ -4,8 +4,8 @@ import { api } from '../lib/api.js'
 // Pièce justificative d'un document d'extraction : le fichier réellement
 // récupéré (courriel, portail fournisseur, téléversement, photo). Rendu comme un
 // champ « Attachement » — même pastille/vignette que partout ailleurs, le clic
-// ouvre le fichier dans un nouvel onglet. Une page = une pièce : un document
-// multipage en porte plusieurs (/:id/file?page=N).
+// ouvre le fichier en modale. Une page = une pièce : un document multipage en
+// porte plusieurs (/:id/file?page=N).
 //
 // Aucune copie des octets : le descripteur est construit des métadonnées déjà
 // servies par la liste (`pages`), les fichiers restent servis par leur route.

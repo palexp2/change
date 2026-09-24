@@ -1,8 +1,46 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { existsSync, readdirSync, readFileSync, statSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs'
+import { resolve, join } from 'node:path'
+
+// Un onglet ouvert continue à importer les noms hachés de son ancien build.
+// Capturer avant que Vite vide outDir, puis restaurer sans écraser le nouveau
+// build. Les dates originales bornent la rétention, même après plusieurs builds.
+export function retainRecentAssets() {
+  let outputDir
+  let retained = new Map()
+  return {
+    name: 'retain-recent-assets',
+    apply: 'build',
+    configResolved(config) {
+      outputDir = resolve(config.root, config.build.outDir)
+      const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000
+      for (const directory of [resolve(config.root, 'dist/assets'), resolve(config.root, 'dist.prev/assets')]) {
+        if (!existsSync(directory)) continue
+        for (const name of readdirSync(directory)) {
+          const file = join(directory, name)
+          const stat = statSync(file)
+          if (!stat.isFile() || stat.mtimeMs < cutoff || retained.has(name)) continue
+          retained.set(name, { data: readFileSync(file), mtime: stat.mtime })
+        }
+      }
+    },
+    writeBundle() {
+      const directory = join(outputDir, 'assets')
+      mkdirSync(directory, { recursive: true })
+      for (const [name, { data, mtime }] of retained) {
+        const file = join(directory, name)
+        if (existsSync(file)) continue
+        writeFileSync(file, data)
+        utimesSync(file, mtime, mtime)
+      }
+      retained.clear()
+    },
+  }
+}
 
 export default defineConfig({
-  plugins: [react(), {
+  plugins: [react(), retainRecentAssets(), {
     name: 'survey-link-preview',
     enforce: 'post',
     generateBundle(_options, bundle) {

@@ -94,4 +94,18 @@ describe('Champ « Pourcentage »', () => {
     assert.equal(display.status, 200, JSON.stringify(display.body))
     assert.deepEqual(JSON.parse(display.body.options), { display: 'bar' })
   })
+
+  test('formule rendue en devise : un nombre, symbole réglable', async () => {
+    const r = await api('POST', '/api/custom-fields/projects', {
+      name: uniqueName('Formule $'), kind: 'formula', formula_expr: '1 + 1', result_type: 'currency', options: { currency: '€' },
+    })
+    assert.equal(r.status, 201, JSON.stringify(r.body))
+    assert.equal(r.body.type, 'number')
+    assert.equal(r.body.result_type, 'currency')
+    assert.deepEqual(JSON.parse(r.body.options), { currency: '€' })
+
+    const edited = await api('PUT', `/api/custom-fields/${r.body.id}`, { options: { currency: 'US$' } })
+    assert.equal(edited.status, 200, JSON.stringify(edited.body))
+    assert.deepEqual(JSON.parse(edited.body.options), { currency: 'US$' })
+  })
 })

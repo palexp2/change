@@ -1,4 +1,4 @@
-import { discoveryAddresses } from '../services/discoveryAddresses.js'
+import { discoveryAddresses, airtableTwinAddress } from '../services/discoveryAddresses.js'
 // Formulaire de découverte technique — entité standalone.
 //
 // Pattern :
@@ -23,6 +23,8 @@ import { APP_URL } from '../config/appUrl.js'
 import { parseLimit } from '../utils/pagination.js'
 import { normalizeDiscoveryOptions, discoveryOptionsFromRow } from '../services/discoveryFormOptions.js'
 import { calculateDiscoveryEquipment } from '../services/discoveryEquipment.js'
+import { queueDiscoveryOrderMirror } from '../services/discoveryOrderAirtable.js'
+import { emitOrder } from '../services/realtimeEmitters.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -40,6 +42,7 @@ function shapeForm(row) {
   const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
   return {
     id: row.id,
+    form_number: row.form_number ?? null,
     company_id: row.company_id,
     company_name: row.company_name || null,
     qualification_call_id: row.qualification_call_id,
@@ -226,7 +229,19 @@ router.get('/:id/equipment-preview', (req, res) => {
   const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
   const response = shapeForm(row)
-  res.json(calculateDiscoveryEquipment(response, schemaRules()))
+  const result = calculateDiscoveryEquipment(response, schemaRules())
+  // Vignette et type par rôle : l'image à côté du nom, le type pour regrouper.
+  const product = db.prepare('SELECT image_url, type FROM products WHERE id=?')
+  const productImages = {}
+  const productTypes = {}
+  for (const line of result.orderItems) {
+    const p = product.get(line.product_id)
+    for (const s of line.sources) {
+      if (p?.image_url) productImages[s.role] = p.image_url
+      if (p?.type) productTypes[s.role] = p.type
+    }
+  }
+  res.json({ ...result, productImages, productTypes })
 })
 
 router.patch('/:id/verification', (req, res) => {
@@ -236,6 +251,18 @@ router.patch('/:id/verification', (req, res) => {
   db.prepare("UPDATE customer_onboarding_responses SET verification_json=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
     .run(JSON.stringify(next), row.id)
   res.json({ ok: true, verification: next })
+})
+
+// Options achetées et extras par serre, modifiables par Orisha tant qu'aucune
+// commande n'a été créée ; le client les voit à la prochaine ouverture du lien.
+router.patch('/:id/options', (req, res) => {
+  const row = db.prepare('SELECT id, generated_order_id FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  if (row.generated_order_id) return res.status(409).json({ error: 'Une commande a déjà été créée pour ce formulaire' })
+  db.prepare("UPDATE customer_onboarding_responses SET form_options_json=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+    .run(JSON.stringify(normalizeDiscoveryOptions(req.body?.form_options)), row.id)
+  const updated = db.prepare('SELECT r.*, c.name AS company_name FROM customer_onboarding_responses r LEFT JOIN companies c ON c.id = r.company_id WHERE r.id=?').get(row.id)
+  res.json(shapeForm(updated))
 })
 
 router.patch('/:id/addresses', (req, res) => {
@@ -261,7 +288,7 @@ router.patch('/:id/addresses', (req, res) => {
   res.json(shapeForm(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)))
 })
 
-router.post('/:id/create-order', (req, res) => {
+router.post('/:id/create-order', async (req, res) => {
   const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
   if (row.generated_order_id) return res.status(409).json({ error: 'Une commande a déjà été créée pour ce formulaire', order_id: row.generated_order_id })
@@ -273,19 +300,36 @@ router.post('/:id/create-order', (req, res) => {
     // La commande doit exister avant de poser la clé étrangère. La liaison
     // conditionnelle reste dans la même transaction : un doublon annule tout.
     const addresses = discoveryAddresses(row, { persist: true })
+    // La livraison se lie à l'adresse connue d'Airtable quand elle existe déjà.
+    const shipping = airtableTwinAddress(addresses.shipping_address)
+    const farm = airtableTwinAddress(addresses.farm_address)
+    addresses.shipping_address = shipping
+    addresses.shipping_address_id = shipping?.id || null
+    addresses.farm_address = farm
+    addresses.farm_address_id = farm?.id || null
     db.prepare("INSERT INTO orders (id, order_number, company_id, farm_address_id, address_id, status, notes, date_commande) VALUES (?,?,?,?,?,'Commande vide',?,date('now'))")
       .run(orderId, orderNumber, row.company_id || null, addresses.farm_address_id, addresses.shipping_address_id, [`System Builder #${row.id}`, ...calc.orderNotes].join('\n'))
-    if (db.pragma('table_info(orders)').some(c => c.name === 'adresse_de_livraison')) {
-      const address = addresses.shipping_address
-      db.prepare('UPDATE orders SET adresse_de_livraison=? WHERE id=?').run(address?.id ? JSON.stringify([address.airtable_id || address.id]) : '', orderId)
+    // Colonnes miroir des liens Airtable « Adresse de livraison » et « Adresse
+    // de la ferme (pour coordonnées géographiques) ».
+    const orderCols = new Set(db.pragma('table_info(orders)').map(c => c.name))
+    for (const [column, address] of [['adresse_de_livraison', addresses.shipping_address], ['adresse_de_la_ferme_pour_coordonnees_geographiques', addresses.farm_address]]) {
+      if (orderCols.has(column)) db.prepare(`UPDATE orders SET ${column}=? WHERE id=?`).run(address?.id ? JSON.stringify([address.airtable_id || address.id]) : '', orderId)
+    }
+    // Réseau Wi-Fi du client → champs « Wi-Fi name » / « Wi-Fi password » de la commande.
+    const known = v => (v && String(v).trim() !== 'Je ne sais pas' ? String(v).trim() : null)
+    for (const [column, value] of [['wi_fi_name', known(row.wifi_ssid)], ['wi_fi_password', known(row.wifi_password)]]) {
+      if (orderCols.has(column) && value) db.prepare(`UPDATE orders SET ${column}=? WHERE id=?`).run(value, orderId)
     }
     const claim = db.prepare("UPDATE customer_onboarding_responses SET generated_order_id=? WHERE id=? AND generated_order_id IS NULL").run(orderId, row.id)
     if (claim.changes !== 1) throw new Error('Une commande a déjà été créée pour ce formulaire')
     for (const item of calc.orderItems) {
-      db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes) VALUES (?,?,?,?,'Non facturable',?)")
+      db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes) VALUES (?,?,?,?,'Facturable',?)")
         .run(newRecordId(), orderId, item.product_id, item.qty, item.label)
     }
   })()
+  emitOrder('created', orderId, req.user?.id)
+  // Airtable suit en arrière-plan ; un échec est repris par la reprise périodique.
+  queueDiscoveryOrderMirror(orderId)
   res.status(201).json({ id: orderId, order_number: orderNumber, unconfigured: calc.unconfigured })
 })
 

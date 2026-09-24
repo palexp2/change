@@ -1,5 +1,5 @@
-import { normalizeDiscoveryOptions, SENSOR_ROLES } from './discoveryFormOptions.js'
-import { JWT_ROLES } from '../../../client/src/lib/discoveryEquipmentCatalog.js'
+import { normalizeDiscoveryOptions, greenhouseLimits, SENSOR_ROLES } from './discoveryFormOptions.js'
+import { JWT_ROLES, EQUIPMENT_LABELS } from '../../../client/src/lib/discoveryEquipmentCatalog.js'
 
 // Règles de dimensionnement du System Builder. Délibérément sans DB : elles
 // restent testables et ne permettent jamais de mutualiser un module entre deux
@@ -10,8 +10,8 @@ export const EQUIPMENT_ROLES = [
   ...JWT_ROLES,
   ...['110', '24', '12'].flatMap(v => ['louver_spring_loaded', ...(v === '110' ? ['louver_with_fan'] : ['louver_open_close'])].map(type => `${type}_${v}`)),
   'humidity_valve', 'humidity_haf',
-  'activation_v2', 'side_vent_module', 'side_vent_controller_24v',
-  'fan_box_110v', 'valve', 'mobile_controller_ca', 'mobile_controller_us', 'central_controller', ...SENSOR_ROLES,
+  'activation_v2', 'side_vent_module', 'side_vent_controller_24v', 'side_vent_motor_left', 'side_vent_motor_right', 'guide_pipe', 'guide_pipe_hanging_kit', 'roof_inverter_ridder', 'roof_inverter_wire',
+  'fan_box_110v', 'valve', 'mobile_controller_ca', 'mobile_controller_us', 'central_controller', 'coax_antenna_kit', ...SENSOR_ROLES,
   ...['motor', 'furnace', 'valve'].flatMap(device => (device === 'valve' ? [15, 25, 'per_foot'] : [25, 50, 75, 100, 'per_foot']).map(length => `${device}_wire_${length}`)), 'valve_wire_nuts', 'backup_thermostat', 'thermostat_wire',
 ]
 
@@ -58,8 +58,8 @@ function orderLineLabel(sources) {
 }
 
 // Une serre de niveau Helper n'automatise que ses côtés ouvrants : ventilateurs,
-// louvres, humidité, fournaises et valves ne lui sont ni demandés (le formulaire
-// public ne pose pas ces questions), ni dimensionnés ici.
+// louvres et humidité ne lui sont jamais demandés. Fournaises, valves et toits
+// seulement si Orisha lui a donné une permission supplémentaire.
 export function greenhouseSideVentsOnly(greenhouse, response) {
   return (greenhouse?.permission_level || response?.permission_level) === 'helper'
 }
@@ -71,13 +71,49 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
   for (const [index, g] of (response?.greenhouses || []).entries()) {
     const greenhouse = index + 1
     const helperOnly = greenhouseSideVentsOnly(g, response)
-    const furnaces = helperOnly ? [] : (Array.isArray(g.furnaces) ? g.furnaces : [])
-    const valves = helperOnly ? 0 : Math.max(0, Number(g.irrigation_zones) || 0)
+    const limits = greenhouseLimits(options, index, g.permission_level || response?.permission_level)
+    const furnaces = limits.furnaces ? (Array.isArray(g.furnaces) ? g.furnaces : []) : []
+    const valves = limits.valves ? Math.max(0, Number(g.irrigation_zones) || 0) : 0
     const fans = helperOnly ? 0 : Math.min(2, Math.max(0, Number(g.num_fans) || 0))
     const motors = g.has_side_vents ? Math.max(0, Number(g.num_side_vent_motors) || 0) : 0
-    let slots = furnaces.length + valves + fans
+    let slots = 0
+    // Ce qui consomme les sorties V2, pour que l'on puisse recompter les modules.
+    const slotSources = []
+    function useSlots(label, qty, perUnit) {
+      if (!qty || !perUnit) return
+      slots += qty * perUnit
+      const source = slotSources.find(s => s.label === label)
+      if (source) { source.qty += qty; source.slots += qty * perUnit } else slotSources.push({ label, qty, slots: qty * perUnit })
+    }
+    useSlots('Fournaise', furnaces.length, 1)
+    useSlots('Zone d’irrigation', valves, 1)
+    useSlots('Ventilateur', fans, 1)
     const items = []
     let outputsUnknown = false
+    // Toits ouvrants déclarés par le client.
+    const roofs = limits.roofs && g.has_roof_vents === true ? Math.max(1, Number(g.num_roof_vents) || 0) : 0
+    // Par toit : inverseur du client (déjà là, ou à fournir par lui pour un
+    // 110 V / 240 V autre que Ridder) → 2 sorties + filage vers le module ;
+    // moteur 24 V DC sans inverseur → contrôleur 24 V (2 sorties) ; Ridder
+    // RW240 sans inverseur → inverseur Orisha + 2 sorties + filage.
+    if (roofs) {
+      const v = g.roof_motor_voltage
+      const ridder = v === '240' && g.roof_motor_ridder_rw240 === true
+      if (g.has_roof_inverter === true || (g.has_roof_inverter === false && (v === '110' || (v === '240' && g.roof_motor_ridder_rw240 === false)))) {
+        useSlots('Toit ouvrant · inverseur', roofs, 2)
+        add(items, 'roof_inverter_wire', roofs, greenhouse, 'Toits ouvrants')
+      } else if (g.has_roof_inverter === false && v === '24_dc') {
+        add(items, 'side_vent_controller_24v', roofs, greenhouse, 'Toits ouvrants')
+        useSlots('Toit ouvrant · contrôleur 24 VDC', roofs, 2)
+      } else if (g.has_roof_inverter === false && ridder) {
+        add(items, 'roof_inverter_ridder', roofs, greenhouse)
+        add(items, 'roof_inverter_wire', roofs, greenhouse, 'Toits ouvrants')
+        useSlots('Toit ouvrant · inverseur Ridder', roofs, 2)
+      } else {
+        outputsUnknown = true
+        warnings.push({ greenhouse, code: 'roof_review', message: `${roofs} toit(s) ouvrant(s) : moteur ou inverseur non précisé, à vérifier avant de créer la commande.` })
+      }
+    }
     function addControlled(role, qty, outputRole = role, note = '') {
       add(items, role, qty, greenhouse, note)
       if (!qty) return
@@ -85,7 +121,7 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
       if (!Number.isInteger(configured) || configured < 0 || configured > 8) {
         outputsUnknown = true
         warnings.push({ greenhouse, code: 'outputs_missing', role: outputRole, message: `Nombre de sorties V2 à définir pour ${outputRole}.` })
-      } else slots += qty * configured
+      } else useSlots(EQUIPMENT_LABELS[role] || role, qty, configured)
     }
     if (g.has_louvers && !helperOnly) {
       const louvers = Array.isArray(g.louvers) ? g.louvers : []
@@ -126,17 +162,34 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
     }
     if (options.humidity_retention && !helperOnly) {
       if (g.humidity_valve === true) addControlled('humidity_valve', 1)
-      const qty = Number(g.humidity_haf_count)
-      if (g.humidity_haf === true && Number.isInteger(qty) && qty > 0 && qty <= 100) addControlled('humidity_haf', qty)
+      // HAF du client : un relais 110 V + ses sorties, peu importe leur nombre.
+      if (g.humidity_haf === true) addControlled('humidity_haf', 1)
     }
 
     if (g.has_side_vents) {
-      if (Number(g.length) > 200) {
+      // Moteurs du client déjà en place avec inverseurs : chaque inverseur prend
+      // 2 sorties d'un module d'activation. Sans inverseur, règle habituelle :
+      // contrôleur 24 V par moteur au-delà de 200 pi, sinon un module pour 2 moteurs.
+      if (g.has_existing_side_vent_motors === true && g.side_has_inverters === true) {
+        const inverters = g.side_inverter_ratio === 'per_two' ? Math.ceil(motors / 2) : motors
+        useSlots('Inverseur côtés ouvrants', inverters, 2)
+      } else if (Number(g.length) > 200) {
         add(items, 'side_vent_controller_24v', motors, greenhouse)
-        slots += motors * 2
+        useSlots('Côté ouvrant · contrôleur 24 VDC', motors, 2)
       } else add(items, 'side_vent_module', Math.ceil(motors / 2), greenhouse)
       // Le filage moteur est toujours un câble continu de 25 pi / serre.
       if (motors) add(items, 'motor_wire_25', 1, greenhouse, 'Filage moteurs')
+      // Client sans moteurs : un moteur par côté, gauche et droit en alternance
+      // (le formulaire ne dit pas de quel côté est un moteur seul : gauche).
+      // Sans tuyaux guides : un tuyau et un kit de suspension par côté.
+      if (g.has_existing_side_vent_motors === false) {
+        add(items, 'side_vent_motor_left', Math.ceil(motors / 2), greenhouse)
+        add(items, 'side_vent_motor_right', Math.floor(motors / 2), greenhouse)
+      }
+      if (g.guide_pipes_state === 'needed') {
+        add(items, 'guide_pipe', motors, greenhouse)
+        add(items, 'guide_pipe_hanging_kit', motors, greenhouse)
+      }
     }
 
     if (!outputsUnknown) add(items, 'activation_v2', Math.ceil(slots / 4), greenhouse, `${slots} sorties`)
@@ -149,27 +202,29 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
       add(items, 'fan_box_110v', upToOneHp ? 1 : 2, greenhouse)
     }
 
-    if (valves && g.needs_orisha_valves) add(items, 'valve', valves, greenhouse)
+    // Le client dit combien de valves il veut (1 à 4) ; les anciennes réponses n'ont que les zones.
+    if (valves && g.needs_orisha_valves) add(items, 'valve', Math.min(valves, Number(g.orisha_valves_count) || valves), greenhouse)
     // La longueur demandée s'applique à chaque valve de la serre.
     if (valves) continuousWire(items, g.valve_control_wire_feet, greenhouse, 'valve', valves)
     for (const furnace of furnaces) {
       continuousWire(items, furnace.control_wire_feet, greenhouse, 'furnace')
-      if (furnace.backup_thermostat === false) {
+      // true = « J’ai besoin d’un thermostat de secours ».
+      if (furnace.backup_thermostat === true) {
         add(items, 'backup_thermostat', 1, greenhouse)
         add(items, 'thermostat_wire', 1, greenhouse)
       }
     }
     // Permissions par fonction et par serre, indépendantes du nombre
     // d'appareils et des sorties V2. La ventilation avancée est partagée.
-    if (!helperOnly) {
+    {
       const note = 'JWT à programmer dans le contrôleur central au montage'
       if (valves) add(items, 'jwt_irrigation', 1, greenhouse, note)
       if (furnaces.length) add(items, 'jwt_heating', 1, greenhouse, note)
-      if (g.has_louvers || fans || g.has_roof_vents === true) add(items, 'jwt_advanced_ventilation', 1, greenhouse, note)
-      if (options.humidity_retention) add(items, 'jwt_humidity_conservation', 1, greenhouse, note)
+      if ((!helperOnly && (g.has_louvers || fans)) || roofs) add(items, 'jwt_advanced_ventilation', 1, greenhouse, note)
+      if (options.humidity_retention && !helperOnly) add(items, 'jwt_humidity_conservation', 1, greenhouse, note)
       if ((g.permission_level || response?.permission_level) === 'chief_grower') add(items, 'jwt_disease_prevention', 1, greenhouse, note)
     }
-    perGreenhouse.push({ greenhouse, slots: outputsUnknown ? null : slots, activation_modules: outputsUnknown ? null : Math.ceil(slots / 4), items })
+    perGreenhouse.push({ greenhouse, slots: outputsUnknown ? null : slots, activation_modules: outputsUnknown ? null : Math.ceil(slots / 4), slot_sources: outputsUnknown ? [] : slotSources, items })
   }
   const siteItems = []
   const orderNotes = []
@@ -182,7 +237,14 @@ export function calculateDiscoveryEquipment(response, rules = {}) {
       warnings.push({ greenhouse: null, code: 'controller_distance_missing', message: 'Indiquez si les serres seront situées à 250 pi ou moins du contrôleur central.' })
     }
   }
-  if (options.mobile_controller || (response?.is_new_site !== 'add_to_existing' && response?.network_access === 'mobile_controller')) add(siteItems, mobileControllerRole(responseCountry(response)), 1, null)
+  const mobile = options.mobile_controller || (response?.is_new_site !== 'add_to_existing' && response?.network_access === 'mobile_controller')
+  if (mobile) add(siteItems, mobileControllerRole(responseCountry(response)), 1, null)
+  // Nouveau site : un contrôleur central, sauf si le contrôleur Internet mobile
+  // en tient lieu ; Wi-Fi à 350 pi : antenne et câble coaxial promis au client.
+  if (response?.is_new_site === 'new') {
+    if (!mobile) add(siteItems, 'central_controller', 1, null)
+    if (response.network_access === 'wifi_350_coax') add(siteItems, 'coax_antenna_kit', 1, null)
+  }
   for (const role of SENSOR_ROLES) add(siteItems, role, options.sensors[role], null)
   const items = [...perGreenhouse.flatMap(x => x.items), ...siteItems]
   const products = Object.entries(rules?.products || {})

@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { Router } from 'express';
 import { newRecordId } from '../utils/recordId.js';
 import path from 'path';
@@ -14,6 +15,7 @@ import { notifyAssignment } from '../services/notifications.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { rescanRachatForCompany } from '../services/subscriptionEvents.js';
 import { logSync } from '../services/syncLog.js';
+import { deleteOrder } from '../services/orderDeletion.js';
 import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js';
 import {
   SHIPMENT_ITEMS_COLUMN,
@@ -26,7 +28,6 @@ import { shippedCostSql, refreezeOrderShippedCosts, pieceUnitCostSql } from '../
 import { logSystemRun } from '../services/systemAutomations.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
-import { matchesScanCode } from '../utils/scanCodes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -70,6 +71,18 @@ const SHELF_HINT_SQL = `
       WHERE sn_r.product_id = oi.product_id AND sn_r.status = 'Disponible - Location') as refurb_serials_available,
     (SELECT COUNT(*) FROM serial_numbers sn_t
       WHERE sn_t.product_id = oi.product_id) as product_serial_count`;
+
+function serialProgress(item) {
+  const count = db.prepare('SELECT COUNT(*) AS n FROM serial_numbers WHERE order_item_id = ? AND product_id IS ?')
+    .get(item.id, item.product_id).n;
+  const required = count > 0 || !!db.prepare('SELECT 1 FROM serial_numbers WHERE product_id = ? LIMIT 1').get(item.product_id);
+  return { required, count };
+}
+
+function missingSerials(item) {
+  const { required, count } = serialProgress(item);
+  return required && count < item.qty;
+}
 
 // Renvoie vers Airtable le rattachement d'un numéro de série à une ligne de
 // commande (champ « Items commande »), qui se pose ICI — au scan de prélèvement
@@ -127,20 +140,28 @@ function firstLinkKey(value) {
 // l'ancienne adresse, et l'inverse laissait Airtable sur l'ancienne.
 // Référent inconnu (ni id Boréal ni record id connu) : on ne touche à rien.
 // Exportée pour être testable sans passer par la route.
+// Même jumelage pour l'adresse de la ferme : `farm_address_id` (Boréal) ↔
+// « Adresse de la ferme (pour coordonnées géographiques) » (Airtable).
+const ADDRESS_PAIRS = [
+  ['address_id', 'adresse_de_livraison'],
+  ['farm_address_id', 'adresse_de_la_ferme_pour_coordonnees_geographiques'],
+];
 export function alignAddressColumns(body) {
   const has = k => Object.prototype.hasOwnProperty.call(body, k);
-  const fromMirror = has('adresse_de_livraison');
-  if (!fromMirror && !has('address_id')) return;
-  const key = fromMirror ? firstLinkKey(body.adresse_de_livraison) : (body.address_id || null);
-  const addr = key
-    ? db.prepare('SELECT id, airtable_id FROM adresses WHERE id = ? OR airtable_id = ?').get(key, key)
-    : null;
-  if (key && !addr) return;
-  body.address_id = addr?.id || null;
-  // Adresse née dans Boréal (sans jumeau Airtable) : la colonne miroir garde son
-  // id local — il s'affiche pareil, et le write-back saute alors le champ plutôt
-  // que de délier côté Airtable.
-  body.adresse_de_livraison = addr ? JSON.stringify([addr.airtable_id || addr.id]) : '';
+  for (const [native, mirror] of ADDRESS_PAIRS) {
+    const fromMirror = has(mirror);
+    if (!fromMirror && !has(native)) continue;
+    const key = fromMirror ? firstLinkKey(body[mirror]) : (body[native] || null);
+    const addr = key
+      ? db.prepare('SELECT id, airtable_id FROM adresses WHERE id = ? OR airtable_id = ?').get(key, key)
+      : null;
+    if (key && !addr) continue;
+    body[native] = addr?.id || null;
+    // Adresse née dans Boréal (sans jumeau Airtable) : la colonne miroir garde son
+    // id local — il s'affiche pareil, et le write-back saute alors le champ plutôt
+    // que de délier côté Airtable.
+    body[mirror] = addr ? JSON.stringify([addr.airtable_id || addr.id]) : '';
+  }
 }
 
 // ── Langue des documents d'installation ─────────────────────────────────────
@@ -284,6 +305,10 @@ router.get('/:id', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   order.farm_address = order.farm_address_id ? db.prepare('SELECT * FROM adresses WHERE id=?').get(order.farm_address_id) || null : null;
+  // Lien réciproque du System builder qui a généré la commande.
+  order.discovery_forms = db.prepare(
+    'SELECT id, status, created_at, submitted_at FROM customer_onboarding_responses WHERE generated_order_id=? ORDER BY created_at'
+  ).all(order.id);
 
   const items = db.prepare(
     `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location, pr.type as product_type,
@@ -580,6 +605,7 @@ router.patch('/:id/status', (req, res) => {
   const shippedStatuses = ['Envoyé', "Envoyé aujourd'hui"]
   if (shippedStatuses.includes(status) && !shippedStatuses.includes(order.status)) {
     const items = db.prepare('SELECT * FROM order_items WHERE order_id = ?').all(order.id);
+    const movementIds = [];
     const run = db.transaction(() => {
       db.prepare(`UPDATE orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(status, order.id);
       for (const item of items) {
@@ -588,14 +614,18 @@ router.patch('/:id/status', (req, res) => {
         if (product) {
           db.prepare(`UPDATE products SET stock_qty=MAX(0, stock_qty - ?), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
             .run(item.qty, item.product_id);
+          const movId = newRecordId();
           db.prepare(
-            `INSERT INTO stock_movements (id, product_id, type, qty, reason, reference_id, user_id)
-             VALUES (?, ?, 'out', ?, 'Commande envoyée', ?, ?)`
-          ).run(newRecordId(), item.product_id, item.qty, order.id, req.user.id);
+            `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id)
+             VALUES (?, ?, 'out', ?, 'Commande envoyée', ?)`
+          ).run(movId, item.product_id, item.qty, req.user.id);
+          movementIds.push(movId);
         }
       }
     });
     run();
+    // Vers Airtable si le sens des mouvements le demande (sinon ignoré).
+    for (const movId of movementIds) createInAirtable('stock_movements', movId);
   } else {
     db.prepare(`UPDATE orders SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(status, req.params.id);
@@ -611,6 +641,10 @@ router.post('/:id/shipments', (req, res) => {
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
   const { tracking_number, carrier, status, shipped_at, notes, item_ids = [], address_id } = req.body;
+  for (const itemId of item_ids) {
+    const item = db.prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?').get(itemId, req.params.id);
+    if (item && missingSerials(item)) return res.status(400).json({ error: 'Scannez un numéro de série distinct pour chaque exemplaire avant de créer l’envoi.' });
+  }
   const resolvedAddressId = address_id !== undefined ? address_id : order.address_id;
   const id = newRecordId();
   const run = db.transaction(() => {
@@ -741,6 +775,33 @@ router.patch('/:id/items/:itemId', (req, res) => {
     return res.status(400).json({ error: 'fulfilled_qty must be an integer >= 0' });
   }
   const allowed = ['product_id', 'qty', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
+  const currentItem = db.prepare('SELECT * FROM order_items WHERE id=? AND order_id=?').get(req.params.itemId, req.params.id);
+  if (!currentItem) return res.status(404).json({ error: 'Article introuvable' });
+  const nextItem = { ...currentItem, ...Object.fromEntries(allowed.filter(k => k in req.body).map(k => [k, req.body[k]])) };
+  const progress = serialProgress(nextItem);
+  const changesPicking = ['product_id', 'qty', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'].some(k => k in req.body);
+  if (changesPicking && progress.required && (
+    nextItem.fulfilled_qty > progress.count ||
+    ((['Prélevé', "Dans l'envoi", 'Envoyé'].includes(nextItem.fulfillment_status) || nextItem.shipment_id) && progress.count < nextItem.qty)
+  )) return res.status(400).json({ error: 'Scannez un numéro de série distinct pour chaque exemplaire.' });
+  // La cellule « # de série » peut dissocier ses liens Airtable. Ce champ
+  // est distinct du prélèvement (serial_numbers.order_item_id).
+  if ('de_serie' in req.body) {
+    const current = db.prepare('SELECT de_serie FROM order_items WHERE id=? AND order_id=?')
+      .get(req.params.itemId, req.params.id);
+    if (!current) return res.status(404).json({ error: 'Article introuvable' });
+    if (refusedAirtablePullKeys('order_items', { de_serie: req.body.de_serie }).length) {
+      return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+    }
+    let next;
+    try { next = JSON.parse(req.body.de_serie); } catch { /* validation ci-dessous */ }
+    const previous = new Set(parseAirtableRecordIds(current.de_serie));
+    if (!Array.isArray(next) || next.some(key => typeof key !== 'string' || !previous.has(key))) {
+      return res.status(400).json({ error: 'Seule la dissociation des séries liées est permise' });
+    }
+    req.body.de_serie = JSON.stringify([...new Set(next)]);
+    allowed.push('de_serie');
+  }
   const updates = [];
   const values = [];
   for (const key of allowed) {
@@ -800,6 +861,49 @@ router.patch('/:id/items/:itemId', (req, res) => {
   res.json(itemWithSerials);
 });
 
+// Retrait partiel du prélèvement : le lien série et le compteur changent ensemble.
+router.post('/:id/items/:itemId/unpick', (req, res) => {
+  const { serial_id, quantity, expected_fulfilled_qty } = req.body || {};
+  const serialMode = typeof serial_id === 'string' && serial_id.length > 0;
+  const amount = serialMode ? 1 : parsePositiveInt(quantity);
+  const expected = parseNonNegativeInt(expected_fulfilled_qty);
+  if (expected === null || amount === null || (serialMode && quantity !== undefined) || (!serialMode && serial_id !== undefined)) {
+    return res.status(400).json({ error: 'Indiquez une série ou une quantité entière à remettre en stock.' });
+  }
+
+  const result = db.transaction(() => {
+    const item = db.prepare('SELECT * FROM order_items WHERE id = ? AND order_id = ?').get(req.params.itemId, req.params.id);
+    if (!item) return { status: 404, error: 'Article introuvable dans cette commande.' };
+    if (item.shipment_id || ["Dans l'envoi", 'Envoyé'].includes(item.fulfillment_status)) {
+      return { status: 409, error: "Retirez d’abord l’article de son envoi." };
+    }
+    const currentQty = item.fulfilled_qty || 0;
+    if (currentQty !== expected) return { status: 409, error: 'Le prélèvement a changé. Actualisez la commande.' };
+    if (amount > currentQty) return { status: 400, error: 'La quantité dépasse le prélèvement.' };
+    if (serialMode) {
+      const serial = db.prepare('SELECT id FROM serial_numbers WHERE id = ? AND order_item_id = ?').get(serial_id, item.id);
+      if (!serial) return { status: 409, error: 'Cette série ne fait plus partie du prélèvement.' };
+      db.prepare('UPDATE serial_numbers SET order_item_id = NULL WHERE id = ?').run(serial_id);
+    } else if (db.prepare('SELECT id FROM serial_numbers WHERE order_item_id = ? OR product_id = ? LIMIT 1').get(item.id, item.product_id)) {
+      return { status: 400, error: 'Choisissez le numéro de série à remettre en stock.' };
+    }
+    const remaining = currentQty - amount;
+    const status = item.fulfillment_status === 'En attente' ? 'En attente' : remaining >= item.qty ? 'Prélevé' : 'À prélever';
+    db.prepare('UPDATE order_items SET fulfilled_qty = ?, fulfillment_status = ? WHERE id = ?').run(remaining, status, item.id);
+    db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
+    return { status: 200 };
+  })();
+  if (result.error) return res.status(result.status).json({ error: result.error });
+
+  const item = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(req.params.itemId);
+  item.serials = db.prepare('SELECT * FROM serial_numbers WHERE order_item_id = ? ORDER BY serial').all(item.id);
+  emitOrderItem('updated', req.params.id, item, req.user?.id);
+  if (serialMode) pushSerialOrderItem(serial_id);
+  writeBackRecord('order_items', item.id, ['fulfilled_qty', 'fulfillment_status'])
+    .catch(e => console.error('write-back order_items:', e.message));
+  res.json(item);
+});
+
 // POST /api/orders/:id/items/:itemId/duplicate
 router.post('/:id/items/:itemId/duplicate', (req, res) => {
   const order = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
@@ -824,23 +928,12 @@ router.delete('/:id/items/:itemId', (req, res) => {
   res.json({ message: 'Item deleted' });
 });
 
-// Pièce désignée par un code scanné : son SKU (insensible à la casse — un
-// lecteur peut renvoyer une autre casse que celle saisie dans la fiche), sinon
-// un de ses codes-barres additionnels (étiquette fournisseur/fabricant, cf.
-// utils/scanCodes.js). Les articles sans numéro de série n'ont que ça.
+// Pièce désignée par un code scanné : son SKU, insensible à la casse — un
+// lecteur peut renvoyer une autre casse que celle saisie dans la fiche.
 function productForScannedCode(code) {
-  const bySku = db.prepare(
+  return db.prepare(
     'SELECT * FROM products WHERE sku = ? COLLATE NOCASE AND deleted_at IS NULL'
-  ).get(code)
-  if (bySku) return bySku
-  // instr() dégrossit (peu de pièces portent des codes) ; le vrai test est
-  // l'égalité code par code, sinon « 1234 » matcherait « 12345 ».
-  const candidates = db.prepare(
-    `SELECT * FROM products
-     WHERE deleted_at IS NULL AND scan_codes IS NOT NULL AND scan_codes <> ''
-       AND instr(lower(scan_codes), lower(?)) > 0`
-  ).all(code)
-  return candidates.find(p => matchesScanCode(p.scan_codes, code)) || null
+  ).get(code) || null
 }
 
 // Statuts d'un numéro de série prélevable : seules les séries en stock (vente
@@ -865,7 +958,7 @@ function openLineForProduct(orderId, productId) {
         AND fulfillment_status NOT IN ('Envoyé', 'Dans l''envoi')
       ORDER BY COALESCE(sort_order, 0), created_at`
   ).all(orderId, productId)
-  return { lines, item: lines.find(l => (l.fulfilled_qty || 0) < (l.qty || 1)) || null }
+  return { lines, item: lines.find(l => (l.fulfilled_qty || 0) < (l.qty || 1) || missingSerials(l)) || null }
 }
 
 // Collision d'adresse pour le client de la commande. Deux appareils de la même
@@ -909,20 +1002,22 @@ router.post('/:id/scan', (req, res) => {
   // ── PICKING MODE: each scan increments fulfilled_qty by 1 ───────────────────
   if (mode === 'pick') {
     function pickItem(item, serialObj) {
-      const newQty = Math.min((item.fulfilled_qty || 0) + 1, item.qty)
-      const newStatus = newQty >= item.qty ? 'Prélevé' : item.fulfillment_status || 'À prélever'
-      db.prepare(`UPDATE order_items SET fulfilled_qty = ?, fulfillment_status = ? WHERE id = ?`).run(newQty, newStatus, item.id)
       if (serialObj) {
         db.prepare('UPDATE serial_numbers SET order_item_id = ? WHERE id = ?').run(item.id, serialObj.id)
         pushSerialOrderItem(serialObj.id)
       }
-      return db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
+      const newQty = serialObj ? serialProgress(item).count : Math.min((item.fulfilled_qty || 0) + 1, item.qty)
+      const newStatus = newQty >= item.qty ? 'Prélevé' : item.fulfillment_status === 'En attente' ? 'En attente' : 'À prélever'
+      db.prepare(`UPDATE order_items SET fulfilled_qty = ?, fulfillment_status = ? WHERE id = ?`).run(newQty, newStatus, item.id)
+      const updated = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(item.id)
+      updated.serials = db.prepare('SELECT * FROM serial_numbers WHERE order_item_id = ? ORDER BY serial').all(item.id)
+      return updated
     }
 
     const serial = db.prepare(
       `SELECT sn.*, pr.name_fr as product_name FROM serial_numbers sn
        LEFT JOIN products pr ON sn.product_id = pr.id
-       WHERE sn.serial = ?`
+       WHERE sn.serial = ? COLLATE NOCASE`
     ).get(v)
 
     if (serial) {
@@ -937,7 +1032,12 @@ router.post('/:id/scan', (req, res) => {
         return res.json({ type: 'serial', action: 'confirm_required', reason: 'refurb_on_purchase', serial })
       }
       // 3. Sa ligne : la première non pleine du produit.
-      const { lines, item } = openLineForProduct(req.params.id, serial.product_id)
+      const { lines, item: openItem } = openLineForProduct(req.params.id, serial.product_id)
+      // Une série déjà liée reste sur sa ligne ; la rescanner ne compte pas
+      // un second exemplaire et ne la déplace jamais vers la ligne suivante.
+      const linkedItem = serial.order_item_id ? lines.find(l => l.id === serial.order_item_id) : null
+      if (serial.order_item_id && !linkedItem) return res.status(409).json({ error: 'Ce numéro de série est déjà lié à un autre article ou envoi.' })
+      const item = linkedItem || openItem
       if (!lines.length) return res.json({ type: 'serial', action: 'not_in_order', serial })
       if (!item) return res.json({ type: 'serial', action: 'lines_full', serial })
       // 4. Son adresse ne doit pas déjà exister chez ce client.
@@ -951,6 +1051,9 @@ router.post('/:id/scan', (req, res) => {
 
     const product = productForScannedCode(v)
     if (product) {
+      if (db.prepare('SELECT 1 FROM serial_numbers WHERE product_id = ? LIMIT 1').get(product.id)) {
+        return res.status(400).json({ error: 'Scannez le numéro de série de chaque exemplaire, plutôt que le code produit.' })
+      }
       const { lines, item } = openLineForProduct(req.params.id, product.id)
       if (!lines.length) return res.json({ type: 'sku', action: 'not_in_order', product })
       if (!item) return res.json({ type: 'sku', action: 'lines_full', product })
@@ -969,7 +1072,7 @@ router.post('/:id/scan', (req, res) => {
     `SELECT sn.*, pr.name_fr as product_name, pr.sku
      FROM serial_numbers sn
      LEFT JOIN products pr ON sn.product_id = pr.id
-     WHERE sn.serial = ?`
+     WHERE sn.serial = ? COLLATE NOCASE`
   ).get(v)
 
   if (serial) {
@@ -1115,7 +1218,7 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
 });
 
 // DELETE /api/orders/:id
-router.delete('/:id', (req, res) => {
+router.delete('/:id', async (req, res) => {
   const existing = db.prepare('SELECT id FROM orders WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Order not found' });
 
@@ -1126,7 +1229,7 @@ router.delete('/:id', (req, res) => {
   // soft-delete (deleted_at) pour les vraies commandes.
   const hard = req.query.hard === 'true' || req.query.hard === '1';
   if (hard) {
-    if (req.user?.role !== 'admin') {
+    if (!hasRole(req.user, 'admin')) {
       return res.status(403).json({ error: 'Admin access required for permanent delete' });
     }
     try {
@@ -1142,7 +1245,8 @@ router.delete('/:id', (req, res) => {
     return res.json({ message: 'Deleted permanently' });
   }
 
-  db.prepare("UPDATE orders SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(req.params.id);
+  const result = await deleteOrder(req.params.id);
+  if (result.status !== 200) return res.status(result.status).json({ error: result.error, shipment_ids: result.shipment_ids });
   emitOrder('deleted', req.params.id, req.user?.id);
   res.json({ message: 'Deleted' });
 });

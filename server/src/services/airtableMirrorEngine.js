@@ -36,6 +36,7 @@ import { existsSync } from 'fs'
 import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import db from '../db/database.js'
+import { periodStartFromFields } from './paiePeriod.js'
 import { getAccessToken } from '../connectors/airtable.js'
 import { syncDynamicFields, updateDynamicFields } from './airtableAutoSync.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
@@ -197,6 +198,11 @@ export const TRANSFORMS = {
     const linked = firstLinked(fields, name)
     if (!linked) return null
     return db.prepare('SELECT id FROM employees WHERE airtable_id=?').get(linked)?.id || null
+  },
+  link_fourniture: (fields, name) => {
+    const linked = firstLinked(fields, name)
+    if (!linked) return null
+    return db.prepare('SELECT id FROM fournitures WHERE airtable_id=?').get(linked)?.id || null
   },
 
   // Pièce jointe : l'URL du PREMIER fichier. Airtable renvoie un tableau
@@ -406,11 +412,13 @@ function instagramDerive(fields, rec, fieldMap) {
   return existing?.contacted_at ? { contacted: 1 } : { contacted: 1, contacted_at: new Date().toISOString() }
 }
 
-// ── Paies : total attendu ────────────────────────────────────────────────────
+// ── Paies : total attendu et début de période ───────────────────────────────
 //
-// `period_start` n'est plus dérivée ici (migration 051 — champ « Période de
-// paie » démappé de /champs/paies, la colonne reste alimentée par
-// `paieTimesheetImport.computePeriod`, indépendant du sync Airtable).
+// `period_start` est relue du champ Airtable « Période de paie » (nom en dur,
+// cf. PAIES_UNMAPPED_AIRTABLE_FIELDS — la migration 051 l'a démappé de
+// /champs/paies, elle n'y revient pas). Illisible ou absent : la colonne n'est
+// pas touchée, ce qui laisse en place la valeur interne
+// (`paieTimesheetImport.computePeriod`).
 function paiesDerive(fields, rec, fieldMap) {
   const num = TRANSFORMS.empNum
   // Depuis le retrait du field_map cœur, chaque clé est démappable dans
@@ -428,6 +436,8 @@ function paiesDerive(fields, rec, fieldMap) {
   // paie est complète côté Airtable : une formule ≤ 0 veut dire que les remises
   // aux organismes ne sont pas encore saisies.
   const totalFallback = totalExcl != null ? Math.round((totalExcl + (reimbTotal || 0)) * 100) / 100 : null
+  const periodStart = periodStartFromFields(fields)
+  if (periodStart) out.period_start = periodStart
   if (fieldMap?.total_with_charges_and_reimb) {
     out.total_with_charges_and_reimb = totalIncl != null ? totalIncl : (totalFallback > 0 ? totalFallback : null)
   }
@@ -444,7 +454,9 @@ const PROCUREMENT_TYPES = ['Acheté', 'Fabriqué', 'Drop ship']
 
 const PROCUREMENT_IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'svg', 'bmp']
 
-async function piecesPrepareImages({ records, fieldMap, dryRun }) {
+// `table` : les fournitures réutilisent la même copie locale (même dossier,
+// même route de service — le nom de fichier est l'id `rec…`, unique partout).
+async function piecesPrepareImages({ records, fieldMap, dryRun }, table = 'products') {
   const imageUrl = {}
   const field = fieldMap?.image
   if (!field) return { imageUrl }
@@ -453,7 +465,7 @@ async function piecesPrepareImages({ records, fieldMap, dryRun }) {
   // POST /api/products/:id/image) l'emporte sur la pièce jointe Airtable :
   // sans ça, la synchro suivante la remplacerait par la copie du miroir.
   const manual = new Set(db.prepare(
-    "SELECT airtable_id FROM products WHERE airtable_id IS NOT NULL AND image_url LIKE '/erp/api/product-images/local-%'"
+    `SELECT airtable_id FROM ${table} WHERE airtable_id IS NOT NULL AND image_url LIKE '/erp/api/product-images/local-%'`
   ).all().map(r => r.airtable_id))
   for (const rec of records) {
     if (manual.has(rec.id)) continue
@@ -645,16 +657,28 @@ export const CORE_PLANS = {
     //  • `qty` est la valeur absolue arrondie de cette même quantité
     //  • `reason` reçoit le texte Airtable brut du même champ que `type`
     //  • `created_at` retombe sur la date de création du record Airtable
+    // Une clé réglée en Boréal → Airtable seulement n'écrit pas sa colonne ici
+    // non plus (même règle que la boucle des champs) ; `type` dépend des deux.
     derive: (fields, rec, fieldMap) => {
       const rawQty = parseFloat(String(fields[fieldMap.qty_change] ?? 0)) || 0
       const atType = getVal(fields, fieldMap.type) || ''
       const type = /ajustement/i.test(atType) ? 'adjustment' : (rawQty >= 0 ? 'in' : 'out')
-      return {
+      const out = {
         type,
         qty: Math.round(Math.abs(rawQty)),
         reason: atType || null,
         created_at: getVal(fields, fieldMap.occurred_at) || rec.createdTime || null,
       }
+      const pushKeys = new Set(['qty_change', 'type', 'occurred_at']
+        .filter(key => fieldMapDirection('stock_movements', key) === 'push'))
+      // Un record NOUVEAU prend tout : type et qty sont NOT NULL.
+      if (!pushKeys.size || !db.prepare('SELECT 1 FROM stock_movements WHERE airtable_id=?').get(rec.id)) return out
+      const pushOnly = key => pushKeys.has(key)
+      if (pushOnly('qty_change')) delete out.qty
+      if (pushOnly('type')) delete out.reason
+      if (pushOnly('qty_change') || pushOnly('type')) delete out.type
+      if (pushOnly('occurred_at')) delete out.created_at
+      return out
     },
   },
   retours: {
@@ -1152,6 +1176,52 @@ export const CORE_PLANS = {
     prepare: achatsPrepareVendors,
     derive: achatsDerive,
   },
+  // Catalogue des fournitures (bureau, entretien, emballage). Mapping cœur
+  // réglable dans /champs (CORE_FIELD_SPECS), plus les champs Airtable
+  // supplémentaires qu'on y branche (champs dynamiques). Pas de règles de champ.
+  fournitures: {
+    fields: {
+      name:            ['name', 'text'],
+      web_url:         ['web_url', 'text'],
+      supplier:        ['supplier', 'text'],
+      reference_price: ['reference_price', 'number'],
+      unit:            ['unit', 'text'],
+      notes:           ['notes', 'text'],
+    },
+    prepare: (args) => piecesPrepareImages(args, 'fournitures'),
+    derive: (fields, rec, fieldMap, { ctx = {} } = {}) => ({ image_url: ctx.imageUrl?.[rec.id] || null }),
+    keepIfNull: ['image_url'],
+    noFieldRules: true,
+  },
+  achats_fournitures: {
+    fields: {
+      purchased_at: ['purchased_at', 'text'],
+      fourniture:   ['fourniture_id', 'link_fourniture'],
+      qty:          ['qty', 'number'],
+      unit_price:   ['unit_price', 'number'],
+    },
+    // Un achat qui arrive avant sa fourniture (webhook des deux tables, ou
+    // rattrapage en parallèle) resterait sans nom : on importe d'abord les
+    // fournitures manquantes.
+    prepare: async ({ records, fieldMap, dryRun }) => {
+      const field = fieldMap?.fourniture
+      if (!field || dryRun) return {}
+      const exists = db.prepare('SELECT 1 FROM fournitures WHERE airtable_id=? LIMIT 1')
+      const missing = new Set()
+      for (const rec of records) {
+        for (const v of rec.fields?.[field] || []) if (typeof v === 'string' && !exists.get(v)) missing.add(v)
+      }
+      if (!missing.size) return {}
+      const tableId = db.prepare("SELECT table_id FROM airtable_module_config WHERE module='fournitures'").get()?.table_id
+      if (tableId) {
+        await syncMirror('fournitures', {
+          [tableId]: { recordIds: [...missing], destroyedIds: [], changedFieldIds: [], hasCreates: false },
+        })
+      }
+      return {}
+    },
+    noFieldRules: true,
+  },
 }
 
 const nowExpr = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
@@ -1520,6 +1590,14 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
   const noTarget = report.no_target ? `, ${report.no_target} sans fiche ERP (ignorés)` : ''
   console.log(`⚙️  ${mirrorId}${dryRun ? ' [à blanc]' : ''}: ${report.imported} importés, ${report.updated} mis à jour${skipped}${echo}${noLink}${noTarget}`)
   return report
+}
+
+// Miroirs nés sur le moteur unique : aucune fonction historique derrière eux.
+// Cette carte tient la place de LEGACY_SYNCS pour les trois appelants (webhook,
+// rattrapage quotidien, bouton « Synchro »).
+export const ENGINE_ONLY_SYNCS = {
+  fournitures: (changes) => syncMirror('fournitures', changes),
+  achats_fournitures: (changes) => syncMirror('achats_fournitures', changes),
 }
 
 // ── Aiguillage ──────────────────────────────────────────────────────────────

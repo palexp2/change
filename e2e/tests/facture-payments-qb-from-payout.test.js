@@ -58,7 +58,7 @@ describe('FacturePayments — lien QB Deposit via payout', () => {
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
 
     // Localise le <th>QB</th> de la section Paiements.
-    const th = page.locator('th', { hasText: /^QB$/ }).first()
+    const th = page.locator('th', { hasText: /^QuickBooks$/ }).first()
     await th.waitFor({ timeout: 8000 })
     const colIndex = await th.evaluate(el => {
       const ths = Array.from(el.parentElement.children)

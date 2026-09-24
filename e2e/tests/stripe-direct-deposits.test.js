@@ -103,7 +103,7 @@ describe('Stripe Payouts — sous-section Dépôts directs', () => {
     assert.ok(href >= 1, 'lien vers la fiche facture manquant')
   })
 
-  test('Cliquer une ligne ouvre le détail /depots-directs/:id avec Aperçu + Pousser vers QB', async (t) => {
+  test('Cliquer une ligne ouvre le détail /depots-directs/:id avec Aperçu + Publier dans QuickBooks', async (t) => {
     if (!apiData.body.candidates.length) { t.skip('aucun candidat en base'); return }
     const first = apiData.body.candidates[0]
     // Clic sur la ligne (pas sur les liens internes) → navigation vers le détail.

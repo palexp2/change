@@ -1,3 +1,4 @@
+import { hasRole } from '../../shared/roles.mjs'
 import { Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import { useEffect, useRef } from 'react'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
@@ -20,6 +21,8 @@ import { legacyFinanceTarget } from './lib/financeSections.js'
 import { PEEK_ROUTES, matchPeekRoute, canOpenRecord } from './lib/recordPeekRoutes.jsx'
 
 import Login from './pages/Login.jsx'
+import ForgotPassword from './pages/ForgotPassword.jsx'
+import ResetPassword from './pages/ResetPassword.jsx'
 import Setup from './pages/Setup.jsx'
 import Dashboard from './pages/Dashboard.jsx'
 import Pipeline from './pages/Pipeline.jsx'
@@ -50,9 +53,11 @@ import QualificationCall from './pages/QualificationCall.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
 import VendorSubscriptions from './pages/VendorSubscriptions.jsx'
 import VendorProfiles from './pages/VendorProfiles.jsx'
+import CartesPaiement from './pages/CartesPaiement.jsx'
 import PrepaidAccounts from './pages/PrepaidAccounts.jsx'
 import DriveInventory from './pages/DriveInventory.jsx'
 import TestsAntoine from './pages/TestsAntoine.jsx'
+import ClientMap from './pages/ClientMap.jsx'
 import FinDeMois from './pages/FinDeMois.jsx'
 import RevenusReportes from './pages/RevenusReportes.jsx'
 import Travaux from './pages/Travaux.jsx'
@@ -63,6 +68,7 @@ import ComptaDashboard from './pages/ComptaDashboard.jsx'
 import SaleReceipts from './pages/SaleReceipts.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
+import Fournitures from './pages/Fournitures.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import ReglesBancaires from './pages/ReglesBancaires.jsx'
 import Propositions from './pages/Propositions.jsx'
@@ -112,10 +118,11 @@ function pageKey(pathname) {
 }
 
 function ProtectedRoute({ children, adminOnly = false, hrOnly = false }) {
-  const { user } = useAuth()
+  const { user, isLoading } = useAuth()
+  if (isLoading) return null
   if (!user) return <Navigate to="/login" replace />
-  if (adminOnly && user.role !== 'admin') return <Navigate to="/dashboard" replace />
-  if (hrOnly && !['admin', 'rh'].includes(user.role)) return <Navigate to="/dashboard" replace />
+  if (adminOnly && !hasRole(user, 'admin')) return <Navigate to="/dashboard" replace />
+  if (hrOnly && !hasRole(user, 'rh')) return <Navigate to="/dashboard" replace />
   return children
 }
 
@@ -197,6 +204,8 @@ function AppRoutes() {
     <Routes location={background || undefined}>
       <Route path="/" element={<Navigate to={user ? homePath : '/login'} replace />} />
       <Route path="/login" element={user ? <Navigate to={homePath} replace /> : <Login />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/setup" element={<Setup />} />
       <Route path="/customer/post-payment" element={<DiscoveryFormPage />} />
       {/* Lien public court vers le formulaire de découverte technique — accessible sans login. */}
@@ -242,6 +251,7 @@ function AppRoutes() {
       <Route path="/priorite-assemblage" element={<ProtectedRoute><PrioriteAssemblage /></ProtectedRoute>} />
       <Route path="/envois" element={<ProtectedRoute><Envois /></ProtectedRoute>} />
       <Route path="/fournisseurs" element={<ProtectedRoute><VendorProfiles /></ProtectedRoute>} />
+      <Route path="/cartes-paiement" element={<ProtectedRoute><CartesPaiement /></ProtectedRoute>} />
       <Route path="/fournisseurs/achats" element={<ProtectedRoute><AchatsFournisseurs /></ProtectedRoute>} />
       <Route path="/fournisseurs/abonnements" element={<ProtectedRoute><VendorSubscriptions /></ProtectedRoute>} />
       <Route path="/achats-fournisseurs" element={<Navigate to="/fournisseurs/achats" replace />} />
@@ -249,9 +259,10 @@ function AppRoutes() {
       <Route path="/comptes-prepayes" element={<ProtectedRoute><PrepaidAccounts /></ProtectedRoute>} />
       <Route path="/inventaire-drive" element={<ProtectedRoute><DriveInventory /></ProtectedRoute>} />
       <Route path="/tests-antoine" element={<ProtectedRoute><TestsAntoine /></ProtectedRoute>} />
+      <Route path="/tests-antoine/carte" element={<ProtectedRoute><ClientMap /></ProtectedRoute>} />
       <Route path="/fin-de-mois" element={<ProtectedRoute><FinDeMois /></ProtectedRoute>} />
       <Route path="/revenus-reportes" element={<ProtectedRoute><RevenusReportes /></ProtectedRoute>} />
-      <Route path="/travaux" element={<ProtectedRoute><Travaux /></ProtectedRoute>} />
+      <Route path="/travaux" element={<ProtectedRoute adminOnly><Travaux /></ProtectedRoute>} />
       <Route path="/dettes-lt" element={<ProtectedRoute><DettesLT /></ProtectedRoute>} />
       {/* Devenue un onglet d'Extraction de données (SaleReceipts) : la route reste pour ne pas casser les signets. */}
       <Route path="/collecte-factures" element={<Navigate to="/sale-receipts?onglet=collecte" replace />} />
@@ -275,10 +286,12 @@ function AppRoutes() {
       <Route path="/stripe-payouts" element={<ProtectedRoute><StripePayouts /></ProtectedRoute>} />
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
+      <Route path="/fournitures" element={<ProtectedRoute><Fournitures /></ProtectedRoute>} />
+      <Route path="/achats-fournitures" element={<Navigate to="/fournitures" replace />} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/regles-bancaires" element={<ProtectedRoute><ReglesBancaires /></ProtectedRoute>} />
       <Route path="/propositions" element={<ProtectedRoute><Propositions /></ProtectedRoute>} />
-      <Route path="/employees" element={<ProtectedRoute hrOnly><Employees /></ProtectedRoute>} />
+      <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
       <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />
       <Route path="/paies" element={<ProtectedRoute><Paies /></ProtectedRoute>} />
@@ -300,8 +313,8 @@ function AppRoutes() {
       <Route path="/settings" element={<Navigate to="/parametres" replace />} />
       <Route path="/changelog" element={<ProtectedRoute><Changelog /></ProtectedRoute>} />
       <Route path="/architecture" element={<ProtectedRoute adminOnly><Architecture /></ProtectedRoute>} />
-      <Route path="/automations" element={<ProtectedRoute><Automations /></ProtectedRoute>} />
-      <Route path="/automations/:id" element={<ProtectedRoute><AutomationDetail /></ProtectedRoute>} />
+      <Route path="/automations" element={<ProtectedRoute adminOnly><Automations /></ProtectedRoute>} />
+      <Route path="/automations/:id" element={<ProtectedRoute adminOnly><AutomationDetail /></ProtectedRoute>} />
       <Route path="/__boom" element={<ProtectedRoute adminOnly><CrashTest /></ProtectedRoute>} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

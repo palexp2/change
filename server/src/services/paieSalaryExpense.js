@@ -26,6 +26,7 @@ import {
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { round2 } from '../utils/money.js'
 import { findBankDebit, shiftDate, linkTxnToQbEntity } from './bankDebitLookup.js'
+import { ensurePaiePeriodStart } from './paiePeriod.js'
 
 
 // Remboursements de dépenses de la paie, par employé (source : paie_items).
@@ -263,14 +264,15 @@ export function computePaieSalaryExpense(paieId, input = {}) {
     warnings.push(`Le montant saisi (${bank.toFixed(2)} $) diffère du total de la paie synchronisé (${expected.toFixed(2)} $) — à la publication, le montant saisi remplacera le total sur la paie et dans Airtable.`)
   }
 
-  // Paie aux 2 semaines : si le début de période n'est pas renseigné (cas
-  // courant côté Airtable), le déduire (fin − 13 jours).
+  // Le début de période vient d'Airtable (« Période de paie », relu au sync et
+  // à la volée par `ensurePaiePeriodStart` avant l'aperçu et la publication).
+  // Dernier recours seulement, si Airtable est muet : déduction fin − 13 jours.
   let periodStart = paie.period_start
   if (!periodStart && paie.period_end) {
     const d = new Date(`${paie.period_end}T12:00:00Z`)
     d.setUTCDate(d.getUTCDate() - 13)
     periodStart = d.toISOString().slice(0, 10)
-    warnings.push(`Début de période déduit (${periodStart}, paie aux 2 semaines) — renseigner « Début de période » sur la paie si différent.`)
+    warnings.push(`Début de période absent d'Airtable — déduit (${periodStart}, paie aux 2 semaines) ; remplir « Période de paie » sur la paie dans Airtable si différent.`)
   }
   const period = periodStart && paie.period_end
     ? `${periodStart} au ${paie.period_end}`
@@ -465,6 +467,7 @@ function buildPurchaseBody(preview, refs, cfg) {
 export async function pushPaieSalaryExpense(paieId, input = {}) {
   const t0 = Date.now()
   try {
+    await ensurePaiePeriodStart(paieId)
     if (!isSystemAutomationActive(PAIE_REPARTITION_AUTOMATION_ID)) {
       throw new Error('Automation sys_paie_repartition inactive — l\'activer avant de publier')
     }
@@ -529,6 +532,7 @@ export async function pushPaieSalaryExpense(paieId, input = {}) {
 export async function updatePaieSalaryExpense(paieId, input = {}) {
   const t0 = Date.now()
   try {
+    await ensurePaiePeriodStart(paieId)
     if (!isSystemAutomationActive(PAIE_REPARTITION_AUTOMATION_ID)) {
       throw new Error('Automation sys_paie_repartition inactive — l\'activer avant de corriger')
     }

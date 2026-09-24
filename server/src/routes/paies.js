@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
-import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
+import { requireAuth, isHR } from '../middleware/auth.js'
 import { importTimesheetsForPaie } from '../services/paieTimesheetImport.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { writeBackRecord } from '../services/airtableWriteback.js'
@@ -15,7 +15,7 @@ function myEmployeeId(userId) {
 }
 
 function ensureHR(req, res, next) {
-  if (!isHROrAdmin(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
+  if (!isHR(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
   next()
 }
 
@@ -74,7 +74,12 @@ function scopeAggregatesToEmployee(rows, empId) {
   `).all(empId, ...ids)
   const byPaie = new Map(mine.map(m => [m.paie_id, m]))
   const empty = { items_count: 0, total_regular_hours: 0, total_regular_amount: 0 }
+  const ownFields = new Set(['id', 'number', 'period_start', 'period_end', 'status', 'nb_holiday_days',
+    'timesheets_deadline', 'timesheets_sent', 'includes_hourly', 'includes_mileage', 'includes_expense_reimb',
+    'includes_paid_leave', 'includes_holiday_hours', 'includes_sales_commissions', 'created_at', 'updated_at',
+    'debited_date', 'items_count', 'total_regular_hours', 'total_regular_amount'])
   for (const r of rows) {
+    for (const key of Object.keys(r)) if (!ownFields.has(key)) delete r[key]
     const m = byPaie.get(r.id) || empty
     for (const key of ['items_count', 'total_regular_hours', 'total_regular_amount']) {
       if (key in r) r[key] = m[key]
@@ -96,7 +101,7 @@ const ALLOWED = [
 router.get('/', (req, res) => {
   const { q } = req.query
   const { page, limitVal, offset } = parsePage(req.query, 100)
-  const hr = isHROrAdmin(req.user)
+  const hr = isHR(req.user)
   const empId = hr ? null : myEmployeeId(req.user.id)
   if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
 
@@ -145,7 +150,7 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   const row = db.prepare(`SELECT * FROM ${readRelation('paies')} WHERE id=?`).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  const hr = isHROrAdmin(req.user)
+  const hr = isHR(req.user)
   const empId = hr ? null : myEmployeeId(req.user.id)
   const itemFilter = hr ? '' : 'AND pi.employee_id = ?'
   const itemParams = hr ? [req.params.id] : [req.params.id, empId]
@@ -311,7 +316,7 @@ router.delete('/:id', ensureHR, (req, res) => {
 router.get('/items/list', (req, res) => {
   const { q } = req.query
   const { page, limitVal, offset } = parsePage(req.query, 100)
-  const hr = isHROrAdmin(req.user)
+  const hr = isHR(req.user)
   const empId = hr ? null : myEmployeeId(req.user.id)
   if (!hr && !empId) return res.json({ data: [], total: 0, page: parseInt(page), limit: limitVal })
   const conditions = []
@@ -410,6 +415,8 @@ router.post('/:id/salary-expense/deductions/refresh', ensureHR, async (req, res)
 // Aperçu : { bank_amount, phone?, txn_date? } → lignes de la dépense.
 router.post('/:id/salary-expense/preview', ensureHR, async (req, res) => {
   try {
+    const { ensurePaiePeriodStart } = await import('../services/paiePeriod.js')
+    await ensurePaiePeriodStart(req.params.id)
     const { computePaieSalaryExpense } = await import('../services/paieSalaryExpense.js')
     res.json(computePaieSalaryExpense(req.params.id, req.body || {}))
   } catch (e) {

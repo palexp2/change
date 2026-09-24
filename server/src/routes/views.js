@@ -14,7 +14,7 @@ const ALLOWED_TABLES = new Set([
   'employees', 'paies', 'paie_items', 'bom_items',
   'company_serials', 'sale_receipts',
   'automations', 'catalog', 'discovery_forms', 'journal_entries',
-  'public_files', 'qualification_calls', 'soumissions', 'stock_movements',
+  'public_files', 'qualification_calls', 'soumissions', 'stock_movements', 'achats_fournitures', 'fournitures',
   'product_movements', 'sync_log', 'bank_transactions',
   'stripe_invoice_items', 'stripe_payouts', 'users', 'payments',
   'ops_issues',
@@ -32,7 +32,7 @@ const ALLOWED_TABLES = new Set([
   'company_contacts', 'company_projects', 'company_orders', 'company_factures',
   'company_abonnements', 'company_envois', 'company_tasks', 'company_achats',
   'company_retours',
-  'product_purchases',
+  'product_purchases', 'fourniture_achats',
   'project_factures', 'project_soumissions', 'project_commissions',
   'contact_tasks', 'serial_state_changes',
   // Pages listes sans table SQL propre (ou dérivée) qui n'avaient pas leur clé.

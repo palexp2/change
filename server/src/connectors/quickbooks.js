@@ -1,3 +1,4 @@
+import { encryptCredentials, decryptCredentials } from '../utils/encryption.js'
 import db from '../db/database.js'
 import { logSync } from '../services/syncLog.js'
 import { getCurrentUser } from '../utils/requestContext.js'
@@ -86,7 +87,7 @@ export async function getAccessToken(accountKey) {
   const meta = JSON.parse(row.metadata || '{}')
 
   if (!row.expiry_date || Date.now() <= row.expiry_date - 60_000) {
-    return { accessToken: row.access_token, realmId: meta.realm_id }
+    return { accessToken: decryptCredentials(row.access_token), realmId: meta.realm_id }
   }
 
   const lockKey = row.account_key
@@ -98,7 +99,7 @@ export async function getAccessToken(accountKey) {
         "SELECT * FROM connector_oauth WHERE connector='quickbooks' AND account_key=?"
       ).get(lockKey)
       if (fresh && (!fresh.expiry_date || Date.now() <= fresh.expiry_date - 60_000)) {
-        return { accessToken: fresh.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
+        return { accessToken: decryptCredentials(fresh.access_token), realmId: JSON.parse(fresh.metadata || '{}').realm_id }
       }
 
       const { clientId, clientSecret } = getCredentials()
@@ -109,7 +110,7 @@ export async function getAccessToken(accountKey) {
           Authorization: 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64'),
           Accept: 'application/json',
         },
-        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: fresh.refresh_token }),
+        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: decryptCredentials(fresh.refresh_token) }),
       })
       if (!resp.ok) {
         console.error(`❌ QB refresh failed (${resp.status}):`, await resp.text())
@@ -120,7 +121,7 @@ export async function getAccessToken(accountKey) {
         UPDATE connector_oauth
         SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
-      `).run(t.access_token, t.refresh_token || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
+      `).run(encryptCredentials(t.access_token), encryptCredentials(t.refresh_token) || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
       return { accessToken: t.access_token, realmId: JSON.parse(fresh.metadata || '{}').realm_id }
     } finally {
       refreshLocks.delete(lockKey)
@@ -168,6 +169,28 @@ function buildQbApiError(method, path, status, text) {
 
 export async function qbRequest(method, path, body) {
   const { accessToken, realmId } = await getAccessToken()
+  const [entityPath, queryString] = path.split('?')
+  const operation = new URLSearchParams(queryString).get('operation')
+  if (method === 'POST' && entityPath === '/journalentry' && body
+      && body.Id == null && body.SyncToken == null && (!operation || operation === 'create')) {
+    const manualNumber = String(body.DocNumber ?? '').trim()
+    if (!manualNumber) {
+      // Réservation atomique et durable AVANT le réseau : un échec peut laisser
+      // un trou, mais jamais réutiliser un numéro après une réponse perdue.
+      const { last_number } = db.prepare(`
+        INSERT INTO qb_journal_sequences (realm_id, last_number) VALUES (?, 1)
+        ON CONFLICT(realm_id) DO UPDATE SET last_number = last_number + 1
+        RETURNING last_number
+      `).get(String(realmId))
+      body = { ...body, DocNumber: `ERP-JE-${String(last_number).padStart(6, '0')}` }
+    } else if (/^ERP-JE-\d{1,14}$/.test(manualNumber) && Number(manualNumber.slice(7)) > 0) {
+      // Un numéro manuel dans notre série fait avancer le compteur également.
+      db.prepare(`
+        INSERT INTO qb_journal_sequences (realm_id, last_number) VALUES (?, ?)
+        ON CONFLICT(realm_id) DO UPDATE SET last_number = MAX(last_number, excluded.last_number)
+      `).run(String(realmId), Number(manualNumber.slice(7)))
+    }
+  }
   const sep = path.includes('?') ? '&' : '?'
   const url = `${QB_API_BASE}/${realmId}${path}${sep}minorversion=65`
   const resp = await fetch(url, {

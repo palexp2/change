@@ -282,6 +282,13 @@ export function ingestManychatEvent(payload = {}) {
   const dedupKey = dedupKeyFor(payload)
   if (!dedupKey) return { ok: false, error: 'Identité du commentateur manquante (ig_user_id ou ig_username requis)' }
 
+  // Un compte écarté comme robot ne revient pas par la lecture suivante : la
+  // clé de dédoublonnage ne protège que les fiches vivantes.
+  const blocked = normalizeUsername(payload.ig_username)
+  if (blocked && db.prepare('SELECT 1 FROM instagram_blocked WHERE ig_username=?').get(blocked)) {
+    return { ok: true, stored: false, blocked: true, is_new: false, prospect: null }
+  }
+
   const cfg = getIntakeConfig()
   const text = clean(payload.comment_text ?? payload.text)
   const occurredAt = normalizeOccurredAt(payload.occurred_at)

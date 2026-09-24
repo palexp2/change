@@ -29,9 +29,8 @@
 //   - quantité commandée → quantite_commande (texte numérique)
 //   - prix unitaire      → prix_unitaire_cad (texte numérique)
 //   - date de commande   → date_de_commande
-//   - date de réception  → cf_date_de_reception_complete (le champ Airtable source rend un
-//                          « 1970-01-01 » sentinel quand la commande n'est pas reçue — traité
-//                          comme absence de date, pas comme une vraie réception)
+//   - date de réception  → cf_date_de_reception_complete (vide = à recevoir ; « 1970-01-01 »
+//                          = reçu à une date inconnue, PAS « à recevoir »)
 //   - notes              → notes_2
 // La logique de score elle-même est inchangée : seuls les noms de colonnes SQL ont bougé.
 import db from '../db/database.js'
@@ -114,6 +113,16 @@ export function isConfidentMatch({ score, detail }, runnerUpScore = 0) {
 // date de facture peut précéder de peu la saisie de l'achat.
 const WINDOW_BEFORE_DAYS = 540
 const WINDOW_AFTER_DAYS = 45
+
+/**
+ * Écart en jours entre la commande d'un achat et la dépense : positif quand la commande
+ * précède la dépense (le cas normal), négatif quand elle la suit. null si une date manque.
+ */
+export function orderGapDays(orderDate, expenseDate) {
+  const a = String(orderDate || '').slice(0, 10), b = String(expenseDate || '').slice(0, 10)
+  if (!a || !b) return null
+  return daysBetween(a, b)
+}
 
 // Écart réception ↔ facture considéré comme « la même expédition » (le fournisseur
 // facture dans les jours qui suivent l'envoi), puis borne au-delà de laquelle la
@@ -234,6 +243,7 @@ const LEXICON = {
   fan: 'ventilateur', ventilateur: 'ventilateur',
   connector: 'connecteur', conn: 'connecteur', connecteur: 'connecteur',
   cable: 'cable', cbl: 'cable', wire: 'cable', fil: 'cable',
+  cond: 'conducteur', conducteur: 'conducteur', conductor: 'conducteur', conducteurs: 'conducteur',
   antenna: 'antenne', antenne: 'antenne', ant: 'antenne',
   motor: 'moteur', moteur: 'moteur',
   valve: 'valve',
@@ -253,13 +263,38 @@ const LEXICON = {
   display: 'afficheur', afficheur: 'afficheur',
   button: 'bouton', bouton: 'bouton',
   seal: 'joint', gasket: 'joint', joint: 'joint',
+  sticker: 'autocollant', decal: 'autocollant', autocollant: 'autocollant',
 }
 
 // Traduction AVANT la mise au singulier : « relais » est déjà la forme canonique, alors
 // que singularize() en ferait « relai » et raterait « relay » du côté anglais.
 const canonical = t => LEXICON[t] || LEXICON[singularize(t)] || singularize(t)
 
-const tokenize = s => normalizeText(s).split(' ').filter(t => t && !STOP_TOKENS.has(t)).map(canonical)
+// VOCABULAIRE DU CÂBLE. Un distributeur écrit « Câble 18-2c BC UNSH » là où la fiche
+// de la pièce dit « Fil 18 AWG 2 cond. non blindé » : deux façons de nommer exactement
+// la même chose, sans un mot en commun. Trois replis suffisent à les réconcilier —
+// « non blindé » compte pour UN mot (sinon le câble blindé ressemble autant au non
+// blindé qu'à lui-même), « UNSH » en est l'abréviation, et « 2c » veut dire
+// « 2 conducteurs ».
+const SHIELDING = { unsh: 'nonblinde', unshielded: 'nonblinde', shielded: 'blinde', shld: 'blinde', blinde: 'blinde' }
+
+export function foldCableTokens(tokens) {
+  const isCable = tokens.includes('cable')
+  const out = []
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]
+    if (t === 'non' && SHIELDING[tokens[i + 1]] === 'blinde') { out.push('nonblinde'); i += 1; continue }
+    if (SHIELDING[t]) { out.push(SHIELDING[t]); continue }
+    const cond = isCable && /^(\d{1,2})c$/.exec(t)
+    if (cond) { out.push(cond[1], 'conducteur'); continue }
+    out.push(t)
+  }
+  return out
+}
+
+const tokenize = s => foldCableTokens(
+  normalizeText(s).split(' ').filter(t => t && !STOP_TOKENS.has(t)).map(canonical),
+)
 
 // Similarité de Dice pondérée : les tokens rares (alphanumériques, ≥ 3 caractères, du
 // type « td191 », « max22205 ») pèsent double — ce sont les références fabricant qui
@@ -371,6 +406,28 @@ const daysBetween = (a, b) => {
 const lineAmount = line => num(line?.total) ?? (num(line?.unit_price) != null && num(line?.quantity) != null
   ? num(line.unit_price) * num(line.quantity) : null)
 
+// UNITÉS QUI NE SE PARLENT PAS : le fournisseur facture au MÈTRE (« Câble 18-2c …,
+// en mètres »), l'achat est suivi au PIED (« Fil 18 AWG 2 cond. (pied) »). Les mêmes
+// 300 m et 984 pi semblaient alors deux quantités étrangères, et la ligne restait sans
+// proposition alors que tout concordait. On convertit avant de comparer, et seulement
+// quand les deux libellés NOMMENT leur unité — jamais sur un simple rapport numérique.
+const M_TO_FT = 3.280839895
+
+export function unitOfText(text) {
+  const t = ` ${normalizeText(text)} `
+  if (/ (m|metre|metres|meter|meters|metrique) /.test(t)) return 'm'
+  if (/ (pi|pied|pieds|ft|foot|feet) /.test(t)) return 'ft'
+  return null
+}
+
+// Quantité de la ligne exprimée dans l'unité de l'achat (null : rien à convertir).
+export function convertQty(qty, fromUnit, toUnit) {
+  if (!qty || !fromUnit || !toUnit || fromUnit === toUnit) return null
+  if (fromUnit === 'm' && toUnit === 'ft') return qty * M_TO_FT
+  if (fromUnit === 'ft' && toUnit === 'm') return qty / M_TO_FT
+  return null
+}
+
 const lineUnitPrice = line => {
   const up = num(line?.unit_price)
   if (up) return up
@@ -477,7 +534,18 @@ export function scoreLine(line, purchase, ctx = {}) {
   if (identified) detail.ident = 1
 
   // Prix unitaire et montant total de la ligne.
-  const unitScore = amountScore(lineUnitPrice(line), purchase.unit_cost)
+  // Quantité et unités : lues avant le prix, qui se convertit avec elles.
+  const q = num(line?.quantity), qo = num(purchase.qty_ordered)
+  const lineUnit = unitOfText(line?.description)
+  const partUnit = unitOfText(haystack)
+  const qConverted = convertQty(q, lineUnit, partUnit)
+
+  const printedUnitPrice = lineUnitPrice(line)
+  // Le prix suit l'unité : 0,86 $/m, c'est 0,26 $/pi.
+  const convertedUnitPrice = printedUnitPrice && qConverted && q ? printedUnitPrice * (q / qConverted) : null
+  const directUnit = amountScore(printedUnitPrice, purchase.unit_cost)
+  const convUnit = amountScore(convertedUnitPrice, purchase.unit_cost)
+  const unitScore = directUnit == null && convUnit == null ? null : Math.max(directUnit ?? 0, convUnit ?? 0)
   add('unit', 0.16, unitScore, 'prix unitaire concordant')
   add('total', 0.09, amountScore(lineAmt, expectedTotal), 'montant de ligne concordant')
 
@@ -485,10 +553,14 @@ export function scoreLine(line, purchase, ctx = {}) {
   // Poids relevé (0,15 → 0,19) : avec le nom et la date de commande, c'est l'un des trois
   // signaux que l'opérateur veut voir trancher en premier — le prix unitaire d'un achat
   // encore à recevoir n'est souvent qu'une estimation, la quantité commandée ne l'est pas.
-  const q = num(line?.quantity), qo = num(purchase.qty_ordered)
   if (q && qo) {
-    const qScore = q === qo ? 1 : (amountScore(q, qo) ?? 0)
-    add('qty', 0.19, qScore, `quantité ${q === qo ? 'identique' : 'proche'} (${qo} commandés)`)
+    const direct = q === qo ? 1 : (amountScore(q, qo) ?? 0)
+    const converted = qConverted ? (amountScore(qConverted, qo) ?? 0) : 0
+    const qScore = Math.max(direct, converted)
+    const viaUnit = converted > direct
+    add('qty', 0.19, qScore, viaUnit
+      ? `quantité concordante une fois convertie (${q} ${lineUnit === 'm' ? 'm' : 'pi'} = ${Math.round(qConverted)} ${partUnit === 'ft' ? 'pi' : 'm'}, ${qo} commandés)`
+      : `quantité ${q === qo ? 'identique' : 'proche'} (${qo} commandés)`)
   }
 
   // Commande encore SANS PRIX : dans le flux Achats, le coût unitaire est renseigné
@@ -513,7 +585,7 @@ export function scoreLine(line, purchase, ctx = {}) {
   // Signal absent (achat pas encore reçu) = pas compté, pas pénalisé : une facture peut
   // précéder la réception (dépôt, précommande) et l'achat encore ouvert est déjà favorisé
   // par le signal « open ».
-  if (ctx.receiptDate && purchase.received_date) {
+  if (ctx.receiptDate && purchase.received_date && String(purchase.received_date) > '1970-01-02') {
     const d = Math.abs(daysBetween(purchase.received_date, ctx.receiptDate) ?? 0)
     // 1 jusqu'à 21 jours (l'écart normal entre réception et facturation), décroissance
     // linéaire jusqu'à 0 à 180 jours.
@@ -564,7 +636,7 @@ export function scoreLine(line, purchase, ctx = {}) {
 
 // Achats du fournisseur, dans la fenêtre de dates, enrichis du nom de pièce et des
 // factures auxquelles ils sont déjà rattachés.
-export function listCandidatePurchases({ company, vendorProfileId = null, receiptDate = null, excludeReceiptId = null } = {}) {
+export function listCandidatePurchases({ company, vendorProfileId = null, excludeReceiptId = null } = {}) {
   const names = new Set()
   if (company) names.add(company)
   let qbIds = []
@@ -576,17 +648,25 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
       qbIds = [prof.qb_vendor_id_cad, prof.qb_vendor_id_usd].filter(Boolean).map(String)
     }
   }
-  if (!names.size && !qbIds.length) return []
+  const hasVendor = names.size > 0 || qbIds.length > 0
 
   const rows = db.prepare(`
     SELECT p.id, p.at_id, p.fournisseur AS supplier, p.supplier_vendor_name, p.supplier_qb_vendor_id,
            p.quantite_commande AS qty_ordered, p.prix_unitaire_cad AS unit_cost,
            p.date_de_commande AS order_date,
-           CASE WHEN p.cf_date_de_reception_complete IS NULL
-                  OR p.cf_date_de_reception_complete <= '1970-01-02'
-                THEN NULL ELSE p.cf_date_de_reception_complete END AS received_date,
+           -- « 1970-01-01 » = REÇU, date inconnue (c'est le cas de 1 700 vieux achats) :
+           -- l'achat n'attend plus de facture. Le traiter comme « à recevoir » rendait tout
+           -- l'historique candidat. Seule l'absence de date veut dire « à recevoir ».
+           p.cf_date_de_reception_complete AS received_date,
            p.depense_line_item, p.notes_2 AS notes,
            pr.name_fr AS part_name, pr.name_en AS part_name_en, pr.sku AS part_sku,
+           -- Valeur unitaire catalogue de la pièce. Sert UNIQUEMENT de POIDS quand une
+           -- ligne de facture couvre plusieurs achats (cf. splitCoveredPurchases) : c'est
+           -- un rapport entre pièces, jamais un montant publié — la devise du catalogue
+           -- (CAD) n'a donc pas à concorder avec celle de la facture.
+           COALESCE(NULLIF(CAST(pr.cout_unitaire AS REAL), 0),
+                    NULLIF(CAST(pr.prix_moyen_500_derniers_jours AS REAL), 0),
+                    NULLIF(CAST(pr.unit_cost AS REAL), 0)) AS part_unit_value,
            pr.fabricant AS part_mpn, pr.manufacturier AS part_mpn_alt,
            pr.lien_fournisseur AS part_url, pr.lien_fournisseur_alternatif AS part_url_alt
     FROM purchases p
@@ -594,15 +674,8 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
     WHERE p.at_id IS NOT NULL AND p.at_id <> ''
   `).all()
 
-  const dateFloor = receiptDate ? new Date(Date.parse(receiptDate) - WINDOW_BEFORE_DAYS * 86400000).toISOString().slice(0, 10) : null
-  const dateCeil = receiptDate ? new Date(Date.parse(receiptDate) + WINDOW_AFTER_DAYS * 86400000).toISOString().slice(0, 10) : null
-
   const linked = linkedPurchaseIndex(excludeReceiptId)
 
-  const inWindow = r => {
-    if (!dateFloor || !r.order_date) return true
-    return r.order_date >= dateFloor && r.order_date <= dateCeil
-  }
   const isVendor = r => {
     if (qbIds.length && r.supplier_qb_vendor_id && qbIds.includes(String(r.supplier_qb_vendor_id))) return true
     for (const n of names) {
@@ -622,13 +695,16 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
     part_refs: partRefs({ part_mpn: r.part_mpn, part_mpn_alt: r.part_mpn_alt, part_url: r.part_url, part_url_alt: r.part_url_alt }),
     qty_ordered: r.qty_ordered,
     unit_cost: r.unit_cost,
+    part_unit_value: r.part_unit_value,
     order_date: r.order_date,
     received_date: r.received_date,
     // « À recevoir » : aucune date de réception complète dans Airtable — la commande
     // est encore en vol. C'est la section de l'interface Achats sur laquelle le
     // sélecteur et les suggestions sont cadrés.
     pending_reception: !r.received_date,
-    supplier: r.supplier_vendor_name || r.supplier,
+    // Le champ LIÉ « Fournisseurs » d'Airtable. `fournisseur` (single-select legacy
+    // figé) ne contient plus qu'un identifiant brut « rec… » : jamais affiché.
+    supplier: r.supplier_vendor_name || null,
     // Achat d'un AUTRE fournisseur, remonté en filet quand le fournisseur du reçu n'a
     // aucun achat candidat (cf. plus bas) : sélectionnable à la main, jamais noté.
     other_vendor: otherVendor,
@@ -654,22 +730,21 @@ export function listCandidatePurchases({ company, vendorProfileId = null, receip
   // score. Un achat déjà reçu n'est PLUS remonté en filet quand aucun pending ne colle :
   // mieux vaut une liste vide (l'opérateur va chercher l'achat par son code) qu'une
   // proposition sur un achat qui n'attend plus de facture.
-  const own = rows.filter(isVendor).filter(inWindow).filter(r => !r.received_date).map(r => shape(r))
-  if (own.length) return finish(own)
+  const own = hasVendor ? rows.filter(isVendor).filter(r => !r.received_date).map(r => shape(r)) : []
 
-  // FILET « AUCUN ACHAT CHEZ CE FOURNISSEUR » : le fournisseur inscrit sur l'achat est
-  // souvent approximatif (« Autre Fournisseur », distributeur au lieu du magasin), et le
-  // cadrage par fournisseur laisse alors la ligne sans aucun code à choisir. Plutôt que
-  // de rendre une liste vide, on ouvre la recherche à TOUS les achats encore à recevoir,
-  // tous fournisseurs confondus — ils sont marqués `other_vendor` et restent purement
-  // manuels : rien n'est proposé ni écrit d'office sur la foi d'un autre fournisseur.
-  // Ce filet reste cadré « à recevoir » lui aussi — jamais un achat déjà reçu.
-  const pending = rows
-    .filter(r => !r.received_date)
+  // AUTRES FOURNISSEURS : le fournisseur inscrit sur l'achat est souvent approximatif
+  // (« Autre Fournisseur », distributeur au lieu du magasin). Le sélecteur présente donc
+  // TOUJOURS, après ceux du fournisseur du reçu, les achats à recevoir des autres
+  // fournisseurs — marqués `other_vendor`, purement manuels : jamais notés, jamais
+  // proposés ni écrits d'office (cf. matchLines, splitCoveredPurchases). Cadrés « à
+  // recevoir » et encore libres (ni dépense Airtable, ni autre reçu).
+  const ownIds = new Set(own.map(c => c.id))
+  const others = rows
+    .filter(r => !r.received_date && !ownIds.has(r.id))
     .filter(r => !(r.depense_line_item && r.depense_line_item !== '[]'))
     .filter(r => !(linked.get(r.id) || []).length)
     .map(r => shape(r, true))
-  return finish(pending)
+  return [...finish(own), ...finish(others)]
 }
 
 // Groupe d'un candidat, dans l'ordre où le sélecteur les présente.
@@ -804,7 +879,12 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
   // s'ouvre à tous les achats à recevoir (cf. listCandidatePurchases). Ces achats sont
   // sélectionnables à la main mais jamais notés : un rapprochement fondé sur un autre
   // fournisseur ne peut pas être une certitude.
-  const scorable = candidates.filter(p => !p.other_vendor)
+  //
+  // SECTION « À RECEVOIR » SEULEMENT : un achat déjà reçu (date de réception, même
+  // « 1970-01-01 » = reçu à une date inconnue) n'attend plus de facture — il n'est jamais
+  // noté, quel que soit son âge ou la ressemblance de son nom. Cas réel : la facture DigiKey
+  // du 2026-09-11 s'était vu rattacher des achats de 2025 portant le même nom de pièce.
+  const scorable = candidates.filter(p => !p.other_vendor && p.pending_reception !== false)
   const openCandidates = scorable.filter(p => !p.already_expensed && !p.linked_receipts?.length)
   const consumedCandidates = scorable.filter(p => p.already_expensed || p.linked_receipts?.length)
 
@@ -863,9 +943,71 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
       return
     }
 
-    // L'écart au 2e candidat de la MÊME ligne conditionne l'écriture automatique.
-    const runnerUp = pool[1]?.score || 0
-    for (const s of pool) if (s.score >= LIA_SUGGEST_THRESHOLD) pairs.push({ index, runnerUp, ...s })
+    const eligible = pool.filter(s => s.score >= LIA_SUGGEST_THRESHOLD)
+    if (!eligible.length) return
+
+    // PLUSIEURS ACHATS AUSSI PLAUSIBLES (écart de score sous la marge) : on départage par
+    // la date de commande la plus proche, puis la quantité, puis le montant. Égalité sur
+    // les trois : aucun rattachement, la ligne est marquée « à vérifier ».
+    const contenders = eligible.filter(s => s.score >= eligible[0].score - AUTO_MIN_MARGIN)
+    let ranked = eligible
+    let runnerUp = pool[1]?.score || 0
+    if (contenders.length > 1) {
+      const ref = orderDate || receiptDate
+      const keys = s => {
+        const gap = orderGapDays(s.purchase.order_date, ref)
+        const q = num(line?.quantity), qo = num(s.purchase.qty_ordered)
+        const amt = lineAmount(line)
+        const expected = num(s.purchase.unit_cost) && qo ? num(s.purchase.unit_cost) * qo : null
+        return [
+          gap == null ? Infinity : Math.abs(gap),
+          q && qo ? Math.abs(q - qo) : Infinity,
+          amt != null && expected != null ? Math.abs(amt - expected) : Infinity,
+        ]
+      }
+      const cmp = (a, b) => {
+        const ka = keys(a), kb = keys(b)
+        for (let k = 0; k < ka.length; k++) if (ka[k] !== kb[k]) return ka[k] - kb[k]
+        return 0
+      }
+      const sorted = [...contenders].sort(cmp)
+      if (cmp(sorted[0], sorted[1]) === 0) {
+        lines[index].review = { reason: 'egalite', lia_refs: sorted.filter(c => cmp(c, sorted[0]) === 0).map(c => c.purchase.lia_ref) }
+        return
+      }
+      // Le départage tient lieu d'écart : le gagnant n'est pas pénalisé par un jumeau
+      // qu'une date plus proche a écarté. Les autres conditions de certitude
+      // (isConfidentMatch) restent exigées.
+      ranked = [sorted[0], ...eligible.filter(s => !contenders.includes(s))]
+      runnerUp = eligible.find(s => !contenders.includes(s))?.score || 0
+    }
+    for (const s of ranked) pairs.push({ index, runnerUp, ...s })
+  })
+
+  // DERNIER RECOURS — LA QUANTITÉ EXACTE DÉSIGNE UN SEUL ACHAT EN ATTENTE. Le vocabulaire
+  // du fournisseur peut n'avoir AUCUN mot commun avec le nom Orisha de la pièce
+  // (« Official Raspberry Pi microSD Card 64GB » contre « SDCIT2 - 16 GB - microSDHC »,
+  // « circle stickers — motif vert » contre « Autocollant fan ») : le garde-fou du libellé
+  // annule alors tout. Mais quand, parmi les achats encore à recevoir de CE fournisseur,
+  // un seul a exactement la quantité facturée, il n'y a rien d'autre que ça puisse être.
+  // Avec plusieurs achats ouverts, une quantité de 1 ne désigne rien (trop fréquente).
+  // Proposition SEULEMENT — jamais d'écriture d'office, et le rattachement confirmé
+  // apprend le libellé pour les prochaines factures.
+  list.forEach((line, index) => {
+    if (lines[index].locked || lines[index].blocked_by || lines[index].review?.reason === 'egalite') return
+    if (pairs.some(p => p.index === index)) return
+    const q = num(line?.quantity)
+    if (!q || (q < 2 && openCandidates.length > 1)) return
+    const sameQty = openCandidates.filter(p => num(p.qty_ordered) === q)
+    if (sameQty.length !== 1) return
+    const only = sameQty[0]
+    pairs.push({
+      index, runnerUp: 1, purchase: only, score: LIA_SUGGEST_THRESHOLD,
+      detail: { qty: 1, only_pending: 1 }, identity: { kind: 'qty', label: null, score: 0 },
+      reasons: [openCandidates.length === 1
+        ? `seul achat encore à recevoir chez ce fournisseur, quantité identique (${q})`
+        : `seul achat à recevoir chez ce fournisseur avec cette quantité (${q})`],
+    })
   })
 
   pairs.sort((a, b) => b.score - a.score)
@@ -902,6 +1044,152 @@ export function matchLines({ items, candidates = [], receiptDate = null, orderDa
   return { lines, candidates }
 }
 
+
+// ───────────── une ligne de facture, plusieurs achats (découpage) ─────────────
+//
+// Le fournisseur ne facture pas toujours comme on achète. Advancing Alternatives
+// imprime UNE ligne de 6 moteurs là où la table Achats en tient DEUX (côté gauche,
+// côté droit, expédiés séparément), et met le kit eye bolt « inclus » dans la ligne
+// du tuyau guide. L'achat sans ligne de facture n'a jamais de code publié dans
+// QuickBooks : Airtable ne peut pas lui rattacher sa dépense, et Martin ne peut pas
+// le réceptionner.
+//
+// On découpe donc la ligne en autant de lignes que d'achats couverts. Deux cas, et
+// deux seulement — le reste est laissé tel quel :
+//
+//   A. UN ACHAT ORPHELIN QUE LA LIGNE DÉSIGNE. Après l'appariement, un achat du même
+//      bon de commande (même date de commande que l'achat déjà porté par la ligne)
+//      reste sans ligne alors que son libellé recoupe celle-ci (score ≥ seuil de
+//      suggestion) : c'est la ligne qui le facture (« includes guide pipe hardware »).
+//   B. LA QUANTITÉ SE CONSERVE. Une ligne sans appariement dont la quantité est
+//      EXACTEMENT la somme des quantités des achats restants du même bon de commande
+//      (6 = 3 + 3) : la ligne les facture tous, et aucun autre découpage n'est possible.
+//
+// Le montant de la ligne est réparti AU PRORATA de la valeur des pièces (quantité ×
+// valeur unitaire catalogue) — un rapport, donc insensible à la devise. Sans valeur
+// catalogue, le prorata se fait sur les quantités seules. Une pièce peut donc hériter
+// d'un petit montant plutôt que du sien : c'est voulu, la facture ne le dit pas.
+const round2 = n => Math.round((Number(n) || 0) * 100) / 100
+const dayOf = d => (String(d || '').slice(0, 10) || null)
+
+// Répartition d'un montant selon des poids, au cent près : le reste d'arrondi va à la
+// plus grosse part pour que la somme retombe EXACTEMENT sur le montant de la ligne.
+export function allocateAmount(total, weights) {
+  const amount = round2(total)
+  const w = weights.map(x => (Number(x) > 0 ? Number(x) : 0))
+  const sum = w.reduce((s, x) => s + x, 0)
+  const shares = sum > 0 ? w.map(x => x / sum) : w.map(() => 1 / w.length)
+  const parts = shares.map(s => round2(amount * s))
+  const drift = round2(amount - parts.reduce((s, x) => s + x, 0))
+  if (drift) {
+    let big = 0
+    for (let i = 1; i < parts.length; i++) if (Math.abs(parts[i]) > Math.abs(parts[big])) big = i
+    parts[big] = round2(parts[big] + drift)
+  }
+  return parts
+}
+
+// Poids d'un groupe d'achats : quantité × valeur catalogue quand TOUTES les pièces en
+// ont une (sinon la comparaison serait faussée par celle qui vaut « 0 »), quantité sinon.
+function splitWeights(purchases) {
+  const qty = purchases.map(p => num(p.qty_ordered) || 1)
+  const vals = purchases.map(p => num(p.part_unit_value))
+  if (vals.every(v => v != null && v > 0)) return purchases.map((_, i) => qty[i] * vals[i])
+  return qty
+}
+
+/**
+ * Découpe les lignes qui couvrent plusieurs achats. Fonction pure : les candidats et
+ * leurs scores par ligne viennent de matchLines().
+ *
+ * @returns {{ items: Array, splits: Array<{index, lia_refs}> }}
+ */
+export function splitCoveredPurchases({ items, lines = [], candidates = [] }) {
+  const list = Array.isArray(items) ? items : []
+  if (!list.length || !candidates.length) return { items: list, splits: [] }
+
+  // Achat porté par chaque ligne : celui écrit sur la ligne, sinon la suggestion du
+  // moteur (elle sera écrite avec le découpage — une ligne qui facture DEUX achats
+  // n'est plus l'appariement ambigu que le garde-fou de marge refusait d'écrire).
+  const byId = new Map(candidates.map(c => [String(c.id), c]))
+  const anchors = list.map((it, i) => {
+    const id = it?.purchase_id || lines?.[i]?.match?.purchase_id || null
+    return id ? byId.get(String(id)) || null : null
+  })
+
+  const taken = new Set(anchors.filter(Boolean).map(a => String(a.id)))
+  const orphans = candidates.filter(c => !c.other_vendor && !c.consumed && !taken.has(String(c.id)))
+  if (!orphans.length) return { items: list, splits: [] }
+
+  const groups = new Map()   // index de ligne → achats supplémentaires
+  const addTo = (i, p) => { groups.set(i, [...(groups.get(i) || []), p]); taken.add(String(p.id)) }
+  const scoreOn = (i, id) => lines?.[i]?.candidates?.find(c => String(c.purchase?.id) === String(id))?.score || 0
+
+  // A. l'achat orphelin que la ligne désigne.
+  for (const p of orphans) {
+    if (taken.has(String(p.id))) continue
+    let best = null
+    list.forEach((it, i) => {
+      const anchor = anchors[i]
+      if (!anchor || !(lineAmount(it) > 0)) return
+      if (dayOf(p.order_date) !== dayOf(anchor.order_date)) return
+      const s = scoreOn(i, p.id)
+      if (s < LIA_SUGGEST_THRESHOLD) return
+      if (!best || s > best.score) best = { index: i, score: s }
+    })
+    if (best) addTo(best.index, p)
+  }
+
+  // B. la quantité se conserve sur une ligne encore sans achat.
+  const left = orphans.filter(p => !taken.has(String(p.id)))
+  const byDay = new Map()
+  for (const p of left) {
+    const d = dayOf(p.order_date)
+    if (!d) continue
+    byDay.set(d, [...(byDay.get(d) || []), p])
+  }
+  const anchorDays = new Set(anchors.filter(Boolean).map(a => dayOf(a.order_date)).filter(Boolean))
+  for (const [day, group] of byDay) {
+    if (group.length < 2 || !anchorDays.has(day)) continue
+    const qtySum = group.reduce((s, p) => s + (num(p.qty_ordered) || 0), 0)
+    if (!qtySum) continue
+    const free = list
+      .map((it, i) => ({ it, i }))
+      .filter(({ it, i }) => !anchors[i] && !groups.has(i) && lineAmount(it) > 0 && num(it?.quantity) === qtySum)
+    // Une seule ligne possible, sinon on ne sait pas laquelle porte le groupe.
+    if (free.length !== 1) continue
+    for (const p of group) addTo(free[0].i, p)
+  }
+
+  if (!groups.size) return { items: list, splits: [] }
+
+  const out = []
+  const splits = []
+  list.forEach((it, i) => {
+    const extra = groups.get(i)
+    if (!extra?.length) { out.push(it); return }
+    const group = [...(anchors[i] ? [anchors[i]] : []), ...extra]
+      .sort((a, b) => String(a.lia_ref).localeCompare(String(b.lia_ref), 'fr', { numeric: true }))
+    const parts = allocateAmount(lineAmount(it), splitWeights(group))
+    const printed = it?.source_description || (hasLiaRef(it?.description) ? null : it?.description) || null
+    group.forEach((p, k) => {
+      const qty = num(p.qty_ordered)
+      out.push({
+        ...it,
+        description: buildLiaLabel(p.lia_ref, p.part_name),
+        source_description: printed,
+        quantity: qty ?? it?.quantity ?? null,
+        unit_price: qty ? round2(parts[k] / qty) : null,
+        total: parts[k],
+        purchase_id: p.id,
+        lia_ref: p.lia_ref,
+      })
+    })
+    splits.push({ index: i, lia_refs: group.map(p => p.lia_ref), amounts: parts })
+  })
+  return { items: out, splits }
+}
+
 /**
  * Applique les appariements CERTAINS (score ≥ LIA_AUTO_THRESHOLD) aux lignes : la
  * description devient « LIA-xxxx⇥Nom de la pièce » et la ligne mémorise l'achat.
@@ -936,10 +1224,17 @@ export function applyAutoMatches(items, lines) {
  */
 export function autoLinkReceiptItems({ items, company, vendorProfileId = null, receiptDate = null, orderDate = null, excludeReceiptId = null }) {
   try {
-    const { lines } = matchReceiptItems({ items, company, vendorProfileId, receiptDate, orderDate, excludeReceiptId })
-    return applyAutoMatches(items, lines)
+    const { lines, candidates } = matchReceiptItems({ items, company, vendorProfileId, receiptDate, orderDate, excludeReceiptId })
+    const applied = applyAutoMatches(items, lines)
+    // Une ligne peut facturer PLUSIEURS achats (moteur gauche + droit, pièce « incluse ») :
+    // elle est alors découpée, chaque achat recevant sa part du montant.
+    const split = splitCoveredPurchases({ items: applied.items, lines, candidates })
+    for (const s of split.splits) {
+      console.log(`Appariement LIA: ligne ${s.index} découpée en ${s.lia_refs.length} achats (${s.lia_refs.join(', ')}) — ${s.amounts.join(' / ')}`)
+    }
+    return { items: split.items, applied: applied.applied, splits: split.splits }
   } catch (e) {
     console.warn(`Appariement LIA indisponible: ${e.message}`)
-    return { items: Array.isArray(items) ? items : [], applied: [] }
+    return { items: Array.isArray(items) ? items : [], applied: [], splits: [] }
   }
 }

@@ -151,6 +151,13 @@ export const SESSION_PROBES = {
     const { probeManychat } = await import('./manychat.js')
     return probeManychat()
   },
+  // Venn n'emprunte pas une session de navigateur (c'est une clé d'API), mais
+  // le symptôme est le même : une clé révoquée rend une liste vide, pas une
+  // erreur. Elle se surveille donc ici, avec les autres.
+  venn: async () => {
+    const { probeVenn } = await import('./venn.js')
+    return probeVenn()
+  },
 }
 
 export const SESSION_HEALTH_AUTOMATION_ID = 'sys_connector_session_health'

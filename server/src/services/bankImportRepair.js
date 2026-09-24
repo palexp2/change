@@ -17,6 +17,7 @@
 import db from '../db/database.js'
 import { fetchQbLedger } from './bankQbLink.js'
 import { refreshStatuses } from './bankReconciliation.js'
+import { touchBankTxns } from './realtimeEmitters.js'
 import { shiftDate } from '../utils/datetime.js'
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
@@ -142,13 +143,18 @@ export function applyRepair(plan) {
   `)
   let repaired = 0
   let linked = 0
+  const touched = new Set()
   const tx = db.transaction(() => {
     for (const r of plan.rows) {
-      repaired += setAmount.run(r.new_amount, r.amount, r.id).changes
-      if (r.qb?.qbId) linked += setQb.run(r.qb.entity, String(r.qb.qbId), r.id).changes
+      const amountChanges = setAmount.run(r.new_amount, r.amount, r.id).changes
+      repaired += amountChanges
+      const qbChanges = r.qb?.qbId ? setQb.run(r.qb.entity, String(r.qb.qbId), r.id).changes : 0
+      linked += qbChanges
+      if (amountChanges || qbChanges) touched.add(r.id)
     }
   })
   tx()
+  touchBankTxns([...touched])
   const restatused = refreshStatuses(plan.account.id)
   return { repaired, linked, restatused }
 }

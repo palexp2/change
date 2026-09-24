@@ -55,7 +55,7 @@ test('parseTrxTab : BNC CAD — double ligne d\'entêtes, débit/crédit', () =>
   assert.equal(warnings.length, 0)
   // Les faits du relevé (catégorie, type, chèque, devise d'origine) sont nuls
   // ici : cet onglet ne porte aucune de ces colonnes.
-  const noFacts = { bank_category: null, txn_type: null, check_number: null, orig_currency: null, orig_amount: null }
+  const noFacts = { bank_category: null, txn_type: null, check_number: null, orig_currency: null, orig_amount: null, bank_state: null }
   assert.deepEqual(rows, [
     { txn_date: '2026-08-07', sheet_color: null, description: 'REMB. MCR', details: 'REMB. MCR', reference: '60024937974', amount: -850, balance: 0.83, ...noFacts },
     { txn_date: '2026-08-07', sheet_color: null, description: 'COMPTES DEBITEURS', details: null, reference: null, amount: 1202.67, balance: 1203.31, ...noFacts },
@@ -87,7 +87,11 @@ test('parseTrxTab : Visa — achats en positif dans le fichier, inversés', () =
   assert.equal(rows[1].amount, 75.42) // paiement → entrée
 })
 
-test('parseTrxTab : Marge — intérêts + avances positifs, remboursements négatifs', () => {
+// Les intérêts d'une marge de crédit ne bougent pas le solde utilisé : le
+// fichier de Michel le montre ligne à ligne (« Remboursement automatique de
+// 19 686,89 $ » = 686,89 $ d'intérêts + 19 000 $ de capital, solde −19 000).
+// Ils sortent du compte courant avec le capital, dans un seul débit.
+test('parseTrxTab : Marge — l\'avance monte le solde, le remboursement le baisse, les intérêts restent à part', () => {
   const grid = [
     ['MARGE DE CRÉDIT - DESJARDINS'],
     ['Date', 'Description', 'Intérêts (CAD)', 'Avance (CAD)', 'Remb, (CAD)', 'Solde (CAD)'],
@@ -96,8 +100,20 @@ test('parseTrxTab : Marge — intérêts + avances positifs, remboursements nég
     ['9 JUN 2026', 'Remboursement', null, null, '1 000,00', '52 000,00'],
   ]
   const { rows } = parseTrxTab(grid, specForTab('Marge Desj'), { todayIso: TODAY })
-  assert.deepEqual(rows.map((r) => r.amount), [531.23, 20000, -1000])
-  assert.equal(rows[0].balance, 98000)
+  // La ligne d'intérêts seuls ne produit AUCUNE transaction : rien n'a bougé.
+  assert.deepEqual(rows.map((r) => r.amount), [20000, -1000])
+  assert.equal(rows[0].balance, 97000)
+})
+
+test('parseTrxTab : Marge — un remboursement garde ses intérêts à côté du capital', () => {
+  const grid = [
+    ['MARGE DE CRÉDIT - DESJARDINS'],
+    ['Date', 'Description', 'Intérêts (CAD)', 'Avance (CAD)', 'Remb, (CAD)', 'Solde (CAD)'],
+    ['1 SEP 2026', 'Remboursement automatique /de EOP:19 686,89$ no', '686.89', null, ' 19 000,00 ', '129 000,00'],
+  ]
+  const { rows } = parseTrxTab(grid, specForTab('Marge Desj'), { todayIso: TODAY })
+  assert.equal(rows[0].amount, -19000)
+  assert.equal(rows[0].interest_cad, 686.89)
 })
 
 test('parseTrxTab : Venn — description composée avec le type et le statut', () => {

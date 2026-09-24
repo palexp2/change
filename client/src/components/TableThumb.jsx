@@ -12,7 +12,9 @@ export const TABLE_THUMB_CLASS = 'h-7 w-7'
 // Une source qui ne charge pas (fichier disparu, pièce jointe Airtable périmée)
 // affichait l'icône « image cassée » du navigateur, indiscernable d'un bug.
 // On retombe sur le même carré pointillé que l'absence d'image.
-export default function TableThumb({ src, alt = '', className = '', ...rest }) {
+// `fit="contain"` : l'image entière tient dans le carré (rien n'est rogné au
+// bord du cadre) au lieu de le remplir.
+export default function TableThumb({ src, alt = '', className = '', fit = 'cover', ...rest }) {
   // Mémorise la source EN ÉCHEC, pas un booléen : le placeholder se réinitialise
   // seul quand la ligne change de valeur (mêmes lignes recyclées par la
   // virtualisation du tableau).
@@ -34,7 +36,7 @@ export default function TableThumb({ src, alt = '', className = '', ...rest }) {
       loading="lazy"
       data-testid="table-thumb"
       onError={() => setFailedSrc(src)}
-      className={`${TABLE_THUMB_CLASS} object-cover rounded ${className}`}
+      className={`${TABLE_THUMB_CLASS} ${fit === 'contain' ? 'object-contain bg-white' : 'object-cover'} rounded ${className}`}
       {...rest}
     />
   )

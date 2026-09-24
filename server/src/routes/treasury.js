@@ -19,6 +19,8 @@ import {
 
 import { refreshTreasuryBalance } from '../services/plaidSync.js'
 
+import { pushBillPayment, deleteBillPayment, billPaymentApplies, getBillPaymentConfig } from '../services/billPaymentQb.js'
+
 import {
   buildSchedule, payBill, unpayBill, deferBill, resumeBill, setVendorParticularites,
 } from '../services/paymentSchedule.js'
@@ -52,10 +54,18 @@ router.post('/payment-schedule/:achatId/pay', (req, res) => {
 })
 
 // Décocher : supprime le paiement tant qu'il n'est pas passé à la banque.
-router.delete('/payment-schedule/:achatId/pay', (req, res) => {
+router.delete('/payment-schedule/:achatId/pay', async (req, res) => {
+  // L'écriture de paiement doit quitter QuickBooks avant que le paiement ERP
+  // disparaisse : autrement la facture resterait soldée là-bas.
+  const linked = db.prepare(
+    'SELECT id FROM treasury_payments WHERE achat_id = ? AND deleted_at IS NULL AND cleared_at IS NULL'
+  ).get(req.params.achatId)
+  const qb = linked
+    ? await deleteBillPayment(linked.id).catch(e => ({ deleted: false, warning: e.message }))
+    : null
   const result = unpayBill(req.params.achatId)
   if (result.error) return res.status(result.status || 400).json({ error: result.error })
-  res.json(result)
+  res.json({ ...result, warning: qb?.warning || null })
 })
 
 // Report explicite (raison obligatoire côté UI, autosave au blur).
@@ -177,10 +187,17 @@ router.get('/payments', async (req, res) => {
   //   - `qb_url` : l'écriture qui a prouvé le passage à la banque ;
   //   - `bill_qb_url` : la facture fournisseur réglée par ce paiement — c'est
   //     elle qu'on ouvre en cliquant son n° (même geste que dans la cédule).
+  const billPaymentConfig = getBillPaymentConfig()
   res.json(rows.map(p => ({
     ...p,
+    // Les paiements d'avant la mise en service ne parlent pas de QuickBooks :
+    // leurs factures y ont déjà été soldées à la main.
+    qb_billpayment_applies: billPaymentApplies(p, { config: billPaymentConfig }),
     qb_url: p.qb_txn_id && p.qb_txn_type ? qbEntityUrl(p.qb_txn_type, p.qb_txn_id) : null,
     bill_qb_url: p.achat_qb_id ? qbEntityUrl('bill', p.achat_qb_id) : null,
+    // L'écriture de paiement que l'ERP a écrite dans QuickBooks en réglant la
+    // facture (distincte de `qb_url`, qui est une écriture TROUVÉE là-bas).
+    qb_billpayment_url: p.qb_billpayment_id ? qbEntityUrl('billpayment', p.qb_billpayment_id) : null,
   })))
 })
 
@@ -241,12 +258,29 @@ router.post('/payments/:id/cleared', (req, res) => {
   res.json(setCleared(req.params.id, cleared))
 })
 
-router.delete('/payments/:id', (req, res) => {
+// Supprimer un paiement rouvre la facture dans QuickBooks : sans ça elle
+// resterait soldée pour un paiement qui n'existe plus. Un refus de QuickBooks
+// (écriture déjà appariée à une opération bancaire) remonte en avertissement —
+// le paiement ERP part quand même.
+router.delete('/payments/:id', async (req, res) => {
   const existing = getPayment(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
+  const qb = await deleteBillPayment(req.params.id).catch(e => ({ deleted: false, warning: e.message }))
   db.prepare(`UPDATE treasury_payments SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`)
     .run(req.params.id)
-  res.json({ ok: true })
+  res.json({ ok: true, warning: qb?.warning || null })
+})
+
+// Rejouer un envoi qui a échoué ou qui avait été écarté : le bouton de la puce
+// ambre « Pas envoyée à QuickBooks ».
+router.post('/payments/:id/qb-push', async (req, res) => {
+  const existing = getPayment(req.params.id)
+  if (!existing) return res.status(404).json({ error: 'Not found' })
+  try {
+    res.json(await pushBillPayment(req.params.id, { userId: req.user.id, trigger: 'manuel' }))
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
 })
 
 // Appariement au relevé bancaire importé → coche les paiements retrouvés.
@@ -322,6 +356,18 @@ router.get('/payment-methods', (req, res) => res.json(PAYMENT_METHODS))
 router.get('/solde-sheet/status', async (req, res) => {
   const { soldeSheetStatus } = await import('../services/treasurySoldeSheet.js')
   res.json(soldeSheetStatus())
+})
+
+router.get('/solde-sheet/mirror', async (req, res) => {
+  const { treasuryMirrorStatus } = await import('../services/treasurySheetMirror.js')
+  res.json(treasuryMirrorStatus())
+})
+
+router.post('/solde-sheet/mirror', async (req, res) => {
+  try {
+    const { syncTreasuryMirror } = await import('../services/treasurySheetMirror.js')
+    res.json(await syncTreasuryMirror({ dryRun: req.body?.dry_run === true, trigger: 'manual' }))
+  } catch (e) { res.status(502).json({ error: e.message }) }
 })
 
 router.post('/solde-sheet/sync', async (req, res) => {

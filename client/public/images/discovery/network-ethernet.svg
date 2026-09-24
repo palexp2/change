@@ -5,31 +5,57 @@
       <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
       <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
     </g>
+    <g id="device">
+      <rect x="0" y="0" width="30" height="22" rx="5" fill="#fff" stroke="#94a3b8" stroke-width="2.2"/>
+      <circle cx="9" cy="11" r="3" fill="#22a34a"/>
+      <path d="M16 11h8" fill="none" stroke="#cbd5e1" stroke-width="2.6" stroke-linecap="round"/>
+    </g>
   </defs>
   <rect width="640" height="300" fill="#fff"/>
 
+  <!-- Bâtiment + routeur -->
   <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
     <path d="M24 148 92 100 160 148"/>
     <path d="M36 148h112v120H36z"/>
     <path d="M52 268v-40a14 14 0 0 1 28 0v40"/>
     <path d="M104 164h32v26h-32z"/>
   </g>
-
   <g>
     <rect x="98" y="208" width="48" height="30" rx="7" fill="#fff" stroke="#94a3b8" stroke-width="2.4"/>
     <circle cx="110" cy="223" r="4" fill="#22a34a"/>
     <path d="M120 218h18M120 228h10" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
   </g>
 
-  <path d="M146 224c62 0 86 30 156 30s84-46 150-46" fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round"/>
+  <!-- Câble Ethernet : du routeur au contrôleur central seulement -->
+  <path d="M146 224c20 0 28-10 50-10" fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round"/>
   <rect x="140" y="217" width="12" height="14" rx="3" fill="#22a34a"/>
 
-  <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
-    <path d="M170 140h242"/>
-    <path d="M170 132v16M412 132v16"/>
+  <!-- Contrôleur central sur poteau -->
+  <path d="M224 234v34" fill="none" stroke="#94a3b8" stroke-width="3.2" stroke-linecap="round"/>
+  <g>
+    <rect x="196" y="194" width="56" height="40" rx="8" fill="#fff" stroke="#94a3b8" stroke-width="2.4"/>
+    <circle cx="210" cy="210" r="4" fill="#22a34a"/>
+    <path d="M220 206h20M220 218h12" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+    <path d="M238 194v-16" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linecap="round"/>
+    <circle cx="238" cy="176" r="3" fill="#94a3b8"/>
   </g>
-  <text x="291" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="30" font-weight="600" fill="#475569">250 pi</text>
 
+  <!-- Ondes LoRa vers la serre -->
+  <g fill="none" stroke="#22a34a" stroke-width="3.2" stroke-linecap="round">
+    <path d="M262 201a20 20 0 0 1 0 26"/>
+    <path d="M274 189a38 38 0 0 1 0 50"/>
+    <path d="M286 177a56 56 0 0 1 0 74"/>
+  </g>
+  <path d="M306 214h100" fill="none" stroke="#94a3b8" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="10 9"/>
+
+  <!-- Portée : contrôleur → serre -->
+  <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+    <path d="M224 140h192"/>
+    <path d="M224 132v16M416 132v16"/>
+  </g>
+  <text x="320" y="126" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="30" font-weight="600" fill="#475569">250 pi</text>
+
+  <!-- Serre -->
   <g transform="translate(200 0)">
     <rect x="226" y="224" width="160" height="40" fill="#d9eef1"/>
     <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
@@ -42,11 +68,9 @@
     <use href="#seedling" x="370" y="260"/>
   </g>
 
-  <g>
-    <rect x="440" y="172" width="54" height="38" rx="8" fill="#fff" stroke="#94a3b8" stroke-width="2.4"/>
-    <circle cx="454" cy="188" r="4" fill="#22a34a"/>
-    <path d="M464 182h18M464 196h12" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
-  </g>
+  <!-- Capteurs et appareils Orisha dans la serre -->
+  <use href="#device" x="446" y="182"/>
+  <use href="#device" x="540" y="182"/>
 
   <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
 </svg>

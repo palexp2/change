@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { Eye, EyeOff, Filter, ArrowUpDown, Layers, X, Plus, ChevronUp, ChevronDown, Check, Search, ChevronsDownUp, ChevronsUpDown, AlertTriangle, Lock, Unlock, Pencil, Trash2, Paintbrush, SlidersHorizontal, Copy } from 'lucide-react'
@@ -816,6 +817,7 @@ export function ViewToolbar({
   filters, setFilters,
   search, setSearch,
   searchFields = [],
+  onSearchSubmit,           // (value) => void — Entrée dans la recherche
   views = [],
   onReorderViews,
   activeViewId,
@@ -835,6 +837,8 @@ export function ViewToolbar({
   onOpenFieldConfig,        // () => void — ouvre la modale « Configuration des champs » (fournie par DataTable)
   onPrefetchFieldConfig,    // () => void — précharge ses données au survol du bouton
   onApplyColumnWidths,      // (widths) => void — pousse des largeurs de colonnes dans l'état du DataTable (copie de config d'une vue)
+  toolbarStart,             // JSX — glissé tout à gauche de la barre, avant la recherche (ex. sélecteur de compte, légende de couleurs)
+  toolbarEnd,               // JSX — glissé tout à droite, après le compteur de lignes (ex. écart, bouton d'action de la page)
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   // Élément bouton servant d'ancre au panneau (rendu en portal position:fixed).
@@ -853,7 +857,7 @@ export function ViewToolbar({
     setOpenPanel(name)
   }
   const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = hasRole(user, 'admin')
   const confirm = useConfirm()
 
   // Menu contextuel (clic droit, admin) sur un onglet de vue : renommer,
@@ -1396,12 +1400,15 @@ export function ViewToolbar({
       <div ref={toolbarRef} className="relative">
         <div className="flex items-center gap-1 px-3 py-2 flex-wrap">
 
+          {toolbarStart}
+
           {searchFields.length > 0 && (
             <div className="relative mr-2">
               <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 value={search}
                 onChange={e => setSearch(e.target.value)}
+                onKeyDown={onSearchSubmit ? e => { if (e.key === 'Enter' && search.trim()) onSearchSubmit(search.trim()) } : undefined}
                 className="input text-xs py-1.5 pl-7 pr-7 w-52"
               />
               {search && (
@@ -1473,9 +1480,15 @@ export function ViewToolbar({
           )}
 
 
-          <span className="ml-auto text-xs text-slate-400 tabular-nums">
-            {processedCount} ligne{processedCount !== 1 ? 's' : ''}
-          </span>
+          {/* Le compteur tient la droite de la barre ; `toolbarEnd` se range
+              à sa suite dans le MÊME conteneur, sinon le `ml-auto` du
+              compteur avalerait l'espace et le renverrait à la ligne. */}
+          <div className="ml-auto flex items-center gap-2 min-w-0">
+            <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">
+              {processedCount} ligne{processedCount !== 1 ? 's' : ''}
+            </span>
+            {toolbarEnd}
+          </div>
         </div>
 
         {openPanel === 'fields' && visibleCols && setVisibleCols && (

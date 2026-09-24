@@ -2,6 +2,2939 @@
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
     {
+      "date": "2026-09-24",
+      "title": "Système : adresses lisibles en entier",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un système, l'adresse de la ferme et celle de livraison prennent toute la largeur et s'affichent au complet, sans être coupées." }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Produits associés : vignette entière",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "La vignette du produit choisi tient maintenant entière dans son cadre, sans être rognée." }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Raccourci « P » : Projets",
+      "category": "Paramètres",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le raccourci clavier « P » s'affiche maintenant sous le nom « Projets »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Raccourci « B » : Billets",
+      "category": "Paramètres",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le raccourci clavier « B » s'affiche maintenant sous le nom « Billets »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Fiche découverte : section « Équipements du site » retirée",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La section « Équipements du site » n'apparaît plus sur la fiche d'un formulaire de découverte."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Formulaire de découverte : choix des moteurs",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "À la question des moteurs, « J'ai besoin de moteurs » est maintenant à gauche."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Formulaire de découverte : bloc Irrigation",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le bloc Irrigation d'une serre montre les zones, les valves et le fil à fournir, et les valves déjà en place."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : moteurs et tuyaux guides",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Un client qui n'a pas ses moteurs reçoit un moteur gauche et un moteur droit (un seul côté : moteur gauche)."
+        },
+        {
+          "type": "new",
+          "text": "Un client sans tuyaux guides reçoit un tuyau guide et un hanging kit par côté ouvrant."
+        },
+        {
+          "type": "new",
+          "text": "Quatre nouveaux produits à associer dans le Form builder : Moteur gauche, Moteur droit, Tuyau guide, Guide pipe hanging kit."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Formulaire de découverte : Acier en premier",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Type de tuyau de côté : le choix « Acier (profil rond / O) » est maintenant à gauche, avant l'aluminium."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Supprimer une fourniture",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Fournitures : une corbeille dans la fiche supprime la fourniture (aussi dans Airtable). Ses achats restent dans l'historique."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Formulaire de découverte : image du câble Ethernet corrigée",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "L'image du choix « câble Ethernet » montre maintenant le câble qui s'arrête au contrôleur central, placé à 250 pi ou moins de la serre et relié sans fil aux appareils Orisha."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Fiche fourniture : « Configurer les champs »",
+      "category": "Logistique",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Dans la fiche d’une fourniture, « Configurer les champs » de l’historique d’achats ouvre maintenant les champs des achats, avec leur champ Airtable, au lieu d’une page vide."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Fournitures : mapping Airtable dans les champs",
+      "category": "Logistique",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La configuration des champs des Fournitures et de leurs achats montre maintenant le champ Airtable de chaque colonne, modifiable, et permet de brancher d'autres champs Airtable."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : colonne ID en SYS-…",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La colonne ID de la liste des System builder affiche maintenant le numéro complet, par exemple SYS-1002."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : boutons − / + des permissions",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Nouveau formulaire : les « Permissions supplémentaires » se règlent avec de gros boutons − / +, serre par serre."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : encadré retiré",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Nouveau formulaire : l'encadré « cartes de serre / lien public » est retiré."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Touche M et liste des raccourcis",
+      "category": "Général",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La touche M ouvre la fenêtre « Modifier le système »."
+        },
+        {
+          "type": "new",
+          "text": "Paramètres → Raccourcis : la liste de tous les raccourcis clavier de l'app."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : titre « Équipements »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la fiche d'un formulaire, la section « Équipements suggérés » s'appelle maintenant « Équipements »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : lien public cliquable",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La colonne « Lien public » affiche l'adresse complète du formulaire et l'ouvre au clic."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : colonne #",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La liste des System builder affiche le numéro SYS-… de chaque formulaire, et la recherche le trouve."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Page Fournitures",
+      "category": "Achats",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "« Achats de fournitures » devient « Fournitures » : la page liste les fournitures (dernier achat, nombre d'achats, total) ; leurs achats se voient dans la fiche de chacune."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Fourniture créée visible dans la liste",
+      "category": "Achats",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une fourniture pas encore achetée apparaît maintenant dans la liste des achats de fournitures, dès sa création."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "« Nouvel achat » dans la fiche fourniture",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le bouton « Nouvel achat » est maintenant dans la fiche de chaque fourniture, juste au-dessus de ses achats ; il n'est plus sur la liste."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Fiche fourniture entièrement modifiable",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Nom, fournisseur, unité, prix de référence et notes d'une fourniture se modifient directement dans sa fiche (repris dans Airtable)."
+        },
+        {
+          "type": "improved",
+          "text": "Date, quantité et prix unitaire des achats de l'historique se modifient dans le tableau de la fiche."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Ajouter un achat de fourniture",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Bouton « Nouvel achat » sur Achats de fournitures : fourniture, date, quantité et prix (repris du prix de référence)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Modifier le lien d'achat d'une fourniture",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Fiche d'une fourniture : champ « Lien d'achat » modifiable sur place ; la nouvelle adresse est aussi enregistrée dans Airtable."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "Ajouter une fourniture",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Achats de fournitures : bouton « Nouvelle fourniture » qui ouvre un formulaire ; la fourniture est créée dans Airtable et sa fiche s'ouvre."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-24",
+      "title": "System builder : Côtés ouvrants = 2 moteurs",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une permission Côtés ouvrants permet maintenant au client de déclarer 2 moteurs de côtés de plus (au lieu d'un)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Achats de fournitures : fiche de la fourniture",
+      "category": "Logistique",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Un clic sur un achat de fourniture ouvre sa fiche en panneau latéral : infos, bouton « Acheter » vers le site du fournisseur et historique de tous ses achats synchronisés d'Airtable."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : les permissions ouvrent des questions",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les permissions supplémentaires ne rajoutent plus d'équipement d'office : elles laissent le client déclarer plus de fournaises, valves, moteurs de côtés ou toits ouvrants dans le questionnaire, avec les mêmes questions."
+        },
+        {
+          "type": "improved",
+          "text": "Une serre Helper qui reçoit une permission Chauffage, Irrigation ou Toits ouvrants se voit poser les questions correspondantes."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Équipements suggérés groupés par type",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Sur la fiche d’un système, les équipements suggérés de chaque serre sont regroupés par type de produit."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : permissions renommées",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les permissions supplémentaires s'appellent maintenant Chauffage, Irrigation, Côtés ouvrants et Toits ouvrants."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Tâches en cours sur les jauges IA",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Les jauges IA en bas de la barre de gauche portent une pastille : le nombre de travaux en cours d'exécution."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Autocorrecteur dans « Modifier le système »",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Le texte d'une demande est corrigé automatiquement (fautes, accents, accords) après une courte pause de frappe ; « Corrigé · annuler » ou Ctrl+Z rétablit l'original."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : permission fournaise = 2, valve = 4",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une permission supplémentaire fournaise donne maintenant droit à 2 fournaises, et une permission valve à 4 valves (au lieu d'une seule)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Quotas IA toujours dans le menu",
+      "category": "Navigation",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La jauge des quotas IA ne disparaît plus du menu quand le service ne répond pas : elle affiche les dernières valeurs connues, grisées."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : mentions « 1 carte serre » retirées",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La fenêtre de création n'affiche plus « 1 carte serre par Chef de culture » ni « 1 carte serre par Helper »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : extras pour les serres Helper",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "À la création d'un System builder, les serres Helper acceptent maintenant fournaises, valves, roll-ups et toits ouvrants supplémentaires."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Travaux retiré du menu",
+      "category": "Navigation",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Travaux n’a plus d’icône dans le menu de gauche ; on y accède en cliquant sur la jauge des quotas IA."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Produits associés : image du produit",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Produits associés : le SKU ne s’affiche plus à côté du nom ; l’image du produit choisi apparaît à la place et un clic dessus ouvre sa fiche."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "« Permissions supplémentaires »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Création d’un System builder : la section des équipements par serre s’intitule maintenant « Permissions supplémentaires »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Nombre de serres : boutons + / −",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Nouveau System builder : les nombres de Chef de culture et de Helper se règlent avec les mêmes gros boutons + / − que les capteurs."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Détail des sorties du module d’activation",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "System builder : sous « Module d’activation V2 », la liste des équipements qui occupent une sortie (fournaises, zones, louvres, toits…) et le total sorties utilisées / disponibles, pour recompter le nombre de modules."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Contrôleur central d’un nouveau site",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "System builder : un nouveau site reçoit maintenant son contrôleur central dans la liste d’équipement, sauf si le contrôleur Internet mobile en tient lieu."
+        },
+        {
+          "type": "new",
+          "text": "Réseau « 350 pi possible » : l’antenne et le câble coaxial promis s’ajoutent à la liste (produit à associer dans Produits associés)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder numérotés",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Chaque System builder a un numéro séquentiel (SYS-1000, SYS-1001…) affiché en haut de sa fiche ; les existants sont numérotés par date de création."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Responsable de la commande",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La fiche d'une commande a un champ « Responsable de la commande » à choisir parmi les utilisateurs de l'app. Il est prérempli depuis Airtable (sauf Frédéric Carrier, sans compte)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Quotas IA : survol et raccourci",
+      "category": "Interface",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la barre de gauche, survoler les jauges IA affiche le détail des quotas ; un clic ouvre Travaux."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Wi-Fi reporté sur la commande",
+      "category": "Commandes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une commande créée depuis le System builder reprend le nom et le mot de passe du Wi-Fi du client (champs Wi-Fi name / Wi-Fi password, aussi dans Airtable). La commande #1082 est complétée."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Capteurs : boutons + / −",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans les formulaires de découverte, le nombre de capteurs se règle avec de gros boutons + / − au lieu des petites flèches."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Adresse de la ferme synchronisée avec Airtable",
+      "category": "Commandes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "L’« Adresse de la ferme » d’une commande suit maintenant le champ Airtable « Adresse de la ferme (pour coordonnées géographiques) », dans les deux sens."
+        },
+        {
+          "type": "fixed",
+          "text": "Les ~240 commandes dont Airtable connaissait la ferme l’affichent maintenant dans la fiche ; la commande #1082 est liée à sa ferme dans Airtable."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Images des équipements suggérés",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Fiche système : chaque équipement suggéré affiche l'image de son produit à côté de son nom."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Entrée envoie la demande",
+      "category": "Général",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la fenêtre « Modifier le système », Entrée envoie la demande ; Maj + Entrée ajoute un retour à la ligne."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Lien vers le System builder",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Une commande créée depuis le System builder affiche un champ « System builder » avec un lien qui ouvre le système d’origine, comme pour l’entreprise et les adresses."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Adresse de livraison conservée",
+      "category": "Commandes",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une adresse créée dans l’ERP (par exemple par le System builder) ne s’efface plus de l’« Adresse de livraison » d’une commande au retour de la synchro Airtable. La commande #1082 est réparée."
+        },
+        {
+          "type": "fixed",
+          "text": "Une commande créée depuis le System builder se lie à l’adresse de livraison déjà connue d’Airtable (même code postal et même numéro civique), pour qu’Airtable la voie aussi. La commande #1082 y est maintenant liée."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Poignée de recopie dans les tableaux",
+      "category": "Général",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dans les tableaux modifiables (articles d’une commande, retours, paiements, pipeline), la cellule sélectionnée porte un petit carré au coin inférieur droit : le glisser vers le haut ou le bas recopie sa valeur sur les autres lignes de la colonne."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Oui / Non en deux boutons",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans le formulaire de découverte, les questions Oui / Non (inverseur, Ridder RW240, valve d’humidité, ventilateurs HAF, questions ajoutées) affichent deux boutons au lieu d’une liste déroulante."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Billets sur la fiche entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La fiche d’une entreprise liste ses billets de support (numéro, titre, statut, date) ; un clic ouvre le billet."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Zones d’irrigation : 4 au maximum",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans le formulaire de découverte, la case « Plus de 4 » des zones d’irrigation est retirée : on choisit parmi les illustrations de 0 à 4 valves."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Aide pour trouver les HP d’un moteur",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dans le formulaire de découverte, un « ? » à côté de « Puissance combinée (HP) » ouvre une photo de plaque de moteur qui montre où lire les HP."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Type de tuyau de côté illustré",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les photos des tuyaux en C et en O sont remplacées par des illustrations dans le style des autres questions."
+        },
+        {
+          "type": "improved",
+          "text": "Le tuyau d’aluminium montre sa rainure en C sur toute la longueur, avec le fil du polylock dedans."
+        },
+        {
+          "type": "improved",
+          "text": "Le choix « tuyaux guides déjà présents » montre une nouvelle illustration de la serre avec son tuyau guide."
+        },
+        {
+          "type": "improved",
+          "text": "La question sur les tuyaux guides devient « Avez-vous des tuyaux de 1 po à 1 ⁵⁄₁₆ po de diamètre qui peuvent servir de tuyaux guides ? », en Oui / Non ; la question sur leur diamètre disparaît."
+        },
+        {
+          "type": "improved",
+          "text": "Cette question montre une seule grande image, avec les boutons Oui / Non dessous."
+        },
+        {
+          "type": "improved",
+          "text": "Fournaise : la question devient « Votre fournaise peut-elle être activée avec un thermostat mural ordinaire ? », illustrée par une photo de thermostat."
+        },
+        {
+          "type": "improved",
+          "text": "Les réponses Oui / Non / Je ne sais pas de cette question sont trois boutons sous la photo, au lieu d’une liste déroulante."
+        },
+        {
+          "type": "improved",
+          "text": "Thermostat de secours : photo du thermostat et deux boutons, « J’ai besoin d’un thermostat de secours » ou « J’ai déjà un thermostat de secours »."
+        },
+        {
+          "type": "improved",
+          "text": "Sa question devient « L’installation d’un thermostat de secours est fortement recommandée et nous pouvons vous en fournir un gratuitement. »"
+        },
+        {
+          "type": "new",
+          "text": "La dernière étape du formulaire affiche le résumé des réponses avant le bouton Soumettre."
+        },
+        {
+          "type": "improved",
+          "text": "Dans ce résumé, chaque fournaise et chaque louvre apparaît en retrait, sous sa section Chauffage ou Louvres."
+        },
+        {
+          "type": "improved",
+          "text": "La première ligne d’une fournaise dans le résumé s’intitule « Compatible »."
+        },
+        {
+          "type": "improved",
+          "text": "Le thermostat de secours y est indiqué « Fourni par Orisha » ou « Déjà présent »."
+        },
+        {
+          "type": "improved",
+          "text": "Même principe pour les tuyaux guides : « Déjà présents » ou « Fournis par Orisha »."
+        },
+        {
+          "type": "improved",
+          "text": "Valves 1 po : si Orisha les fournit, le client choisit juste dessous combien il en veut (1 à 4, selon ses zones) ; sinon il choisit la marque (Rainbird, Irritrol ou autre). Les questions marque et modèle à écrire disparaissent."
+        },
+        {
+          "type": "fixed",
+          "text": "La liste d’équipement ajoute le thermostat de secours quand le client en a besoin, et non plus quand il en a déjà un."
+        },
+        {
+          "type": "improved",
+          "text": "Valves d’une autre marque : le client inscrit la marque (obligatoire) et le modèle juste dessous."
+        },
+        {
+          "type": "new",
+          "text": "Le résumé avant l’envoi est modifiable : chaque section a un lien « Modifier » qui ouvre sa question, puis « Retour au résumé » y ramène."
+        },
+        {
+          "type": "improved",
+          "text": "Le résumé montre aussi le type de commande et les adresses (ferme, livraison), chacun avec son lien « Modifier »."
+        },
+        {
+          "type": "improved",
+          "text": "Marque de la fournaise : quatre boutons (Modine, Reznor, LB White, Autre) ; « Autre » demande la marque et le modèle juste dessous, et la question séparée sur le modèle disparaît."
+        },
+        {
+          "type": "improved",
+          "text": "Filage de fournaise de plus de 100 pi : le nombre de pieds se saisit juste dessous, sur la même page."
+        },
+        {
+          "type": "improved",
+          "text": "Serre en mode Chef de culture : le formulaire demande s’il y a un toit ouvrant et combien, puis les questions sur son moteur et son inverseur."
+        },
+        {
+          "type": "improved",
+          "text": "Les toits ouvrants ajoutés en extra par Orisha s’additionnent à ceux du client, qui voit « + N toit(s) ouvrant(s) supplémentaire(s) »."
+        },
+        {
+          "type": "improved",
+          "text": "Le client répond seulement Oui / Non pour le toit ouvrant ; le nombre ne lui est demandé que si Orisha a ajouté des toits en extra dans cette serre."
+        },
+        {
+          "type": "improved",
+          "text": "Moteur de toit 24 V DC ou Ridder RW240 sans inverseur : le message « Orisha peut peut-être fournir l’inverseur » n’est plus affiché au client."
+        },
+        {
+          "type": "improved",
+          "text": "Dans le résumé, la ligne « Marque du moteur » du toit ouvrant indique Ridder RW240, 24 V DC ou Autre."
+        },
+        {
+          "type": "improved",
+          "text": "Puissance combinée des ventilateurs : trois boutons texte, sans images."
+        },
+        {
+          "type": "new",
+          "text": "Fiche d’un système : bouton « Modifier » pour changer les options achetées et les équipements supplémentaires de chaque serre, tant qu’aucune commande n’est créée. Le client voit les changements à la prochaine ouverture de son lien."
+        },
+        {
+          "type": "improved",
+          "text": "Marque des moteurs de côtés déjà en place : trois choix, Kingzo 24 V DC et LVM60 / LVM100 en photo, ou « Autre » avec marque et modèle à inscrire juste dessous."
+        },
+        {
+          "type": "new",
+          "text": "Moteurs de côtés déjà en place : le formulaire demande s’il y a des inverseurs, un par moteur ou un pour deux moteurs, et leur modèle (8ZE133L, 8ZE133LDC ou autre, avec marque et modèle à inscrire)."
+        },
+        {
+          "type": "improved",
+          "text": "Liste d’équipement : avec inverseurs, chaque inverseur prend 2 sorties d’un module d’activation ; sans inverseur, un module de côtés ouvrants pour 2 moteurs, ou un contrôleur 24 V par moteur au-delà de 200 pi."
+        },
+        {
+          "type": "new",
+          "text": "Formulaire : les flèches gauche et droite du clavier passent à la question précédente ou suivante."
+        },
+        {
+          "type": "improved",
+          "text": "La question sur la puissance précise qu’il s’agit de la puissance combinée des deux moteurs de ventilateurs."
+        },
+        {
+          "type": "improved",
+          "text": "Ventilateurs HAF : la question devient « Avez-vous des ventilateurs HAF à automatiser ? » et le nombre de HAF n’est plus demandé ; la liste d’équipement prévoit un relais 110 V et une sortie de module d’activation."
+        },
+        {
+          "type": "improved",
+          "text": "Toits ouvrants dans la liste d’équipement : 2 sorties + filage par inverseur du client, contrôleur 24 V pour un moteur 24 V DC, inverseur Orisha + filage pour un Ridder RW240. L’alerte « à vérifier » ne reste que si le moteur n’est pas précisé."
+        },
+        {
+          "type": "improved",
+          "text": "Le Form builder ne garde que les produits associés et les sorties V2 par appareil ; le bouton du System builder s’appelle « Produits associés »."
+        },
+        {
+          "type": "improved",
+          "text": "Une commande créée depuis le System builder a maintenant ses lignes de type « Facturable » par défaut."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Mode de la serre à côté de son numéro",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans le formulaire de découverte, chaque « Serre #N » indique si elle est en mode Chef de culture ou Assistant, dans les étapes comme dans le récapitulatif."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : Wi-Fi inconnu",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Si le client coche « Je ne sais pas » pour le nom de son Wi-Fi, le formulaire ne lui demande plus le mot de passe."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System builder : extras par serre",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "À la création d'un formulaire, Orisha saisit pour chaque serre le nombre de fournaises, valves, roll-ups et toits ouvrants supplémentaires ; le client ne les saisit plus, ils s'ajoutent à ses réponses."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Formulaire System builder plus lisible",
+      "category": "Ventes",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Texte du formulaire agrandi."
+        },
+        {
+          "type": "improved",
+          "text": "La page de titre est retirée : le formulaire s'ouvre directement sur la première question."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Achats de fournitures",
+      "category": "Autres outils",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Nouvelle page « Achats de fournitures » dans Autres outils : chaque achat de fourniture (bureau, entretien, emballage) avec sa photo, son fournisseur, la quantité, le prix et le total. Les données viennent des tables Airtable « Fournitures » et « Achats fournitures » et se mettent à jour d'elles-mêmes ; le bouton « Synchroniser » force une relecture."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Supprimer une commande",
+      "category": "Commandes",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Bouton corbeille sur la fiche Commande : supprime la commande et ses articles dans Boréal et dans Airtable, après confirmation."
+        },
+        {
+          "type": "new",
+          "text": "Une commande déjà envoyée ne peut pas être supprimée : déliez d’abord ses envois depuis la fiche Envoi."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "System Builder : commande créée instantanément",
+      "category": "Commandes",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le bouton « Créer la commande » crée la commande et ses articles dans Boréal sans attendre Airtable."
+        },
+        {
+          "type": "new",
+          "text": "L’envoi à Airtable suit en arrière-plan et est repris automatiquement (toutes les 5 min, puis de plus en plus espacé) tant qu’une commande ou un article manque."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Champs non modifiables sans cadre",
+      "category": "Produits",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Sur la fiche Produit, « Stock actuel » et « Quantité en inventaire » s'affichent en texte simple, sans cadre blanc : on voit qu'ils ne se modifient pas."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Champ « Ajustement manuel » retiré de la fiche Pièce",
+      "category": "Produits",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La section « Ajustement » de la fiche Pièce n'affiche plus le champ « Ajustement manuel » ; l'inventaire s'ajuste toujours avec « Ajuster l'inventaire »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Champ « Codes-barres » supprimé",
+      "category": "Produits",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le champ « Codes-barres » des pièces est supprimé. Au scan d'une commande, un code inconnu affiche « Code inconnu » au lieu de proposer de l'associer à un article."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Ajustement de stock : même Type qu'Airtable",
+      "category": "Inventaire",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La modale d'ajustement de stock de la fiche produit fait choisir le Type dans la liste d'Airtable, accepte un nouveau stock ou une variation, et enregistre la vraie variation (ex. −3) au lieu du stock visé."
+        },
+        {
+          "type": "improved",
+          "text": "Le choix du Type y reprend les couleurs configurées sur le champ."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Mouvements d'inventaire : « Type » partout comme dans Airtable",
+      "category": "Inventaire",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La modale de modification du champ « Type » propose enfin les choix d'Airtable au lieu de in / out / adjustment, et l'historique des mouvements de la fiche produit affiche le même « Type » et la quantité signée."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Quotas Claude : fin des « Quotas illisibles »",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les quotas Claude sont relus toutes les 5 min, au rythme toléré par Anthropic, au lieu de chaque minute. Un refus passager ne s'affiche plus tant que des chiffres récents sont là (leur âge est en infobulle sur « Quotas Claude »)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Dates d'origine : format avec heure",
+      "category": "Champs",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La modale « Modifier le champ » d'une date d'origine (ex. « Date de commande ») propose maintenant le format d'affichage, dont les variantes « + heure »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Correspondance Airtable à jour en direct",
+      "category": "Connecteurs",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le panneau de correspondance des champs Airtable affiche aussitôt les champs et les sens de synchronisation modifiés ailleurs, sans effacer votre brouillon en cours ; une modification concurrente sur le même champ est signalée."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Modale d'adresse à jour en direct",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une adresse modifiée ailleurs (autre utilisateur, import, API) se met à jour dans la modale ouverte ; un champ en cours de saisie est conservé et un avis signale le conflit."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Tableurs joints : aperçu et lecture",
+      "category": "Général",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Un tableur joint (Excel, OpenDocument, CSV) montre ses premières cellules en vignette ; un clic l'ouvre en grand, feuille par feuille, sans le télécharger."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Champ Date : saisie de l'heure",
+      "category": "Champs",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Un champ Date réglé sur un format « + heure » se saisit maintenant avec l'heure dans la fiche, et l'heure s'affiche dans les tableaux."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Mouvements d'inventaire : « Type » comme dans Airtable",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le champ « Type » des mouvements d'inventaire propose maintenant les mêmes choix qu'Airtable (Fabrication, Prélèvement pour R&D, Restitution R&D, Ajustement…), avec leurs couleurs ; la quantité s'affiche signée (négative pour une sortie), comme « Changement » dans Airtable."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Mouvements d'inventaire : champ « Référence » supprimé",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le champ « Référence », jamais rempli, disparaît des mouvements d'inventaire, de l'historique de la fiche produit et de la page Champs."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Formules au format Devise",
+      "category": "Champs",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Le format d'une formule ou d'un cumul peut maintenant être « Devise » : la valeur s'affiche en montant (« 1 234,50 $ »), avec un symbole au choix."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Formules : champs suggérés sous leur nom affiché",
+      "category": "Champs",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la page Champs, taper le début d'un nom de champ dans une formule propose les champs correspondants sous le nom qu'ils portent dans l'app (« Quantité », pas « qty »)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Nouveautés déplacées dans les Paramètres",
+      "category": "Interface",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les Nouveautés quittent le menu de gauche : elles se trouvent désormais dans Paramètres, section « Nouveautés »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Menu : plus d'entrée Dashboard",
+      "category": "Navigation",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "L'icône Dashboard est retirée du menu de gauche ; le logo en haut y mène toujours."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Cédule « À payer » : seulement ce qui presse",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Consultée hors du mardi, la cédule ne propose plus que les factures qui ne peuvent pas attendre la prochaine séance ; le reste passe dans « Plus tard »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-23",
+      "title": "Budget marketing : envoi manuel toujours possible",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le bouton « Envoyer » du message à Émilie fonctionne même quand l'envoi hebdomadaire automatique est désactivé."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "TRX_Orisha → Boréal en moins d'une minute",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Un commentaire écrit dans le fichier TRX_Orisha apparaît dans le rapprochement en moins d'une minute, au lieu de 20."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Commentaires synchronisés avec TRX_Orisha",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Le commentaire d'une transaction dans le rapprochement et la colonne « Commentaires » du fichier TRX_Orisha se recopient l'un dans l'autre, dans les deux sens."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Codes LIA proposés même quand le fournisseur nomme autrement",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les factures Sticker Mule (« stickers ») proposent de nouveau les achats « Autocollant … » à recevoir."
+        },
+        {
+          "type": "improved",
+          "text": "Quand un seul achat à recevoir du fournisseur a exactement la quantité facturée, il est proposé même si les noms ne se ressemblent pas."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "TRX_Orisha : lignes neuves à pleine hauteur",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les transactions ajoutées au fichier TRX_Orisha ne s'écrasent plus en lignes minuscules et se rangent sous la ligne de séparation de l'en-tête."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Menu « Achat » des reçus : retouches",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Quantités sans décimale inutile (30 au lieu de 30.0)."
+        },
+        {
+          "type": "improved",
+          "text": "Noms de pièce plus lisibles : colonne élargie, la pastille de confiance passe sous le code."
+        },
+        {
+          "type": "improved",
+          "text": "Le compte « à recevoir » ne compte que le fournisseur de la facture (le total s'il n'y en a aucun)."
+        },
+        {
+          "type": "fixed",
+          "text": "Seule la suggestion est en vert ; le choix actuel garde une coche discrète, et le menu recouvre proprement la ligne du dessous."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Paiements émis : n° de confirmation des cartes",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Après « J'ai payé » sur une Visa, la ligne attend le n° de confirmation même si on change d'onglet pour aller le chercher."
+        },
+        {
+          "type": "fixed",
+          "text": "Un paiement coché dans « à payer » (carte ou facture) apparaît tout de suite dans le fil, en vol."
+        },
+        {
+          "type": "new",
+          "text": "« + n° » sur un paiement en vol sans numéro, pour l'ajouter après coup."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Transport des factures sans taxes",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le transport d'une facture sans taxes (ex. PCBWay) n'est plus perdu : le total lu est le montant dû, transport inclus."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Reçus : menu d'achat en tableau",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le menu « Achat » d'une ligne de facture est un petit tableau : code, pièce, fournisseur, quantité, date de commande, avec recherche sur les trois premiers."
+        },
+        {
+          "type": "improved",
+          "text": "Seuls les achats à recevoir y figurent : l'achat suggéré en tête (en vert, avec sa confiance), puis ceux du fournisseur, puis « Autres fournisseurs » (choix manuel seulement)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Instagram : on sait qui est chaque personne",
+      "category": "Marketing",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Chaque fiche affiche en haut « Qui c'est » (lu sur son profil public : bio, publications et photos) et comment la personne est arrivée."
+        },
+        {
+          "type": "improved",
+          "text": "La pile « Fleurs » n'accueille plus que les gens dont le profil montre que les fleurs sont leur activité principale."
+        },
+        {
+          "type": "improved",
+          "text": "Le message suggéré tient compte de l'activité réelle de la personne ; il est réécrit quand elle change de pile."
+        },
+        {
+          "type": "improved",
+          "text": "Un profil vide ou une bio de vendeur d'abonnés compte maintenant comme indice de robot."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Rapprochement : remboursements et notes de crédit retrouvés",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Une entrée d'argent (remboursement d'impôt, note de crédit) se voit proposer la pièce correspondante déjà lue par l'extracteur."
+        },
+        {
+          "type": "improved",
+          "text": "Les libellés bancaires de l'ARC et de Revenu Québec (« REMB. IMPOT », « GOUV. CANADA », « MRQ »…) sont reconnus comme le fournisseur."
+        },
+        {
+          "type": "fixed",
+          "text": "Une sortie ne se voit plus proposer une pièce négative, ni une entrée une facture."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Factures Yanghui → PCBWay",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les factures de « Hong Kong Yanghui Information Technology » sont lues comme venant de PCBWay ; aucun fournisseur Yanghui n'est plus créé."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Pièces en devise retrouvées au rapprochement",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Un achat en USD sur une carte CAD retrouve sa facture grâce au « montant initial en devise » écrit au relevé."
+        },
+        {
+          "type": "improved",
+          "text": "Une facture lue en CAD par erreur, ou débitée avec les ~2,5 % de frais de change de la carte, est maintenant proposée."
+        },
+        {
+          "type": "fixed",
+          "text": "Pré-autorisation et passage au compte du même achat : la facture va à la ligne passée, la ligne en attente la montre sans la prendre."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Instagram : la page prend tout l'écran",
+      "category": "Marketing",
+      "requester": "Charles Perreault",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les piles deviennent des onglets en haut, la liste s'aère et la conversation se lit dans une colonne centrée."
+        },
+        {
+          "type": "improved",
+          "text": "Le type de la personne, sa fenêtre de réponse, « traité » et « écarter » sont tous dans l'en-tête de la conversation."
+        },
+        {
+          "type": "improved",
+          "text": "Le message à envoyer vit dans sa propre carte, avec Envoyer, J'écris et Réécrire côte à côte."
+        },
+        {
+          "type": "new",
+          "text": "La liste de gauche se replie pour laisser toute la largeur à la conversation ; repliée, elle réapparaît quand la souris touche le bord gauche et se referme dès qu'on s'en éloigne."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Rapprochement : clic sur la ligne, marques à droite",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une ligne dépliée puis refermée reprend sa taille normale."
+        },
+        {
+          "type": "improved",
+          "text": "Plus de petite flèche : un clic n'importe où sur la ligne l'ouvre ou la referme."
+        },
+        {
+          "type": "improved",
+          "text": "Le rond rouge « à réviser » et le signet sont maintenant à droite, après le solde ; le signet posé n'affiche plus qu'un seul ruban, sans trait orange."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Jauges IA dans la barre de gauche",
+      "category": "Outils",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Une mince barre par compte IA (Claude, Codex) en bas de la barre de gauche ; un clic ouvre le détail de chaque plafond (ce qui reste, remise à zéro), comme dans Travaux."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Rapprochement : confirmer sur la ligne, comme dans QuickBooks",
+      "category": "Comptabilité",
+      "requester": "Charles Lambert",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Une ligne qui porte une proposition s'ouvre dessus : « C'est bien ça » se clique dans le tableau, sans passer par le dossier."
+        },
+        {
+          "type": "fixed",
+          "text": "La confirmation en lot ne publie plus de dépense dans QuickBooks : elle passe les appariements et les virements, et dit combien d'écritures restent à confirmer une par une."
+        },
+        {
+          "type": "new",
+          "text": "« Règles » ouvre la liste des règles dans le rapprochement — piles, portée et modification sur place."
+        },
+        {
+          "type": "new",
+          "text": "La ligne dit quelle règle a préparé son écriture."
+        },
+        {
+          "type": "fixed",
+          "text": "Un lien venu de la page Propositions ouvre directement la bonne ligne, et la colonne du geste attendu ne reste plus vide sur les gros comptes."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Rapprochement : signet et bon code couleur",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Plus de colonne de numéros : au survol d'une ligne, deux petits boutons posent le rond rouge « à réviser » (la date est alors entourée au crayon) ou le signet orange, qui marque la ligne d'un ruban et d'un trait."
+        },
+        {
+          "type": "fixed",
+          "text": "Une ligne jaune déjà comptabilisée dans QuickBooks ne propose plus « Publier » ou « Apparier » : elle ne laisse plus croire qu'il manque l'écriture."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Mouvements d'inventaire : sync Airtable dans les deux sens",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dans la page des champs des mouvements d'inventaire, le sens de sync (pièce, quantité, type, coût unitaire) se choisit maintenant champ par champ."
+        },
+        {
+          "type": "new",
+          "text": "Un mouvement créé dans Boréal (ajustement de stock, commande envoyée) est créé dans Airtable avec sa pièce et sa variation signée, dès qu'un champ est réglé vers Airtable."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Instagram : questions et commentaires séparés",
+      "category": "Marketing",
+      "requester": "Charles Perreault",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La pile « Autres » est coupée en deux : ceux qui posent une vraie question et ceux qui ont simplement réagi à une publication."
+        },
+        {
+          "type": "new",
+          "text": "Un bouton « J'écris » jette la suggestion et vide la boîte : Philippe répond lui-même et rien ne sera resuggéré pour cette personne."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Rapprochement en classeur",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Rapprochement bancaire : nouvelle allure de classeur papier, plus grande, et « À traiter » reste en blanc."
+        },
+        {
+          "type": "new",
+          "text": "Un clic sur le numéro de ligne pose un rond rouge « à réviser », puis le signet orange (un par compte), puis retire la marque."
+        },
+        {
+          "type": "new",
+          "text": "Les comptes sont des onglets au bas de la page, avec le nombre de lignes à réviser dans un rond rouge."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Lignes de facture : plus de rattachement à un vieil achat",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une ligne de facture n'est plus rattachée à un achat au même nom commandé il y a des mois : seuls les achats du même fournisseur commandés entre 90 jours avant et 7 jours après la facture sont proposés."
+        },
+        {
+          "type": "fixed",
+          "text": "Les vieux achats marqués reçus sans date ne sont plus pris pour des commandes à recevoir."
+        },
+        {
+          "type": "improved",
+          "text": "Deux achats aussi plausibles : le plus proche en date l'emporte ; à égalité, rien n'est rattaché et la ligne affiche « À vérifier »."
+        },
+        {
+          "type": "new",
+          "text": "« Modifier la dépense » et la fiche de facture montrent la date de commande de l'achat relié, avec un avertissement s'il était déjà reçu ou s'il est relié ailleurs."
+        },
+        {
+          "type": "fixed",
+          "text": "Facture DigiKey 132580242 : lignes réattribuées aux achats du 11 septembre (LIA-2022, LIA-2018, LIA-2019), aussi dans QuickBooks."
+        },
+        {
+          "type": "fixed",
+          "text": "Le module ne restait plus bloqué à « réponse inattendue » au moment d'envoyer les sessions."
+        },
+        {
+          "type": "fixed",
+          "text": "La fenêtre du module montre l'avancement portail par portail et ne reste plus figée sur « Envoi… »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Instagram : une pile par type de demande",
+      "category": "Marketing",
+      "requester": "Charles Perreault",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La liste Instagram est divisée par ce que la personne demande : coaching, fleurs, abonnés qu'on peut aborder, et le reste — chaque pile a son propre message écrit d'avance, modifiable."
+        },
+        {
+          "type": "fixed",
+          "text": "Les 108 personnes à qui Philippe avait déjà écrit lui-même ne réapparaissent plus comme « à contacter » ; elles reviennent seulement si elles réécrivent."
+        },
+        {
+          "type": "new",
+          "text": "Les faux comptes et démarcheurs sont reconnus et supprimés, et un compte écarté ne peut plus revenir à la lecture suivante."
+        },
+        {
+          "type": "improved",
+          "text": "Celles qui n'ont fait que répondre à une story quittent la liste, et les déjà traités sont repliés dans une section qu'on ouvre au besoin."
+        },
+        {
+          "type": "improved",
+          "text": "Un mauvais rangement se corrige d'un clic sur la fiche, et ce choix n'est jamais réécrit."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "La collecte part toute seule quand la session arrive",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dès qu'une session de portail arrive du navigateur, l'ERP va chercher tout de suite la facture d'une sortie d'argent qui l'attend — plus besoin de cliquer."
+        },
+        {
+          "type": "improved",
+          "text": "Les sessions ouvertes sont renvoyées chaque heure et à chaque ouverture du navigateur, au lieu de deux fois par jour."
+        },
+        {
+          "type": "improved",
+          "text": "Le module de navigateur indique maintenant quand une collecte est partie dans la foulée de l'envoi."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Colonne Description au rapprochement",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Rapprochement bancaire : la description de la banque (ex. « Remboursement d'impôts »), jusqu'ici visible seulement au survol, a maintenant sa propre colonne."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Critères d'analyse : l'espace ne disparaît plus",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Dans Travaux › Suggestions, l'espace tapé en fin de ligne des critères d'analyse n'est plus effacé par l'enregistrement automatique quand on marque une pause."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Pièces jointes de courriels : aperçu",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Sur les fiches contact et interaction, chaque pièce jointe d'un courriel montre sa miniature ; un clic l'ouvre en grand au lieu de la télécharger. Le bouton ↓ télécharge toujours."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Factures d'un abonnement : aperçu du PDF",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la fiche d'un abonnement, chaque facture montre la miniature de son PDF ; un clic l'ouvre en aperçu au lieu d'un nouvel onglet, sans ouvrir la fiche facture."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Champ pièce jointe d'une fiche : aperçu sur place",
+      "category": "Général",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans une fiche, chaque fichier d'un champ pièce jointe (image ou PDF) s'affiche en miniature ; un clic l'ouvre en aperçu au lieu d'un nouvel onglet. Le « × » de retrait reste séparé."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Champ pièce jointe : liste toujours à jour",
+      "category": "Général",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Après l'ajout ou le retrait d'un fichier dans un champ pièce jointe d'une fiche, les miniatures suivent désormais les documents actuels quand la fiche se rafraîchit ou qu'on passe à un autre enregistrement, au lieu de garder les anciens fichiers."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Pièces jointes du courriel : aperçu sur place",
+      "category": "Général",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la fenêtre d'envoi d'un courriel, chaque pièce jointe s'affiche en miniature ; un clic ouvre le document en aperçu, sans quitter ni perdre le brouillon (Échap ferme seulement l'aperçu). Visible notamment sur le courriel d'instructions d'un retour (étiquette, aide-mémoire)."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Pièces jointes : « +N » quand la cellule déborde",
+      "category": "Tables",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une cellule de pièces jointes trop étroite affiche « +N » pour les fichiers qui ne tiennent pas ; un clic ouvre une galerie où chaque document se consulte. Le compte suit la largeur de la colonne, y compris pour les champs recherchés dans une autre table."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Modifier le système : modèle choisi selon les quotas",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "À l'ouverture de la fenêtre, Opus ou Astra est présélectionné selon le quota restant de chaque abonnement (fenêtre de 5 h et semaine) et le temps avant leur réinitialisation. Survoler le choix montre la marge de chacun ; un clic reprend la main."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Bon de commande : contacts du fournisseur et langue",
+      "category": "Achats",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "L'envoi d'un bon de commande propose tous les contacts liés au fournisseur."
+        },
+        {
+          "type": "improved",
+          "text": "Le courriel (et le PO joint) est rédigé dans la langue du contact choisi."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Bon de commande : tarif à 0 par défaut",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les articles d'un bon de commande arrivent avec un tarif à 0 ; le prix se saisit à la main."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Bon de commande : les achats se créent à l'envoi",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Envoyer un bon de commande crée un achat par article du catalogue (pièce, quantité, fournisseur, date du PO), envoyé aussi à Airtable ; renvoyer le même PO ne crée pas de doublon."
+        },
+        {
+          "type": "improved",
+          "text": "Une ligne tapée à la main dont le nom ou le SKU correspond à une seule pièce du catalogue est reliée à cette pièce."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Bon de commande : images des pièces",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans le bon de commande, chaque article et chaque pièce proposée du fournisseur affiche son image."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "BOM : ouvrir un composant",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans la fiche d’un produit, cliquer sur une ligne de la BOM ouvre la fiche du composant en panneau latéral."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Fiche pièce : ajustement d’inventaire",
+      "category": "Inventaire",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Nouvelle section « Ajustement d’inventaire » sur la fiche d’une pièce, comme dans Airtable : quantité en inventaire, ajustement manuel et sa raison. L’ajustement est envoyé à Airtable, qui recalcule la quantité."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "File de travaux : plus de tâche figée sans fin",
+      "category": "Système",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le délai maximal d'une tâche compte depuis son vrai départ : un redémarrage du serveur ne le remet plus à zéro."
+        },
+        {
+          "type": "fixed",
+          "text": "Les tests qui laissaient le navigateur ouvert, et faisaient figer les tâches Codex, se terminent maintenant."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Inventaire : une seule boîte de recherche",
+      "category": "Logistique",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le scan par numéro de série se fait dans la recherche du tableau : taper ou scanner le numéro puis Entrée."
+        },
+        {
+          "type": "fixed",
+          "text": "Cliquer sur une vue (ex. « À acheter ») après un scan retire le scan et affiche la liste complète de la vue."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Instagram : la lecture des commentaires repasse",
+      "category": "Marketing",
+      "requester": "Charles Perreault",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La lecture des publications Instagram était refusée depuis des semaines ; elle passe maintenant par le même chemin que le site lui-même."
+        },
+        {
+          "type": "new",
+          "text": "Rattrapage des 30 derniers jours : 90 nouveaux prospects et 94 fiches mises à jour."
+        },
+        {
+          "type": "improved",
+          "text": "Une tournée qui ne lit aucune publication le dit clairement au lieu de se déclarer réussie."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Recherche de produits dans les autres vues",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Si une recherche ne trouve rien dans « À acheter » ou une autre vue de produits, la liste passe automatiquement à une vue contenant le produit en conservant votre recherche."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Retrouver une pièce par scan dans toutes les vues",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Dans les listes de pièces et produits, scannez une référence, un code-barre enregistré ou un numéro de série pour afficher la pièce, même si les filtres de la vue la masquent. « Revenir à la liste » rétablit la vue habituelle."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Ajouter un achat depuis une pièce",
+      "category": "Achats",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dans la section Achats d’une fiche produit, le bouton « Ajouter un achat » permet de saisir une quantité, un fournisseur présélectionné et une note. L’achat est ajouté à la liste et synchronisé avec Airtable ; en cas d’échec, la synchronisation peut être réessayée."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Pièces disponibles dans les bons de commande",
+      "category": "Achats",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le bouton « Générer un PO » apparaît pour les pièces cochées « Achat par PO ». Les pièces dont le fournisseur est renseigné en texte, comme WP13-18-5G chez Takachi, sont aussi proposées lors de l’ajout d’une pièce au PO du même fournisseur."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Liens cliquables dans les fiches produits",
+      "category": "Produits",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les adresses web affichées en texte dans les champs des fiches produits, comme le lien fournisseur, s’ouvrent désormais dans un nouvel onglet au clic."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Saisie manuelle des numéros de série",
+      "category": "Envois",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "À droite des articles prélevés, saisissez un numéro de série puis Entrée pour l’associer comme un scan. Les minuscules sont reconnues : dc6461 retrouve la série DC6461."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-22",
+      "title": "Commandes envoyées dans les 30 derniers jours",
+      "category": "Ventes",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La vue « Envoyé 30 dernier jours » utilise la date affichée des envois : Black Creek Community Farm y apparaît bien. La date du dernier envoi s’actualise aussi lorsqu’un envoi est ajouté, modifié ou supprimé."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Statut des retours actualisé après réception",
+      "category": "Retours",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le statut et la vue « En transit » s’actualisent automatiquement après la réception des articles, y compris depuis Airtable. Les retours déjà reçus, comme Desert Stream Farm, ne restent plus affichés en transit."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Essai de collecte FedEx par agent navigateur",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La collecte FedEx utilise un agent qui observe les pages pour retrouver les factures et leurs téléchargements. Ses étapes et les captures de blocage sont visibles dans le journal. Le numéro de chaque PDF est vérifié avant son import."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Numérotation automatique des écritures QuickBooks",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Les nouvelles écritures de journal envoyées par l’ERP à QuickBooks reçoivent automatiquement un numéro ERP-JE-000001, ERP-JE-000002, etc. Les numéros saisis manuellement sont conservés."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Connexion FedEx lors de la collecte",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La collecte FedEx essaie aussi de se connecter lorsque la connexion est demandée à l’ouverture des factures. Une session non authentifiée n’est plus présentée comme un blocage de l’automatisation."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Paiements sans doublon sur les factures",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le champ Paiements redondant a été retiré des informations de la facture. Les paiements restent visibles dans leur section dédiée plus bas."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Créateur des paiements et remboursements",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans le détail d’une facture, les paiements et remboursements affichent leur créateur dans Boréal ou « Intégration Stripe » pour les lignes automatiques Stripe."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Aperçus PDF : chargement du lecteur",
+      "category": "Documents",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le lecteur PDF utilise un nouveau fichier JavaScript pour contourner les anciennes versions en cache et améliorer la compatibilité des aperçus avec les navigateurs."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Rabais dans les dépôts et la constatation des ventes",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les dépôts automatiques utilisent le total hors taxes après rabais, y compris pour les prix taxes incluses et les paiements partiels."
+        },
+        {
+          "type": "fixed",
+          "text": "La constatation vérifie le revenu net de la facture pour éviter de reprendre un ancien montant différé avant rabais. Les écritures déjà publiées restent à corriger séparément."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Documents d’installation après expédition",
+      "category": "Envois",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Les documents d’installation restent accessibles pour impression après l’envoi d’une commande, depuis sa fiche et le mode expédition, en français ou en anglais."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Commandes envoyées dans les 30 derniers jours",
+      "category": "Ventes",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La vue « Envoyé 30 dernier jours » affiche uniquement les commandes envoyées dont le dernier envoi date des 30 derniers jours, y compris celles envoyées aujourd’hui."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Rattachement manuel des dépôts sans correspondance client QuickBooks",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Un dépôt existant peut être lié manuellement au paiement même si la fiche entreprise ne possède pas encore d’identifiant client QuickBooks. Le compte crédité est renseigné uniquement lorsqu’il est identifiable sans ambiguïté."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Modifier le dépôt lié à un paiement client",
+      "category": "Comptabilité",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dans la fiche facture client, les administrateurs peuvent délier un dépôt direct ou rattacher le paiement à un dépôt QuickBooks existant, sans supprimer le dépôt."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Accès utilisateur, Admin et RH cumulables",
+      "category": "Administration",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Chaque compte dispose des accès utilisateur ; les droits Admin et RH peuvent être ajoutés séparément."
+        },
+        {
+          "type": "fixed",
+          "text": "Sans accès RH, chacun consulte uniquement sa fiche personnelle, ses feuilles de temps et ses paies."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Tous les numéros de série avant de terminer le prélèvement",
+      "category": "Envois",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Un article suivi par numéro de série reste à prélever tant que chaque exemplaire n’a pas son propre numéro. Rescanner le même numéro, scanner le code produit ou cliquer sur la ligne ne permet plus de le terminer prématurément."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Des dimensions propres à chaque boîte",
+      "category": "Envois",
+      "requester": "Martin Audesse",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans Envois, la création d’une étiquette permet de choisir un format ou des dimensions personnalisées pour chaque boîte. Le récapitulatif affiche les dimensions de chacune avant l’achat."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Feuille de temps par période de paie",
+      "category": "RH",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "L’historique à gauche de la feuille de temps regroupe les heures par périodes de paie de deux semaines, avec un total par période. Les périodes suivent celle du 30 août au 12 septembre 2026."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Vignette d’une pièce jointe remplacée",
+      "category": "Pièces jointes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Quand une image ne s’affichait pas, le message « Fichier introuvable » restait même après remplacement du document. La vignette du nouveau document apparaît maintenant tout de suite et s’ouvre en grand au clic."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Responsable par défaut des tâches du contact",
+      "category": "Contacts",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Lors de la création d’une tâche depuis une fiche contact, vous êtes présélectionné comme responsable. Vous pouvez choisir une autre personne avant de créer la tâche."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Interactions et notes épinglées",
+      "category": "Contacts",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Dans le fil d’un contact, cliquez sur l’épingle d’une interaction ou d’une note pour la garder en haut. Cliquez à nouveau pour la remettre dans l’ordre chronologique."
+        },
+        {
+          "type": "fixed",
+          "text": "Retirer l’épingle d’une ancienne interaction préserve le chargement de la suite du fil, sans entrée oubliée ni doublon."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Documents rapatriés d’une fiche liée",
+      "category": "Application",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Un champ qui va chercher les documents d’une fiche liée affiche maintenant leurs miniatures, et non plus une suite de caractères illisible."
+        },
+        {
+          "type": "improved",
+          "text": "Cliquer la miniature d’un document ouvre le document en grand dans la page, au lieu d’un nouvel onglet."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Pièces jointes : aperçu au lieu du téléchargement",
+      "category": "Application",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans les pièces jointes d’une fiche, chaque image ou PDF montre son contenu en miniature et s’ouvre en grand d’un clic sur la miniature ou sur le nom. Le téléchargement reste disponible par la flèche."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Ouverture des fiches après une mise à jour",
+      "category": "Application",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les onglets déjà ouverts continuent de charger les fiches après une mise à jour, notamment l’adresse de la ferme depuis une commande. Les onglets plus anciens peuvent se recharger automatiquement en conservant la session et la page."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Entreprise affichée une seule fois sur les commandes",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le champ Entreprise redondant est retiré de la fiche commande. L'entreprise reste accessible dans le champ déjà présent plus haut."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-21",
+      "title": "Récupération des onglets restés blancs",
+      "category": "Application",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Si Boréal reste vide au retour sur un onglet, une récupération automatique tente de rétablir la page en conservant la session. Les erreurs d’affichage sont mieux prises en charge."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Les comptes Venn arrivent tout seuls",
+      "category": "Comptabilité",
+      "requester": "Antoine Lambert",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Venn se branche dans Connecteurs : coller la clé, « Tester la connexion » affiche les deux comptes avec leurs soldes, puis on relie chacun à son compte de l'ERP."
+        },
+        {
+          "type": "new",
+          "text": "Les mouvements Venn CAD et Venn USD se lisent chaque nuit et apparaissent dans le rapprochement comme ceux de la BNC — plus rien à télécharger à la main."
+        },
+        {
+          "type": "new",
+          "text": "Les montants en dollars US restent en dollars US : aucune conversion à l'import, et aucune écriture n'est publiée toute seule."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Une ligne de facture peut payer plusieurs achats",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "À la lecture d'une facture, une ligne qui couvre plusieurs achats (moteur gauche + droit, pièce « incluse » dans une autre) se coupe en une ligne par achat — chacun porte son code et peut être réceptionné."
+        },
+        {
+          "type": "new",
+          "text": "Le montant de la ligne est réparti entre les achats au prorata de la valeur des pièces ; il reste modifiable avant la publication."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Marge de crédit : le capital et les intérêts se séparent tout seuls",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Un remboursement automatique de la marge ouvre son écriture déjà coupée : le capital sur la marge, les intérêts en charge."
+        },
+        {
+          "type": "fixed",
+          "text": "Le solde de la marge ne bouge plus que du capital remboursé ou avancé ; les intérêts ne s'y ajoutent plus."
+        },
+        {
+          "type": "fixed",
+          "text": "Le remboursement du 1er septembre est corrigé : 19 000 $ de capital et 686,89 $ d'intérêts."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Les paiements en dollars américains ne passent plus pour non comptabilisés",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une sortie payée en dollars américains à partir d'un compte canadien est maintenant reconnue dans QuickBooks : le rapprochement propose l'écriture à confirmer, taux de change à l'appui."
+        },
+        {
+          "type": "improved",
+          "text": "Le lien n'est proposé que si le montant de l'écriture multiplié par son taux tombe au cent près sur la ligne du relevé et que le fournisseur concorde."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Les actions d'un document restent en haut",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dans l'extracteur, Relire, Marquer non lu, Archiver et Supprimer restent visibles en haut de la fiche même quand on descend."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Rapprochement : couper une écriture, en faire une règle",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "En comptabilisant une ligne, on peut couper le montant entre plusieurs comptes de dépense, avec le reste à répartir affiché."
+        },
+        {
+          "type": "improved",
+          "text": "« Toujours faire ça pour ce libellé » retient maintenant le fournisseur, le compte et la taxe, et s'offre aussi sur une ligne déjà comptabilisée."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Plus de faux écarts sur une facture",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "La facture Bell Mobilité n'annonce plus « 2 écarts avec la facture » : une facture de téléphonie n'est plus lue comme une facture de transport."
+        },
+        {
+          "type": "improved",
+          "text": "Une taxe que le papier n'imprime pas n'est plus comptée comme une taxe à zéro, donc plus jamais signalée comme un écart."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Fichier de suivi des transactions : ménage et couleurs",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les 335 lignes « GUILLAUME LAMBERT » à 0,00 $ de l'onglet Visa USD sont retirées, et une ligne que le fichier ne saurait pas relire n'y est plus ajoutée."
+        },
+        {
+          "type": "fixed",
+          "text": "Une transaction ajoutée se place du côté où l'onglet s'allonge, même si de vieilles lignes y sont rangées dans l'autre sens."
+        },
+        {
+          "type": "improved",
+          "text": "Les lignes d'avant juillet 2026 reçoivent aussi la couleur de leur statut, sans que rien d'ancien soit ajouté ni recalculé."
+        },
+        {
+          "type": "improved",
+          "text": "Tout ce qui date d'avant juin 2026 est vert dans le fichier de suivi : ces exercices sont clos."
+        },
+        {
+          "type": "improved",
+          "text": "Le rapprochement ne signale plus d'anomalie sur une transaction d'avant juin 2026."
+        },
+        {
+          "type": "improved",
+          "text": "Les repères de couleur posés à la main à droite des transactions ne bougent pas, et une transaction ajoutée n'en reçoit aucun."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Une collecte en panne se voit",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Le tableau de bord comptabilité annonce les portails qui ne rapportent plus de factures, et ce qu'il y a à faire."
+        },
+        {
+          "type": "improved",
+          "text": "Une facture descendue pour un débit précis est lue en sachant déjà le fournisseur, le montant et la date passés à la banque."
+        },
+        {
+          "type": "improved",
+          "text": "Une facture déjà débitée se comptabilise en dépense, plus en facture à payer."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "La date d'une facture suit son débit",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Dès qu'une facture est rattachée à une ligne de relevé, sa date devient celle où l'argent est sorti du compte — la facture Bell Mobilité du 13 septembre est datée du 17, comme son débit."
+        },
+        {
+          "type": "improved",
+          "text": "La date imprimée sur le document est conservée à part et sert encore à confronter le papier au dossier ; 24 factures déjà rattachées ont été recalées."
+        },
+        {
+          "type": "new",
+          "text": "La carte Contrôles reprend aussi les avertissements de la page Rapprochement : « comptabilisée mais introuvable dans QuickBooks », « écriture QuickBooks sans ligne au relevé » et « une transaction manque au relevé »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Les sorties sans facture, dans le rapprochement",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Une pastille « sans facture » dans le rapprochement bancaire ne garde que les sorties d'argent sans pièce justificative, la plus vieille en tête."
+        },
+        {
+          "type": "new",
+          "text": "Les sorties dont le fournisseur n'est pas reconnu au relevé y figurent aussi — elles n'apparaissaient nulle part avant."
+        },
+        {
+          "type": "improved",
+          "text": "Un débit importé attend sa facture tout de suite, sans attendre la nuit."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Cadrer les serres et lire leur surface",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Sur une fiche d'entreprise, le bouton « Serres » cadre la vue du ciel sur les bâtiments et annonce leur nombre et leur surface totale."
+        },
+        {
+          "type": "improved",
+          "text": "Sans relevé disponible pour ce site, la vue zoome simplement sur l'adresse."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Les sessions des portails partent toutes seules",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Un module de navigateur (Edge ou Chrome) envoie à l'ERP la session d'un portail dès qu'on s'y connecte, sans rien cliquer."
+        },
+        {
+          "type": "new",
+          "text": "Son bouton lance la collecte de tous les portails d'un coup quand on la veut tout de suite."
+        },
+        {
+          "type": "improved",
+          "text": "Le module envoie aussi ce que la page garde en mémoire, sans quoi MonBell retombait sur son écran de connexion."
+        },
+        {
+          "type": "new",
+          "text": "Le module et son jeton se récupèrent depuis la page Collecte de factures."
+        },
+        {
+          "type": "fixed",
+          "text": "Bell et DigiKey ne tentent plus une connexion que leur case « je ne suis pas un robot » rend impossible : ils réclament une session et le disent."
+        },
+        {
+          "type": "fixed",
+          "text": "La collecte Amazon repart, et FedEx dit maintenant clairement quand le portail refuse la connexion automatique."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Voir les serres du ciel",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La carte des clients bascule en vue satellite et zoome jusqu'au toit des serres."
+        },
+        {
+          "type": "new",
+          "text": "Chaque fiche d'entreprise située montre son site vu du ciel, avec une échelle pour juger la surface des serres."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Rapprochement : la pièce déjà lue se retrouve toute seule",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Une sortie d'argent propose maintenant la facture déjà lue dans l'extraction de données ou saisie en achat, même si la date est loin, la devise différente ou le montant arrondi."
+        },
+        {
+          "type": "new",
+          "text": "Chaque pièce proposée dit pourquoi elle est là — fournisseur au relevé, numéro, montant, date — et une pastille dit à quel point c'est certain."
+        },
+        {
+          "type": "new",
+          "text": "Quand le fournisseur est reconnu au relevé et qu'aucune autre pièce ne lui ressemble, la ligne s'attache toute seule ; rien n'est publié dans QuickBooks pour autant."
+        },
+        {
+          "type": "new",
+          "text": "Quand deux pièces se ressemblent, la page le dit et laisse chercher la bonne par fournisseur ou par numéro."
+        },
+        {
+          "type": "improved",
+          "text": "Une ligne déjà verte qui gagne sa pièce reste verte."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Carte : les serres à conquérir",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "La carte montre en violet les serres de l'annuaire public des Producteurs en serre du Québec qui ne sont pas déjà des fiches chez nous, avec leur téléphone, courriel et site."
+        },
+        {
+          "type": "new",
+          "text": "Le bouton « Annuaire » relit la liste et retire celles devenues des fiches maison."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Contrôles comptables",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une ligne du relevé déjà rattachée à son écriture QuickBooks ne peut plus être affichée comme absente de QuickBooks — les frais mensuels en dollars US et les paiements de la Visa étaient signalés à tort."
+        },
+        {
+          "type": "new",
+          "text": "Nouvelle carte « Contrôles » sur le tableau de bord comptabilité : même mouvement comptabilisé deux fois, ligne importée en double, lien vers une écriture disparue, type d'écriture illisible, solde qui ne tombe pas sur QuickBooks."
+        },
+        {
+          "type": "new",
+          "text": "« Écarter » retire définitivement une constatation, et une constatation qui disparaît se règle toute seule ; la vérification repasse chaque jour et se lance aussi d'un clic."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Carte : le menu de gauche repasse devant",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Les menus de la barre de gauche s'affichent devant la carte des clients au lieu de disparaître derrière."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Carte des clients : « Opportunités »",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La couche ambre de la carte s'appelle maintenant « Opportunités »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Cartes de paiement reconnues sur les factures",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Les 4 derniers chiffres imprimés sur une facture désignent maintenant le compte qui a payé."
+        },
+        {
+          "type": "new",
+          "text": "Une facture payée par un employé avec sa carte personnelle part sur son compte « rembourser à »."
+        },
+        {
+          "type": "new",
+          "text": "Les cartes se gèrent dans Espace finance → Cartes de paiement."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Factures Amazon : reconnues, et un seul fournisseur Amazon",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Une facture Amazon vendue par un marchand tiers est maintenant classée sous Amazon.ca au lieu du nom du marchand."
+        },
+        {
+          "type": "improved",
+          "text": "La lecture d'un document regarde aussi son allure — logo, couleurs, mise en page — pour reconnaître le fournisseur quand son nom n'est écrit nulle part."
+        },
+        {
+          "type": "fixed",
+          "text": "Plus aucun fournisseur Amazon en double n'est créé à la publication : tout retombe sur Amazon.ca, et Amazon Web Services reste à part."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Menu de gauche : les sous-menus ne fuient plus",
+      "category": "Navigation",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "On peut aller en diagonale du menu vers un sous-menu sans qu'il se referme en chemin, y compris sur trois niveaux."
+        },
+        {
+          "type": "fixed",
+          "text": "Une seule liste de sous-sections reste ouverte à la fois, celle qu'on vise."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Rapprochement : QuickBooks interrogé toutes les 30 secondes",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Ce qui est comptabilisé dans QuickBooks apparaît maintenant dans le rapprochement en moins d'une minute, sans clic et sans attendre le passage de l'heure."
+        },
+        {
+          "type": "fixed",
+          "text": "L'écart annoncé sur la facture Novo Express 252974 n'existait pas : les frais imprimés sur deux colonnes sont maintenant tous lus, la facture s'affiche conforme."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Facture de transport : la comparaison avec la facture est lisible",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "fixed",
+          "text": "Le tableau « Facture | Dossier » d'un reçu ouvert en panneau ne se chevauche plus : une ligne par montant comparé."
+        },
+        {
+          "type": "improved",
+          "text": "Quand il n'y a qu'un écart, le bandeau le nomme (ex. « Écart — Sous-total ») au lieu de dire seulement « 1 écart »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Rapprochement : marquer une transaction à faire réviser par Michel",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Une colonne « X » en tête du relevé permet de marquer une transaction comme à réviser par Michel."
+        },
+        {
+          "type": "new",
+          "text": "La marque se recopie dans la colonne « X » du fichier de suivi, à la place où elle a toujours été, et disparaît du fichier quand on la retire."
+        },
+        {
+          "type": "new",
+          "text": "Les X déjà écrits dans le fichier remontent dans la page au premier passage."
+        },
+        {
+          "type": "fixed",
+          "text": "La colonne « X » s'affiche même si on avait déjà réglé les colonnes du relevé auparavant."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Carte des clients",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Une carte du monde montre où sont les clients (350 situés), les entreprises en démarchage et le reste du répertoire, chacun d'une couleur, avec un clic sur un point pour ouvrir la fiche."
+        },
+        {
+          "type": "new",
+          "text": "Le bouton « Situer » complète les coordonnées manquantes ; elle se trouve dans « Tests – Antoine », sous « Carte des clients »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Encaissement client : la bonne facture, et son PDF dans l'écriture",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Un virement client propose maintenant la facture en se fiant au nom du payeur écrit au relevé, au numéro et à la date, pas seulement au montant."
+        },
+        {
+          "type": "new",
+          "text": "Chaque proposition dit ce qui la désigne et son degré de certitude ; quand plusieurs factures se ressemblent, la page le signale au lieu de choisir."
+        },
+        {
+          "type": "new",
+          "text": "Une recherche par nom ou numéro permet de désigner soi-même la facture quand aucune proposition ne convient."
+        },
+        {
+          "type": "new",
+          "text": "« Marquer payée » joint le PDF de la facture à l'écriture dans QuickBooks."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Même vocabulaire dans toute l'app",
+      "category": "Général",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "« QB » s'écrit QuickBooks partout, et l'action est toujours « Publier dans QuickBooks » — y compris automations, factures, reçus, paies, dettes et comptes prépayés."
+        },
+        {
+          "type": "improved",
+          "text": "« Mapping » devient « correspondance », « sync » devient « synchronisation », et « token » devient « accès » ou « clé »."
+        },
+        {
+          "type": "improved",
+          "text": "Le mot payout a disparu au profit de « versement », et « dashboard » de « tableau de bord »."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Vocabulaire uniformisé dans l'espace finance",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "« QB » est écrit QuickBooks partout, et l'action s'appelle toujours « Publier dans QuickBooks » (avant : pousser, publier sur, push)."
+        },
+        {
+          "type": "improved",
+          "text": "La page « Stripe Payouts » devient « Versements Stripe », et le mot payout disparaît de l'interface."
+        },
+        {
+          "type": "improved",
+          "text": "Les messages d'échec disent ce qui n'a pas marché (« La publication dans QuickBooks a échoué ») au lieu d'un code technique."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Apparier dans Boréal publie dans QuickBooks",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Lier une ligne de relevé à une facture ou un reçu publie l'écriture dans QuickBooks dans la foulée."
+        },
+        {
+          "type": "new",
+          "text": "Une ligne déjà appariée dont l'écriture n'est jamais partie affiche « Comptabiliser »."
+        },
+        {
+          "type": "improved",
+          "text": "Si QuickBooks refuse, le lien reste posé et le message l'explique sur la ligne."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Rapprochement : une seule vue",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le bascule « QuickBooks / Relevé » disparaît : le relevé porte maintenant tous les gestes."
+        },
+        {
+          "type": "new",
+          "text": "Chaque ligne affiche le geste qu'elle attend — Publier, Apparier, Lier le virement — et s'ouvre dessus."
+        },
+        {
+          "type": "new",
+          "text": "Le lien « Règles » est à côté des pastilles de statut."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Vue QuickBooks : apparier et lier un virement",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "En vue QuickBooks, chaque ligne affiche le geste qu'elle attend : lier le virement de l'autre compte, apparier une facture, ou publier l'écriture préparée."
+        },
+        {
+          "type": "new",
+          "text": "La ligne dépliée s'ouvre déjà sur ce geste, et les autres restent à un clic — comptabiliser, apparier, virement interne, exclure."
+        },
+        {
+          "type": "improved",
+          "text": "Un virement entre deux comptes se reconnaît maintenant tout seul : la ligne miroir est proposée avec son compte."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Paie : début de période lu dans Airtable",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "La comptabilisation d'une paie prend le début de période directement dans « Période de paie » d'Airtable au lieu de le deviner."
+        },
+        {
+          "type": "improved",
+          "text": "L'avertissement ne s'affiche plus que si Airtable n'a rien à dire sur la période."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Rapprochement : vue QuickBooks",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "Le rapprochement bancaire s'affiche maintenant au choix en vue relevé ou en vue QuickBooks, avec les onglets Pour révision, Comptabilisé, Rapproché et Exclu."
+        },
+        {
+          "type": "new",
+          "text": "En vue QuickBooks, un clic sur une ligne ouvre juste en dessous l'écriture telle qu'elle partira — fournisseur, compte, taxe, mémo — modifiable, avec son bouton de publication."
+        },
+        {
+          "type": "improved",
+          "text": "Le lien de la page retient le compte et la vue choisis."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Solde de la projection relu aux 10 minutes",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Le solde du compte BNC utilisé par la projection de trésorerie est relu à la banque toutes les 10 minutes au lieu de 30."
+        },
+        {
+          "type": "fixed",
+          "text": "La mention sous le solde affiche maintenant la dernière lecture à la banque, et non la dernière fois que le montant a changé : un solde stable ne s'affiche plus comme vieux de six heures."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Lignes comptabilisées en jaune",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "improved",
+          "text": "Au rapprochement bancaire, une ligne comptabilisée mais pas encore publiée se voit d'un coup d'œil : son fond est franchement jaune au lieu d'un orange proche du rouge des lignes à traiter."
+        }
+      ]
+    },
+    {
+      "date": "2026-09-19",
+      "title": "Mot de passe oublié",
+      "category": "Connexion",
+      "requester": "Charles",
+      "changes": [
+        {
+          "type": "new",
+          "text": "L’écran de connexion offre « Mot de passe ou identifiant oublié ? » : on entre son courriel et on reçoit un lien par courriel."
+        },
+        {
+          "type": "new",
+          "text": "Le courriel rappelle l’identifiant et permet de choisir un nouveau mot de passe, valable une heure."
+        }
+      ]
+    },
+    {
       "date": "2026-09-15",
       "title": "Coût unitaire actuel supprimé",
       "category": "Commandes",

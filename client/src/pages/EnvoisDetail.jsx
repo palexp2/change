@@ -584,6 +584,7 @@ export default function EnvoisDetail({ recordId, onClose }) {
 
       <Modal isOpen={showLabel} onClose={() => { setShowLabel(false); load(); endGuided() }} title="Créer une étiquette postale">
         <NovoxpressLabelModal
+          individualBoxes
           envoi={envoi}
           orderItemsTotalWeight={
             (envoi.order_items || [])

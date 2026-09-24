@@ -1,24 +1,11 @@
-import jwt from 'jsonwebtoken';
-import { JWT_SECRET } from '../config/secrets.js';
+import { hasRole } from '../../../shared/roles.mjs'
+import { verifySession } from '../services/sessionSecurity.js';
 import { requestContext } from '../utils/requestContext.js';
-import db from '../db/database.js';
-
-// Le rôle encodé dans le JWT (10 ans) devient périmé dès qu'on modifie le
-// compte : on relit donc le rôle courant en DB à chaque requête. Fallback sur
-// le payload si le user n'existe plus (tokens de test signés sans record).
-function currentRole(payload) {
-  try {
-    const row = db.prepare('SELECT role FROM users WHERE id = ?').get(payload.id);
-    return row?.role || payload.role;
-  } catch {
-    return payload.role;
-  }
-}
 
 export function requireAuth(req, res, next) {
   const authHeader = req.headers['authorization'];
   // Accept token as query param for iframe/embed contexts (e.g. PDF viewer)
-  const queryToken = req.query.token;
+  const queryToken = ['GET', 'HEAD'].includes(req.method) && typeof req.query.token === 'string' ? req.query.token : null;
   if (!authHeader && !queryToken) {
     return res.status(401).json({ error: 'Authentication required' });
   }
@@ -26,14 +13,9 @@ export function requireAuth(req, res, next) {
     return res.status(401).json({ error: 'Authentication required' });
   }
 
-  const token = queryToken || authHeader.slice(7);
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : queryToken;
   try {
-    const payload = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-    req.user = {
-      id: payload.id,
-      role: currentRole(payload),
-      name: payload.name,
-    };
+    req.user = verifySession(token);
     // Propage l'utilisateur dans le contexte async de toute la suite de la requête
     // (handlers + services), pour que les écritures QuickBooks soient attribuées à
     // la bonne personne sans threader req.user à travers chaque appel.
@@ -45,22 +27,26 @@ export function requireAuth(req, res, next) {
 
 export function requireAdmin(req, res, next) {
   requireAuth(req, res, () => {
-    if (req.user.role !== 'admin') {
+    if (!hasRole(req.user, 'admin')) {
       return res.status(403).json({ error: 'Admin access required' });
     }
     next();
   });
 }
 
-export function requireHROrAdmin(req, res, next) {
+export function requireHR(req, res, next) {
   requireAuth(req, res, () => {
-    if (!['admin', 'rh'].includes(req.user.role)) {
+    if (!hasRole(req.user, 'rh')) {
       return res.status(403).json({ error: 'Accès RH requis' });
     }
     next();
   });
 }
 
-export function isHROrAdmin(user) {
-  return !!user && ['admin', 'rh'].includes(user.role);
+export function isHR(user) {
+  return !!user && hasRole(user, 'rh');
 }
+
+// Compatibility names; authorization is now the explicit RH grant only.
+export const requireHROrAdmin = requireHR
+export const isHROrAdmin = isHR

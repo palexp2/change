@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import EmailAttachments from '../components/EmailAttachments.jsx'
@@ -352,7 +352,7 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
   )
 
   return (
-    <Modal title={isEdit ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={onClose}>
+    <Modal isOpen title={isEdit ? 'Modifier la tâche' : 'Nouvelle tâche'} onClose={onClose}>
       {isEdit ? (
         <div className="space-y-4">
           {fields}
@@ -486,7 +486,7 @@ export default function ContactDetail({ recordId, onClose }) {
   const id = recordId
   // « Suppression permise » : case du mode de personnalisation de la fiche.
   const canDelete = useRecordDeleteAllowed('contacts')
-  const { user: _user } = useAuth()
+  const { user } = useAuth()
   const confirm = useConfirm()
   const { addToast } = useToast()
   const undoableDelete = useUndoableDelete()
@@ -494,6 +494,7 @@ export default function ContactDetail({ recordId, onClose }) {
   const [interactions, setInteractions] = useState([])
   const [companies, setCompanies] = useState([])
   const [loadingMore, setLoadingMore] = useState(false)
+  const interactionRequest = useRef(false)
   const [total, setTotal] = useState(0)
   const [offset, setOffset] = useState(0)
   const [fieldSaving, setFieldSaving] = useState({})
@@ -549,23 +550,42 @@ export default function ContactDetail({ recordId, onClose }) {
   }, [])
 
   async function loadMore() {
+    if (interactionRequest.current) return
+    interactionRequest.current = true
     setLoadingMore(true)
     try {
       const res = await api.interactions.list({ contact_id: id, limit: LIMIT, offset, include: 'heavy' })
       setInteractions(prev => [...prev, ...(res.interactions || [])])
       setOffset(o => o + LIMIT)
+    } catch {
+      addToast({ message: 'Impossible de charger la suite du fil', type: 'error' })
     } finally {
+      interactionRequest.current = false
       setLoadingMore(false)
     }
   }
 
   async function togglePinInteraction(item) {
+    if (interactionRequest.current) return
+    interactionRequest.current = true
+    setLoadingMore(true)
+    let saved = false
     try {
       const updated = await api.interactions.pin(item.id, !item.pinned)
+      saved = true
       setInteractions(prev => [...prev].map(x => x.id === item.id ? { ...x, ...updated } : x)
         .sort((a, b) => (b.pinned - a.pinned) || (b.timestamp || '').localeCompare(a.timestamp || '')))
+      // Désépingler une ancienne entrée peut la repousser hors des pages déjà
+      // chargées. Relire cette fenêtre évite de sauter une entrée à la page suivante.
+      const res = await api.interactions.list({ contact_id: id, limit: offset || LIMIT, offset: 0, include: 'heavy' })
+      setInteractions(res.interactions || [])
+      setTotal(res.total || 0)
+      setOffset(res.interactions?.length || 0)
     } catch {
-      addToast({ message: "Échec de l'épinglage", type: 'error' })
+      addToast({ message: saved ? 'Épinglage enregistré. Actualisez le fil.' : "Échec de l'épinglage", type: 'error' })
+    } finally {
+      interactionRequest.current = false
+      setLoadingMore(false)
     }
   }
 
@@ -624,7 +644,7 @@ export default function ContactDetail({ recordId, onClose }) {
 
   function openNewTask() {
     setEditingTask(null)
-    setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' })
+    setTaskForm({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: user?.id || '', notes: '' })
     setShowTaskModal(true)
   }
 

@@ -1,8 +1,8 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { useSearchParams, useLocation, useNavigate, useHref } from 'react-router-dom'
 import api from './api.js'
 import { useAuth } from './auth.jsx'
-import { applyFilter, applyFilterGroup } from './tableFilters.js'
+import { applyFilter, applyFilterGroup, countFilterRules } from './tableFilters.js'
 import { usePeekFieldEdit } from './detailFieldLayout.jsx'
 import { getSubsections } from './navSubsections.js'
 
@@ -10,6 +10,11 @@ export { applyFilter, applyFilterGroup }
 
 function norm(s) {
   return String(s ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+}
+
+function matchesFilters(row, filters, ctx) {
+  if (Array.isArray(filters)) return filters.every(f => applyFilter(row, f, ctx))
+  return applyFilterGroup(row, filters, ctx)
 }
 // Collator précompilé — ~10× plus rapide que String.prototype.localeCompare
 // dans une boucle de tri (qui recompile le collator à chaque appel). Critique
@@ -53,7 +58,7 @@ function mainViewTableFor(pathname) {
   return desc?.kind === 'views' ? desc.table : null
 }
 
-export function useTableView({ table, columns, data, searchFields = [], forceAllView = false }) {
+export function useTableView({ table, columns, data, searchFields = [], forceAllView = false, searchAcrossViews = false, loading = false }) {
   const [searchParams] = useSearchParams()
   const { user } = useAuth()
   const userName = user?.name || null
@@ -115,7 +120,7 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [table, reloadKey])
 
-  function setActiveViewId(id, currentViews, currentConfig) {
+  const setActiveViewId = useCallback((id, currentViews, currentConfig) => {
     const vList = currentViews ?? views
     const cfg = currentConfig ?? adminConfig
     // Persist current view's state in local array before switching
@@ -136,7 +141,7 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
         setFilters(view.filters || [])
       }
     }
-  }
+  }, [views, adminConfig, activeViewId, filters, sorts, table])
 
   // `?vue=<id>` qui change alors que la table est déjà montée (clic dans le
   // sous-menu de la sidebar depuis la page elle-même) : on suit l'URL.
@@ -229,24 +234,44 @@ export function useTableView({ table, columns, data, searchFields = [], forceAll
   // useMemo à chaque render parent et, combiné à `onFilteredDataChange`, crée
   // une boucle de re-render coûteuse sur les grandes tables (14k+ contacts).
   const searchFieldsKey = searchFields.join('|')
-  const filteredData = useMemo(() => {
-    let result = data
+  const searchedData = useMemo(() => {
     if (search && searchFields.length > 0) {
       const q = norm(search)
-      result = result.filter(row => searchFields.some(f => norm(row[f]).includes(q)))
+      return data.filter(row => searchFields.some(f => norm(row[f]).includes(q)))
     }
+    return data
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, search, searchFieldsKey])
+
+  const filteredData = useMemo(() => {
     const ctx = { userName }
-    // Support both flat array format and nested group format
-    if (filters?.conjunction && filters?.rules) {
-      result = result.filter(row => applyFilterGroup(row, filters, ctx))
-    } else if (Array.isArray(filters) && filters.length > 0) {
-      result = result.filter(row => filters.every(f => applyFilter(row, f, ctx)))
-    }
+    let result = searchedData.filter(row => matchesFilters(row, filters, ctx))
     const colTypes = Object.fromEntries(allColumns.map(c => [c.field, c.type]))
     result = applySort(result, sorts, colTypes)
     return result
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data, search, searchFieldsKey, filters, sorts, userName, allColumns])
+  }, [searchedData, filters, sorts, userName, allColumns])
+
+  // Opt-in de page : une recherche sans résultat peut changer de vue, sans
+  // effacer ses filtres enregistrés. Une seule tentative par saisie, pour que
+  // l'utilisateur puisse ensuite choisir librement une autre vue.
+  const handledSearch = useRef('')
+  useEffect(() => {
+    if (!search.trim()) { handledSearch.current = ''; return }
+    if (!searchAcrossViews || forceAllView || loading || !configReady || handledSearch.current === search) return
+    const timer = setTimeout(() => {
+      handledSearch.current = search
+      if (filteredData.length || !searchedData.length) return
+      const candidates = [...views]
+        .filter(v => v.id !== activeViewId)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+      const ctx = { userName }
+      // Préférer la vue générale, puis la première vue contenant un résultat.
+      const target = candidates.find(v => countFilterRules(v.filters) === 0)
+        || candidates.find(v => searchedData.some(row => matchesFilters(row, v.filters, ctx)))
+      setActiveViewId(target?.id ?? null)
+    }, 350)
+    return () => clearTimeout(timer)
+  }, [search, searchAcrossViews, forceAllView, loading, configReady, filteredData, searchedData, views, activeViewId, userName, setActiveViewId])
 
   function reorderViews(newViews) {
     const realViews = newViews.map((v, i) => ({ ...v, sort_order: i }))

@@ -1,9 +1,10 @@
+import { hasRole, rolesOf } from '../../../shared/roles.mjs'
 import { useState, useEffect, useRef, useLayoutEffect, useMemo, createContext, useContext } from 'react'
 import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import {
   Settings,
   ChevronRight, ChevronDown, LogOut, Menu, X,
-  Search, ExternalLink, Sparkles, ListChecks,
+  Search, ExternalLink,
   GripVertical, Bookmark, BookmarkPlus, BookmarkMinus,
 } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
@@ -22,8 +23,8 @@ import { KeyboardShortcutsModal } from './KeyboardShortcutsModal.jsx'
 import { GlobalSearch as CRMSearch } from './GlobalSearch.jsx'
 import { FeedbackFab } from './FeedbackFab.jsx'
 import ThemeToggle from './ThemeToggle.jsx'
-import { useTravauxQuick } from './TravauxQuickPanel.jsx'
 import { Logo } from './Logo.jsx'
+import { AiUsageRail } from './AiUsageRail.jsx'
 
 // Raccourcis clavier de navigation globaux — source unique de vérité.
 // Le handler clavier de Layout construit sa table de routage à partir d'ici,
@@ -32,8 +33,8 @@ import { Logo } from './Logo.jsx'
 export const NAV_SHORTCUTS = [
   { key: 'd', label: 'Tableau de bord', to: '/dashboard' },
   { key: 't', label: 'Feuille de temps', to: '/feuille-de-temps' },
-  { key: 'b', label: 'Tickets', to: '/tickets' },
-  { key: 'p', label: 'Pipeline', to: '/pipeline' },
+  { key: 'b', label: 'Billets', to: '/tickets' },
+  { key: 'p', label: 'Projets', to: '/pipeline' },
   { key: 'c', label: 'Commandes', to: '/orders' },
 ]
 
@@ -123,6 +124,73 @@ function NavItem({ to, href, external, icon: Icon, label, compact = false, badge
 // son parent, qui compte les rectangles de ses descendants comme « dedans ».
 const FlyoutChainContext = createContext(null)
 
+// ── Couloir d'intention ─────────────────────────────────────────────────────
+// Un panneau s'ouvre à droite de la ligne survolée : pour l'atteindre, la
+// souris part en diagonale et traverse les lignes voisines. Chaque ligne
+// traversée ouvrait son propre sous-menu et refermait celui qu'on visait —
+// impossible d'attraper une entrée basse d'un menu profond sans longer le bord
+// au pixel près.
+//
+// On regarde donc où va la souris, pas seulement où elle est : tant que sa
+// trajectoire pointe vers un panneau ouvert, ce panneau reste ouvert et les
+// voisines n'ouvrent pas le leur. Dès qu'elle s'arrête ou change de cap, le
+// survol reprend ses droits.
+const aimTargets = new Set() // () => DOMRect|null, un par panneau ouvert
+
+// Marge verticale autour du panneau visé, et distance au-delà de laquelle on
+// ne considère plus viser quoi que ce soit.
+const AIM_MARGIN = 28
+const AIM_REACH = 500
+
+let lastPointer = null
+let aimState = { since: 0 }
+
+function trackPointer(e) {
+  const prev = lastPointer
+  lastPointer = { x: e.clientX, y: e.clientY, dx: prev ? e.clientX - prev.x : 0, dy: prev ? e.clientY - prev.y : 0 }
+}
+if (typeof document !== 'undefined') document.addEventListener('mousemove', trackPointer, true)
+
+/** La souris se dirige-t-elle vers un panneau ouvert (sans y être encore) ? */
+function pointerAimsAtPanel(skipRect) {
+  const pt = lastPointer
+  if (!pt || Math.abs(pt.dx) < 2) return false
+  for (const getRect of aimTargets) {
+    const r = getRect()
+    if (!r || r === skipRect) continue
+    if (skipRect && r.left === skipRect.left && r.top === skipRect.top) continue
+    if (pt.x >= r.left && pt.x <= r.right && pt.y >= r.top && pt.y <= r.bottom) continue
+    // Le panneau est-il devant, dans le sens du déplacement ?
+    const edge = pt.dx > 0 ? r.left : r.right
+    const reach = edge - pt.x
+    if (Math.sign(reach) !== Math.sign(pt.dx) || Math.abs(reach) > AIM_REACH) continue
+    const yAtEdge = pt.y + (pt.dy / pt.dx) * reach
+    if (yAtEdge >= r.top - AIM_MARGIN && yAtEdge <= r.bottom + AIM_MARGIN) return true
+  }
+  return false
+}
+
+// Le couloir ne doit pas devenir un blocage : au-delà de ce délai passé à
+// « viser » sans arriver, on rend la main au survol normal.
+const AIM_GRACE_MS = 800
+
+function aimHoldsOpen() {
+  if (!pointerAimsAtPanel()) { aimState.since = 0; return false }
+  if (!aimState.since) aimState.since = Date.now()
+  return Date.now() - aimState.since < AIM_GRACE_MS
+}
+
+/** Un panneau ouvert s'annonce au couloir d'intention le temps de sa vie. */
+function useAimTarget(panelRef, open) {
+  useEffect(() => {
+    if (!open) return
+    const getRect = () => panelRef.current?.getBoundingClientRect() || null
+    aimTargets.add(getRect)
+    return () => aimTargets.delete(getRect)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open])
+}
+
 // ── Un seul menu de section à la fois ───────────────────────────────────────
 // Un panneau s'ouvre dès que la souris touche son icône, mais ne se referme que
 // lorsqu'elle s'éloigne franchement (tolérance de quelques pixels autour de
@@ -150,23 +218,45 @@ function useExclusiveRailMenu(open, close) {
   }, [open])
 }
 
-function useFlyoutChain(panelRef, open) {
+function useFlyoutChain(panelRef, open, close) {
   const parent = useContext(FlyoutChainContext)
   const childRectsRef = useRef(new Set())
+  // Un seul sous-menu ouvert par panneau : le dernier entré chasse le précédent.
+  // Sans ça, le couloir d'intention laisserait s'empiler les panneaux des
+  // lignes traversées en chemin.
+  const claimedRef = useRef(null)
+  const closeRef = useRef(close)
+  closeRef.current = close
   const chain = useMemo(() => ({
     add: (fn) => childRectsRef.current.add(fn),
     remove: (fn) => childRectsRef.current.delete(fn),
+    claim: (fn) => {
+      const previous = claimedRef.current
+      claimedRef.current = fn
+      if (previous && previous !== fn) previous()
+    },
+    release: (fn) => { if (claimedRef.current === fn) claimedRef.current = null },
   }), [])
+
+  // Un panneau annonce à son parent SON rectangle et ceux de sa descendance :
+  // sinon le grand-parent se croit abandonné dès qu'on entre dans un petit-fils
+  // et referme tout l'arbre sous le curseur.
+  const childRects = () => [...childRectsRef.current]
+    .flatMap(fn => { const v = fn(); return Array.isArray(v) ? v : [v] })
+    .filter(Boolean)
 
   useEffect(() => {
     if (!parent || !open) return
-    const getRect = () => panelRef.current?.getBoundingClientRect()
-    parent.add(getRect)
-    return () => parent.remove(getRect)
+    const getRects = () => [panelRef.current?.getBoundingClientRect(), ...childRects()]
+    const closeSelf = () => closeRef.current?.()
+    parent.add(getRects)
+    parent.claim?.(closeSelf)
+    return () => { parent.remove(getRects); parent.release?.(closeSelf) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [parent, open])
 
-  const childRects = () => [...childRectsRef.current].map(fn => fn()).filter(Boolean)
+  useAimTarget(panelRef, open)
+
   return { chain, childRects }
 }
 
@@ -218,6 +308,9 @@ function useFlyoutDismiss({ open, pinned, triggerRef, panelRef, childRects, clos
       const hit = inside(triggerRef.current?.getBoundingClientRect())
         || inside(panelRef.current?.getBoundingClientRect())
         || childRects().some(inside)
+        // La souris a quitté le panneau mais file vers un sous-menu ouvert :
+        // on la laisse arriver (cf. couloir d'intention).
+        || aimHoldsOpen()
       if (hit) {
         if (closeTimer) { clearTimeout(closeTimer); closeTimer = null }
       } else if (!closeTimer) {
@@ -300,7 +393,7 @@ function NavBadge({ item, inRail }) {
   )
 }
 
-function NavRow({ item, variant }) {
+function NavRow({ item, variant, subsections }) {
   const hover = useHoverPrefetch(item.to)
   // Certaines sous-sections sont réservées aux admins (Paramètres).
   const { user } = useAuth()
@@ -309,9 +402,11 @@ function NavRow({ item, variant }) {
   const rowRef = useRef(null)
   const panelRef = useRef(null)
   const location = useLocation()
-  const { chain, childRects } = useFlyoutChain(panelRef, open)
+  const { chain, childRects } = useFlyoutChain(panelRef, open, () => setOpen(false))
   const [pos, seedPos] = useFlyoutPosition(rowRef, panelRef, open)
-  const hasSubsections = !!getSubsections(item.to)
+  // Une page peut fournir ses onglets effectifs (selon le compte, par exemple).
+  const visibleItems = subsections ?? items
+  const hasSubsections = subsections !== undefined ? subsections.length > 0 : !!getSubsections(item.to)
   const inFlyout = variant === 'flyout'
   const inRail = variant === 'rail'
   // Réordonner le rail au glisser-déposer : pendant un glissement de section,
@@ -330,16 +425,20 @@ function NavRow({ item, variant }) {
   function onEnter() {
     hover.onMouseEnter?.()
     if (rootDrag) return
+    // Simple passage : la souris traverse cette ligne en visant un panneau
+    // déjà ouvert. Ouvrir ici le ferait disparaître sous le curseur.
+    if (!open && pointerAimsAtPanel()) return
     if (!hasSubsections) {
       // Dans le rail, le panneau porte le titre : il s'ouvre quand même.
       if (inRail) { seedPos(); setOpen(true) }
       return
     }
     seedPos()
+    if (subsections !== undefined) { setOpen(true); return }
     if (items) { setOpen(true); return }
     if (pendingRef.current) return
     pendingRef.current = true
-    resolveSubsections(item.to, { isAdmin: user?.role === 'admin' }).then(list => {
+    resolveSubsections(item.to, { isAdmin: hasRole(user, 'admin') }).then(list => {
       pendingRef.current = false
       setItems(list)
       setOpen(true)
@@ -385,7 +484,7 @@ function NavRow({ item, variant }) {
         {hasSubsections && !inRail && <ChevronRight size={11} className="flex-shrink-0 opacity-50" />}
       </NavLink>
 
-      {open && (inRail || items?.length > 0) && (
+      {open && (inRail || visibleItems?.length > 0) && (
         <FlyoutChainContext.Provider value={chain}>
           <div
             ref={panelRef}
@@ -394,17 +493,17 @@ function NavRow({ item, variant }) {
             data-testid="nav-subsection-panel"
             data-nav-flyout=""
             data-route={item.to}
-            className={`fixed bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 max-w-72 z-[210] overflow-y-auto ${items?.length ? 'min-w-52' : ''}`}
+            className={`fixed bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 max-w-72 z-[210] overflow-y-auto ${visibleItems?.length ? 'min-w-52' : ''}`}
             style={pos
               ? { top: pos.top, left: pos.left, maxHeight: pos.maxHeight }
               : { top: 0, left: 0, visibility: 'hidden' }}
           >
-            <p className={items?.length
+            <p className={visibleItems?.length
               ? 'px-3 pb-1 text-[10px] font-semibold text-slate-400 uppercase tracking-wider truncate'
               : 'px-3 py-0.5 text-[13px] font-medium text-slate-700 whitespace-nowrap'}>
               {item.label}
             </p>
-            {items?.map(sub => (
+            {visibleItems?.map(sub => (
               <NavLink
                 key={sub.to}
                 to={sub.to}
@@ -464,12 +563,13 @@ function NavFlyoutItem({ icon: Icon, label, groups, to }) {
   const panelRef = useRef(null)
   const touchRef = useRef(false)
   const location = useLocation()
-  const { chain, childRects } = useFlyoutChain(panelRef, open)
+  const { chain, childRects } = useFlyoutChain(panelRef, open, () => { setOpen(false); setPinned(false) })
   const [pos, seedPos] = useFlyoutPosition(triggerRef, panelRef, open)
 
   const isActive = navItemMatches(location.pathname, { flyoutGroups: groups, to })
 
   function openMenu() {
+    if (!open && pointerAimsAtPanel()) return
     seedPos()
     setOpen(true)
   }
@@ -786,8 +886,8 @@ function NavGroup({ group, icon: Icon, items, accent }) {
 // juste à côté — son titre, puis ses pages cliquables. Rien ne se déplie sur
 // place, le contenu de la page ne bouge jamais.
 
-function RailNavLink({ item }) {
-  return <NavRow item={item} variant="rail" />
+function RailNavLink({ item, subsections }) {
+  return <NavRow item={item} variant="rail" subsections={subsections} />
 }
 
 // Lien externe (ex. Admin Chatbot) réduit à son icône.
@@ -814,7 +914,7 @@ function RailGroup({ group, icon: Icon, items, accent }) {
   const panelRef = useRef(null)
   const location = useLocation()
   const drag = useContext(NavReorderContext)?.drag
-  const { chain, childRects } = useFlyoutChain(panelRef, open)
+  const { chain, childRects } = useFlyoutChain(panelRef, open, () => { setOpen(false); setPinned(false) })
   const [pos, seedPos] = useFlyoutPosition(triggerRef, panelRef, open)
 
   const isActive = items.some(item => navItemMatches(location.pathname, item))
@@ -973,7 +1073,7 @@ function RailBookmarks() {
   const triggerRef = useRef(null)
   const panelRef = useRef(null)
   const location = useLocation()
-  const { chain, childRects } = useFlyoutChain(panelRef, open)
+  const { chain, childRects } = useFlyoutChain(panelRef, open, () => { setOpen(false); setPinned(false) })
   const [pos, seedPos] = useFlyoutPosition(triggerRef, panelRef, open)
 
   const here = location.pathname + location.search
@@ -1127,7 +1227,7 @@ function UserAvatarMenu({ user, roleLabel, onLogout, compact = false }) {
         >
           <div className="px-3 py-2 border-b border-slate-100">
             <div className="text-slate-800 text-sm font-medium truncate">{user?.name}</div>
-            <div className="text-slate-500 text-xs mt-0.5">{roleLabel[user?.role] || user?.role}</div>
+            <div className="text-slate-500 text-xs mt-0.5">{rolesOf(user).map(role => roleLabel[role]).join(' · ')}</div>
           </div>
           {/* Ni les nouveautés ni les paramètres ne sont ici : ils ont leur
               propre entrée dans la barre latérale, juste au-dessus. Ce menu ne
@@ -1202,36 +1302,17 @@ export function Layout({ children }) {
   const [showShortcuts, setShowShortcuts] = useState(false)
   const { user, logout } = useAuth()
   const { isHidden, order, setOrder, bookmarks, setBookmarks } = useNavPrefs()
-  // Compteur des files de travaux : la lecture temps réel vit déjà dans le
-  // provider du panneau rapide (monté au-dessus des routes), on ne rajoute donc
-  // aucun appel. Les DEUX files sont comptées — l'icône dit « il reste du
-  // travail », peu importe de quelle section il vient. Les items « de côté » n'y
-  // sont pas : rien ne démarrera tant qu'on ne les aura pas remis en file.
-  const travauxQuick = useTravauxQuick()
-  const travauxItem = useMemo(() => {
-    const asking = travauxQuick?.askingCount || 0
-    const active = travauxQuick?.activeCount || 0
-    const total = asking + active
-    return {
-      to: '/travaux',
-      icon: ListChecks,
-      label: 'Travaux',
-      badge: total,
-      badgeTone: asking ? 'ask' : 'busy',
-      badgeTitle: total
-        ? [`${total} en file`, asking ? `dont ${asking} en attente de ta réponse` : null].filter(Boolean).join(' — ')
-        : undefined,
-    }
-  }, [travauxQuick?.askingCount, travauxQuick?.activeCount])
+  // Travaux n'a plus d'entrée dans le menu (demande de Pierre-Alexandre
+  // Papillon, 2026-09-23) : on y va par la jauge des quotas IA du rail ou par
+  // le panneau rapide.
 
   // Roue dentée : simple lien vers la page. Ses sections ne s'ouvrent pas au
   // survol dans le menu de gauche — on les voit une fois sur la page
   // (cf. lib/settingsSections.js).
   const settingsItem = { to: SETTINGS_ROUTE, icon: Settings, label: 'Paramètres' }
 
-  // Nouveautés : entrée à part entière de la barre latérale (avant, elle était
-  // enfouie dans le menu du compte, où personne n'allait la chercher).
-  const changelogItem = { to: '/changelog', icon: Sparkles, label: 'Nouveautés' }
+  // Nouveautés : section des Paramètres (lib/settingsSections.js), plus
+  // d'entrée dans la barre latérale.
 
   // Raccourcis clavier globaux
   useEffect(() => {
@@ -1283,8 +1364,8 @@ export function Layout({ children }) {
     return () => { stopRecordLive(); realtimeDisconnect() }
   }, [])
 
-  const roleLabel = { admin: 'Admin', rh: 'RH', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
-  const isHR = ['admin', 'rh'].includes(user?.role)
+  const roleLabel = { user: 'Utilisateur', admin: 'Admin', rh: 'RH' }
+  const isHR = hasRole(user, 'rh')
   // Filtrage en deux temps : d'abord les permissions de rôle (hrOnly), puis les
   // préférences perso de l'utilisateur (items/groupes cachés via Paramètres).
   // Clés : item = `to`, groupe = `group:<nom>`.
@@ -1298,10 +1379,10 @@ export function Layout({ children }) {
       // (pas de `to` interne à filtrer).
       if (item.external) return item
       if (!item.group) {
-        return isHidden(item.to) ? null : item
+        return item.menuHidden || isHidden(item.to) ? null : item
       }
       if (isHidden(`group:${item.group}`)) return null
-      const items = item.items.filter(i => (!i.hrOnly || isHR) && !isHidden(i.to))
+      const items = item.items.filter(i => (!i.hrOnly || isHR) && !isHidden(i.to)).map(i => !isHR && i.selfLabel ? { ...i, label: i.selfLabel } : i)
       if (items.length === 0) return null
       return { ...item, items }
     })
@@ -1344,13 +1425,9 @@ export function Layout({ children }) {
         ))}
       </nav>
 
-      {/* Bas de barre : Travaux, Paramètres, compte */}
+      {/* Bas de barre : Paramètres, compte */}
       <div className="border-t border-slate-100 py-2 px-2 space-y-0.5 flex-shrink-0">
-        {/* Travaux visible par tous : file de prompts pour l'agent, suggestions,
-            réglages — touche toute la plateforme, pas seulement la compta, d'où
-            une entrée à plat plutôt qu'un sous-menu de l'Espace finance. */}
-        <NavItem {...travauxItem} />
-        <NavItem {...changelogItem} />
+        <AiUsageRail wide />
         <NavItem {...settingsItem} />
         <div className="pt-1">
           <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} />
@@ -1399,13 +1476,9 @@ export function Layout({ children }) {
         ))}
       </nav>
 
-      {/* Bas de rail : Travaux, Paramètres, compte */}
+      {/* Bas de rail : Paramètres, compte */}
       <div className="flex flex-col items-center gap-1 pt-1.5 w-full border-t border-slate-100 flex-shrink-0">
-        {/* Travaux visible par tous : file de prompts pour l'agent, suggestions,
-            réglages — touche toute la plateforme, pas seulement la compta, d'où
-            une entrée à plat plutôt qu'un sous-menu de l'Espace finance. */}
-        <RailNavLink item={travauxItem} />
-        <RailNavLink item={changelogItem} />
+        <AiUsageRail to="/travaux" runningBadge />
         <RailNavLink item={settingsItem} />
         <ThemeToggle compact />
         <UserAvatarMenu user={user} roleLabel={roleLabel} onLogout={logout} compact />

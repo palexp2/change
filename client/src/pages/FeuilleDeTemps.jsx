@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
 import { ChevronLeft, ChevronRight, Plus, Trash2, Search, Copy, Maximize2 } from 'lucide-react'
@@ -7,7 +8,7 @@ import { PageTitle } from '../components/PageTitle.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
-import { parseDurationToMinutes, formatMinutes, weekKey } from '../lib/duration.js'
+import { parseDurationToMinutes, formatMinutes } from '../lib/duration.js'
 import { parseWeekHours } from '../lib/weekDuration.js'
 import { localISODate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
@@ -29,14 +30,24 @@ function weekdayShort(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
   return d.toLocaleDateString('fr-CA', { weekday: 'short' })
 }
-// Lundi de la semaine contenant `dateStr` — clé du mode semaine.
+// Dimanche de la semaine contenant `dateStr` — clé du mode semaine.
 function weekStartOf(dateStr) {
   const d = new Date(dateStr + 'T00:00:00')
-  return shiftDate(dateStr, -((d.getDay() + 6) % 7))
+  return shiftDate(dateStr, -d.getDay())
 }
 function weekRangeLabel(dateStr) {
   const start = weekStartOf(dateStr)
-  const end = shiftDate(start, 6)
+  return dateRangeLabel(start, shiftDate(start, 6))
+}
+// Périodes de 14 jours, du dimanche au samedi, ancrées au 12 septembre 2026.
+function payPeriodStartOf(dateStr) {
+  const anchor = '2026-08-30'
+  // Les dates ISO sont lues en UTC pour compter des jours civils, même aux
+  // changements d'heure ; shiftDate conserve ensuite les dates locales.
+  const days = (Date.parse(dateStr) - Date.parse(anchor)) / 86400000
+  return shiftDate(anchor, Math.floor(days / 14) * 14)
+}
+function dateRangeLabel(start, end) {
   const fmt = (s, withYear) => new Date(s + 'T00:00:00')
     .toLocaleDateString('fr-CA', { day: 'numeric', month: 'long', ...(withYear ? { year: 'numeric' } : {}) })
   return `${fmt(start)} — ${fmt(end, true)}`
@@ -507,10 +518,11 @@ function TextCell({ value, onCommit, disabled, expandTitle = 'Description', test
 
 export default function FeuilleDeTemps() {
   const { user } = useAuth()
-  const isAdmin = ['admin', 'rh'].includes(user?.role)
+  const isAdmin = hasRole(user, 'rh')
   const [date, setDate] = useState(todayStr())
   const [day, setDay] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [deletingDay, setDeletingDay] = useState(false)
   const [savingField, setSavingField] = useState({})
   const [activityCodes, setActivityCodes] = useState([])
   const [history, setHistory] = useState([])
@@ -594,7 +606,7 @@ export default function FeuilleDeTemps() {
     else if (verb === 'deleted') setDay(null)
   })
 
-  // Charge 12 mois de feuilles : sert à la sidebar historique (filtrée à 12 semaines)
+  // Charge 12 mois de feuilles : sert à la sidebar historique (périodes complètes)
   // ET au rapport RSDE mensuel en bas de page.
   const loadHistory = useCallback(async () => {
     if (!selectedUserId) return
@@ -635,13 +647,13 @@ export default function FeuilleDeTemps() {
     return () => { weekRequest.current = request + 1 }
   }, [selectedUserId, weekStart, weekScope, isWeekMode, weekReload])
 
-  // Sidebar : ne montrer que les 12 dernières semaines pour rester compact.
+  // Sidebar : environ 12 semaines, sans tronquer la première période de paie.
   const sidebarHistory = useMemo(() => {
-    const cutoff = shiftDate(todayStr(), -84)
+    const cutoff = payPeriodStartOf(shiftDate(todayStr(), -84))
     return history.filter(d => d.date >= cutoff)
   }, [history])
   const sidebarWeeks = useMemo(() => {
-    const cutoff = shiftDate(todayStr(), -84)
+    const cutoff = payPeriodStartOf(shiftDate(todayStr(), -84))
     return weekHistory.filter(w => w.week_start >= cutoff)
   }, [weekHistory])
 
@@ -752,6 +764,26 @@ export default function FeuilleDeTemps() {
     loadHistory()
   }
 
+  async function deleteEmptyDay() {
+    if (!canDeleteDay || deletingDay || Object.values(savingField).some(Boolean)) return
+    const id = day.id
+    setDeletingDay(true)
+    try {
+      if (!(await confirm({
+        message: `Supprimer la journée du ${weekdayLabel(day.date)} ?`,
+        confirmLabel: 'Supprimer',
+      }))) return
+      await api.timesheets.deleteDay(id)
+      setDay(current => current?.id === id ? null : current)
+      setHistory(current => current.filter(d => d.id !== id))
+      addToast({ message: 'Journée supprimée', type: 'success' })
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setDeletingDay(false)
+    }
+  }
+
   // Création d'un code d'activité à la volée depuis le picker de la feuille.
   // Le nouveau code est public (visible à tous) et non pré-coché RSDE par défaut —
   // ces réglages se font ensuite sur la page « Codes d'activité ».
@@ -810,6 +842,10 @@ export default function FeuilleDeTemps() {
   // Totaux — un entry ne compte que si le code d'activité est payable (payable !== 0).
   // Les entrées sans code d'activité comptent (par défaut on assume payable).
   const entries = day?.entries || []
+  const canDeleteDay = !isWeekMode && !loading && day?.date === date
+    && day?.user_id === selectedUserId && entries.length === 0
+    && (day.mode === 'detailed' || (!day.start_time && !day.end_time && !Number(day.break_minutes)))
+    && day.status !== 'approved' && (day.status !== 'submitted' || isAdmin)
   const isPayable = (e) => e.activity_code_payable == null || e.activity_code_payable === 1
   const detailedTotalMin = entries
     .filter(isPayable)
@@ -926,6 +962,18 @@ export default function FeuilleDeTemps() {
             </div>
 
             {/* Edit area */}
+            {canDeleteDay && (
+              <div className="flex justify-end mb-3">
+                <button
+                  type="button"
+                  onClick={deleteEmptyDay}
+                  disabled={deletingDay || Object.values(savingField).some(Boolean)}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 text-sm text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Trash2 size={14} /> {deletingDay ? 'Suppression…' : 'Supprimer la journée'}
+                </button>
+              </div>
+            )}
             {isWeekMode && weekLoad.key === weekScope && weekLoad.error ? (
               <div className="card p-4" role="alert">
                 <p className="text-sm text-red-600">Impossible de charger cette semaine.</p>
@@ -954,7 +1002,7 @@ export default function FeuilleDeTemps() {
                 onPatchEntry={patchEntry}
                 onPatchDay={patchDay}
                 onDeleteEntry={deleteEntry}
-                onCreateCode={createActivityCode}
+                onCreateCode={isAdmin ? createActivityCode : undefined}
                 focusEntryId={focusEntryId}
                 onFocusConsumed={() => setFocusEntryId(null)}
               />
@@ -1249,41 +1297,43 @@ function RsdeReport({ history }) {
 
 function HistoryTable({ history, weeks, currentDate, currentWeek, isWeekMode, onJump }) {
   const grouped = useMemo(() => {
-    const byWeek = new Map()
+    const byPeriod = new Map()
     const bucket = (k) => {
-      if (!byWeek.has(k)) byWeek.set(k, { days: [], week: null })
-      return byWeek.get(k)
+      if (!byPeriod.has(k)) byPeriod.set(k, { days: [], weeks: [] })
+      return byPeriod.get(k)
     }
-    for (const d of history) bucket(weekKey(d.date)).days.push(d)
+    for (const d of history) bucket(payPeriodStartOf(d.date)).days.push(d)
     // Une semaine déclarée d'un seul chiffre n'a aucune journée : sans ça, elle
     // n'apparaîtrait nulle part dans l'historique.
-    for (const w of weeks || []) if (w.minutes) bucket(weekKey(w.week_start)).week = w
-    return Array.from(byWeek.entries()).sort((a, b) => a[0] < b[0] ? 1 : -1)
+    for (const w of weeks || []) if (w.minutes) bucket(payPeriodStartOf(w.week_start)).weeks.push(w)
+    return Array.from(byPeriod.entries()).sort((a, b) => b[0].localeCompare(a[0]))
   }, [history, weeks])
 
   if (grouped.length === 0) return null
 
   return (
     <div>
-      <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Historique</h2>
+      <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wide mb-3">Périodes de paie</h2>
       <div className="space-y-4">
-        {grouped.map(([week, { days, week: weekRec }]) => {
-          const weekTotal = days.reduce((s, d) => s + dayTotal(d), 0) + (Number(weekRec?.minutes) || 0)
+        {grouped.map(([period, { days, weeks: periodWeeks }]) => {
+          const periodTotal = days.reduce((s, d) => s + dayTotal(d), 0)
+            + periodWeeks.reduce((s, w) => s + (Number(w.minutes) || 0), 0)
           return (
-            <div key={week} className="card overflow-hidden">
+            <div key={period} className="card overflow-hidden" data-testid={`history-pay-period-${period}`}>
               <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100">
-                <div className="text-xs font-semibold text-slate-600">Semaine {week}</div>
-                <div className="text-xs text-slate-500 tabular-nums font-semibold text-slate-900">{formatMinutes(weekTotal)}</div>
+                <div className="text-xs font-semibold text-slate-600">{dateRangeLabel(period, shiftDate(period, 13))}</div>
+                <div className="text-xs text-slate-500 tabular-nums font-semibold text-slate-900" data-testid="history-pay-period-total">{formatMinutes(periodTotal)}</div>
               </div>
               <table className="w-full text-sm">
                 <tbody>
-                  {weekRec && (
+                  {periodWeeks.map(weekRec => (
                     <WeekRow
+                      key={weekRec.id}
                       week={weekRec}
                       isActive={isWeekMode && weekRec.week_start === currentWeek}
                       onJump={onJump}
                     />
-                  )}
+                  ))}
                   {days.map(d => (
                     <DayRow key={d.id} day={d} isActive={!isWeekMode && d.date === currentDate} onJump={onJump} />
                   ))}

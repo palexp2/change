@@ -24,6 +24,9 @@ function isAuto(match, autoMethods) {
   if (!autoMethods.includes(match.method)) return false
   // Une conversion non vérifiée garde un écart : elle ne se pose jamais seule.
   if (match.method === 'conversion' && !match.verified) return false
+  // Idem si un jour « devise_taux » entre dans la liste : le taux doit avoir été
+  // relu. Décision de Charles (19 sept. 2026) : ces liens restent à confirmer.
+  if (match.method === 'devise_taux' && !match.verified) return false
   return true
 }
 

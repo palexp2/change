@@ -8,7 +8,7 @@
 // de colonnes sont des constantes — seuls eux entrent dans le SQL.
 
 import db from './database.js'
-import { requireHROrAdmin, requireAdmin } from '../middleware/auth.js'
+import { requireHR, requireAdmin } from '../middleware/auth.js'
 import { toBool, toBoolDefaultTrue, trimOrNull } from '../utils/partialUpdate.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { getWritableCustomColumns } from '../services/customFieldWritability.js'
@@ -27,6 +27,7 @@ export const RECORD_REGISTRY = {
     table: 'activity_codes',
     idColumn: 'id',
     entity: 'activity_code',
+    writeAuth: requireHR,
     softDelete: true,
     touchUpdatedAt: true,
     allowed: ['name', 'description', 'active', 'payable', 'rsde_default'],
@@ -68,7 +69,7 @@ export const RECORD_REGISTRY = {
     entity: 'employee',
     softDelete: false,
     touchUpdatedAt: true,
-    auth: requireHROrAdmin,
+    auth: requireHR,
     allowed: [
       'first_name', 'last_name', 'phone_personal', 'phone_work', 'email_personal', 'email_work',
       'birth_date', 'hire_date', 'matricule', 'active', 'gender', 'address', 'emergency_contact',
@@ -160,29 +161,6 @@ export const RECORD_REGISTRY = {
       if (body.status === undefined) return
       body.resolved_at = body.status === 'Résolu' ? new Date().toISOString() : null
     },
-  },
-
-  // Constatations de revenus perçus d'avance : une ligne par (facture, mois).
-  // Sa présence marque le mois comme constaté — la page ne le repropose plus.
-  // La création passe par la comptabilisation (services/deferredRevenue.js) ;
-  // ce qui reste ouvert ici, c'est la correction manuelle d'une ligne (montant,
-  // note) et sa suppression pour reproposer le mois.
-  deferred_revenue_recognitions: {
-    table: 'deferred_revenue_recognitions',
-    idColumn: 'id',
-    softDelete: true,
-    touchUpdatedAt: true,
-    allowed: ['amount_cad', 'note', 'revenue_acctnum', 'deferral_acctnum'],
-    nonNullable: new Set(),
-    coerce: {},
-    insertable: ['facture_id', 'month', 'amount_cad', 'amount_native', 'currency',
-      'exchange_rate', 'fx_source', 'deferral_acctnum', 'revenue_acctnum', 'source', 'note'],
-    required: { facture_id: 'facture_id requis', month: 'month requis' },
-    defaults: { source: 'manuel' },
-    filters: ['month', 'facture_id'],
-    orderBy: 'month DESC, created_at DESC',
-    messages: { notFound: 'Constatation introuvable' },
-    deleteResponse: { ok: true },
   },
 
   projects: {

@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useRef, Fragment } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown, EyeOff } from 'lucide-react'
@@ -113,8 +114,8 @@ function CollapsibleCard({ id, title, description, leadingIcon, action, collapse
           <button
             type="button"
             onClick={onHide}
-            aria-label="Masquer cette section du dashboard"
-            title="Masquer du dashboard"
+            aria-label="Masquer cette section du tableau de bord"
+            title="Masquer du tableau de bord"
             data-testid={`section-hide-${id}`}
             className="text-slate-300 hover:text-slate-600 hover:bg-slate-50 rounded p-0.5 mt-0.5 shrink-0 transition-colors"
           >
@@ -251,7 +252,7 @@ function DashboardEditor({ prefs, onChange, onClose }) {
 function ProjectGoalWidget({ goal, onEdit }) {
   const { target, current, end_date } = goal || {}
   const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = hasRole(user, 'admin')
 
   if (!target) {
     return (

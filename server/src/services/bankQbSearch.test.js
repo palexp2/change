@@ -149,3 +149,32 @@ test('la vérification du taux annule l\'écart apparent d\'une conversion', asy
   assert.equal(m2.get('b1').verified, false)
   assert.ok(m2.get('b1').delta > 0)
 })
+
+test('paiement en devise étrangère sur un compte canadien : apparié, puis vérifié', async () => {
+  // Facture Axxess de 575 US payée du compte Venn CAD : le relevé note
+  // 796,67 $, le grand livre affiche 575 — sans le taux, la ligne restait « à
+  // traiter » alors qu'elle était comptabilisée.
+  const own = [e({
+    amount: -575, type: 'Paiement de factures (chèque)', entity: 'billpayment',
+    qbId: '17896', date: '2026-08-22', name: 'Axxess International - USD',
+  })]
+  const bank = [t({ amount: -796.67, txn_date: '2026-08-22', description: 'Axxess International Inc. — Outbound Transfer' })]
+
+  const { matches } = searchAccount(ACCOUNT, bank, indexOf(own))
+  assert.equal(matches.get('b1').method, 'devise_taux')
+  await verifyConversions(matches, new Map(bank.map((x) => [x.id, x])), null,
+    async () => ({ TotalAmt: 575, ExchangeRate: 1.385513 }))
+  assert.equal(matches.get('b1').verified, true)
+  assert.equal(matches.get('b1').delta, 0)
+
+  // Taux qui ne retombe pas sur la ligne : l'appariement est abandonné.
+  const { matches: m2 } = searchAccount(ACCOUNT, bank, indexOf(own))
+  await verifyConversions(m2, new Map(bank.map((x) => [x.id, x])), null,
+    async () => ({ TotalAmt: 575, ExchangeRate: 1.2 }))
+  assert.equal(m2.size, 0)
+
+  // Libellé sans rapport : jamais apparié par ressemblance de rapport.
+  const { matches: m3 } = searchAccount(ACCOUNT, [t({ amount: -796.67, description: 'AMAZON.CA' })],
+    indexOf([e({ amount: -575, entity: 'expense', name: 'Bell Canada', date: '2026-08-01' })]))
+  assert.equal(m3.size, 0)
+})

@@ -1253,6 +1253,10 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
   const timeoutMs = execTimeoutFor(known?.run_model || known?.model)
   const pidFile = lane === 'question' ? QPID_FILE(taskId) : (lane === 'recover' ? null : EPID_FILE(myLane))
   const startedAt = Date.now()
+  // Le délai court depuis le VRAI départ de l'exécution, pas depuis ce monitor : sinon
+  // chaque redémarrage du serveur (reprise d'une orpheline) remettait le chrono à zéro
+  // et une exécution figée pouvait survivre indéfiniment.
+  const runStartedAt = Math.min(Date.parse(known?.started_at) || startedAt, startedAt)
   let offset = 0
   let lineBuffer = ''
   let finished = false
@@ -1439,7 +1443,7 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
     // Primary signal: the wrapper wrote the exit code → done/blocked by code.
     if (existsSync(CODE)) { finalize(); return }
     // Hard timeout: kill the whole detached group, mark blocked.
-    if (Date.now() - startedAt > timeoutMs) {
+    if (Date.now() - runStartedAt > timeoutMs) {
       killExecutionTree(taskId, lane, currentPid())
       finalize({ killedTimeout: true })
       return

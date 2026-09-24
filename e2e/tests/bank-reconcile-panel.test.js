@@ -46,17 +46,15 @@ describe('Rapprochement bancaire — panneau de rapprochement automatique', () =
     await page.waitForSelector('h1:has-text("Rapprochement bancaire")', { timeout: 20000 })
     await page.waitForSelector('[data-testid="reconcile-panel"]', { timeout: 20000 })
 
-    // Le solde du relevé est calculé côté serveur à partir des lignes importées :
-    // il doit s'afficher sans action de l'utilisateur.
-    const stmt = page.locator('[data-testid="reconcile-statement-balance"]')
-    await stmt.waitFor({ timeout: 20000 })
-    // Le montant remplace le « … » de chargement dès la réponse de /summary.
+    // Le solde du relevé est calculé côté serveur à partir des lignes importées.
+    // Depuis la refonte de l'en-tête, il n'est plus écrit à l'écran : la barre
+    // n'affiche que l'écart et porte les deux soldes en attributs (infobulle).
     await page.waitForFunction(() => {
-      const el = document.querySelector('[data-testid="reconcile-statement-balance"]')
-      return !!el && /\d/.test(el.textContent || '')
+      const el = document.querySelector('[data-testid="reconcile-panel"]')
+      return !!el && /\d/.test(el.getAttribute('data-statement-balance') || '')
     }, null, { timeout: 20000 })
-    const txt = (await stmt.innerText()).trim()
-    assert.ok(/\d/.test(txt), `solde du relevé non calculé : « ${txt} »`)
+    const stmtTxt = await page.getAttribute('[data-testid="reconcile-panel"]', 'data-statement-balance')
+    assert.ok(/\d/.test(stmtTxt || ''), `solde du relevé non calculé : « ${stmtTxt} »`)
 
     // Les anciens boutons séparés ont fusionné dans le panneau.
     assert.equal(await page.locator('button:has-text("Matching auto")').count(), 0)

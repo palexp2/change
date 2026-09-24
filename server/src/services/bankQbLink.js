@@ -7,11 +7,7 @@
 // rapport GeneralLedger de QB filtré sur le compte bancaire mappé
 // (bank_accounts.qb_account_id, possiblement plusieurs ids séparés par
 // virgule) et on apparie par montant exact + date la plus proche (±4 jours).
-import db from '../db/database.js'
 import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
-import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
-
-const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 
 // Libellés (localisés FR) du rapport GL → entité des URLs /app/<entity>?txnId=.
 // Un type absent de la table n'est pas liable (pas d'URL fiable) — on l'ignore.
@@ -198,74 +194,12 @@ export async function fetchQbLedgerCleared(qbAccountIds, startDate, endDate) {
   return [...kept.values()].flat()
 }
 
-const MAX_DAY_GAP = 4
-
-// Apparie les transactions non liées d'un compte ERP à leur transaction QB.
-// Montant exact (même signe) + date la plus proche ≤ 4 jours ; chaque entrée QB
-// ne sert qu'une fois. Retourne { scanned, linked, ledgerEntries }.
-export async function linkAccountToQb(accountId) {
-  const account = db.prepare('SELECT * FROM bank_accounts WHERE id=? AND deleted_at IS NULL').get(accountId)
-  if (!account) throw new Error('Compte introuvable')
-  if (!account.qb_account_id) throw new Error('Aucun compte QuickBooks mappé (qb_account_id)')
-
-  const txns = db.prepare(`
-    SELECT id, txn_date, amount FROM bank_transactions
-    WHERE account_id=? AND deleted_at IS NULL AND qb_txn_id IS NULL AND status != 'ignore'
-    ORDER BY txn_date
-  `).all(accountId)
-  if (!txns.length) return { scanned: 0, linked: 0, ledgerEntries: 0 }
-
-  const start = shiftDate(txns[0].txn_date, -MAX_DAY_GAP)
-  const end = shiftDate(txns[txns.length - 1].txn_date, MAX_DAY_GAP)
-
-  // Un compte ERP peut couvrir plusieurs comptes QB (ids séparés par virgule).
-  const ledger = []
-  for (const qbId of String(account.qb_account_id).split(',').map((s) => s.trim()).filter(Boolean)) {
-    ledger.push(...await fetchQbLedger(qbId, start, end))
-  }
-
-  // Index par montant signé exact → liste d'entrées consommables.
-  const byAmount = new Map()
-  for (const e of ledger) {
-    const key = e.amount.toFixed(2)
-    if (!byAmount.has(key)) byAmount.set(key, [])
-    byAmount.get(key).push(e)
-  }
-
-  // L'orientation des signes varie selon le compte : sur un compte d'actif le
-  // relevé suit le GL (sortie = crédit = négatif), mais sur un passif (marge,
-  // carte selon l'émetteur) le relevé peut noter une avance en positif là où
-  // le GL la crédite. On essaie ±1 et on garde l'orientation qui matche le plus.
-  const matchAll = (sign) => {
-    const used = new Set()
-    const matches = []
-    for (const t of txns) {
-      const pool = byAmount.get((sign * Number(t.amount)).toFixed(2))
-      if (!pool?.length) continue
-      let best = null
-      let bestDiff = Infinity
-      for (const e of pool) {
-        if (used.has(e)) continue
-        const diff = dayDiff(t.txn_date, e.date)
-        if (diff <= MAX_DAY_GAP && diff < bestDiff) { best = e; bestDiff = diff }
-      }
-      if (!best) continue
-      used.add(best)
-      matches.push([t, best])
-    }
-    return matches
-  }
-  const plus = matchAll(1)
-  const minus = matchAll(-1)
-  const matches = plus.length >= minus.length ? plus : minus
-
-  const update = db.prepare(`UPDATE bank_transactions SET qb_txn_type=?, qb_txn_id=?, updated_at=${NOW} WHERE id=?`)
-  const tx = db.transaction(() => {
-    for (const [t, e] of matches) update.run(e.entity, e.qbId, t.id)
-  })
-  tx()
-  return { scanned: txns.length, linked: matches.length, ledgerEntries: ledger.length }
-}
+// `linkAccountToQb` a été RETIRÉ le 2026-09-15. Il appariait au montant exact,
+// à ±4 jours, sur le seul compte du relevé — et déclarait « absente de
+// QuickBooks » toute écriture qui sortait de ce cadre : 83 des 94 anomalies du
+// 22 août 2026 étaient ses faux positifs. Il cohabitait avec la recherche
+// approfondie, qui se contredisaient sur les mêmes lignes. Un seul moteur
+// désormais : services/bankQbVerify.js.
 
 export function storedQbUrl(txn) {
   return txn.qb_txn_id && txn.qb_txn_type ? qbEntityUrl(txn.qb_txn_type, txn.qb_txn_id) : null

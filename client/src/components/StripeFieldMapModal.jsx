@@ -29,7 +29,7 @@ const FACTURES_CONFIG = {
   resyncDefault: false,
   runResync: () => api.stripeQueue.batchEnrich().catch(() => {}),
   savedResyncMsg: 'Mapping enregistré — ré-import Stripe lancé en arrière-plan.',
-  savedMsg: 'Mapping enregistré — appliqué aux prochaines synchronisations Stripe.',
+  savedMsg: 'Correspondance enregistrée — appliquée aux prochaines synchronisations Stripe.',
 }
 
 const SUBSCRIPTIONS_CONFIG = {
@@ -40,16 +40,16 @@ const SUBSCRIPTIONS_CONFIG = {
   load: () => api.stripeQueue.subscriptionFieldMap(),
   save: draft => api.stripeQueue.saveSubscriptionFieldMap(draft),
   resyncLabel: 'Resynchroniser les abonnements après enregistrement',
-  resyncTitle: 'Ré-importe tous les abonnements Stripe avec le nouveau mapping',
+  resyncTitle: 'Ré-importe tous les abonnements Stripe avec la nouvelle correspondance',
   resyncDefault: true,
   runResync: () => api.stripe.sync().catch(() => {}),
-  savedResyncMsg: 'Mapping enregistré — resynchronisation des abonnements lancée en arrière-plan.',
-  savedMsg: 'Mapping enregistré — appliqué aux prochaines synchronisations Stripe.',
+  savedResyncMsg: 'Correspondance enregistrée — resynchronisation des abonnements lancée en arrière-plan.',
+  savedMsg: 'Correspondance enregistrée — appliquée aux prochaines synchronisations Stripe.',
 }
 
 export function StripeFieldMapModal({ isOpen, onClose, onSaved }) {
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Mapping des champs Stripe" size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title="Correspondance des champs Stripe" size="lg">
       {isOpen && <StripeFieldMapPane onSaved={onSaved} config={FACTURES_CONFIG} />}
     </Modal>
   )
@@ -60,7 +60,7 @@ export function StripeFieldMapModal({ isOpen, onClose, onSaved }) {
 // bouton « Sync Stripe » direct de la page /abonnements).
 export function StripeSubscriptionFieldMapModal({ isOpen, onClose, onSaved, onSyncNow }) {
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Mapping des champs Stripe" size="lg">
+    <Modal isOpen={isOpen} onClose={onClose} title="Correspondance des champs Stripe" size="lg">
       {isOpen && <StripeFieldMapPane onSaved={onSaved} onSyncNow={onSyncNow} config={SUBSCRIPTIONS_CONFIG} />}
     </Modal>
   )
@@ -268,7 +268,7 @@ function StripeFieldMapPane({ onSaved, onSyncNow, config }) {
               onClick={syncNow}
               disabled={syncingNow || saving}
               className="btn-secondary btn-sm"
-              title="Importer immédiatement tous les abonnements depuis Stripe avec le mapping enregistré"
+              title="Importer immédiatement tous les abonnements depuis Stripe avec la correspondance enregistrée"
               data-testid={`${prefix}-sync-now`}
             >
               <RefreshCw size={13} className={syncingNow ? 'animate-spin' : ''} />
@@ -284,7 +284,7 @@ function StripeFieldMapPane({ onSaved, onSyncNow, config }) {
             data-testid={`${prefix}-save`}
           >
             {saving ? <RefreshCw size={13} className="animate-spin" /> : null}
-            {saving ? 'Enregistrement…' : 'Enregistrer le mapping'}
+            {saving ? 'Enregistrement…' : 'Enregistrer la correspondance'}
           </button>
         </div>
       </div>

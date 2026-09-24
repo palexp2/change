@@ -1,7 +1,7 @@
-import { useCallback } from 'react'
+import { useCallback, useMemo } from 'react'
 import { Undo2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { patchRecord } from '../lib/dataStore.js'
+import { patchRecord, useTable } from '../lib/dataStore.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { useListData } from '../lib/useListData.js'
@@ -26,6 +26,43 @@ export default function Retours() {
   // la table garde, plus les champs Airtable pilotés depuis /champs/retours.
   const { rows: retours, loading } = useListData({ table: 'returns' })
 
+  // Recherche par entreprise. La colonne « Entreprise » d'un retour est un champ
+  // lien : elle porte l'IDENTIFIANT de la fiche entreprise, son nom n'apparaît
+  // qu'au rendu de la cellule. Taper « frai » ne pouvait donc pas trouver
+  // « Fraisière du Nord-Est ». On recopie les noms visés dans un champ caché,
+  // cherchable. Aucun nom de colonne codé en dur (les champs des retours se
+  // pilotent depuis /champs/retours) : une entreprise se reconnaît à son
+  // identifiant, quel que soit le champ qui le porte.
+  const companies = useTable('companies')
+  const companyNameByKey = useMemo(() => {
+    const m = new Map()
+    for (const c of companies) {
+      if (!c?.name) continue
+      if (c.id) m.set(c.id, c.name)
+      if (c.airtable_id) m.set(c.airtable_id, c.name)
+    }
+    return m
+  }, [companies])
+
+  const rows = useMemo(() => {
+    if (!companyNameByKey.size) return retours
+    return retours.map(row => {
+      let names = null
+      for (const value of Object.values(row)) {
+        // Un identifiant (rec Airtable ou id Boréal) tient en moins de 40
+        // caractères ; une cellule de lien multiple les joint par « , ».
+        if (typeof value !== 'string' || !value || value.length > 400) continue
+        for (const key of value.split(',')) {
+          const name = companyNameByKey.get(key.trim())
+          if (!name) continue
+          if (!names) names = []
+          if (!names.includes(name)) names.push(name)
+        }
+      }
+      return names ? { ...row, company_search: names.join(' ') } : row
+    })
+  }, [retours, companyNameByKey])
+
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
   const { addToast } = useToast()
 
@@ -46,7 +83,7 @@ export default function Retours() {
         table="retours"
         manageViews
         columns={COLUMNS}
-        data={retours}
+        data={rows}
         loading={loading}
         onCellEdit={updateField}
         peek={{
@@ -58,8 +95,9 @@ export default function Retours() {
           render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
         }}
         // Le statut était le dernier champ natif cherchable (droppé par la 041) :
-        // il ne reste que l'identifiant du retour.
-        searchFields={['id']}
+        // il ne reste que l'identifiant du retour, plus le nom de l'entreprise
+        // reconstitué ci-dessus.
+        searchFields={['id', 'company_search']}
         emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée. Les retours clients apparaissent ici." }}
       />
     </ListPage>

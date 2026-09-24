@@ -32,8 +32,9 @@ const IMAGES = {
   guide_pipes: 'guide_pipes.webp',
   fans_two: 'fans-two.svg',
   furnaces: 'furnaces.webp',
+  furnace_dry_contact: 'furnace-wall-thermostat.webp',
   furnace_wire: 'furnace_wire.webp',
-  thermostat: 'thermostat.webp',
+  thermostat: 'furnace-wall-thermostat.webp',
   irrigation: 'irrigation.webp',
   valves: 'irrigation.webp',
 }
@@ -42,6 +43,10 @@ const IMAGES = {
 export default function GreenhouseIllustration({ focus = 'overview', height = 128, label, className = '', pipeType, image, variant }) {
   const selected = normalizeQuestionImage(image)
   if (selected === 'none') return null
+  if (variant === 'furnace-wire-choice' && (!selected || selected === 'furnace_wire.webp')) {
+    return <FurnaceIllustration variant="control-wire" label={label || focusLabel('furnace_wire')} className={`shrink-0 rounded-lg bg-white ${className}`}
+      style={{ width: Math.max(180, height * 2.2), maxWidth: '100%', height: Math.max(112, height) }} />
+  }
   if (variant === 'furnace-choice' && (!selected || selected === 'furnaces.webp')) {
     return <FurnaceIllustration label={label || focusLabel('furnaces')} className={`shrink-0 rounded-lg bg-white ${className}`}
       style={{ width: Math.max(180, height * 2.2), maxWidth: '100%', height: Math.max(112, height) }} />
@@ -49,9 +54,9 @@ export default function GreenhouseIllustration({ focus = 'overview', height = 12
   const diameterRange = variant === 'diameter-range' && selected === 'diameter-1-5-16.svg'
   const diameterOver = variant === 'diameter-over-1-5-16' && (!selected || selected === 'diameter-other.svg')
   const file = diameterOver ? 'diameter-over-1-5-16.svg' : diameterRange ? 'diameter-range-half-to-1-5-16.svg' : selected || (focus === 'side_pipe' && pipeType === 'aluminum_C'
-    ? 'pipe-c.png'
+    ? 'pipe-c.svg'
     : focus === 'side_pipe' && pipeType === 'steel_O'
-      ? 'pipe-o.png'
+      ? 'pipe-o.svg'
       : IMAGES[focus] || IMAGES.overview)
 
   return (

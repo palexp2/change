@@ -114,8 +114,8 @@ fingerprint() {
     | LC_ALL=C sort | sha256sum | cut -c1-16
 }
 
-CLIENT_PATHS="client/src client/public client/index.html client/package.json client/vite.config.js client/tailwind.config.js client/postcss.config.js"
-SERVER_PATHS="server/src server/package.json"
+CLIENT_PATHS="shared client/src client/public client/index.html client/package.json client/vite.config.js client/tailwind.config.js client/postcss.config.js"
+SERVER_PATHS="shared server/src server/package.json"
 [ -f server/.env ] && SERVER_PATHS="$SERVER_PATHS server/.env"
 
 CLIENT_FP=$(fingerprint $CLIENT_PATHS)

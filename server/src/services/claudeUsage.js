@@ -27,8 +27,9 @@
 //     lui-même ; `extra_usage.is_enabled` dit si des crédits de dépassement
 //     prendraient le relais au plafond (chez nous : non → tout attend la réinit.).
 //
-// Résultat mis en cache 60 s (la page agent interroge fréquemment le statut du
-// runner ; inutile de re-frapper l'API à chaque fois). Le cache est servi
+// Résultat mis en cache 5 min : l'endpoint refuse (429) dès qu'on le lit plus d'une
+// fois toutes les ~2 min — et Claude Code, qui tourne pour l'agent, consomme le même
+// crédit de lecture. Un quota n'a pas besoin d'être connu à la minute. Le cache est servi
 // TOUJOURS sans attendre : voir getClaudeUsage() — une lecture périmée part en
 // rafraîchissement de fond au lieu de faire patienter la page.
 
@@ -39,17 +40,17 @@ const HOME = process.env.HOME || '/home/ec2-user'
 const CREDENTIALS_PATH = resolve(HOME, '.claude', '.credentials.json')
 const USAGE_ENDPOINT = 'https://api.anthropic.com/api/oauth/usage'
 
-const CACHE_TTL_MS = 60 * 1000
+const CACHE_TTL_MS = 5 * 60 * 1000
 
 // ─── Ce qui se passe quand la lecture échoue ──────────────────────────────────
 // L'endpoint des quotas est lui-même limité en fréquence (HTTP 429). Avant, un
 // échec RACCOURCISSAIT le cache à 15 s : on frappait donc quatre fois plus fort
 // l'endpoint qui venait de nous refouler, et le refus s'entretenait tout seul
 // (jauges vides pendant des heures). Désormais un échec espace les tentatives —
-// 30 s, 1 min, 2 min… jusqu'à 10 min — et l'`Retry-After` du serveur, s'il en
+// 2 min, 4 min, 8 min… jusqu'à 30 min — et l'`Retry-After` du serveur, s'il en
 // donne un, prime sur ce calcul. Une réussite remet le compteur à zéro.
-const RETRY_BASE_MS = 30 * 1000
-const RETRY_MAX_MS  = 10 * 60 * 1000
+const RETRY_BASE_MS = 2 * 60 * 1000
+const RETRY_MAX_MS  = 30 * 60 * 1000
 
 let _fail = null // { at, reason, message, attempts, retryAt }
 
@@ -288,7 +289,7 @@ async function compute() {
 //      temps partagent le même appel réseau au lieu d'en lancer dix.
 //   2. Périmé mais connu → on répond TOUT DE SUITE avec la dernière lecture et on
 //      rafraîchit en fond (les `resetsAt` sont absolus, seuls les % vieillissent
-//      d'une minute).
+//      de quelques minutes).
 //   3. Tant qu'un écran regarde (`keepWarm`, posé par la route HTTP dans les 5
 //      dernières minutes), le cache est réchauffé tout seul : la lecture suivante
 //      est déjà prête. Les appels internes (garde-fou de quota, choix du modèle)
@@ -345,6 +346,11 @@ export async function getClaudeUsage({ allowStale = true, keepWarm = false } = {
   }
   return refresh()
 }
+
+// Dernière lecture connue, sans rien déclencher : la barre de gauche (tous les
+// utilisateurs, toutes les pages) ne doit jamais ajouter d'appel à Anthropic. Le cache
+// est déjà entretenu toutes les 5 min par l'ordonnanceur (syncScopedModelLimit).
+export function peekClaudeUsage() { return _cache?.data || null }
 
 // Premier chargement : on remplit le cache sans attendre qu'une page le demande,
 // pour que la toute première consultation soit instantanée elle aussi. Décalé de

@@ -1,10 +1,14 @@
+import '../test-helpers/testEnv.js'
+import { initTestDb } from '../test-helpers/testApp.js'
 // Tests for the script sandbox guards. Only exercises throwing/read-only paths
-// so nothing is written to the real DB (prod DB == test DB).
+// against a disposable database. Never import the production database.
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
 import { runScriptSandboxed, WRITABLE_TABLES } from './scriptSandbox.js'
+
+initTestDb()
 
 test('read-only mode does not expose update()', async () => {
   await assert.rejects(

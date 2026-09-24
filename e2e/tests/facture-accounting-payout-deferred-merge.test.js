@@ -10,7 +10,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 // 577EF696-0003 — paid_at, payout (deposit #17282) et deferred_revenue_qb_ref
 // = deposit:17282. Le revenu perçu d'avance est posté sur le même dépôt que
 // le payout, donc les deux événements doivent être fusionnés en une seule
-// ligne « Payout Stripe + revenu perçu d'avance ».
+// ligne « Versement Stripe + revenu perçu d'avance ».
 const FACTURE_ID = '128feafb-0c7d-480e-baf8-f1a37b29eb80'
 
 describe('FactureDetail — Historique : fusion payout + revenu perçu d\'avance', () => {
@@ -48,7 +48,7 @@ describe('FactureDetail — Historique : fusion payout + revenu perçu d\'avance
     const section = page.getByTestId('facture-accounting-section')
     await section.waitFor({ state: 'visible', timeout: 10000 })
     // Le label fusionné apparaît.
-    await section.getByText(/Payout Stripe \+ revenu perçu d'avance/).waitFor({ state: 'visible', timeout: 5000 })
+    await section.getByText(/Versement Stripe \+ revenu perçu d'avance/).waitFor({ state: 'visible', timeout: 5000 })
     // Le standalone « Revenu perçu d'avance posté » NE doit PAS exister
     // (il est absorbé dans la ligne payout ci-dessus).
     const standalone = section.getByTestId('event-deferred')

@@ -20,12 +20,15 @@ export const EQUIPMENT_PRODUCT_GROUPS = [
   { label: 'Permissions JWT', products: JWT_PRODUCTS, productType: 'JWT', help: 'Une permission par fonction et par serre, à programmer dans le contrôleur central au montage. Prévention des maladies incluse en Chef de culture, exclue en Helper.' },
   { label: 'Contrôle et accessoires', products: [
     ['activation_v2', 'Module d’activation V2'], ['side_vent_module', 'Module côtés ouvrants'],
-    ['side_vent_controller_24v', 'Contrôleur côtés 24 VDC'], ['fan_box_110v', 'Boîtier 110 V ventilateur'],
+    ['side_vent_controller_24v', 'Contrôleur côtés 24 VDC'], ['side_vent_motor_left', 'Moteur côté ouvrant · gauche'], ['side_vent_motor_right', 'Moteur côté ouvrant · droit'],
+    ['guide_pipe', 'Tuyau guide'], ['guide_pipe_hanging_kit', 'Guide pipe hanging kit'], ['fan_box_110v', 'Boîtier 110 V ventilateur'],
+    ['roof_inverter_ridder', 'Inverseur pour moteur de toit Ridder RW240'], ['roof_inverter_wire', 'Filage inverseur de toit → module d’activation'],
     ['valve', 'Valve d’irrigation'], ['valve_wire_nuts', 'Marette pour valve (2 unités)'],
     ['backup_thermostat', 'Thermostat de secours'], ['thermostat_wire', 'Filage thermostat'],
     ['mobile_controller_ca', 'Contrôleur Internet mobile · Canada'],
     ['mobile_controller_us', 'Contrôleur Internet mobile · États-Unis'],
     ['central_controller', 'Contrôleur central'],
+    ['coax_antenna_kit', 'Antenne + câble coaxial (Wi-Fi à 350 pi)'],
   ] },
   { label: 'Filage par appareil', products: wireProducts },
   { label: 'Louvres', products: [
@@ -36,7 +39,7 @@ export const EQUIPMENT_PRODUCT_GROUPS = [
       ...(voltage === '110' ? [[`louver_with_fan_${voltage}`, `Louvre spring loaded + ventilateur · ${voltage} V`]] : []),
     ]),
   ] },
-  { label: 'Conservation de l’humidité', products: [['humidity_valve', 'Valve de conservation de l’humidité'], ['humidity_haf', 'HAF de conservation de l’humidité']] },
+  { label: 'Conservation de l’humidité', products: [['humidity_valve', 'Valve de conservation de l’humidité'], ['humidity_haf', 'Relais 110 V pour HAF']] },
   { label: 'Capteurs', products: SENSOR_PRODUCTS },
 ]
 export const EQUIPMENT_PRODUCTS = EQUIPMENT_PRODUCT_GROUPS.flatMap(g => g.products)
@@ -45,5 +48,5 @@ export const EQUIPMENT_LABELS = Object.fromEntries(EQUIPMENT_PRODUCTS)
 export const EQUIPMENT_OUTPUTS = [
   ['louver_spring_loaded', 'Louvre seule spring loaded'], ['louver_open_close', 'Louvre seule open/close'],
   ['louver_with_fan', 'Louvre spring loaded + ventilateur'],
-  ['humidity_valve', 'Valve de conservation de l’humidité'], ['humidity_haf', 'HAF de conservation de l’humidité'],
+  ['humidity_valve', 'Valve de conservation de l’humidité'], ['humidity_haf', 'Relais 110 V pour HAF'],
 ]

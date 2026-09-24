@@ -6,7 +6,7 @@ import { logSync } from './syncLog.js'
 import { logSystemRun } from './systemAutomations.js'
 import { LEGACY_SYNCS } from './airtable.js'
 import { syncFactureLinksFromWebhook } from './factureLinks.js'
-import { routeSync } from './airtableMirrorEngine.js'
+import { routeSync, ENGINE_ONLY_SYNCS } from './airtableMirrorEngine.js'
 import { APP_URL } from '../config/appUrl.js'
 
 const NOTIFICATION_URL = `${APP_URL}/erp/api/connectors/airtable/webhook-ping`
@@ -21,6 +21,7 @@ const NOTIFICATION_URL = `${APP_URL}/erp/api/connectors/airtable/webhook-ping`
 // seul le rattrapage de liens subsiste.
 export const LEGACY_SYNC_FNS = {
   ...LEGACY_SYNCS,
+  ...ENGINE_ONLY_SYNCS,
   // Factures : pas de re-sync complet (le sync Airtable a été déconnecté).
   // On ne capte que les changements de liens projet/commande, et seulement
   // pour les factures déjà connues côté Stripe.
@@ -47,6 +48,7 @@ const MODULE_SYNC_PRIORITY = {
   projets: 1,      // references companies
   pieces: 1,
   serials: 1,
+  fournitures: 1,  // avant achats_fournitures, qui les lie
   orders: 2,       // reference projects + companies
   order_items: 3,  // référencent les commandes
   soumissions: 2,

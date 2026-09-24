@@ -125,6 +125,10 @@ async function signIn(ctx) {
 export default {
   label: 'DigiKey',
   fields: { username: 'Courriel du compte MyDigiKey', password: 'Mot de passe', totp: 'Secret 2FA (optionnel)' },
+  // Cloudflare Turnstile garde l'entrée de MyDigiKey, y compris avec une session
+  // valide : un navigateur sans humain ne coche pas la case. Seule une session
+  // ouverte à la main puis envoyée à l'ERP passe.
+  requiresImportedSession: true,
 
   async list(ctx) {
     const { page, context, log } = ctx

@@ -35,6 +35,17 @@ const PORTAL_ID = 'qb-select-portal'
 //                            « Rafraîchir » des champs Airtable).
 //  - className             : classes du bouton déclencheur. Défaut: ancien look QB.
 //  - size                  : 'xs' | 'sm' — taille typographique du menu. Défaut 'xs'.
+//  VARIANTE « tableau » (menu d'achat LIA de la fiche reçu) — tout est optionnel :
+//  - searchAside           : JSX à droite du champ de recherche (ex. un compte).
+//  - listHeader            : JSX épinglé au-dessus de la liste (en-têtes de colonnes).
+//  - getOptionGroup(opt)   : libellé de groupe ; un séparateur s'affiche à chaque changement.
+//  - optionClassName(opt)  : classes ajoutées à la rangée (ex. fond de la suggestion).
+//  - hideOption(opt)       : option absente de la liste mais affichable comme valeur.
+//  - hideCheck             : pas de coche en tête de rangée.
+//  - minMenuWidth          : largeur minimale du menu ouvert. Défaut 240.
+//  - quietSelection        : le choix actuel n'a ni fond ni couleur, seulement une
+//                            coche grise (quand une autre rangée porte déjà le vert).
+//  - menuClassName         : classes ajoutées au menu ouvert.
 //  - disabled              : bool.
 export function SearchableSelect({
   value,
@@ -54,6 +65,15 @@ export function SearchableSelect({
   size = 'xs',
   disabled = false,
   testId,
+  searchAside,
+  listHeader,
+  getOptionGroup,
+  optionClassName,
+  hideOption,
+  hideCheck = false,
+  minMenuWidth = 240,
+  quietSelection = false,
+  menuClassName = '',
 }) {
   const [open, setOpen] = useState(false)
   const [search, setSearch] = useState('')
@@ -92,10 +112,11 @@ export function SearchableSelect({
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
-    if (!q || remoteSearch) return options
+    const listed = hideOption ? options.filter(o => !hideOption(o)) : options
+    if (!q || remoteSearch) return listed
     const match = filterOption || ((o, query) => String(getOptionLabel(o) ?? '').toLowerCase().includes(query))
-    return options.filter(o => match(o, q))
-  }, [options, search, filterOption, getOptionLabel, remoteSearch])
+    return listed.filter(o => match(o, q))
+  }, [options, search, filterOption, getOptionLabel, remoteSearch, hideOption])
 
   const computePos = useCallback(() => {
     const rect = btnRef.current?.getBoundingClientRect()
@@ -105,10 +126,10 @@ export function SearchableSelect({
     setPos({
       top: openUp ? rect.top - 4 : rect.bottom + 4,
       left: rect.left,
-      width: Math.max(rect.width, 240),
+      width: Math.max(rect.width, minMenuWidth),
       openUp,
     })
-  }, [])
+  }, [minMenuWidth])
 
   useEffect(() => {
     if (!open) return
@@ -187,10 +208,10 @@ export function SearchableSelect({
             width: pos.width,
             zIndex: 9999,
           }}
-          className="bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden flex flex-col"
+          className={`bg-white border border-slate-200 rounded-lg shadow-xl overflow-hidden flex flex-col ${menuClassName}`}
         >
-          <div className="p-2 border-b border-slate-100">
-            <div className="relative">
+          <div className={`p-2 border-b border-slate-100 ${searchAside ? 'flex items-center gap-2' : ''}`}>
+            <div className={`relative ${searchAside ? 'flex-1 min-w-0' : ''}`}>
               <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
               <input
                 ref={inputRef}
@@ -200,15 +221,17 @@ export function SearchableSelect({
                 className={`w-full pl-7 pr-2 py-1.5 ${txt} border border-slate-200 rounded focus:outline-none focus:ring-1 focus:ring-brand-400`}
               />
             </div>
+            {searchAside && <div className={`shrink-0 ${txt} text-slate-400`}>{searchAside}</div>}
           </div>
+          {listHeader && <div className="flex-shrink-0 border-b border-slate-100">{listHeader}</div>}
           <div className="max-h-64 overflow-y-auto">
             {showEmpty && (
               <button
                 type="button"
                 onClick={() => commit('')}
-                className={`w-full text-left px-3 py-2 ${txt} hover:bg-slate-50 flex items-center gap-2 ${String(value) === '' ? 'text-brand-600 font-medium bg-brand-50' : 'text-slate-500'}`}
+                className={`w-full text-left px-3 py-2 ${txt} hover:bg-slate-50 flex items-center gap-2 ${String(value) === '' && !quietSelection ? 'text-brand-600 font-medium bg-brand-50' : 'text-slate-500'}`}
               >
-                <Check size={13} className={`flex-shrink-0 ${String(value) === '' ? 'text-brand-600' : 'text-transparent'}`} />
+                <Check size={13} className={`flex-shrink-0 ${String(value) !== '' ? 'text-transparent' : quietSelection ? 'text-slate-400' : 'text-brand-600'}`} />
                 <span className="truncate">{emptyOption}</span>
               </button>
             )}
@@ -216,20 +239,27 @@ export function SearchableSelect({
               <p className={`${txt} text-slate-400 text-center py-3`}>Aucun résultat</p>
             ) : filtered.map((o, idx) => {
               const isSel = String(getOptionValue(o)) === String(value)
+              const group = getOptionGroup ? getOptionGroup(o) : null
+              const newGroup = group && (idx === 0 || group !== getOptionGroup(filtered[idx - 1]))
+              const extra = optionClassName?.(o) || ''
               return (
+                <div key={keyOf(o) ?? idx}>
+                {newGroup && (
+                  <div className="px-3 pt-2 pb-1 text-[10px] font-medium text-slate-400 border-t border-slate-100">{group}</div>
+                )}
                 <button
-                  key={keyOf(o) ?? idx}
                   type="button"
                   onClick={() => commit(getOptionValue(o))}
                   onMouseEnter={() => setActiveIdx(idx)}
                   title={titleOf(o)}
-                  className={`w-full text-left px-3 py-2 ${txt} flex items-center gap-2 transition-colors ${idx === activeIdx ? 'bg-slate-50' : ''} ${isSel ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
+                  className={`w-full text-left px-3 py-2 ${txt} flex items-center gap-2 transition-colors ${extra} ${idx === activeIdx && !extra ? 'bg-slate-50' : ''} ${isSel && !quietSelection ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
                 >
-                  <Check size={13} className={`flex-shrink-0 ${isSel ? 'text-brand-600' : 'text-transparent'}`} />
+                  {!hideCheck && <Check size={13} className={`flex-shrink-0 ${isSel ? 'text-brand-600' : 'text-transparent'}`} />}
                   <span className="flex-1 min-w-0 truncate">
                     {renderOption ? renderOption(o) : getOptionLabel(o)}
                   </span>
                 </button>
+                </div>
               )
             })}
           </div>

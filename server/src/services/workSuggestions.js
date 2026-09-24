@@ -11,13 +11,14 @@
 import { createHash } from 'crypto'
 import { newRecordId } from '../utils/recordId.js'
 import { execFileSync } from 'child_process'
-import { readdirSync } from 'fs'
+import { readdirSync, readFileSync } from 'fs'
 import db from '../db/database.js'
 import { broadcastAll } from './realtime.js'
-import { runToollessClaude } from './taskRunner.js'
+import { runToollessClaude, getSettings } from './taskRunner.js'
 import { preferredAgentModel } from './agentModel.js'
 import { createPrompt } from './promptQueue.js'
 import { listRecurringTasks } from './recurringWork.js'
+import { collectReviewChunks, reviewPrompt, validateReviewFinding } from './appReview.js'
 
 const REPO = '/home/ec2-user/erp'
 const MAX_NEW_PER_RUN = 5
@@ -72,11 +73,12 @@ export function fingerprintOf(title) {
   return createHash('sha1').update(norm).digest('hex')
 }
 
-export function listSuggestions({ status = null, kind = null } = {}) {
+export function listSuggestions({ status = null, kind = null, source = null } = {}) {
   const where = ['s.deleted_at IS NULL']
   const params = []
   if (status) { where.push('s.status=?'); params.push(status) }
   if (kind) { where.push('s.kind=?'); params.push(kind) }
+  if (source) { where.push('s.source=?'); params.push(source) }
   // Une suggestion promue vit désormais dans la file (elle y porte sa pastille
   // « Claude ») : on joint quand même l'état de l'item promu, c'est ce qui permet
   // à un appel `status=accepted` de savoir ce qu'elle est devenue.
@@ -97,18 +99,18 @@ export function getSuggestion(id) {
 }
 
 /** Insère une suggestion ; retourne null si l'empreinte existe déjà (doublon). */
-export function addSuggestion({ title, rationale = null, prompt, area = null, kind = 'chantier' }) {
+export function addSuggestion({ title, rationale = null, prompt, area = null, kind = 'chantier', fingerprintKey = null, source = 'legacy' }) {
   const t = String(title || '').trim()
   const p = String(prompt || '').trim()
   if (!t || !p) return null
-  const fp = fingerprintOf(t)
+  const fp = fingerprintOf(fingerprintKey || t)
   const exists = db.prepare('SELECT id FROM work_suggestions WHERE fingerprint=?').get(fp)
   if (exists) return null
   const id = newRecordId()
   db.prepare(`
-    INSERT INTO work_suggestions (id, title, rationale, prompt, area, kind, fingerprint)
-    VALUES (?,?,?,?,?,?,?)
-  `).run(id, t, rationale, p, normalizeArea(area), normalizeKind(kind), fp)
+    INSERT INTO work_suggestions (id, title, rationale, prompt, area, kind, fingerprint, source)
+    VALUES (?,?,?,?,?,?,?,?)
+  `).run(id, t, rationale, p, normalizeArea(area), normalizeKind(kind), fp, source === 'app_review' ? source : 'legacy')
   broadcast()
   return db.prepare('SELECT * FROM work_suggestions WHERE id=?').get(id)
 }
@@ -488,9 +490,103 @@ export async function generateIntegrationSuggestions() {
  * fois — `runToollessClaude` démarre un vrai process). `kind` restreint à un
  * moteur ; sans `kind`, les deux tournent.
  */
-export async function runSuggestionEngines({ kind = null } = {}) {
-  const out = {}
-  if (kind !== 'integration') out.chantiers = await generateSuggestions()
-  if (kind !== 'chantier') out.integrations = await generateIntegrationSuggestions()
-  return out
+export async function generateAppReview() {
+  // Instantané au début du passage : le cron et le bouton utilisent les mêmes
+  // critères persistés, même s’ils changent pendant l’appel au modèle.
+  const criteria = getSettings().appReviewCriteria || ''
+  const chunks = collectReviewChunks({ repo: REPO })
+  if (!chunks.length) return { scanned: 0, proposed: 0, added: 0 }
+  const batches = []
+  let batch = []
+  let batchSize = 0
+  for (const chunk of chunks) {
+    const size = chunk.code.length
+    if (batch.length && batchSize + size > 60000) {
+      batches.push(batch)
+      batch = []
+      batchSize = 0
+    }
+    batch.push(chunk)
+    batchSize += size
+  }
+  if (batch.length) batches.push(batch)
+
+  const items = []
+  let known = buildContextDigest().known
+  for (const samples of batches) {
+    const { code, text } = await runToollessClaude({
+      prompt: reviewPrompt(samples, known, criteria),
+      model: 'codex', effort: 'high', timeoutMs: 6 * 60_000,
+    })
+    if (code !== 0) throw new Error('Analyse de l’app interrompue ou modèle indisponible')
+    const found = parseSuggestionsJson(text).filter(it => validateReviewFinding(it, samples))
+    items.push(...found)
+    known = [known, ...found.map(it => it.title)].filter(Boolean).join('\n')
+  }
+  const selected = items.slice(0, 3)
+  let added = 0
+  for (const it of selected) {
+    // Ne publie pas une preuve devenue obsolète pendant l'appel au modèle.
+    const current = collectCurrentReviewLine(it)
+    if (current !== it.evidence.trim()) continue
+    if (addSuggestion({
+      title: `[${it.severity}] ${it.title}`,
+      fingerprintKey: `app-review:${it.path}:${it.evidence.trim()}`,
+      source: 'app_review',
+      area: 'technique',
+      rationale: `Revue statique · ${it.path}:${it.line}\n${it.rationale}`,
+      prompt: [
+        `Problème signalé par une revue statique (à confirmer avant modification) : ${it.title}`,
+        `Priorité : ${it.severity}. Emplacement : ${it.path}:${it.line}`,
+        ...(criteria ? [`Critères d’analyse demandés : ${criteria}`] : []),
+        `Preuve : ${it.evidence}`, `Scénario et impact : ${it.rationale}`,
+        `Solution proposée : ${it.solution}`, `Vérification : ${it.verification}`,
+        'Relire le contexte complet et vérifier que le problème existe toujours. Corriger uniquement ce problème confirmé ; préserver les modifications en cours.',
+        'Respecter CLAUDE.md : journal des nouveautés, build client et redémarrage erp-server si nécessaire.',
+      ].join('\n\n'),
+    })) added++
+  }
+  console.log(`🤖 Revue de l’app : ${chunks.length} extrait(s), ${selected.length} proposition(s), ${added} nouvelle(s)`)
+  return { scanned: chunks.length, proposed: selected.length, added }
+}
+
+function collectCurrentReviewLine(item) {
+  try { return readFileSync(`${REPO}/${item.path}`, 'utf8').split('\n')[item.line - 1]?.trim() } catch { return null }
+}
+
+let suggestionRun = null
+let reviewRun = null
+function runAppReview() {
+  if (!reviewRun) {
+    reviewRun = generateAppReview()
+      .then(result => {
+        broadcastAll({ type: 'travaux:suggestions:updated', review: result })
+        return result
+      })
+      .catch(error => {
+        broadcastAll({ type: 'travaux:suggestions:updated', review: { error: error.message } })
+        throw error
+      })
+      .finally(() => { reviewRun = null })
+  }
+  return reviewRun
+}
+export function runSuggestionEngines({ kind = null, source = null } = {}) {
+  // La vue simplifiée ne lance jamais les anciens moteurs de recommandations.
+  if (source === 'app_review') return runAppReview().then(review => ({ review }))
+  // Cron, bouton manuel et automation partagent un seul passage à la fois.
+  if (suggestionRun) return suggestionRun
+  suggestionRun = (async () => {
+    const out = {}
+    if (kind !== 'integration') {
+      try { out.review = await runAppReview() } catch (error) {
+        console.error('🤖 Revue de l’app:', error.message)
+        out.review = { error: error.message }
+      }
+      out.chantiers = await generateSuggestions()
+    }
+    if (kind !== 'chantier') out.integrations = await generateIntegrationSuggestions()
+    return out
+  })().finally(() => { suggestionRun = null })
+  return suggestionRun
 }

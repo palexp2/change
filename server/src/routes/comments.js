@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 // Fil de commentaires + @mentions attaché à n'importe quel enregistrement.
 //
 // Contrairement à InteractionTimeline (historique en lecture seule des
@@ -16,6 +17,16 @@ import { createNotification } from '../services/notifications.js'
 
 const router = Router()
 router.use(requireAuth)
+router.use((req, res, next) => {
+  const type = req.query.record_type || req.body?.record_type
+  if (type === 'employee' && !hasRole(req.user, 'rh')) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+})
+router.param('id', (req, res, next, id) => {
+  const comment = db.prepare('SELECT record_type FROM record_comments WHERE id=?').get(id)
+  if (comment?.record_type === 'employee' && !hasRole(req.user, 'rh')) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+})
 
 // record_type -> URL de la fiche détail. Sert à la fois de whitelist (un type
 // absent est refusé) et de cible des deep-links de notification.
@@ -163,7 +174,7 @@ router.patch('/:id', (req, res) => {
 router.delete('/:id', (req, res) => {
   const c = db.prepare('SELECT * FROM record_comments WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
   if (!c) return res.status(404).json({ error: 'Commentaire introuvable' })
-  if (c.author_id !== req.user.id && req.user.role !== 'admin') {
+  if (c.author_id !== req.user.id && !hasRole(req.user, 'admin')) {
     return res.status(403).json({ error: 'Suppression réservée à l\'auteur ou à un admin' })
   }
   db.prepare(

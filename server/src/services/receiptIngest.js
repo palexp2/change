@@ -32,9 +32,11 @@ export function contentAlreadyImported(hash) {
  * @param {string} ext extension avec le point (« .pdf »)
  * @param {string} source valeur de sale_receipts.source (« scraper:amazon »…)
  * @param {string|null} userId auteur attribué
+ * @param {string|null} bankContext ce que la sortie d'argent visée nous apprend
+ *   déjà (fournisseur, montant, date) — repère donné à la lecture du document
  * @returns {{status:'imported'|'duplicate', id?:string, hash:string}}
  */
-export function ingestReceiptBuffer({ buffer, originalName, ext = '.pdf', source = 'scraper', userId = null }) {
+export function ingestReceiptBuffer({ buffer, originalName, ext = '.pdf', source = 'scraper', userId = null, bankContext = null }) {
   const hash = sha256(buffer)
   const existing = db.prepare('SELECT id FROM sale_receipts WHERE content_sha256=?').get(hash)
   if (existing) return { status: 'duplicate', id: existing.id, hash }
@@ -52,6 +54,6 @@ export function ingestReceiptBuffer({ buffer, originalName, ext = '.pdf', source
   const created = db.prepare('SELECT * FROM sale_receipts WHERE id=?').get(id)
   if (created) emitEntity('sale_receipt', 'created', id, { ...created, items: [] }, userId)
 
-  runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId, trigger: 'scheduled' })
+  runExtractionAndUpdate({ saleReceiptId: id, filePath, fileExt: ext, userId, trigger: 'scheduled', bankContext })
   return { status: 'imported', id, hash, filename: storedName }
 }

@@ -7,7 +7,7 @@ const EMAIL = process.env.ERP_EMAIL || 'pap@orisha.io'
 const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
-describe('Dashboard comptabilité — projection BNC + saisie de solde', () => {
+describe('Comptabilité — projection BNC + saisie de solde', () => {
   let browser, ctx, page, balanceId, recurringId
 
   const apiFetch = (path, opts = {}) => page.evaluate(async ({ path, opts }) => {
@@ -39,7 +39,7 @@ describe('Dashboard comptabilité — projection BNC + saisie de solde', () => {
 
   test('la page /comptabilite affiche les sections attendues', async () => {
     await page.goto(URL + '/comptabilite', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('h1:has-text("Dashboard comptabilité")', { timeout: 15000 })
+    await page.waitForSelector('h1:has-text("Comptabilité")', { timeout: 15000 })
     // « Revenus reportés » a quitté le dashboard compta : les sections restantes
     // sont la trésorerie, les anomalies, la paie, l'AGA et les reçus manquants.
     for (const id of ['treasury-section', 'compta-anomalies', 'compta-paie', 'compta-missing-receipts']) {

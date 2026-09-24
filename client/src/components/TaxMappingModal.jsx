@@ -43,7 +43,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
     e.preventDefault()
     setError(null)
     if (form.stripe_tax_ids.length === 0 || !form.qb_tax_code.trim()) {
-      setError('Au moins un Stripe Tax ID et un QB Tax Code sont requis')
+      setError('Au moins un code de taxe Stripe et un code de taxe QuickBooks sont requis')
       return
     }
     const combinedKey = [...new Set(form.stripe_tax_ids)].sort().join('+')
@@ -95,7 +95,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
   }
 
   async function handleDelete(id) {
-    if (!(await confirm('Supprimer ce mapping ?'))) return
+    if (!(await confirm('Supprimer cette correspondance ?'))) return
     await api.stripeQueue.deleteTaxMapping(id)
     await reload()
   }
@@ -115,14 +115,14 @@ export function TaxMappingModal({ isOpen, onClose }) {
           {loading ? (
             <div className="text-sm text-slate-500"><Spinner size="xs" label="Chargement…" /></div>
           ) : mappings.length === 0 ? (
-            <div className="text-sm text-slate-400 italic">Aucun mapping configuré</div>
+            <div className="text-sm text-slate-400 italic">Aucune correspondance configurée</div>
           ) : (
             <div className="border border-slate-200 rounded-lg overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-xs text-slate-500 uppercase tracking-wide">
                   <tr>
                     <th className="text-left px-3 py-2">Stripe Tax ID</th>
-                    <th className="text-left px-3 py-2">QB Tax Code</th>
+                    <th className="text-left px-3 py-2">Code de taxe QuickBooks</th>
                     <th className="w-10"></th>
                   </tr>
                 </thead>
@@ -227,7 +227,7 @@ export function TaxMappingModal({ isOpen, onClose }) {
             )}
           </div>
           <div>
-            <label className="label">QB Tax Code</label>
+            <label className="label">Code de taxe QuickBooks</label>
             <QbTaxCodeCombobox
               value={form.qb_tax_code}
               onChange={v => setForm({ ...form, qb_tax_code: v })}

@@ -374,7 +374,13 @@ export function TravauxQuickProvider({ children }) {
     () => (data.prompts || []).filter(p => ['running', 'queued'].includes(p.status) && !isAsking(p)).length,
     [data.prompts])
 
-  const value = useMemo(() => ({ open, setOpen, askingCount, activeCount }), [open, askingCount, activeCount])
+  // Ce que Claude traite réellement (pas ce qui attend son tour) : pastille des jauges IA du rail.
+  const runningCount = useMemo(
+    () => (data.prompts || []).filter(p => p.status === 'running' && p.run_state === 'executing').length,
+    [data.prompts])
+
+  const value = useMemo(() => ({ open, setOpen, askingCount, activeCount, runningCount }),
+    [open, askingCount, activeCount, runningCount])
 
   return (
     <Ctx.Provider value={value}>

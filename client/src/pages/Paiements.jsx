@@ -23,7 +23,7 @@ const fmtNum = n => fmtNumber(n, { decimals: 2 })
 //   - skip volontaire → « Ignoré »
 //   - sinon → « À publier »
 function qbStatus(row) {
-  if (row.synthetic) return { label: 'Au payout', color: 'blue' }
+  if (row.synthetic) return { label: 'Au versement', color: 'blue' }
   if (row.qb_deposit_id || row.qb_journal_entry_id || row.qb_payment_id) return { label: 'Publié', color: 'green' }
   if (row.qb_skipped) return { label: 'Ignoré', color: 'gray' }
   return { label: 'À publier', color: 'yellow' }

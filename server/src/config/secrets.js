@@ -26,11 +26,9 @@ function loadSecret(name, { minLength = 32, required = true } = {}) {
   return value
 }
 
-// Validated values — null if missing/weak. Caller must handle null gracefully
-// (warn-only mode for now to avoid taking prod down on existing weak configs).
+// Refuse to sign or accept sessions with missing or known weak secrets.
 export const JWT_SECRET = loadSecret('JWT_SECRET', { minLength: 32 })
-  ?? process.env.JWT_SECRET // fall through to whatever is set, even if weak
-  ?? 'change-this-secret-in-production' // last-resort: keep legacy behavior
+if (!JWT_SECRET || JWT_SECRET.length < 32) throw new Error('JWT_SECRET must be a strong secret of at least 32 characters')
 // AGENT_INTERNAL_SECRET: if missing, generate an ephemeral per-process secret so
 // the agent task system keeps working without a hardcoded weak default. Both
 // the route handler and the task runner import this same value, so they agree.

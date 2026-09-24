@@ -27,7 +27,7 @@ describe('Publication paie & AGA — sans confirmation', () => {
 
   after(async () => { await browser?.close() })
 
-  test('répartition de paie : "Publier sur QB" pousse directement, sans confirm()', async () => {
+  test('répartition de paie : "Publier dans QuickBooks" pousse directement, sans confirm()', async () => {
     let dialogFired = false
     page.on('dialog', d => { dialogFired = true; d.dismiss() })
 
@@ -60,7 +60,7 @@ describe('Publication paie & AGA — sans confirmation', () => {
     await page.unroute('**/api/paies/*/repartition-push')
   })
 
-  test('assurance collective (AGA) : "Publier sur QB" pousse directement, sans confirm()', async () => {
+  test('assurance collective (AGA) : "Publier dans QuickBooks" pousse directement, sans confirm()', async () => {
     let dialogFired = false
     page.on('dialog', d => { dialogFired = true; d.dismiss() })
 

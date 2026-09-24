@@ -28,6 +28,7 @@ if (!process.env.__TEST_DB_PATH) {
 // l'environnement : signataire (makeToken) et vérificateur (requireAuth) lisent
 // tous deux JWT_SECRET via config/secrets.js, donc ils restent cohérents quoi
 // qu'il arrive.
+process.env.CONNECTOR_ENCRYPTION_KEY ||= 'a'.repeat(64)
 process.env.JWT_SECRET ||= 'test-jwt-secret-thirty-two-characters-min-0000'
 
 // Realtime WS désactivé — le harnais monte l'app sans serveur http long-vivant.

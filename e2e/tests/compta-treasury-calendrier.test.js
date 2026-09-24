@@ -1,4 +1,4 @@
-// Dashboard comptabilité → « Projection du solde BNC » : retour de la vue
+// Comptabilité → « Projection du solde BNC » : retour de la vue
 // calendrier à côté de la vue liste.
 //
 // La bascule Liste / Calendrier avait disparu lors d'un nettoyage de la carte.

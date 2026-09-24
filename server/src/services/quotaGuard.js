@@ -57,7 +57,7 @@ export function getQuotaFloors() {
   }
 }
 
-const CHECK_EVERY_MS = 2 * 60_000   // la lecture est cachée 60 s côté claudeUsage
+const CHECK_EVERY_MS = 2 * 60_000   // la lecture est cachée 5 min côté claudeUsage
 const FIRST_CHECK_MS = 30_000       // laisse le serveur finir de démarrer
 
 /**

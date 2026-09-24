@@ -1,29 +1,21 @@
+import { rolesOf } from '../../../shared/roles.mjs'
 import { Router } from 'express';
 import { newRecordId } from '../utils/recordId.js';
 import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
+import { issueSession } from '../services/sessionSecurity.js';
+import { loginRateLimit, makeLoginRateLimit } from '../middleware/loginRateLimit.js';
+import { randomBytes, createHash } from 'node:crypto';
+import { APP_URL } from '../config/appUrl.js';
+import { resolveFromAddress, getPostmarkClient } from '../services/postmarkConfig.js';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
-import { JWT_SECRET } from '../config/secrets.js';
 
 const router = Router();
 
-// Durée de vie volontairement très longue (10 ans) : app single-tenant interne,
-// pas de mécanisme de refresh token, et les déconnexions au bout de 7 jours
-// étaient vécues comme un bug. Le rôle n'est pas figé pour autant — requireAuth
-// le relit en DB à chaque requête, et désactiver un compte le coupe côté login.
-function generateToken(user) {
-  return jwt.sign(
-    { id: user.id, role: user.role, name: user.name },
-    JWT_SECRET,
-    { expiresIn: '10y' }
-  );
-}
-
 // POST /api/auth/login
-router.post('/login', async (req, res) => {
+router.post('/login', loginRateLimit, async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) {
+  if (typeof email !== 'string' || typeof password !== 'string' || !email || !password || email.length > 254 || password.length > 1024) {
     return res.status(400).json({ error: 'Email and password required' });
   }
 
@@ -37,7 +29,7 @@ router.post('/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  const token = generateToken(user);
+  const token = issueSession(user);
 
   res.json({
     token,
@@ -45,7 +37,7 @@ router.post('/login', async (req, res) => {
       id: user.id,
       email: user.email,
       name: user.name,
-      role: user.role,
+      role: user.role, roles: rolesOf(user), employee_id: user.employee_id || null,
     },
   });
 });
@@ -68,8 +60,8 @@ router.post('/setup', async (req, res) => {
   const userId = newRecordId();
   const passwordHash = await bcrypt.hash(password, 10);
 
-  db.prepare('INSERT INTO users (id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)')
-    .run(userId, email.toLowerCase().trim(), passwordHash, admin_name, 'admin');
+  db.prepare('INSERT INTO users (id, email, password_hash, name, role, roles) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(userId, email.toLowerCase().trim(), passwordHash, admin_name, 'admin', JSON.stringify(['user', 'admin', 'rh']));
 
   res.status(201).json({ message: 'Setup complete. You can now log in.' });
 });
@@ -77,9 +69,9 @@ router.post('/setup', async (req, res) => {
 // GET /api/auth/users — liste des utilisateurs actifs du tenant (accessible à tous)
 router.get('/users', requireAuth, (req, res) => {
   const users = db.prepare(
-    'SELECT id, name, role FROM users WHERE active = 1 ORDER BY name'
+    'SELECT id, name, role, roles FROM users WHERE active = 1 ORDER BY name'
   ).all();
-  res.json(users);
+  res.json(users.map(user => ({ ...user, roles: rolesOf(user) })));
 });
 
 // POST /api/auth/change-password
@@ -100,11 +92,101 @@ router.post('/change-password', requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// ─── Mot de passe oublié ──────────────────────────────────────────────────────
+// Le lien en clair ne vit que dans le courriel : en base on ne garde que son
+// hachage. Une nouvelle demande périme les précédentes.
+
+const RESET_TTL_MS = 60 * 60 * 1000;
+const forgotRateLimit = makeLoginRateLimit({ windowMs: 15 * 60_000, max: 5 });
+
+function hashToken(token) {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function findLiveReset(token) {
+  if (typeof token !== 'string' || token.length < 20 || token.length > 200) return null;
+  const row = db.prepare(
+    `SELECT * FROM password_resets WHERE token_hash = ? AND used_at IS NULL`
+  ).get(hashToken(token));
+  if (!row) return null;
+  if (new Date(row.expires_at).getTime() < Date.now()) return null;
+  const user = db.prepare('SELECT * FROM users WHERE id = ? AND active = 1').get(row.user_id);
+  if (!user) return null;
+  return { row, user };
+}
+
+async function sendResetEmail(user, token) {
+  const link = `${APP_URL}/erp/reset-password?token=${encodeURIComponent(token)}`;
+  const from = resolveFromAddress();
+  if (!from) throw new Error('Adresse expéditeur Postmark manquante');
+  await getPostmarkClient().sendEmail({
+    From: from,
+    To: user.email,
+    Subject: 'Boréal — réinitialisation de votre mot de passe',
+    HtmlBody: `<p>Bonjour ${user.name || ''},</p>
+<p>Votre identifiant : <strong>${user.email}</strong></p>
+<p><a href="${link}">Choisir un nouveau mot de passe</a> (lien valide 1 heure).</p>
+<p>Si vous n'avez rien demandé, ignorez ce message.</p>`,
+    TextBody: `Identifiant : ${user.email}\nNouveau mot de passe (lien valide 1 heure) : ${link}`,
+  });
+}
+
+// POST /api/auth/forgot-password — réponse volontairement identique que le
+// compte existe ou non (pas d'énumération d'adresses).
+router.post('/forgot-password', forgotRateLimit, async (req, res) => {
+  const email = typeof req.body?.email === 'string' ? req.body.email.toLowerCase().trim() : '';
+  if (!email || email.length > 254) return res.status(400).json({ error: 'Courriel requis' });
+
+  const user = db.prepare('SELECT * FROM users WHERE email = ? AND active = 1').get(email);
+  if (user) {
+    db.prepare('UPDATE password_resets SET used_at = ? WHERE user_id = ? AND used_at IS NULL')
+      .run(new Date().toISOString(), user.id);
+    const token = randomBytes(32).toString('base64url');
+    db.prepare(
+      'INSERT INTO password_resets (id, user_id, token_hash, expires_at) VALUES (?, ?, ?, ?)'
+    ).run(newRecordId(), user.id, hashToken(token), new Date(Date.now() + RESET_TTL_MS).toISOString());
+    try {
+      await sendResetEmail(user, token);
+    } catch (err) {
+      console.error('[auth] envoi du courriel de réinitialisation échoué:', err.message);
+    }
+  }
+  res.json({ ok: true });
+});
+
+// POST /api/auth/reset-password/check — le lien est-il encore bon ?
+router.post('/reset-password/check', (req, res) => {
+  const found = findLiveReset(req.body?.token);
+  if (!found) return res.json({ valid: false });
+  res.json({ valid: true, email: found.user.email });
+});
+
+// POST /api/auth/reset-password — pose le nouveau mot de passe et connecte.
+router.post('/reset-password', async (req, res) => {
+  const { token, password } = req.body || {};
+  if (typeof password !== 'string' || password.length < 8 || password.length > 1024) {
+    return res.status(400).json({ error: 'Le mot de passe doit contenir au moins 8 caractères' });
+  }
+  const found = findLiveReset(token);
+  if (!found) return res.status(400).json({ error: 'Lien invalide ou expiré' });
+
+  const hash = await bcrypt.hash(password, 10);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, found.user.id);
+  db.prepare('UPDATE password_resets SET used_at = ? WHERE id = ?')
+    .run(new Date().toISOString(), found.row.id);
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(found.user.id);
+  res.json({
+    token: issueSession(user),
+    user: { id: user.id, email: user.email, name: user.name, role: user.role, roles: rolesOf(user), employee_id: user.employee_id || null },
+  });
+});
+
 // GET /api/auth/me
 router.get('/me', requireAuth, (req, res) => {
-  const user = db.prepare('SELECT id, email, name, role, created_at FROM users WHERE id = ?').get(req.user.id);
+  const user = db.prepare('SELECT id, email, name, role, roles, employee_id, created_at FROM users WHERE id = ?').get(req.user.id);
   if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+  res.json({ ...user, roles: rolesOf(user) });
 });
 
 function readNavHidden(userId) {

@@ -198,13 +198,18 @@ export async function apiBlobNamed(path) {
 }
 
 export const api = {
+  // Jauges IA de la barre de gauche (tous les utilisateurs) : caches serveur seulement.
+  aiUsage: () => getFresh('/ai-usage'),
   // Auth
   auth: {
     login: (email, password) => post('/auth/login', { email, password }),
     setup: (data) => post('/auth/setup', data),
-    me: () => get('/auth/me'),
+    me: () => getFresh('/auth/me'),
     users: () => get('/auth/users'),
     changePassword: (current_password, new_password) => post('/auth/change-password', { current_password, new_password }),
+    forgotPassword: (email) => post('/auth/forgot-password', { email }),
+    checkReset: (token) => post('/auth/reset-password/check', { token }),
+    resetPassword: (token, password) => post('/auth/reset-password', { token, password }),
     getPreferences: () => get('/auth/preferences'),
     updatePreferences: (data) => patch('/auth/preferences', data),
   },
@@ -219,6 +224,7 @@ export const api = {
     update: (id, data) => put(`/companies/${id}`, data),
     delete: (id) => del(`/companies/${id}`),
     onboardingResponses: (id) => get(`/companies/${id}/onboarding-responses`),
+    tickets: (id) => get(`/companies/${id}/tickets`),
   },
 
   // Contacts
@@ -259,11 +265,11 @@ export const api = {
     create: (data) => post('/products', data),
     update: (id, data) => put(`/products/${id}`, data),
     adjustStock: (id, data) => post(`/products/${id}/stock`, data),
-    // Apprend un code-barre à la pièce (étiquette fournisseur scannée au
-    // prélèvement) — le scan de commande le reconnaîtra ensuite comme le SKU.
-    addScanCode: (id, code) => post(`/products/${id}/scan-codes`, { code }),
     // Achats (PO Airtable) qui citent cette pièce — tableau « Achats » de la fiche.
     purchases: (id) => get(`/products/${id}/purchases`),
+    purchasePrefill: (id) => get(`/products/${id}/purchases/prefill`),
+    createPurchase: (id, data) => post(`/products/${id}/purchases`, data),
+    syncPurchase: (id, purchaseId) => post(`/products/${id}/purchases/${purchaseId}/sync`, {}),
     delete: (id) => del(`/products/${id}`),
     // Ce qui empêche la suppression (BOM, envois, achats liés) — sert à griser
     // le bouton avant même de tenter le DELETE (qui répond 409).
@@ -303,6 +309,7 @@ export const api = {
     addShipment: (id, data) => post(`/orders/${id}/shipments`, data),
     addItem: (id, data) => post(`/orders/${id}/items`, data),
     updateItem: (orderId, itemId, data) => patch(`/orders/${orderId}/items/${itemId}`, data),
+    unpickItem: (orderId, itemId, data) => post(`/orders/${orderId}/items/${itemId}/unpick`, data),
     duplicateItem: (orderId, itemId) => post(`/orders/${orderId}/items/${itemId}/duplicate`, {}),
     reorderItems: (orderId, order) => patch(`/orders/${orderId}/items/reorder`, order),
     deleteItem: (orderId, itemId) => del(`/orders/${orderId}/items/${itemId}`),
@@ -390,6 +397,7 @@ export const api = {
 
   // Admin
   admin: {
+    employeeOptions: () => get('/admin/employee-options'),
     listUsers: () => get('/admin/users'),
     createUser: (data) => post('/admin/users', data),
     updateUser: (id, data) => put(`/admin/users/${id}`, data),
@@ -519,6 +527,19 @@ export const api = {
     // Demande à la banque d'être interrogée tout de suite.
     refresh: (itemId) => post(`/plaid/items/${itemId}/refresh`, {}),
     removeItem: (itemId) => del(`/plaid/items/${itemId}`),
+  },
+
+  // Venn — deuxième banque (CAD + USD), en LECTURE SEULE : comptes, soldes et
+  // transactions. Aucun paiement n'est jamais émis d'ici.
+  venn: {
+    status: () => get('/venn/status'),
+    saveConfig: (data) => put('/venn/config', data),
+    deleteConfig: () => del('/venn/config'),
+    test: () => post('/venn/test'),
+    accounts: () => get('/venn/accounts'),
+    linkAccount: (bankAccountId, venn_account_id) =>
+      post(`/venn/accounts/${bankAccountId}/link`, { venn_account_id }),
+    sync: (body = {}) => post('/venn/sync', body),
   },
 
   // Stripe
@@ -709,6 +730,7 @@ export const api = {
     create: (data) => post('/purchases', data),
     update: (id, data) => patch(`/purchases/${id}`, data),
     delete: (id) => del(`/purchases/${id}`),
+    liaLinks: (params) => get('/purchases/lia-links?' + new URLSearchParams(params)),
   },
 
   // Serials
@@ -802,6 +824,7 @@ export const api = {
     create: (data) => post('/payments', data),
     update: (id, data) => patch(`/payments/${id}`, data),
     retryQb: (id) => post(`/payments/${id}/retry-qb`, {}),
+    updateDepositLink: (id, data) => patch(`/payments/${id}/deposit-link`, data),
     qbLinkSuggestions: (id) => get(`/payments/${id}/qb-link-suggestions`),
     qbCreditAccount: (id) => get(`/payments/${id}/qb-credit-account`),
     delete: (id) => del(`/payments/${id}`),
@@ -816,6 +839,10 @@ export const api = {
     // reviennent en 400, leur valeur serait écrasée au prochain sync.
     update: (id, data) => patch(`/projets/retours/${id}`, data),
     updateItem: (itemId, data) => patch(`/projets/retours/items/${itemId}`, data),
+    // Réception au pistolet : le code scanné pose la date et le réceptionniste
+    // sur l'article, et rend la phrase à afficher (étagère d'analyse ou de
+    // reconditionnement).
+    receiveScan: (id, data) => post(`/retours/${id}/receive-scan`, data),
     context: (id, addressId) => get(`/retours/${id}/return-context${addressId ? `?address_id=${addressId}` : ''}`),
     getRates: (id, data) => post(`/retours/${id}/return-rates`, data),
     createLabel: (id, data) => post(`/retours/${id}/return-label`, data),
@@ -886,6 +913,7 @@ export const api = {
     delete: (id) => del(`/discovery-forms/${id}`),
     equipmentPreview: (id) => get(`/discovery-forms/${id}/equipment-preview`),
     saveAddresses: (id, data) => patch(`/discovery-forms/${id}/addresses`, data),
+    saveOptions: (id, form_options) => patch(`/discovery-forms/${id}/options`, { form_options }),
     saveVerification: (id, verification) => patch(`/discovery-forms/${id}/verification`, { verification }),
     createOrder: (id) => post(`/discovery-forms/${id}/create-order`, {}),
     // Accès public au formulaire via short token (sans auth) — utilisé par la page client.
@@ -996,6 +1024,18 @@ export const api = {
     list: (params = {}) => get('/stock-movements?' + new URLSearchParams(params)),
   },
 
+  // Achats de fournitures (miroir Airtable « Fournitures » + « Achats fournitures »)
+  fournitures: {
+    list: () => get('/fournitures'),
+    createAchat: (data) => post('/fournitures/achats', data),
+    updateAchat: (id, data) => patch(`/fournitures/achats/${id}`, data),
+    get: (id) => get(`/fournitures/${id}`),
+    create: (data) => post('/fournitures', data),
+    update: (id, data) => patch(`/fournitures/${id}`, data),
+    delete: (id) => del(`/fournitures/${id}`),
+    sync: () => post('/fournitures/sync', {}),
+  },
+
   // Feed des opérations (journal d'activité applicatif — qui / quoi / quand)
   activity: {
     list: (params = {}) => get('/activity?' + new URLSearchParams(params)),
@@ -1086,6 +1126,9 @@ export const api = {
       update: (id, data) => put(`/treasury/payments/${id}`, data),
       setCleared: (id, cleared) => post(`/treasury/payments/${id}/cleared`, { cleared }),
       delete: (id) => del(`/treasury/payments/${id}`),
+      // Renvoie l'écriture de paiement dans QuickBooks quand l'envoi
+      // automatique a échoué ou avait été écarté.
+      qbPush: (id) => post(`/treasury/payments/${id}/qb-push`, {}),
       autoClear: (account = null) => post('/treasury/payments/auto-clear', { account }),
       importSheet: (since) => post('/treasury/payments/import-sheet', { since }),
       // Sync automatique de l'onglet Pmt_Suivi (toutes les 30 min) : active ?
@@ -1165,18 +1208,44 @@ export const api = {
     transactions: (accountId) => get(`/bank/accounts/${accountId}/transactions`),
     import: (accountId, data) => post(`/bank/accounts/${accountId}/import`, data),
     imports: (accountId) => get(`/bank/accounts/${accountId}/imports`),
+    // Dépôt de relevés : des fichiers entrent, un aperçu en sort, et rien
+    // n'est écrit avant le commit.
+    statements: {
+      upload: (formData) => uploadRequest('/bank/statements/upload', formData),
+      list: () => getFresh('/bank/statements'),
+      // getFresh : l'aperçu est interrogé en boucle pendant la lecture.
+      get: (id) => getFresh(`/bank/statements/${id}`),
+      setAccount: (id, accountId) => patch(`/bank/statements/${id}`, { account_id: accountId }),
+      reanalyze: (id) => post(`/bank/statements/${id}/reanalyze`, {}),
+      // Le fichier déposé est une facture, pas un relevé : il part à
+      // l'extraction de données.
+      toReceipt: (id) => post(`/bank/statements/${id}/to-receipt`, {}),
+      commit: (id, rows = null) => post(`/bank/statements/${id}/commit`, rows ? { rows } : {}),
+      remove: (id) => del(`/bank/statements/${id}`),
+    },
     automatch: (accountId) => post(`/bank/accounts/${accountId}/automatch`, {}),
     summary: (accountId) => get(`/bank/accounts/${accountId}/summary`),
     qbCompare: (accountId, params = {}) => {
       const qs = new URLSearchParams(Object.entries(params).filter(([, v]) => v)).toString()
       return get(`/bank/accounts/${accountId}/qb-compare${qs ? `?${qs}` : ''}`)
     },
-    reconcileAuto: (accountId) => post(`/bank/accounts/${accountId}/reconcile-auto`, {}),
+    // « Mettre à jour » : le seul bouton d'action de /rapprochement — apparier
+    // aux documents, vérifier dans QuickBooks, recalculer l'écart.
+    updateAll: (accountId) => post(`/bank/accounts/${accountId}/update-all`, {}),
     qbAudit: (accountId, sinceDays = null) => post(`/bank/accounts/${accountId}/qb-audit`, { sinceDays }),
     qbAccounts: () => get('/bank/qb-accounts'),
-    qbLink: (accountId) => post(`/bank/accounts/${accountId}/qb-link`, {}),
     suggestions: (txnId) => get(`/bank/transactions/${txnId}/suggestions`),
+    // Vue QuickBooks : le geste qu'attend chaque ligne du compte (virement,
+    // appariement, publication), en un seul appel.
+    nextActions: (accountId) => getFresh(`/bank/accounts/${accountId}/next-actions`),
     match: (txnId, data) => post(`/bank/transactions/${txnId}/match`, data),
+    publishMatched: (txnId) => post(`/bank/transactions/${txnId}/publish-matched`, {}),
+    // « X » : envoyer la ligne à la relecture de Michel (recopié au classeur).
+    setReview: (txnId, on) => post(`/bank/transactions/${txnId}/review`, { on }),
+    // Encaissement client : chercher soi-même la facture quand la détection
+    // n'a pas tranché.
+    invoiceSearch: (txnId, q) => get(`/bank/transactions/${txnId}/invoice-search?q=${encodeURIComponent(q)}`),
+    receiptSearch: (txnId, q) => get(`/bank/transactions/${txnId}/receipt-search?q=${encodeURIComponent(q)}`),
     // « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture.
     addDefaults: (txnId) => get(`/bank/transactions/${txnId}/add-defaults`),
     taxCodeRate: (taxCodeId) => get(`/bank/tax-code-rate/${taxCodeId}`),
@@ -1190,6 +1259,10 @@ export const api = {
     // l'affiche — pour confirmer l'appariement sans ouvrir QBO.
     qbEntry: (txnId) => getFresh(`/bank/transactions/${txnId}/qb-entry`),
     clearQbLink: (txnId) => del(`/bank/transactions/${txnId}/qb-link`),
+    // Ce qu'il y a à comptabiliser pour cette ligne et qui le porte : document
+    // apparié, versement de dette, paie, paiement émis. Le panneau latéral s'en
+    // sert pour ouvrir la bonne surface sur place, sans changer d'écran.
+    dossier: (txnId) => getFresh(`/bank/transactions/${txnId}/dossier`),
     // « Ce libellé, c'est ce fournisseur » : apprend un motif de relevé sur la
     // fiche du fournisseur, depuis la ligne bancaire.
     learnVendorPattern: (txnId, data) => post(`/bank/transactions/${txnId}/vendor-pattern`, data),
@@ -1235,8 +1308,9 @@ export const api = {
     // Doublons hérités de TRX_Orisha sur un compte branché à Plaid.
     mergePlaidDuplicates: (accountId, dryRun = true) =>
       post(`/bank/accounts/${accountId}/merge-plaid-duplicates`, { dry_run: dryRun }),
-    trxSheetStatus: () => get('/bank/trx-sheet/status'),
-    trxSheetSync: (dryRun = false) => post('/bank/trx-sheet/sync', { dryRun }),
+    // Le classeur Google ne se lit plus, il s'écrit : Boreal a le dernier mot.
+    mirrorStatus: () => getFresh('/bank/trx-sheet/mirror'),
+    mirrorSync: () => post('/bank/trx-sheet/mirror', {}),
   },
 
   // Comptes prépayés : ledger fournisseurs prépayés + cédule FPA #13000
@@ -1302,16 +1376,12 @@ export const api = {
     piecesSlackSend: (month) => post(`/month-end/pieces/${month}/slack`, {}),
   },
 
-  // Revenus perçus d'avance : le mois calculé, le rapprochement QuickBooks
-  // (séparé, plus lent), le brouillon d'écriture et sa comptabilisation.
+  // Revenus perçus d'avance : l'état du compte 23900 (dépôts de commandes), et
+  // l'écriture qui solde un dossier — préparée ici, envoyée sur clic.
   deferredRevenue: {
-    month: (month) => get(`/deferred-revenue/month/${month}`),
-    qb: (month) => get(`/deferred-revenue/month/${month}/qb`),
-    propose: (month, aggregated) => post(`/deferred-revenue/month/${month}/draft`, { aggregated: !!aggregated }),
-    saveDraft: (month, data) => put(`/deferred-revenue/month/${month}/draft`, data),
-    deleteDraft: (month) => del(`/deferred-revenue/month/${month}/draft`),
-    publish: (month) => post(`/deferred-revenue/month/${month}/publish`, {}),
-    unmark: (id) => del(`/deferred-revenue/${id}`),
+    state: (end) => get(`/deferred-revenue/state${end ? `?end=${end}` : ''}`),
+    correction: (key) => get(`/deferred-revenue/correction/${encodeURIComponent(key)}`),
+    publishCorrection: (data) => post('/deferred-revenue/correction', data),
   },
 
   marketingBudget: {
@@ -1339,6 +1409,8 @@ export const api = {
     setSession: (data) => put('/instagram/session', data),
     workbench: (all = false) => getFresh(`/instagram/workbench${all ? '?all=1' : ''}`),
     drafts: () => getFresh('/instagram/drafts'),
+    setSegment: (prospectId, segment) => post(`/instagram/prospects/${prospectId}/segment`, { segment }),
+    sortSegments: () => post('/instagram/segments/run', {}),
     writeDraft: (prospectId, data = {}) => post('/instagram/drafts/write', { prospect_id: prospectId, ...data }),
     writeAllDrafts: () => post('/instagram/drafts/write-all', {}),
     sendDraftsNow: () => post('/instagram/drafts/send-now', {}),
@@ -1386,6 +1458,14 @@ export const api = {
     createProspects: (entries) => post('/mapaq/prospects', { entries }),
   },
 
+  // Carte des clients — points situés + complétion des coordonnées manquantes.
+  clientMap: {
+    points: () => getFresh('/client-map/points'),
+    geocode: (limit) => post('/client-map/geocode', { limit }),
+    refreshLeads: () => post('/client-map/leads/refresh'),
+    greenhouses: (lat, lng) => get(`/client-map/greenhouses?lat=${lat}&lng=${lng}`),
+  },
+
   // Douanes — relevé CARM (GCRA) de l'ASFC + appariement aux reçus
   carm: {
     list: () => get('/carm/transactions'),
@@ -1426,6 +1506,7 @@ export const api = {
     runs: (accountId) => get(`/scrapers/runs${accountId ? `?account_id=${accountId}` : ''}`),
     documents: () => get('/scrapers/documents'),
     needs: () => get('/scrapers/needs'),
+    health: () => get('/scrapers/health'),
     needForTransaction: (txnId) => get(`/scrapers/needs/transaction/${txnId}`),
     collectForTransaction: (txnId) => post(`/scrapers/needs/transaction/${txnId}/collect`, {}),
     create: (data) => post('/scrapers/accounts', data),
@@ -1436,8 +1517,22 @@ export const api = {
     otp: (id, code) => post(`/scrapers/accounts/${id}/otp`, { code }),
     forgetSession: (id) => post(`/scrapers/accounts/${id}/forget-session`, {}),
     importSession: (id, payload) => post(`/scrapers/accounts/${id}/session`, { payload }),
+    // Pont de session : le module de navigateur appelle ces routes lui-même, l'ERP
+    // n'a besoin que de savoir où en est chaque portail.
+    bridgeTargets: () => get('/scrapers/session-bridge/targets'),
+    // Lien direct : le dépôt n'existe que sur le serveur, le module s'y télécharge.
+    bridgeModuleUrl: () =>
+      `/erp/api/scrapers/session-bridge/module?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
     artifactUrl: (runId, name) =>
       `/erp/api/scrapers/runs/${runId}/artifacts/${name}?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
+  },
+
+  // Cartes de paiement connues : 4 derniers chiffres → compte QuickBooks payeur.
+  paymentCards: {
+    list: () => get('/payment-cards'),
+    create: (data) => post('/payment-cards', data),
+    update: (id, data) => patch(`/payment-cards/${id}`, data),
+    delete: (id) => del(`/payment-cards/${id}`),
   },
 
   vendorProfiles: {
@@ -1520,6 +1615,7 @@ export const api = {
 
   // Automations
   automations: {
+    runtimeStatus: () => get('/automations/runtime/status'),
     list: () => get('/automations'),
     get: (id) => get(`/automations/${id}`),
     create: (data) => post('/automations', data),
@@ -1620,6 +1716,7 @@ export const api = {
     // `space` sépare les deux files : 'finance' (Espace finance) / 'agent' (section Agent).
     listPrompts:   (params = {}) => getFresh('/travaux/prompts' + (Object.keys(params).length ? '?' + new URLSearchParams(params) : '')),
     createPrompt:  (data)      => post('/travaux/prompts', data),
+    spellfix:      (text)      => post('/travaux/spellfix', { text }),
     updatePrompt:  (id, data)  => patch(`/travaux/prompts/${id}`, data),
     deletePrompt:  (id)        => del(`/travaux/prompts/${id}`),
     reorderPrompts:(ids)       => post('/travaux/prompts/reorder', { ids }),
@@ -1638,6 +1735,8 @@ export const api = {
     // Steering : message livré à Claude PENDANT l'exécution, sans l'interrompre.
     steerPrompt:   (id, text)  => post(`/travaux/prompts/${id}/message`, { text }),
 
+    getReviewSettings: () => getFresh('/travaux/review-settings'),
+    updateReviewSettings: (patch) => put('/travaux/review-settings', patch),
     listSuggestions:  (params = {}) => getFresh('/travaux/suggestions?' + new URLSearchParams(params)),
     acceptSuggestion: (id, prompt, space, priority) => post(`/travaux/suggestions/${id}/accept`, {
       ...(prompt ? { prompt } : {}), ...(space ? { space } : {}), ...(priority ? { priority: true } : {}),
@@ -1645,7 +1744,7 @@ export const api = {
     dismissSuggestion:(id, reason)  => post(`/travaux/suggestions/${id}/dismiss`, { reason }),
     deleteSuggestion: (id)          => del(`/travaux/suggestions/${id}`),
     // Sans `kind`, le serveur passe les deux moteurs (chantiers + intégrations).
-    generateSuggestions: (kind)     => post('/travaux/suggestions/generate', kind ? { kind } : {}),
+    generateSuggestions: (kind, source = null) => post('/travaux/suggestions/generate', { ...(kind ? { kind } : {}), ...(source ? { source } : {}) }),
     // Discussion d'une suggestion (chantier ou intégration) : échange en lecture
     // seule à côté de la carte — rien ne part en exécution par ce chemin.
     listSuggestionMessages: (id)       => getFresh(`/travaux/suggestions/${id}/messages`),
@@ -1726,6 +1825,14 @@ export const api = {
     dismiss: (id, reason) => post(`/anomalies/${id}/dismiss`, { reason }),
     reopen: (id) => post(`/anomalies/${id}/reopen`),
     scan: () => post('/anomalies/scan', {}),
+  },
+
+  // Contrôles comptables — les constatations du passage de vérification.
+  audit: {
+    findings: (params = {}) => get('/audit/findings?' + new URLSearchParams(params)),
+    run: (body = {}) => post('/audit/run', body),
+    dismiss: (id, reason) => post(`/audit/findings/${id}/dismiss`, { reason }),
+    reopen: (id) => post(`/audit/findings/${id}/reopen`),
   },
 
   syncLog: {

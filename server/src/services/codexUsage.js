@@ -68,3 +68,6 @@ export async function getCodexUsage() {
   await pending
   return cache
 }
+
+// Dernière lecture connue, sans relancer Codex (cf. peekClaudeUsage).
+export function peekCodexUsage() { return cache }

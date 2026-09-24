@@ -1,0 +1,224 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>L'en-tête du rapprochement</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ink: #17211c; --ink-2: #5c6b62; --ink-3: #8d9a92;
+    --page: #f3f2ee; --surface: #ffffff; --line: #e2e1da; --line-soft: #eeede7;
+    --brand: #21b14b; --brand-soft: #eefaf1;
+    --red: #b3261e; --amber: #8a5a00; --sky: #14618f; --green: #1b8e3c;
+    --t-red: rgba(254,226,224,.85); --t-sky: rgba(224,241,250,.8);
+    --t-amber: rgba(253,240,214,.85); --t-green: rgba(220,244,227,.85);
+    --t-mute: rgba(232,232,229,.9);
+    --shadow: 0 1px 2px rgba(23,33,28,.06), 0 8px 24px rgba(23,33,28,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e8ece9; --ink-2: #a3b0a8; --ink-3: #74827a;
+      --page: #121613; --surface: #1a201c; --line: #2b332e; --line-soft: #232a26;
+      --brand: #43cc6e; --brand-soft: #16301f;
+      --red: #ff9b93; --amber: #e8b866; --sky: #8fc7ea; --green: #6bd588;
+      --t-red: rgba(90,32,28,.75); --t-sky: rgba(20,46,62,.8);
+      --t-amber: rgba(64,48,18,.8); --t-green: rgba(24,58,34,.8);
+      --t-mute: rgba(38,44,39,.9);
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e8ece9; --ink-2: #a3b0a8; --ink-3: #74827a;
+    --page: #121613; --surface: #1a201c; --line: #2b332e; --line-soft: #232a26;
+    --brand: #43cc6e; --brand-soft: #16301f;
+    --red: #ff9b93; --amber: #e8b866; --sky: #8fc7ea; --green: #6bd588;
+    --t-red: rgba(90,32,28,.75); --t-sky: rgba(20,46,62,.8);
+    --t-amber: rgba(64,48,18,.8); --t-green: rgba(24,58,34,.8);
+    --t-mute: rgba(38,44,39,.9);
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.35);
+  }
+
+  body { background: var(--page); color: var(--ink); font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding-inline: 16px; padding-block: 40px 72px; }
+  h1 { font-size: 26px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .pistes { display: flex; flex-direction: column; gap: 56px; margin-top: 36px; }
+  .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .code { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 500; color: var(--brand); border: 1px solid var(--brand); border-radius: 4px; padding: 1px 6px; }
+  .head h2 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .head p { margin: 0; font-size: 14px; color: var(--ink-2); }
+
+  .screen { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+  .scroll { overflow-x: auto; }
+  .screen-in { padding: 14px 16px 16px; min-width: 700px; }
+  .zone { outline: 1px dashed color-mix(in srgb, var(--brand) 55%, transparent); outline-offset: 5px; border-radius: 4px; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .title { font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+  .sub { font-size: 12px; color: var(--ink-3); }
+  .btn { font: inherit; font-size: 13px; border-radius: 7px; border: 1px solid var(--line); background: var(--surface); color: var(--ink-2); padding: 5px 10px; white-space: nowrap; }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 500; }
+  :root[data-theme="dark"] .btn.primary { color: #06170c; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #06170c; } }
+  .icons { display: flex; gap: 6px; align-items: center; }
+  .icon { width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3); display: grid; place-items: center; font-size: 13px; }
+  .num { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+  .ecart { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 500; color: var(--green); }
+  .ecart.off { color: var(--red); }
+
+  .tabs { display: flex; gap: 14px; border-bottom: 1px solid var(--line); margin-top: 10px; }
+  .tab { font-size: 13px; color: var(--ink-3); padding: 6px 1px; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tab.on { color: var(--ink); font-weight: 500; border-bottom-color: var(--brand); }
+  .tab .n { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--red); margin-left: 5px; }
+
+  .legend { display: flex; align-items: center; gap: 2px; padding: 6px 0; flex-wrap: wrap; }
+  .lg { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-3); padding: 3px 7px; border-radius: 6px; }
+  .lg .sw { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgba(0,0,0,.1); }
+  .lg.on { background: var(--line-soft); color: var(--ink); font-weight: 500; }
+  .sw.a { background: var(--t-red); } .sw.f { background: var(--t-sky); }
+  .sw.c { background: var(--t-amber); } .sw.r { background: var(--t-green); }
+  .sw.i { background: var(--t-mute); }
+  .wand { color: var(--brand); border-left: 1px solid var(--line); margin-left: 6px; padding-left: 10px; }
+
+  /* barre d'outils du tableau */
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 8px 0; flex-wrap: wrap; }
+  .search { flex: 1; min-width: 140px; border: 1px solid var(--line); border-radius: 7px; padding: 5px 10px; font-size: 13px; color: var(--ink-3); }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); padding: 7px 8px; border-bottom: 1px solid var(--line); }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line-soft); }
+  td.r, th.r { text-align: right; }
+  tr.a td { background: var(--t-red); } tr.f td { background: var(--t-sky); }
+  tr.c td { background: var(--t-amber); } tr.r td { background: var(--t-green); }
+  tr.i td { background: var(--t-mute); color: var(--ink-3); }
+  .st { font-size: 12px; font-weight: 500; }
+  .st.a { color: var(--red); } .st.f { color: var(--sky); }
+  .st.c { color: var(--amber); } .st.r { color: var(--green); } .st.i { color: var(--ink-3); }
+
+  .menu { position: relative; }
+  .pop { position: absolute; right: 0; top: 34px; background: var(--surface); border: 1px solid var(--line); border-radius: 9px; box-shadow: var(--shadow); padding: 5px; width: 240px; z-index: 3; }
+  .pop div { font-size: 13px; color: var(--ink-2); padding: 6px 9px; border-radius: 6px; display: flex; justify-content: space-between; gap: 10px; }
+  .pop .k { color: var(--ink-3); font-size: 11px; }
+</style>
+<style>body{margin:0}img{max-width:100%}</style></head><body>
+
+
+<div class="wrap">
+  <h1>L'en-tête du rapprochement</h1>
+
+  <div class="pistes">
+
+    <!-- H1 -->
+    <section>
+      <div class="head"><span class="code">H1</span><h2>Une seule ligne</h2><p>Compte, écart, Rapprocher — les six icônes passent sous « ⋯ ».</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="bar zone">
+          <div style="display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">
+            <span class="title">BNC CAD ▾</span>
+            <span class="sub">Écart <span class="ecart">0,00</span> · relevé <span class="num">48 217,04</span> · QB <span class="num">48 217,04</span></span>
+          </div>
+          <div class="icons">
+            <button class="btn primary">Rapprocher</button>
+            <div class="menu"><span class="icon">⋯</span>
+              <div class="pop">
+                <div><span>Déposer un relevé</span></div>
+                <div><span>Relire TRX_Orisha</span><span class="k">il y a 8 min</span></div>
+                <div><span>Recopier dans le classeur</span></div>
+                <div><span>Recalculer QuickBooks</span></div>
+                <div><span>Chercher dans tout QuickBooks</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="legend" style="margin-top:8px">
+          <span class="lg on"><span class="sw a"></span>9</span>
+          <span class="lg"><span class="sw f"></span>3</span>
+          <span class="lg"><span class="sw c"></span>7</span>
+          <span class="lg"><span class="sw r"></span>142</span>
+          <span class="lg"><span class="sw i"></span>4</span>
+          <span class="lg wand">✦ 5 à confirmer</span>
+        </div>
+        <table>
+          <thead><tr><th style="width:86px">Date</th><th>Libellé</th><th class="r" style="width:96px">Débit</th><th class="r" style="width:96px">Crédit</th><th style="width:130px">Statut</th></tr></thead>
+          <tbody>
+            <tr class="a"><td class="num">15 sept.</td><td>MAXI QUEBEC MYRAND 722</td><td class="r num">60,95</td><td></td><td class="st a">À traiter</td></tr>
+            <tr class="f"><td class="num">14 sept.</td><td>PROVO LTD</td><td class="r num">463,79</td><td></td><td class="st f">Facture reçue</td></tr>
+            <tr class="c"><td class="num">14 sept.</td><td>COMPTE DIVERS</td><td></td><td class="r num">1 756,48</td><td class="st c">Comptabilisé</td></tr>
+            <tr class="r"><td class="num">11 sept.</td><td>DKC*DIGI-KEY CORP</td><td class="r num">174,29</td><td></td><td class="st r">Rapproché</td></tr>
+            <tr class="i"><td class="num">11 sept.</td><td>GOOGLE *SERVICES</td><td class="r num">2,00</td><td></td><td class="st i">Ignoré</td></tr>
+          </tbody>
+        </table>
+      </div></div></div>
+    </section>
+
+    <!-- H2 -->
+    <section>
+      <div class="head"><span class="code">H2</span><h2>Les comptes gardent leurs onglets</h2><p>Titre retiré, écart au bout des onglets, actions dans la barre du tableau.</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="zone">
+          <div class="tabs" style="margin-top:0">
+            <span class="tab on">BNC CAD <span class="n">9</span></span>
+            <span class="tab">MasterCard BNC <span class="n">12</span></span>
+            <span class="tab">VISA Desjardins CAD</span>
+            <span class="tab">BNC USD</span>
+            <span class="tab">Venn CAD</span>
+            <span class="tab" style="margin-left:auto;color:var(--ink-2)">Écart <span class="ecart">0,00</span></span>
+          </div>
+          <div class="toolbar">
+            <span class="search">Rechercher</span>
+            <span class="legend" style="padding:0">
+              <span class="lg on"><span class="sw a"></span>9</span>
+              <span class="lg"><span class="sw f"></span>3</span>
+              <span class="lg"><span class="sw c"></span>7</span>
+              <span class="lg"><span class="sw r"></span>142</span>
+              <span class="lg"><span class="sw i"></span>4</span>
+              <span class="lg wand">✦ 5</span>
+            </span>
+            <button class="btn primary">Rapprocher</button>
+            <span class="icon">⋯</span>
+          </div>
+        </div>
+        <table>
+          <thead><tr><th style="width:86px">Date</th><th>Libellé</th><th class="r" style="width:96px">Débit</th><th class="r" style="width:96px">Crédit</th><th style="width:130px">Statut</th></tr></thead>
+          <tbody>
+            <tr class="a"><td class="num">15 sept.</td><td>AMZN MKTP CA</td><td class="r num">13,56</td><td></td><td class="st a">À traiter</td></tr>
+            <tr class="a"><td class="num">14 sept.</td><td>Frais suivi annuel/renouvellement</td><td class="r num">300,00</td><td></td><td class="st a">À traiter</td></tr>
+            <tr class="f"><td class="num">14 sept.</td><td>PROVO LTD</td><td class="r num">463,79</td><td></td><td class="st f">Facture reçue</td></tr>
+            <tr class="r"><td class="num">10 sept.</td><td>ASSURANCE ENT.</td><td class="r num">2 737,95</td><td></td><td class="st r">Rapproché</td></tr>
+            <tr class="r"><td class="num">8 sept.</td><td>STRIPE — Inbound Transfer</td><td></td><td class="r num">2 955,05</td><td class="st r">Rapproché</td></tr>
+          </tbody>
+        </table>
+      </div></div></div>
+    </section>
+
+    <!-- H3 -->
+    <section>
+      <div class="head"><span class="code">H3</span><h2>Plus d'en-tête du tout</h2><p>Tout tient dans la barre du tableau ; le compte devient le premier filtre.</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="toolbar zone" style="padding-top:2px">
+          <button class="btn" style="font-weight:600;color:var(--ink)">BNC CAD ▾</button>
+          <span class="search">Rechercher</span>
+          <span class="legend" style="padding:0">
+            <span class="lg on"><span class="sw a"></span>9</span>
+            <span class="lg"><span class="sw f"></span>3</span>
+            <span class="lg"><span class="sw c"></span>7</span>
+            <span class="lg"><span class="sw r"></span>142</span>
+            <span class="lg"><span class="sw i"></span>4</span>
+          </span>
+          <span class="sub">Écart <span class="ecart">0,00</span></span>
+          <button class="btn primary">Rapprocher <span style="opacity:.8">· 5</span></button>
+          <span class="icon">⋯</span>
+        </div>
+        <table>
+          <thead><tr><th style="width:86px">Date</th><th>Libellé</th><th class="r" style="width:96px">Débit</th><th class="r" style="width:96px">Crédit</th><th style="width:130px">Statut</th></tr></thead>
+          <tbody>
+            <tr class="a"><td class="num">15 sept.</td><td>MAXI QUEBEC MYRAND 722</td><td class="r num">60,95</td><td></td><td class="st a">À traiter</td></tr>
+            <tr class="a"><td class="num">11 sept.</td><td>WWW.PISHOP.CA</td><td class="r num">1 285,43</td><td></td><td class="st a">À traiter</td></tr>
+            <tr class="f"><td class="num">14 sept.</td><td>PROVO LTD</td><td class="r num">463,79</td><td></td><td class="st f">Facture reçue</td></tr>
+            <tr class="c"><td class="num">14 sept.</td><td>COMPTE DIVERS</td><td></td><td class="r num">1 756,48</td><td class="st c">Comptabilisé</td></tr>
+            <tr class="r"><td class="num">11 sept.</td><td>DEBOURSE MCR</td><td></td><td class="r num">2 803,00</td><td class="st r">Rapproché</td></tr>
+            <tr class="i"><td class="num">11 sept.</td><td>GOOGLE *SERVICES</td><td class="r num">2,00</td><td></td><td class="st i">Ignoré</td></tr>
+          </tbody>
+        </table>
+      </div></div></div>
+    </section>
+
+  </div>
+</div>
+
+</body></html>

@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { ExternalLink, Send, Hourglass, Trash2 } from 'lucide-react'
@@ -17,6 +18,9 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { invalidate } from '../lib/prefetch.js'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
+
+// Les paiements sont déjà affichés dans la section dédiée sous les articles.
+const FACTURE_TAKEN_FIELDS = ['cf_paiements']
 
 // Champs disponibles pour le builder de règles de visibilité. Le picker
 // utilise `field` (clé du record) et `label` (humain). On expose un
@@ -400,6 +404,7 @@ export default function FactureDetail({ recordId, onClose }) {
             record={facture}
             className="p-5"
             testId="facture-fields"
+            taken={FACTURE_TAKEN_FIELDS}
             wrapField={wrapGuardedField}
           >
             <DetailField id="company_name" label="Entreprise">
@@ -634,7 +639,7 @@ export default function FactureDetail({ recordId, onClose }) {
           onChanged={refreshFacture}
         />
 
-        {user?.role === 'admin' && (
+        {hasRole(user, 'admin') && (
           <div className="mt-8 pt-6 border-t border-slate-200 flex justify-end">
             <button
               onClick={() => { setDeleteError(null); setDeleteModalOpen(true) }}
@@ -717,7 +722,7 @@ export default function FactureDetail({ recordId, onClose }) {
                 {facture.revenue_recognized_at && (
                   <li>
                     Vente constatée le {fmtDate(facture.revenue_recognized_at)}
-                    {facture.revenue_recognized_je_id && <> — JE QuickBooks <strong>#{facture.revenue_recognized_je_id}</strong> existe toujours côté QB</>}
+                    {facture.revenue_recognized_je_id && <> — JE QuickBooks <strong>#{facture.revenue_recognized_je_id}</strong> existe toujours côté QuickBooks</>}
                   </li>
                 )}
                 {facture.deferred_revenue_at && !facture.revenue_recognized_at && (
@@ -725,7 +730,7 @@ export default function FactureDetail({ recordId, onClose }) {
                 )}
                 {facture.paid_at && <li>Paiement reçu le {fmtDate(facture.paid_at)} ({fmtMoney(facture.paid_amount, facture.currency)})</li>}
               </ul>
-              <div className="text-xs mt-1.5">La trace locale est perdue mais les écritures QB / mouvements Stripe demeurent.</div>
+              <div className="text-xs mt-1.5">La trace locale est perdue mais les écritures QuickBooks et les mouvements Stripe demeurent.</div>
             </div>
           )}
 

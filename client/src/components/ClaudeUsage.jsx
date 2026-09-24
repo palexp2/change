@@ -359,8 +359,8 @@ export function usageTone(pct, severity = null) {
 //   • onglet en arrière-plan → on cesse d'interroger, et on rattrape au retour.
 const STORE_KEY = 'erp:claude-usage'
 const HYDRATE_MAX_AGE_MS = 30 * 60 * 1000  // au-delà, mieux vaut la roue qu'un chiffre faux
-// Le serveur cache la lecture 60 s : interroger plus souvent ne donnait rien de plus
-// frais et ajoutait des appels à un endpoint qu'Anthropic limite en fréquence.
+// Interroge NOTRE serveur (qui cache la lecture Anthropic 5 min) : ce sondage ne
+// frappe jamais Anthropic directement ; il sert surtout à l'état de la file.
 const POLL_MS = 60_000
 
 function readStored() {
@@ -423,8 +423,8 @@ function subscribe(fn) {
 const snapshot = () => _usage
 const errorSnapshot = () => _error
 
-// Hook commun : état partagé, rafraîchi toutes les 30 s (le serveur cache 60 s de
-// toute façon). `error` → l'appelant se retire silencieusement.
+// Hook commun : état partagé, rafraîchi toutes les minutes (le serveur cache 5 min
+// de toute façon). `error` → l'appelant se retire silencieusement.
 function useClaudeUsage() {
   const usage = useSyncExternalStore(subscribe, snapshot, snapshot)
   const error = useSyncExternalStore(subscribe, errorSnapshot, errorSnapshot)
@@ -534,22 +534,22 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
 
   const scoped = usage?.weekScoped
   const failure = usage?.subscriptionError || null
-  // Une ligne, jamais deux : soit on explique l'échec en cours (avec l'âge des
-  // chiffres s'ils sont encore là), soit rien.
+  // Une ligne, seulement quand il n'y a AUCUN chiffre à montrer. Un refus passager
+  // pendant qu'une lecture récente est encore affichée ne mérite pas d'alerte : l'âge
+  // des chiffres reste en infobulle sur le titre.
   const note = error
     ? 'Quotas illisibles — le serveur ne répond pas. Nouvelle tentative dans 1 min.'
-    : failure
-      ? `Quotas illisibles (${failure.label})`
-        + (usage?.subscriptionStale ? ` — pourcentages datant de ${formatAgo(usage.subscriptionAt)}` : '')
-        + `. Nouvelle tentative ${formatInDelay(failure.retryAt)}.`
+    : failure && !usage?.subscriptionAvailable
+      ? `Quotas illisibles (${failure.label}). Nouvelle tentative ${formatInDelay(failure.retryAt)}.`
       : null
+  const ageHint = usage?.subscriptionAt ? `Chiffres d'il y a ${formatAgo(usage.subscriptionAt)}` : undefined
   return (
     <div className={className} data-testid="claude-usage-strip">
       <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs">
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
           <div className="flex items-center gap-1.5 shrink-0">
             <Sparkles size={13} className="text-brand-400" />
-            <span className="font-semibold uppercase tracking-wider text-slate-500">Quotas Claude</span>
+            <span className="font-semibold uppercase tracking-wider text-slate-500" title={ageHint}>Quotas Claude</span>
             {/* Roue seulement pendant une vraie attente : quand la ligne d'explication
                 est là, une roue tournerait dans le vide. */}
             {!usage && !note && <Loader2 size={11} className="text-slate-300 animate-spin" />}

@@ -71,3 +71,45 @@ test('dates françaises abrégées', () => {
 })
 
 const round2 = x => Math.round(x * 100) / 100
+
+// Facture 252974 : le sommaire passe sur DEUX colonnes dès qu'il y a beaucoup de
+// frais. Lire la seule colonne de droite donnait 51,66 $ de sous-total au lieu de
+// 115,83 $ — un « écart » affiché sur une facture pourtant conforme.
+const NOVO_2COL = `Numéro de compte           Numéro de facture        Date de facturation     Page
+GAP2308                    252974                   16 sept. 2026           1 de 5
+
+Montant total dû                                  120,92
+
+Sommaire des frais d'éxpédition
+Frais de Base                                        37,50           Droits                                1,25
+Surch. Carburant                                     12,87           Ajustements                          28,85
+Zone Résidentiel                                      2,20           T.P.S. (5%) - 784615486RT0001         2,74
+PGA Disclaim Fee                                      3,46           T.V.Q. (9,975%) - 1225170467TQ0001    2,35
+Surcharge pour droits et taxes de transit             8,14           T.V.P. (7%) -                         2,18
+frais de débours                                     19,38
+`
+
+test('sommaire imprimé sur deux colonnes', () => {
+  const r = parseTransportInvoiceSummary(NOVO_2COL)
+  assert.equal(r.tps, 2.74)
+  assert.equal(r.tvq, 2.35)
+  assert.equal(r.non_recoverable, 2.18) // T.V.P. — reste dans le coût
+  assert.equal(r.subtotal, 115.83)
+  assert.equal(round2(r.subtotal + r.tps + r.tvq), r.total_due)
+})
+
+// Facture de téléphonie Bell : elle imprime « Sommaire des frais courants » et
+// une charge, mais pas de montant total dû ni de ligne de taxe nommée. Lue comme
+// un sommaire de transport, elle faisait apparaître deux écarts (TPS et TVQ
+// « absentes du papier ») sur une facture parfaitement saisie.
+const BELL = `    Solde                                                                 0,00 $
+    Sommaire des frais courants
+    Frais mensuels                                                        171,20
+    Utilisation et interurbain                                              0,00
+    Total des taxes des frais courants                                     25,63
+    Total frais courants         taxes compr.                           196,83 $
+`
+
+test('facture de téléphonie : pas un sommaire de transport, rien à confronter', () => {
+  assert.equal(parseTransportInvoiceSummary(BELL), null)
+})

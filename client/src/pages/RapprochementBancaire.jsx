@@ -1,37 +1,49 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
-import { Upload, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, ChevronRight, FileSpreadsheet, BookOpen, Download, Clock, SearchCheck, Plus, ArrowLeftRight, Check, X } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, FileWarning } from 'lucide-react'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
-import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
-import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
+import { StatementDropModal } from '../components/StatementDropModal.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
+import DebtPaymentPublish from '../components/DebtPaymentPublish.jsx'
+import { RecordScope } from '../lib/recordLive.jsx'
+import { subscribe } from '../lib/realtime.js'
+
+// Le volet « Règles » : même liste que /regles-bancaires, chargée seulement
+// quand on l'ouvre (elle va chercher le plan comptable de QuickBooks).
+const BankRulesList = lazy(() => import('../components/BankRulesList.jsx').then((m) => ({ default: m.BankRulesList })))
 
 // Sentinel « pas de taxe » des profils fournisseurs (côté serveur : bankActions.js).
 const NO_TAX = '__none__'
 
-// Statuts = l'ancien code couleur du fichier TRX_Orisha.xlsx. `cell` peint la
-// cellule du tableau (le fichier était lu à la couleur, pas au texte) ; `color`
-// reste la pastille du panneau latéral.
-// La LIGNE entière porte la couleur (voir `row-st-*` dans index.css) : la
-// pastille de la colonne Statut ne garde donc que son texte coloré — deux
-// jaunes superposés rendaient la ligne sale.
+// Statuts = l'ancien code couleur du fichier TRX_Orisha.xlsx.
+// La ligne entière porte la couleur (voir `row-st-*` dans index.css) ;
+// `color` reste la pastille du panneau latéral.
 // `tint` : le nom de classe est écrit ici EN TOUTES LETTRES, jamais construit
 // par interpolation — sinon le scanner de Tailwind ne le voit pas et purge la
 // règle du CSS livré.
 const STATUS_META = {
-  a_traiter:     { label: 'À traiter',      color: 'red',    cell: 'text-red-700',    tint: 'row-st-a_traiter',     hint: 'Aucun document trouvé — souvent facture manquante' },
-  facture_recue: { label: 'Facture reçue',  color: 'blue',   cell: 'text-sky-700',    tint: 'row-st-facture_recue', hint: 'Document apparié, pas encore publié à QB' },
-  comptabilise:  { label: 'Comptabilisé',   color: 'yellow', cell: 'text-amber-700',  tint: 'row-st-comptabilise',  hint: 'Publié à QuickBooks, pas encore rapproché' },
-  rapproche:     { label: 'Rapproché',      color: 'green',  cell: 'text-green-700',  tint: 'row-st-rapproche',     hint: 'Comptabilisé et validé contre le relevé' },
-  ignore:        { label: 'Ignoré',         color: 'gray',   cell: 'text-slate-500',  tint: 'row-st-ignore',        hint: 'Exclu du rapprochement' },
+  a_traiter:     { label: 'À traiter',      color: 'red',    tint: 'row-st-a_traiter',     hint: 'Aucun document trouvé — souvent facture manquante' },
+  facture_recue: { label: 'Facture reçue',  color: 'blue',   tint: 'row-st-facture_recue', hint: 'Document apparié, pas encore publié dans QuickBooks' },
+  comptabilise:  { label: 'Comptabilisé',   color: 'yellow', tint: 'row-st-comptabilise',  hint: 'Publié à QuickBooks, pas encore rapproché' },
+  rapproche:     { label: 'Rapproché',      color: 'green',  tint: 'row-st-rapproche',     hint: 'Comptabilisé et validé contre le relevé' },
+  ignore:        { label: 'Ignoré',         color: 'gray',   tint: 'row-st-ignore',        hint: 'Exclu du rapprochement' },
+}
+
+// L'état d'une ligne à la banque. « Complété » est le cas ordinaire : il reste
+// muet pour que les deux autres se voient.
+const BANK_STATE_META = {
+  complete:   { label: 'Complété',   cls: 'text-slate-400' },
+  en_attente: { label: 'En attente', cls: 'text-amber-700' },
+  autorise:   { label: 'Autorisé',   cls: 'text-blue-700' },
 }
 
 // Les écritures QuickBooks sans ligne au relevé : une couleur à part, sinon
@@ -63,82 +75,35 @@ function docLink(type, id, label) {
   return <Link to={to} onClick={(e) => e.stopPropagation()} className="link-record">{label || type}</Link>
 }
 
-// ── Modale d'import par collage ──────────────────────────────────────────────
-// Import = action transactionnelle (pas d'autosave) : collage → aperçu → confirmation.
-function ImportModal({ account, onClose, onDone }) {
-  const [text, setText] = useState('')
-  const [preview, setPreview] = useState(null)
+// ── Miroir vers le classeur Google ───────────────────────────────────────────
+// Boreal écrit, personne d'autre : le bouton pousse le rapprochement et ses
+// couleurs dans le classeur, et donne le lien.
+// Le classeur Google miroir : état + recopie. Rendu comme une entrée du menu
+// « ⋯ » (voir MoreMenu) depuis que la page n'a plus d'en-tête.
+function useMirror(flash) {
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState(null)
+  const [url, setUrl] = useState(null)
 
-  const doPreview = async () => {
-    setBusy(true); setError(null)
+  useEffect(() => {
+    let alive = true
+    api.bank.mirrorStatus().then((s) => { if (alive) setUrl(s?.url || null) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+
+  const run = async () => {
+    setBusy(true)
     try {
-      setPreview(await api.bank.import(account.id, { text, preview: true }))
-    } catch (e) { setError(e.message) } finally { setBusy(false) }
-  }
-  const doImport = async () => {
-    setBusy(true); setError(null)
-    try {
-      const res = await api.bank.import(account.id, { text })
-      onDone(res)
-    } catch (e) { setError(e.message); setBusy(false) }
+      const res = await api.bank.mirrorSync()
+      setUrl(res.url)
+      const bits = [
+        res.added ? `${res.added} ligne${res.added > 1 ? 's' : ''} ajoutée${res.added > 1 ? 's' : ''}` : null,
+        res.cells ? `${res.cells} cellule${res.cells > 1 ? 's' : ''} à jour` : null,
+      ].filter(Boolean)
+      flash(bits.length ? `Classeur à jour — ${bits.join(', ')}.` : 'Classeur déjà à jour.')
+    } catch (e) { flash(e.message) } finally { setBusy(false) }
   }
 
-  return (
-    <Modal isOpen onClose={onClose} title={`Importer un relevé — ${account.name}`} size="lg">
-      <div className="space-y-3">
-        <p className="text-sm text-slate-600">
-          Coller les lignes du relevé (depuis Excel ou le site de la banque), <strong>avec la ligne d'entêtes</strong> (Date,
-          Description, Montant ou Débit/Crédit…). Les doublons déjà importés sont ignorés automatiquement.
-        </p>
-        <textarea
-          className="w-full h-48 border border-slate-300 rounded-lg p-2 font-mono text-xs"
-          value={text}
-          onChange={(e) => { setText(e.target.value); setPreview(null) }}
-        />
-        {error && <div className="text-sm text-red-600">{error}</div>}
-        {preview && (
-          <div className="text-sm bg-slate-50 rounded-lg p-3 space-y-1">
-            <div><strong>{preview.rows.length}</strong> transaction{preview.rows.length > 1 ? 's' : ''} reconnue{preview.rows.length > 1 ? 's' : ''}</div>
-            {preview.parseErrors?.length > 0 && (
-              <div className="text-amber-700">{preview.parseErrors.slice(0, 5).map((e, i) => <div key={i}>⚠️ {e}</div>)}</div>
-            )}
-            <div className="max-h-40 overflow-auto mt-1">
-              <table className="w-full text-xs">
-                <tbody>
-                  {preview.rows.slice(0, 30).map((r, i) => (
-                    <tr key={i} className="border-t border-slate-200">
-                      <td className="py-0.5 pr-2 whitespace-nowrap">{r.txn_date}</td>
-                      <td className="pr-2 truncate max-w-[16rem]">
-                        {txnLabel(r)}
-                        {txnSubLabel(r) && <span className="text-slate-400"> · {txnSubLabel(r)}</span>}
-                      </td>
-                      <td className={`text-right whitespace-nowrap ${r.amount < 0 ? 'text-red-700' : 'text-green-700'}`}>{r.amount.toFixed(2)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        )}
-        <div className="flex justify-end gap-2">
-          <button className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onClick={onClose}>Annuler</button>
-          {!preview ? (
-            <button className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-              disabled={busy || !text.trim()} onClick={doPreview}>
-              {busy ? 'Analyse…' : 'Analyser'}
-            </button>
-          ) : (
-            <button className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-              disabled={busy || !preview.rows.length} onClick={doImport}>
-              {busy ? 'Import…' : `Importer ${preview.rows.length} transactions`}
-            </button>
-          )}
-        </div>
-      </div>
-    </Modal>
-  )
+  return { busy, url, run }
 }
 
 // ── « Ajouter » : comptabiliser une ligne qui n'aura jamais de facture ──────
@@ -156,12 +121,17 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const [rate, setRate] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  // Écriture coupée : une part par compte. `null` = une seule dépense.
+  const [parts, setParts] = useState(null)
 
   useEffect(() => {
     let alive = true
     api.bank.addDefaults(txn.id).then((d) => {
       if (!alive) return
       setDefaults(d)
+      // Remboursement de marge : l'écriture s'ouvre déjà coupée en capital et
+      // intérêts, il ne reste qu'à confirmer.
+      if (d.split?.lines?.length) setParts(d.split.lines.map((l) => ({ ...l })))
       setForm({
         vendor: d.vendor || '',
         expense_account_id: d.expense_account_id || '',
@@ -194,13 +164,18 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
   const docTax = defaults?.tax_cad
   const taxCad = docTax != null ? docTax
     : (rate ? Math.round((total - total / (1 + rate / 100)) * 100) / 100 : 0)
+  // La base à répartir quand l'écriture est coupée : le relevé moins la taxe.
+  const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100
+  const base = round2(total - taxCad)
+  const rest = round2(base - (parts || []).reduce((n, p) => n + (Number(p.amount) || 0), 0))
 
   const submit = async () => {
     setBusy(true); setError(null)
     try {
       const r = await api.bank.addExpense(txn.id, {
         vendor: form.vendor,
-        expense_account_id: form.expense_account_id,
+        expense_account_id: parts ? '' : form.expense_account_id,
+        lines: parts || undefined,
         tax_code_id: form.tax_code_id || null,
         tax_cad: taxCad,
         memo: form.memo,
@@ -236,6 +211,9 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
     <div className="space-y-3 text-sm">
       <div className="text-xs text-slate-500">
         Comptabiliser {money(total, currency)}{draft?.document ? ` · ${draft.document.label}` : ' sans facture'}.
+        {/* La règle qui a rempli ces champs : sans elle, on ne saurait pas
+            pourquoi le compte et la taxe sont déjà là. */}
+        {txn.rule_name && <span className="text-slate-400"> Préparée par la règle « {txn.rule_name} ».</span>}
       </div>
 
       {!!draft?.hints?.length && (
@@ -250,14 +228,61 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         {from('vendor')}
       </label>
 
-      <label className="block">
-        <span className="text-xs text-slate-500">Compte de dépense</span>
-        <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
-          options={accounts} getOptionValue={(a) => String(a.Id)}
-          getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
-          placeholder="Choisir un compte" />
-        {from('expense_account_id')}
-      </label>
+      {!parts ? (
+        <label className="block">
+          <span className="text-xs text-slate-500">Compte de dépense</span>
+          <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
+            options={accounts} getOptionValue={(a) => String(a.Id)}
+            getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
+            placeholder="Choisir un compte" />
+          <div className="flex items-center justify-between">
+            {from('expense_account_id')}
+            <button type="button" className="text-[11px] text-slate-500 hover:text-brand-600 hover:underline"
+              onClick={() => setParts([
+                { expense_account_id: form.expense_account_id, amount: base },
+                { expense_account_id: '', amount: 0 },
+              ])}>
+              Couper en plusieurs comptes
+            </button>
+          </div>
+        </label>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-xs text-slate-500">{defaults?.split?.reason || 'Comptes de dépense'}</span>
+            <button type="button" className="text-[11px] text-slate-500 hover:underline" onClick={() => setParts(null)}>
+              Un seul compte
+            </button>
+          </div>
+          {parts.map((p, i) => (
+            <div key={i} className="flex gap-2 items-center">
+              <div className="grow min-w-0">
+                <SearchableSelect value={p.expense_account_id}
+                  onChange={(v) => setParts((ps) => ps.map((x, j) => (j === i ? { ...x, expense_account_id: v } : x)))}
+                  options={accounts} getOptionValue={(a) => String(a.Id)}
+                  getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
+                  placeholder="Choisir un compte" />
+              </div>
+              <input type="number" step="0.01" value={p.amount}
+                className="w-24 border border-slate-300 rounded-lg px-2 py-1 text-sm text-right"
+                onChange={(e) => setParts((ps) => ps.map((x, j) => (j === i ? { ...x, amount: Number(e.target.value) } : x)))} />
+              <button type="button" className="text-slate-300 hover:text-red-600" title="Retirer"
+                onClick={() => setParts((ps) => (ps.length > 2 ? ps.filter((_, j) => j !== i) : ps))}>
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+          <div className="flex items-center justify-between text-xs">
+            <button type="button" className="text-slate-500 hover:text-brand-600 hover:underline"
+              onClick={() => setParts((ps) => [...ps, { expense_account_id: '', amount: rest > 0 ? rest : 0 }])}>
+              Ajouter une part
+            </button>
+            <span className={Math.abs(rest) > 0.02 ? 'text-amber-600' : 'text-slate-400'}>
+              {Math.abs(rest) > 0.02 ? `reste ${money(rest, currency)}` : `${money(base, currency)} répartis`}
+            </span>
+          </div>
+        </div>
+      )}
 
       <label className="block">
         <span className="text-xs text-slate-500">Taxe</span>
@@ -342,7 +367,9 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
 
       <div className="flex gap-2">
         <button type="button" className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-          disabled={busy || !form.vendor || !form.expense_account_id} onClick={submit}>
+          disabled={busy || !form.vendor
+            || (parts ? (Math.abs(rest) > 0.02 || parts.some((p) => !p.expense_account_id)) : !form.expense_account_id)}
+          onClick={submit}>
           {busy ? 'Publication…' : 'Ajouter et publier'}
         </button>
         <button type="button" className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onClick={onCancel}>
@@ -654,6 +681,8 @@ function QbEntryCard({ txn, currency, onChanged }) {
 // publie jamais seule.
 function RuleFromTxnForm({ txn }) {
   const [draft, setDraft] = useState(null)
+  const [keepBooking, setKeepBooking] = useState(true)
+  const [names, setNames] = useState(null)
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState(false)
   const [error, setError] = useState(null)
@@ -669,7 +698,14 @@ function RuleFromTxnForm({ txn }) {
 
   const open = async () => {
     setBusy(true); setError(null)
-    try { setDraft(await api.bank.rules.draftFromTxn(txn.id)) }
+    try {
+      setDraft(await api.bank.rules.draftFromTxn(txn.id))
+      // Les noms des comptes et des codes de taxe, seulement à l'ouverture.
+      if (!names) {
+        Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
+          .then(([a, t]) => setNames({ accounts: a || [], taxCodes: t || [] })).catch(() => {})
+      }
+    }
     catch (e) { setError(e.message) } finally { setBusy(false) }
   }
 
@@ -677,6 +713,11 @@ function RuleFromTxnForm({ txn }) {
     setBusy(true); setError(null)
     try {
       const { preview: _p, ...rule } = draft
+      // Sans la façon de comptabiliser, la règle ne retient que le libellé.
+      if (!keepBooking) {
+        rule.vendor_name = null; rule.expense_account_id = null
+        rule.tax_code_id = null; rule.memo = null; rule.qb_type = null
+      }
       await api.bank.rules.create(rule)
       setDone(true); setDraft(null)
     } catch (e) { setError(e.message) } finally { setBusy(false) }
@@ -710,6 +751,13 @@ function RuleFromTxnForm({ txn }) {
       </div>
     )
   }
+  const nameOf = (list, id) => (list || []).find((o) => String(o.Id) === String(id))?.Name || null
+  const booking = [
+    draft.vendor_name,
+    nameOf(names?.accounts, draft.expense_account_id) || (draft.expense_account_id ? 'compte choisi' : null),
+    draft.tax_code_id ? `taxe ${nameOf(names?.taxCodes, draft.tax_code_id) || ''}`.trim() : null,
+  ].filter(Boolean).join(' · ')
+
   return (
     <div className="space-y-2 bg-slate-50 rounded-lg p-2">
       <input value={draft.label_pattern} className="w-full text-xs border border-slate-300 rounded-lg px-2 py-1"
@@ -717,6 +765,14 @@ function RuleFromTxnForm({ txn }) {
       <div className="text-xs text-slate-500">
         {draft.preview.count} lignes · {draft.preview.a_traiter} à traiter
       </div>
+      {/* Ce que la règle retiendra de la façon de comptabiliser : ce que la
+          ligne porte déjà, sinon ce que le dossier avait préparé. */}
+      {booking && (
+        <label className="flex items-start gap-2 text-xs text-slate-600">
+          <input type="checkbox" className="mt-0.5" checked={keepBooking} onChange={(e) => setKeepBooking(e.target.checked)} />
+          <span>{booking}</span>
+        </label>
+      )}
       <div className="flex items-center gap-2">
         <button className="text-xs px-2 py-1 rounded-lg bg-brand-600 text-white disabled:opacity-50"
           disabled={busy || draft.label_pattern.trim().length < 3} onClick={save}>
@@ -781,6 +837,358 @@ function VendorPatternForm({ txn, onSaved }) {
   )
 }
 
+// ── Comptabiliser sans changer d'écran ──────────────────────────────────────
+//
+// Une ligne de relevé n'est pas toujours une facture. C'est aussi un versement
+// de dette (la ventilation capital / intérêts vit dans la cédule), un débit de
+// paie, un paiement émis, un document extrait. Chacune de ces natures avait son
+// écran : on quittait le rapprochement pour comptabiliser, puis on y revenait.
+//
+// `GET /bank/transactions/:id/dossier` dit ce que la ligne porte — rien n'y est
+// deviné, seulement ce qui est déjà rattaché — et la surface correspondante
+// s'ouvre ICI : la ventilation de la dette dans le panneau, la carte de paie et
+// la facture fournisseur dans un panneau empilé par-dessus.
+function useDossier(txnId) {
+  const [dossier, setDossier] = useState(null)
+  const load = useCallback(() => api.bank.dossier(txnId).then(setDossier).catch(() => setDossier(null)), [txnId])
+  useEffect(() => { setDossier(null); load() }, [txnId, load])
+  return { dossier, reload: load }
+}
+
+// La fiche d'un achat fournisseur n'a pas de route ; elle s'ouvre par son
+// formulaire, le même que sur /fournisseurs/achats (autosave, publication QB,
+// pièces jointes) — chargé à la demande pour ne pas alourdir cette page.
+const AchatPanel = lazy(() => import('./AchatsFournisseurs.jsx').then((m) => ({ default: m.AchatModal })))
+const PaiePanel = lazy(() => import('./ComptaDashboard.jsx').then((m) => ({ default: m.PaieComptabilisationCard })))
+
+function PanelFallback() {
+  return <div className="p-6 text-sm text-slate-400">Chargement…</div>
+}
+
+// Le document apparié : reçus et payouts ont une fiche que le panneau empile
+// tout seul (un simple lien suffit) ; l'achat fournisseur, non — d'où le bouton.
+function MatchedDocument({ txn, doc, onChanged, icon = false }) {
+  const [achat, setAchat] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const label = txn.matched_label || doc?.label || 'Document'
+
+  if (txn.matched_type === 'achat') {
+    const open = async () => {
+      setLoading(true)
+      try { setAchat(await api.achatsFournisseurs.get(txn.matched_id)) } catch { /* lien mort : on laisse le libellé */ }
+      finally { setLoading(false) }
+    }
+    return (
+      <>
+        <button type="button" onClick={(e) => { e.stopPropagation(); open() }} disabled={loading}
+          data-testid="open-matched-doc" title={icon ? `Ouvrir ${label}` : undefined}
+          className={icon
+            ? 'shrink-0 text-slate-300 hover:text-brand-600 disabled:opacity-50'
+            : 'link-record text-left disabled:opacity-50'}>
+          {icon ? <FileText size={12} /> : label}
+        </button>
+        {achat && (
+          <RecordPeekDrawer open onClose={() => setAchat(null)} peekKey="achats" width={640}
+            title={achat.vendor || 'Facture fournisseur'}
+            subtitle={[achat.vendor_invoice_number, achat.invoice_date].filter(Boolean).join(' · ')}>
+            <div className="px-5 py-4">
+              <Suspense fallback={<PanelFallback />}>
+                <AchatPanel achat={achat} onClose={() => setAchat(null)} onSaved={async () => { invalidate('/bank'); await onChanged() }} />
+              </Suspense>
+            </div>
+          </RecordPeekDrawer>
+        )}
+      </>
+    )
+  }
+  // Le payout Stripe s'adresse par son id Stripe : le chemin vient du dossier
+  // (panneau) ou de la ligne (tableau), pas de `matched_id`.
+  const path = doc?.path || txn.matched_path
+  if (path) {
+    return (
+      <Link to={path} onClick={(e) => e.stopPropagation()} title={icon ? `Ouvrir ${label}` : undefined}
+        className={icon ? 'shrink-0 text-slate-300 hover:text-brand-600' : 'link-record'}>
+        {icon ? <FileText size={12} /> : label}
+      </Link>
+    )
+  }
+  if (icon) return null
+  return docLink(txn.matched_type, txn.matched_id, txn.matched_label)
+}
+
+// Le versement de dette que porte cette ligne : sa ventilation, et le bouton
+// qui la publie. Plus besoin d'ouvrir /dettes-lt et d'y retrouver l'échéance.
+function DebtCard({ data, onPublished }) {
+  const { debt, payment, qb_url: qbUrl } = data
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3" data-testid="dossier-debt">
+      <div className="flex items-center gap-2 mb-2">
+        <Landmark size={13} className="text-slate-500 shrink-0" />
+        <span className="text-xs font-medium text-slate-700">Versement de dette</span>
+        <span className="grow" />
+        <Link to="/dettes-lt" className="text-[11px] text-slate-400 hover:underline">cédule</Link>
+      </div>
+      <DebtPaymentPublish debt={debt} payment={{ ...payment, qb_url: qbUrl }} onPublished={onPublished} />
+    </div>
+  )
+}
+
+// Le débit de paie : rattaché ici, comptabilisé ici. La carte est celle de la
+// page Comptabilité, ouverte sur la période de cette ligne.
+function PaieCard({ paie, onChanged }) {
+  const [open, setOpen] = useState(false)
+  const period = paie.period_start && paie.period_end
+    ? `${fmtDate(paie.period_start)} au ${fmtDate(paie.period_end)}`
+    : fmtDate(paie.period_end)
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3" data-testid="dossier-paie">
+      <div className="flex items-center gap-2">
+        <Wallet size={13} className="text-slate-500 shrink-0" />
+        <span className="text-xs font-medium text-slate-700">Paie{paie.number != null ? ` n° ${paie.number}` : ''}</span>
+        <span className="text-xs text-slate-500 truncate">{period}</span>
+        <span className="grow" />
+        {paie.booked ? (
+          <span className="text-xs text-slate-500">Comptabilisée</span>
+        ) : (
+          <button type="button" onClick={() => setOpen(true)} data-testid="dossier-paie-open"
+            className="text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700">
+            Comptabiliser
+          </button>
+        )}
+      </div>
+      {open && (
+        <RecordPeekDrawer open peekKey="paie-compta" width={720}
+          onClose={async () => { setOpen(false); invalidate('/bank'); await onChanged() }}
+          title="Comptabilisation de la paie" subtitle={period}>
+          <div className="p-4">
+            <Suspense fallback={<PanelFallback />}>
+              <PaiePanel paieId={paie.id} />
+            </Suspense>
+          </div>
+        </RecordPeekDrawer>
+      )}
+      {!paie.booked && (
+        <div className="text-[11px] text-slate-400 mt-1">Le débit est rattaché ; la dépense reste à publier.</div>
+      )}
+    </div>
+  )
+}
+
+// ENCAISSEMENT CLIENT. Un virement d'un client entre au compte sans document :
+// il fallait ouvrir Stripe, retrouver la facture et la marquer payée. Le
+// montant ne suffit pas à désigner la bonne facture — plusieurs sont ouvertes
+// au même total —, alors chaque candidate arrive avec ce qui la désigne (nom
+// du payeur au relevé, numéro, date) et son degré de certitude. Rien n'est
+// coché d'office : quand deux candidates se valent, la page le dit et laisse
+// chercher. Marquer payée enregistre le paiement, pose le dépôt QuickBooks et
+// y joint le PDF de la facture pris sur Stripe.
+const VERDICT_META = {
+  sure: { dot: 'bg-emerald-500', label: 'Très probable' },
+  probable: { dot: 'bg-amber-400', label: 'Possible' },
+  faible: { dot: 'bg-slate-300', label: 'Incertaine' },
+}
+
+function InvoiceRow({ f, busy, onPay }) {
+  const v = VERDICT_META[f.verdict] || VERDICT_META.faible
+  const why = (f.reasons || []).join(' · ')
+  return (
+    <div className="flex items-center gap-2 text-xs min-w-0">
+      <span className={`shrink-0 h-2 w-2 rounded-full ${v.dot}`} title={`${v.label}${why ? ` — ${why}` : ''}`} />
+      <Link to={`/factures/${f.id}`} onClick={(e) => e.stopPropagation()} className="link-record truncate">
+        {f.company_name || f.document_number}
+      </Link>
+      <span className="text-slate-400 truncate" title={why}>
+        {f.document_number} · {fmtDate(f.document_date)}{why ? ` · ${why}` : ''}
+      </span>
+      <span className="grow" />
+      {f.lien_stripe && (
+        <a href={f.lien_stripe} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+          title="Ouvrir la facture dans Stripe" className="shrink-0 text-slate-300 hover:text-brand-600">
+          <ExternalLink size={12} />
+        </a>
+      )}
+      <button type="button" disabled={busy} onClick={() => onPay(f)} data-testid="invoice-mark-paid"
+        className="shrink-0 px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+        {busy ? '…' : 'Marquer payée'}
+      </button>
+    </div>
+  )
+}
+
+function InvoiceCard({ txn, invoices, ambiguous, currency, onChanged }) {
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+  const [note, setNote] = useState(null)
+  const [q, setQ] = useState('')
+  const [found, setFound] = useState(null)
+
+  // Recherche libre : le filet quand la détection n'a pas tranché.
+  useEffect(() => {
+    const term = q.trim()
+    if (term.length < 2) { setFound(null); return undefined }
+    const t = setTimeout(() => {
+      api.bank.invoiceSearch(txn.id, term).then(r => setFound(r?.candidates || [])).catch(() => setFound([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q, txn.id])
+
+  const pay = async (f) => {
+    setBusy(f.id); setError(null); setNote(null)
+    try {
+      const r = await api.payments.create({
+        facture_id: f.id,
+        direction: 'in',
+        method: /interac/i.test(`${txn.description || ''} ${txn.details || ''}`) ? 'interac' : 'virement_bancaire',
+        received_at: txn.txn_date,
+        amount: f.balance_due > 0 ? f.balance_due : f.total_amount,
+        currency: f.currency || currency || 'CAD',
+        notes: `Encaissement vu au relevé — ${txnLabel(txn)}`,
+        // Facture marquée « payée » dans Stripe sans encaissement réel : on
+        // reprend la main, sinon le solde ne bougerait pas.
+        clear_paid_status: !!(f.paid_at && !f.paid_charge_id && !f.paid_payment_intent),
+      })
+      if (r?.qb_error) setError(`Paiement enregistré, mais pas d'écriture QuickBooks — ${r.qb_error}`)
+      else if (r?.qb?.attachment && !r.qb.attachment.attached && r.qb.attachment.reason !== 'déjà jointe') {
+        setNote(`Écriture posée ; PDF de la facture non joint (${r.qb.attachment.error || r.qb.attachment.reason}).`)
+      }
+      invalidate('/bank')
+      await onChanged()
+    } catch (e) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  const list = found ?? invoices
+  const unsure = ambiguous || !invoices.length || invoices[0]?.verdict !== 'sure'
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2" data-testid="dossier-invoices">
+      <div className="flex items-center gap-2">
+        <ArrowLeftRight size={13} className="text-slate-500 shrink-0" />
+        <span className="text-xs font-medium text-slate-700">Facture client</span>
+        {ambiguous && <span className="text-[11px] text-amber-600">plusieurs se ressemblent — à choisir</span>}
+      </div>
+      {list.map((f) => (
+        <InvoiceRow key={f.id} f={f} busy={busy === f.id} onPay={pay} />
+      ))}
+      {!list.length && <div className="text-xs text-slate-400">Aucune facture ne correspond.</div>}
+      {unsure && (
+        <label className="flex items-center gap-2 text-[11px] text-slate-400">
+          Chercher
+          <input value={q} onChange={(e) => setQ(e.target.value)} onClick={(e) => e.stopPropagation()}
+            data-testid="invoice-search"
+            className="grow text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-700" />
+        </label>
+      )}
+      {note && <div className="text-xs text-amber-600">{note}</div>}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+    </div>
+  )
+}
+
+// LA PIÈCE D'UNE SORTIE. La facture est presque toujours déjà lue dans
+// l'extracteur ou saisie en achat, mais le montant et la date ne suffisent pas
+// à la désigner : c'est le fournisseur écrit au relevé qui tranche. Apparier
+// ici ne publie rien à QuickBooks — ça reste un second geste.
+function ReceiptRow({ d, busy, onLink }) {
+  const v = VERDICT_META[d.verdict] || VERDICT_META.faible
+  const why = (d.reasons || []).join(' · ')
+  const to = d.type === 'receipt' ? `/sale-receipts/${d.id}` : null
+  return (
+    <div className="flex items-center gap-2 text-xs min-w-0">
+      <span className={`shrink-0 h-2 w-2 rounded-full ${v.dot}`} title={`${v.label}${why ? ` — ${why}` : ''}`} />
+      {to
+        ? <Link to={to} onClick={(e) => e.stopPropagation()} className="link-record truncate">{d.label}</Link>
+        : <span className="truncate text-slate-700">{d.label}</span>}
+      <span className="text-slate-400 truncate" title={why}>
+        {fmtDate(d.date)}{why ? ` · ${why}` : ''}
+      </span>
+      <span className="grow" />
+      <button type="button" disabled={busy} onClick={() => onLink(d)} data-testid="receipt-link"
+        className="shrink-0 px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+        {busy ? '…' : 'Apparier'}
+      </button>
+    </div>
+  )
+}
+
+function ReceiptCard({ txn, receipts, ambiguous, onChanged }) {
+  const [busy, setBusy] = useState(null)
+  const [error, setError] = useState(null)
+  const [q, setQ] = useState('')
+  const [found, setFound] = useState(null)
+
+  useEffect(() => {
+    const term = q.trim()
+    if (term.length < 2) { setFound(null); return undefined }
+    const t = setTimeout(() => {
+      api.bank.receiptSearch(txn.id, term).then(r => setFound(r?.candidates || [])).catch(() => setFound([]))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q, txn.id])
+
+  const link = async (d) => {
+    setBusy(d.id); setError(null)
+    try {
+      await api.bank.match(txn.id, { matched_type: d.type, matched_id: String(d.id), push_qb: false })
+      invalidate('/bank')
+      await onChanged()
+    } catch (e) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  const list = found ?? receipts
+  const unsure = ambiguous || !receipts.length || receipts[0]?.verdict !== 'sure'
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2" data-testid="dossier-receipts">
+      <div className="flex items-center gap-2">
+        <FileText size={13} className="text-slate-500 shrink-0" />
+        <span className="text-xs font-medium text-slate-700">Pièce</span>
+        {ambiguous && <span className="text-[11px] text-amber-600">plusieurs se ressemblent — à choisir</span>}
+      </div>
+      {list.map((d) => (
+        <ReceiptRow key={`${d.type}:${d.id}`} d={d} busy={busy === d.id} onLink={link} />
+      ))}
+      {!list.length && <div className="text-xs text-slate-400">Aucune pièce ne correspond.</div>}
+      {unsure && (
+        <label className="flex items-center gap-2 text-[11px] text-slate-400">
+          Chercher
+          <input value={q} onChange={(e) => setQ(e.target.value)} onClick={(e) => e.stopPropagation()}
+            data-testid="receipt-search"
+            className="grow text-xs border border-slate-200 rounded-lg px-2 py-1 text-slate-700" />
+        </label>
+      )}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+    </div>
+  )
+}
+
+// Le paiement émis passé au compte : rien à comptabiliser, mais il nomme la
+// ligne mieux que le relevé.
+function PaymentLine({ payment, currency }) {
+  return (
+    <div className="text-xs text-slate-500" data-testid="dossier-payment">
+      Paiement émis · {payment.label || payment.method || 'sortie'} · {money(payment.amount, currency)} du {fmtDate(payment.payment_date)}
+    </div>
+  )
+}
+
+// L'écriture QuickBooks de la ligne, à un clic depuis le tableau.
+function QbLink({ txn }) {
+  if (!txn.qb_url) return null
+  return (
+    <a href={txn.qb_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
+      title={txn.qb_match_method
+        ? `Ouvrir dans QuickBooks — retrouvée par ${MATCH_METHOD[txn.qb_match_method] || txn.qb_match_method}${txn.qb_match_rate ? ` ${txn.qb_match_rate}` : ''}${txn.qb_match_account ? ` (${txn.qb_match_account})` : ''}${txn.qb_match_delta ? `, écart de ${txn.qb_match_delta.toFixed(2)} $` : ''}`
+        : 'Ouvrir dans QuickBooks'}
+      className={`shrink-0 ${txn.qb_match_delta ? 'text-amber-500' : 'text-slate-300'} hover:text-brand-600`}>
+      <ExternalLink size={12} />
+    </a>
+  )
+}
+
+// « X » — la ligne part à la relecture de Michel. Le classeur TRX_Orisha a
+// cette colonne depuis toujours (légende « Trx non révisée (Mike) ») : la
+// marque posée ici s'y recopie à la même place, et un X déjà écrit là-bas
+// remonte ici au premier passage.
 function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
   // Le panneau porte les deux gestes qui demandent un formulaire : comptabiliser
   // sans facture, et apparier un virement. Les boutons de la ligne ouvrent le
@@ -848,6 +1256,9 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
 
   const meta = STATUS_META[txn.status] || STATUS_META.a_traiter
   const done = async () => { setMode(null); await onChanged() }
+  // Ce que la ligne porte d'autre qu'une facture : versement de dette, paie,
+  // paiement émis. Chacun s'ouvre ici plutôt que sur sa page.
+  const { dossier, reload: reloadDossier } = useDossier(txn.id)
 
   if (mode === 'add') {
     return (
@@ -900,6 +1311,21 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
       {/* Écriture QuickBooks retrouvée : on la lit ici, on confirme ici. */}
       {txn.qb_txn_id && <QbEntryCard txn={txn} currency={currency} onChanged={onChanged} />}
 
+      {dossier?.debt && (
+        <DebtCard data={dossier.debt}
+          onPublished={async () => { await reloadDossier(); invalidate('/bank'); await onChanged() }} />
+      )}
+      {dossier?.paie && <PaieCard paie={dossier.paie} onChanged={onChanged} />}
+      {Array.isArray(dossier?.invoices) && (
+        <InvoiceCard txn={txn} invoices={dossier.invoices} ambiguous={dossier.invoices_ambiguous}
+          currency={currency} onChanged={onChanged} />
+      )}
+      {dossier?.receipts?.length > 0 && (
+        <ReceiptCard txn={txn} receipts={dossier.receipts} ambiguous={dossier.receipts_ambiguous}
+          onChanged={onChanged} />
+      )}
+      {dossier?.payment && <PaymentLine payment={dossier.payment} currency={currency} />}
+
       {txn.transfer_txn_id ? (
         <div className="bg-slate-50 rounded-lg p-3 space-y-2">
           <div className="text-xs font-medium text-slate-500 uppercase">Virement interne</div>
@@ -921,7 +1347,7 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
       ) : txn.matched_id ? (
         <div className="bg-slate-50 rounded-lg p-3 space-y-2">
           <div className="text-xs font-medium text-slate-500 uppercase">Document apparié</div>
-          <div>{docLink(txn.matched_type, txn.matched_id, txn.matched_label)}
+          <div><MatchedDocument txn={txn} doc={dossier?.document} onChanged={onChanged} />
             {txn.match_method === 'auto' && txn.match_confidence != null && (
               <span className="text-xs text-slate-400 ml-2">auto · {Math.round(txn.match_confidence * 100)} %</span>
             )}
@@ -974,7 +1400,7 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
             <div key={`${s.type}:${s.id}`} className="flex items-center justify-between gap-2 bg-slate-50 rounded-lg p-2">
               <div className="min-w-0">
                 <div className="truncate">{docLink(s.type, s.id, s.label)}</div>
-                <div className="text-xs text-slate-500">{fmtDate(s.date)} · {money(s.total, currency)} · {Math.round(s.confidence * 100)} %{s.quickbooks_id ? ' · publié QB' : ''}</div>
+                <div className="text-xs text-slate-500">{fmtDate(s.date)} · {money(s.total, currency)} · {Math.round(s.confidence * 100)} %{s.quickbooks_id ? ' · publié dans QuickBooks' : ''}</div>
               </div>
               <button className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50" disabled={busy}
                 onClick={() => act(() => api.bank.match(txn.id, { matched_type: s.type, matched_id: s.id }))}>
@@ -985,9 +1411,11 @@ function TxnPeek({ txn, currency, onChanged, initialMode = null }) {
         </div>
       )}
 
-      {!txn.matched_id && !txn.transfer_txn_id && (
+      {!txn.transfer_txn_id && (
         <div className="space-y-1.5">
-          <VendorPatternForm txn={txn} onSaved={onChanged} />
+          {!txn.matched_id && <VendorPatternForm txn={txn} onSaved={onChanged} />}
+          {/* Après avoir comptabilisé une ligne, c'est LE moment d'en faire une
+              règle : la façon de faire est encore sous les yeux. */}
           <RuleFromTxnForm txn={txn} />
         </div>
       )}
@@ -1082,8 +1510,7 @@ function useReconcile(account, refreshKey, onChanged) {
   const [qbLoading, setQbLoading] = useState(false)
   const [qbError, setQbError] = useState(null)
   const [busy, setBusy] = useState(false)
-  const [qbAuditBusy, setQbAuditBusy] = useState(false)
-  const [qbAuditMsg, setQbAuditMsg] = useState(null)
+  const [msg, setMsg] = useState(null)
 
   const accountId = account?.id
 
@@ -1094,48 +1521,40 @@ function useReconcile(account, refreshKey, onChanged) {
     return () => { alive = false }
   }, [accountId, refreshKey])
 
-  // La comparaison QuickBooks tape sur l'API Intuit (quelques secondes) : elle
-  // se charge d'elle-même à l'ouverture du compte, puis à la demande.
+  // La comparaison QuickBooks tape sur l'API Intuit : elle se charge d'elle-même
+  // à l'ouverture du compte, puis après « Mettre à jour » ou une accalmie du
+  // temps réel. Côté serveur, le grand livre est mis en cache 5 minutes.
   const loadQb = useCallback(async () => {
     if (!accountId || !account?.qb_account_id) { setQb(null); return }
     setQbLoading(true); setQbError(null)
     try { setQb(await api.bank.qbCompare(accountId)) } catch (e) { setQbError(e.message); setQb(null) } finally { setQbLoading(false) }
   }, [accountId, account?.qb_account_id])
 
-  useEffect(() => { setQb(null); setQbError(null); setQbAuditMsg(null); loadQb() }, [loadQb])
+  useEffect(() => { setQb(null); setQbError(null); setMsg(null); loadQb() }, [loadQb])
 
-  const runAuto = async () => {
-    setBusy(true)
+  // « Mettre à jour » : apparier aux documents de l'ERP, vérifier dans
+  // QuickBooks, recalculer l'écart. Un seul bouton, une seule route.
+  const runUpdate = async () => {
+    setBusy(true); setMsg(null)
     try {
-      await api.bank.reconcileAuto(accountId)
+      const r = await api.bank.updateAll(accountId)
+      setMsg(r?.message || null)
       await onChanged()
       await loadQb()
-    } finally { setBusy(false) }
-  }
-
-  // Compte Plaid : la vérité « comptabilisé dans QuickBooks » ne vient plus du
-  // fichier TRX_Orisha (désactivé pour ces comptes) mais de cette recherche
-  // approfondie — voir services/plaidQbAudit.js.
-  const runQbAudit = async () => {
-    setQbAuditBusy(true); setQbAuditMsg(null)
-    try {
-      const r = await api.bank.qbAudit(accountId)
-      setQbAuditMsg(`${r.linked} lié(s) sur ${r.scanned} vérifiée(s)`)
-      await onChanged()
     } catch (e) {
-      setQbAuditMsg(`Échec : ${e.message}`)
-    } finally { setQbAuditBusy(false) }
+      setMsg(`Échec : ${e.message}`)
+    } finally { setBusy(false) }
   }
 
   const onMerged = async () => { await onChanged() }
 
-  return { summary, qb, qbLoading, qbError, loadQb, busy, runAuto, qbAuditBusy, qbAuditMsg, runQbAudit, onMerged }
+  return { summary, qb, qbLoading, qbError, loadQb, busy, runUpdate, msg, onMerged }
 }
 
 // Une ligne, trois nombres : le solde du relevé, celui de QuickBooks, et
 // l'écart entre les deux — c'est le seul chiffre qui commande une action.
 function EcartBar({ account, rec }) {
-  const { summary, qb, qbLoading, qbError, qbAuditMsg } = rec
+  const { summary, qb, qbLoading, qbError, msg } = rec
   if (!account) return null
   const stmt = summary?.statement
   const bal = qb?.balance && !qb.balance.error ? qb.balance : null
@@ -1143,28 +1562,27 @@ function EcartBar({ account, rec }) {
   const ok = diff != null && Math.abs(diff) < 0.01
   const currency = account.currency
 
+  // Un seul chiffre affiché (2026-09-15) : les deux soldes qui le produisent
+  // sont dans l'infobulle — c'est l'écart, et lui seul, qui commande une action.
+  const detail = [
+    `Relevé ${stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : '—'}`,
+    `QuickBooks ${bal ? money(bal.qb_as_of, currency) : account.qb_account_id ? '—' : 'non mappé'}`,
+    stmt?.date ? `soldes au ${fmtDate(stmt.date)}` : null,
+    bal && Math.abs(bal.qb_current - bal.qb_as_of) >= 0.01 ? `solde QuickBooks aujourd'hui ${money(bal.qb_current, currency)}` : null,
+  ].filter(Boolean).join(' · ')
+
   return (
-    <div data-testid="reconcile-panel" className="flex items-baseline gap-x-2 text-sm min-w-0">
-      <span className="text-slate-500">Écart</span>
+    <div data-testid="reconcile-panel" title={detail}
+      data-statement-balance={stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : ''}
+      data-qb-balance={bal ? money(bal.qb_as_of, currency) : ''}
+      className="flex items-baseline gap-x-1.5 text-xs min-w-0">
+      <span className="text-slate-400">Écart</span>
       <span data-testid="reconcile-difference"
-        className={`text-lg font-semibold tabular-nums ${diff == null ? 'text-slate-300' : ok ? 'text-green-700' : 'text-red-700'}`}>
+        className={`text-sm font-semibold tabular-nums ${diff == null ? 'text-slate-300' : ok ? 'text-green-700' : 'text-red-700'}`}>
         {qbLoading ? '…' : diff == null ? '—' : money(diff, currency)}
       </span>
-      <span className="text-xs text-slate-400 truncate"
-        title={[
-          stmt?.date ? `Soldes au ${fmtDate(stmt.date)}` : null,
-          bal && Math.abs(bal.qb_current - bal.qb_as_of) >= 0.01 ? `Solde QuickBooks aujourd'hui : ${money(bal.qb_current, currency)}` : null,
-        ].filter(Boolean).join(' — ') || undefined}>
-        <span data-testid="reconcile-statement-balance">
-          relevé {stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : '—'}
-        </span>
-        {' · '}
-        <span data-testid="reconcile-qb-balance">
-          QB {bal ? money(bal.qb_as_of, currency) : account.qb_account_id ? '—' : 'non mappé'}
-        </span>
-      </span>
-      {qbError && <span className="text-xs text-amber-700">QuickBooks indisponible : {qbError}</span>}
-      {qbAuditMsg && <span className="text-xs text-slate-400">{qbAuditMsg}</span>}
+      {qbError && <span className="text-[11px] text-amber-700 truncate">QuickBooks indisponible</span>}
+      {msg && <span className="text-[11px] text-slate-400 truncate">{msg}</span>}
       <PlaidDuplicates account={account} rec={rec} />
     </div>
   )
@@ -1202,17 +1620,9 @@ function PlaidDuplicates({ account, rec }) {
   )
 }
 
-// ── Sync automatique du fichier TRX_Orisha (Drive) ───────────────────────────
-
-const ANOMALY_KIND = {
-  comptabilisee_introuvable: { label: 'Déclarée comptabilisée, introuvable dans QuickBooks', color: 'red' },
-  doublon_releve: { label: 'Probablement saisie deux fois', color: 'orange' },
-  qb_sans_releve: { label: 'Compensée dans QuickBooks, absente du relevé', color: 'orange' },
-}
-
-// Couleur peinte à la main dans TRX_Orisha : c'est l'affirmation de Michel sur
-// ce qui est comptabilisé. L'ERP la conserve telle quelle et la confronte au
-// grand livre plutôt que de la deviner.
+// Couleur peinte à la main dans TRX_Orisha du temps où ce fichier était la
+// source. Donnée HISTORIQUE figée (2024-2025) : plus personne ne peint rien,
+// mais elle reste une preuve pour les lignes de cette époque.
 const SHEET_COLOR_META = {
   vert: { dot: 'bg-green-500', label: 'Fichier : rapprochée avec la banque' },
   jaune: { dot: 'bg-yellow-400', label: 'Fichier : comptabilisée' },
@@ -1230,209 +1640,73 @@ const MATCH_METHOD = {
   devise: 'montant en devise du compte',
   tolerance: 'montant proche (frais ou conversion)',
   conversion: 'conversion de devise (taux vérifié)',
+  devise_taux: 'écriture en devise étrangère (taux vérifié)',
   autre_compte: 'écriture portée à un autre compte',
   agregat: 'plusieurs écritures QuickBooks',
   agregat_inverse: 'écriture QuickBooks partagée avec d\'autres lignes',
 }
 
-function fmtDateTime(iso) {
-  if (!iso) return '—'
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('fr-CA', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+
+
+// Ce qui n'est pas « Mettre à jour » tient dans le menu « ⋯ » en bout de barre :
+// déposer un relevé, et les deux gestes du classeur Google. La page n'a plus
+// d'en-tête (2026-09-15). Les entrées « Relire TRX_Orisha » et « Détail
+// TRX_Orisha » ont disparu avec la lecture du fichier, « Recalculer
+// QuickBooks » et « Chercher dans tout QuickBooks » avec le bouton unique.
+function MenuItem({ icon, label, hint, onClick, disabled, href, testId }) {
+  const cls = 'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-left text-slate-700 hover:bg-slate-50 disabled:opacity-40 disabled:hover:bg-transparent'
+  const body = (
+    <>
+      <span className="text-slate-400 shrink-0">{icon}</span>
+      <span className="flex-1 truncate">{label}</span>
+      {hint && <span className="text-[11px] text-slate-400 shrink-0">{hint}</span>}
+    </>
+  )
+  if (href) {
+    return <a href={href} target="_blank" rel="noreferrer" className={cls} data-testid={testId}>{body}</a>
+  }
+  return <button type="button" className={cls} data-testid={testId} disabled={disabled} onClick={onClick}>{body}</button>
 }
 
-// État + actions de la sync TRX_Orisha, partagés entre l'icône du header
-// (TrxSheetIndicator) et le panneau détaillé repliable (TrxSheetPanel) — un
-// seul chargement de statut pour les deux.
-function useTrxSheetStatus(onSynced) {
-  const [status, setStatus] = useState(null)
-  const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState(null)
+function MoreMenu({ onDrop, flash }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const mirror = useMirror(flash)
 
-  const load = useCallback(() => {
-    api.bank.trxSheetStatus().then(setStatus).catch(() => setStatus(null))
-  }, [])
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
 
-  const runSync = async () => {
-    setSyncing(true); setError(null)
-    try {
-      await api.bank.trxSheetSync()
-      load()
-      await onSynced()
-    } catch (e) { setError(e.message) } finally { setSyncing(false) }
-  }
+  const run = (fn) => () => { setOpen(false); fn() }
 
-  const last = status?.last_run
-  return {
-    status, syncing, error, runSync, last,
-    anomalies: last?.anomalies || [],
-    toBook: last?.to_book || [],
-    gaps: last?.gaps || [],
-  }
-}
-
-// Icône discrète dans le header — remplace l'ancien bandeau plein-largeur
-// permanent. Silencieuse quand tout est à jour, se transforme en pill visible
-// seulement quand il y a des anomalies à signaler.
-function TrxSheetIndicator({ trx, open, onToggle }) {
-  if (!trx.status) return null
-  if (trx.anomalies.length > 0) {
-    return (
-      <button type="button" onClick={onToggle} data-testid="trx-sheet-indicator"
-        title="TRX_Orisha : anomalies détectées — cliquer pour voir le détail"
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg border transition-colors ${open
-          ? 'bg-amber-100 border-amber-300 text-amber-900'
-          : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'}`}>
-        <AlertTriangle size={13} />
-        {trx.anomalies.length} anomalie{trx.anomalies.length > 1 ? 's' : ''}
+  return (
+    <div className="relative" ref={ref}>
+      <button type="button" data-testid="rapprochement-more" aria-label="Autres actions"
+        onClick={() => setOpen((v) => !v)}
+        className={`relative inline-flex items-center justify-center w-7 h-7 rounded-md border transition-colors ${open
+          ? 'bg-slate-100 border-slate-300 text-slate-700'
+          : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>
+        <MoreHorizontal size={15} />
       </button>
-    )
-  }
-  return (
-    <button type="button" onClick={onToggle} data-testid="trx-sheet-indicator"
-      title="Fichier TRX_Orisha (Drive) — sync auto aux 20 min, cliquer pour le détail"
-      className={`inline-flex items-center justify-center w-8 h-8 rounded-lg border transition-colors ${open
-        ? 'bg-slate-100 border-slate-300 text-slate-700'
-        : 'border-slate-300 text-slate-400 hover:bg-slate-50 hover:text-slate-600'}`}>
-      {trx.syncing ? <RefreshCw size={14} className="animate-spin" /> : <FileSpreadsheet size={14} />}
-    </button>
-  )
-}
 
-// Sync du fichier à la demande, sans avoir à déplier le panneau : demandé le
-// 2026-09-12, en même temps que le retour de TRX_Orisha comme source unique.
-function TrxSheetSyncButton({ trx }) {
-  if (!trx.status) return null
-  return (
-    <button type="button" onClick={trx.runSync} disabled={trx.syncing} data-testid="trx-sheet-sync"
-      title="Relire le fichier TRX_Orisha maintenant (sync auto aux 20 min)"
-      className="inline-flex items-center gap-1.5 px-2.5 h-8 text-xs rounded-lg border border-slate-300 text-slate-600 hover:bg-slate-50 disabled:opacity-50">
-      <RefreshCw size={13} className={trx.syncing ? 'animate-spin' : ''} />
-      {trx.syncing ? 'Sync…' : 'TRX'}
-    </button>
-  )
-}
-
-// Panneau détaillé — replié par défaut, ouvert via TrxSheetIndicator (ou
-// auto-ouvert une fois s'il y a des anomalies). Contenu inchangé par rapport
-// à l'ancien bandeau : dernier passage, 3 sous-panneaux, sync manuelle.
-function TrxSheetPanel({ trx, onGoToAccount }) {
-  const { status, syncing, error, runSync, last, anomalies, toBook, gaps } = trx
-  const [showAnomalies, setShowAnomalies] = useState(null)
-  if (!status) return null
-
-  // Un panneau à la fois : anomalies (contradictions), à comptabiliser (travail
-  // en cours, jamais alerté) et appariements avec écart (frais, conversions).
-  const panel = (key) => () => setShowAnomalies((v) => (v === key ? null : key))
-  const line = (a, extra) => (
-    <div className="min-w-0">
-      <button type="button" className="text-left hover:underline" title="Ouvrir ce compte"
-        onClick={() => onGoToAccount(a.account_id)}>
-        <span className="font-medium">{a.account_name}</span>
-        <span className="text-slate-500"> · {fmtDate(a.date)} · </span>
-        <span className={a.amount < 0 ? 'text-red-700' : 'text-green-700'}>{money(a.amount)}</span>
-        <span className="text-slate-700"> · {a.label}</span>
-      </button>
-      {extra}
-    </div>
-  )
-
-  return (
-    <div data-testid="trx-sheet-banner"
-      className={`mb-3 rounded-xl border px-4 py-3 ${anomalies.length ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-xs">
-        <span className="inline-flex items-center gap-1.5 font-medium text-slate-700"
-          title={`${status.active ? 'Sync auto aux 20 min' : 'Automation désactivée'} — ${last
-            ? `dernier passage ${fmtDateTime(last.executed_at)} : ${last.status === 'success' ? last.summary : `échec (${last.error})`}`
-            : 'jamais synchronisé'}`}>
-          <FileSpreadsheet size={13} className="text-green-700" /> TRX_Orisha
-        </span>
-        {last?.status === 'error' && <span className="text-red-600">échec de la dernière sync : {last.error}</span>}
-        <span className="grow" />
-        {anomalies.length > 0 && (
-          <button type="button"
-            className="inline-flex items-center gap-1 text-amber-800 hover:text-amber-900 font-medium"
-            onClick={panel('anomalies')}>
-            <AlertTriangle size={14} />
-            {anomalies.length} anomalie{anomalies.length > 1 ? 's' : ''}
-            <ChevronRight size={14} className={`transition-transform ${showAnomalies === 'anomalies' ? 'rotate-90' : ''}`} />
-          </button>
-        )}
-        {toBook.length > 0 && (
-          <button type="button"
-            className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900"
-            title="Lignes pas encore comptabilisées d'après la couleur du fichier — état de travail normal, jamais alerté"
-            onClick={panel('to_book')}>
-            <BookOpen size={14} />
-            {toBook.length} à comptabiliser
-            <ChevronRight size={14} className={`transition-transform ${showAnomalies === 'to_book' ? 'rotate-90' : ''}`} />
-          </button>
-        )}
-        {gaps.length > 0 && (
-          <button type="button"
-            className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-900"
-            title="Appariées à QuickBooks malgré un écart de montant (frais bancaires, conversion de devise)"
-            onClick={panel('gaps')}>
-            <Link2 size={14} />
-            {gaps.length} avec écart
-            <ChevronRight size={14} className={`transition-transform ${showAnomalies === 'gaps' ? 'rotate-90' : ''}`} />
-          </button>
-        )}
-        <button type="button"
-          className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-lg border border-slate-300 bg-white hover:bg-slate-50 disabled:opacity-50"
-          disabled={syncing} onClick={runSync}>
-          <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-          {syncing ? 'Synchronisation…' : 'Synchroniser maintenant'}
-        </button>
-      </div>
-      {error && <div className="mt-2 text-sm text-red-600">Sync échouée : {error}</div>}
-      {showAnomalies === 'anomalies' && (
-        <div className="mt-3 space-y-1.5 max-h-80 overflow-auto pr-1">
-          {anomalies.map((a) => {
-            const kind = ANOMALY_KIND[a.kind] || { label: a.kind, color: 'gray' }
-            return (
-              <div key={a.key} className="flex items-start gap-2 rounded-lg bg-white/70 border border-amber-200 px-2.5 py-1.5 text-sm">
-                <Badge color={kind.color} size="xs">{kind.label}</Badge>
-                {line(a, <div className="text-xs text-slate-500">↳ {a.explanation}</div>)}
-              </div>
-            )
-          })}
-        </div>
-      )}
-      {showAnomalies === 'to_book' && (
-        <div className="mt-3 space-y-1.5 max-h-80 overflow-auto pr-1">
-          <div className="text-xs text-slate-500">
-            Pas des anomalies : ces lignes ne sont simplement pas encore comptabilisées d'après la couleur du fichier.
-          </div>
-          {toBook.map((a) => (
-            <div key={a.key} className="flex items-start gap-2 rounded-lg bg-white/70 border border-slate-200 px-2.5 py-1.5 text-sm">
-              <Badge color={a.sheet_color === 'bleu' ? 'blue' : 'gray'} size="xs">{a.age_days} j</Badge>
-              {line(a, <div className="text-xs text-slate-500">↳ {a.explanation}</div>)}
-            </div>
-          ))}
-        </div>
-      )}
-      {showAnomalies === 'gaps' && (
-        <div className="mt-3 space-y-1.5 max-h-80 overflow-auto pr-1">
-          {gaps.map((g) => (
-            <div key={`${g.txn_id || g.date}-${g.qb_id}`} className="flex items-start gap-2 rounded-lg bg-white/70 border border-slate-200 px-2.5 py-1.5 text-sm">
-              <Badge color="gray" size="xs">{g.method_label}</Badge>
-              {line(g, (
-                <div className="text-xs text-slate-500">
-                  ↳ QuickBooks : {fmtDate(g.qb_date)}{g.qb_name ? ` · ${g.qb_name}` : ''} · écart {money(g.delta)}
-                  {g.rate ? ` · taux ${g.rate}` : ''}
-                </div>
-              ))}
-            </div>
-          ))}
+      {open && (
+        <div className="absolute right-0 top-9 z-30 w-72 rounded-lg border border-slate-200 bg-white shadow-lg p-1">
+          <MenuItem icon={<FileUp size={14} />} label="Déposer un relevé"
+            testId="statement-drop" onClick={run(onDrop)} />
+          <MenuItem icon={<Table2 size={14} className={mirror.busy ? 'animate-pulse' : ''} />}
+            label="Recopier dans le classeur" disabled={mirror.busy} onClick={mirror.run} />
+          {mirror.url && <MenuItem icon={<ExternalLink size={14} />} label="Ouvrir le classeur" href={mirror.url} />}
         </div>
       )}
     </div>
   )
 }
 
+// Le compte : un bouton-titre dans la barre d'outils, plus une rangée de 13
+// onglets. Recherche dès qu'il y a de quoi chercher (règle des >10 options).
 // ── Page ─────────────────────────────────────────────────────────────────────
 
 // Trois files, comme « Opérations bancaires » de QuickBooks : ce qui demande
@@ -1459,6 +1733,21 @@ function StatusLegend({ counts, value, onChange }) {
       {counts.ghost > 0 && chip('ghost', GHOST_META.label, GHOST_META.hint, GHOST_META.tint, counts.ghost)}
       {/* Pas une couleur du fichier : ce que les moteurs proposent et qui
           attend un clic. Posée à la suite, séparée par un filet. */}
+      {/* Sortie d'argent sans pièce justificative : le vrai « il manque une
+          facture ». Posée ici plutôt que sur une page à part — c'est le relevé
+          qui la porte, et le dossier de la ligne donne la suite (chercher au
+          portail, apprendre le fournisseur, déposer la facture). */}
+      {counts.missing > 0 && (
+        <button type="button" data-testid="reconcile-legend-missing"
+          aria-pressed={value === 'missing'} title="Sorties d'argent sans facture"
+          onClick={() => onChange(value === 'missing' ? null : 'missing')}
+          className={`ml-2 pl-3 border-l border-slate-200 inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${value === 'missing'
+            ? 'bg-amber-100 text-amber-900 font-medium'
+            : 'text-amber-700 hover:bg-amber-50'}`}>
+          <FileWarning size={12} />
+          <span className="tabular-nums">{counts.missing}</span> sans facture
+        </button>
+      )}
       {counts.proposals > 0 && (
         <button type="button" data-testid="reconcile-legend-proposals"
           aria-pressed={value === 'proposals'} title="Propositions à confirmer"
@@ -1474,40 +1763,295 @@ function StatusLegend({ counts, value, onChange }) {
   )
 }
 
-// Onglet : soulignement fin, pas de pastille pleine — la barre de comptes et
-// la barre de files se lisent comme les onglets d'un classeur.
-function Tab({ active, onClick, title, children }) {
+function TransactionComment({ txn, onSave }) {
+  const [draft, setDraft] = useState(null)
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const saving = useRef(false)
+  const cancelled = useRef(false)
+
+  const save = async () => {
+    if (saving.current || cancelled.current || draft === null) return
+    if (draft === (txn.comment || '')) { setDraft(null); return }
+    saving.current = true
+    setBusy(true)
+    setError(null)
+    try {
+      await onSave(txn.id, draft || null)
+      setDraft(null)
+    } catch (e) {
+      setError(e.message || 'Enregistrement impossible')
+    } finally {
+      saving.current = false
+      setBusy(false)
+    }
+  }
+
   return (
-    <button type="button" onClick={onClick} title={title}
-      className={`-mb-px border-b-2 px-2 py-1.5 text-sm whitespace-nowrap transition-colors ${active
-        ? 'border-brand-500 text-slate-900 font-medium'
-        : 'border-transparent text-slate-500 hover:text-slate-800'}`}>
-      {children}
+    <div className="-mx-4 px-4 min-h-8 flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      {draft === null ? (
+        <button type="button" className="w-full min-h-8 text-left truncate cursor-text hover:bg-white/50"
+          aria-label="Modifier le commentaire" title={txn.comment || 'Ajouter un commentaire'}
+          onClick={() => { cancelled.current = false; setError(null); setDraft(txn.comment || '') }}>
+          {txn.comment || '—'}
+        </button>
+      ) : (
+        <>
+          <input autoFocus aria-label="Commentaire" aria-invalid={!!error} aria-busy={busy}
+            className={`w-full min-w-0 rounded border px-1 py-0.5 text-sm outline-none focus:ring-1 focus:ring-brand-500 ${error ? 'border-red-500' : 'border-brand-500'}`}
+            value={draft} readOnly={busy} onChange={(e) => setDraft(e.target.value)} onBlur={save}
+            onKeyDown={(e) => {
+              e.stopPropagation()
+              if (e.nativeEvent.isComposing) return
+              if (e.key === 'Enter') { e.preventDefault(); save() }
+              if (e.key === 'Escape' && !saving.current) {
+                e.preventDefault(); cancelled.current = true; setDraft(null); setError(null)
+              }
+            }} />
+          {error && <span role="alert" className="text-xs text-red-600 truncate" title={error}>{error}</span>}
+        </>
+      )}
+    </div>
+  )
+}
+
+// ── Grammaire QuickBooks dans la vue relevé ────────────────────────────────
+// Choix de Charles (2026-09-19) : une seule vue. Le relevé garde ses couleurs
+// et ses pastilles, et porte les gestes de QuickBooks — le bouton du geste
+// attendu sur chaque ligne, et l'écriture qui s'ouvre sous la ligne. Un clic
+// humain par écriture : pas de publication en lot (décision du 2026-09-12).
+
+// Ce que la ligne attend, dit sur la ligne elle-même (maquette B3) : le bouton
+// porte le geste, et le dépliage s'ouvre déjà dessus.
+const NEXT_META = {
+  virement: { label: 'Lier le virement', pane: 'transfer', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
+  apparier: { label: 'Apparier', pane: 'match', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
+  publier: { label: 'Publier', pane: 'add', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
+  comptabiliser: { label: 'Comptabiliser', pane: 'publish', cls: 'bg-brand-600 text-white hover:bg-brand-700' },
+  rien: { label: 'Ouvrir', pane: 'add', cls: 'border border-slate-300 text-slate-600 hover:bg-white' },
+}
+
+// « Apparier » : les documents au même montant, et le bouton qui lie.
+function QbMatchPane({ txn, currency, onChanged }) {
+  const [items, setItems] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  useEffect(() => {
+    let alive = true
+    api.bank.suggestions(txn.id)
+      .then((r) => { if (alive) setItems(r) })
+      .catch((e) => { if (alive) { setItems([]); setError(e.message) } })
+    return () => { alive = false }
+  }, [txn.id])
+
+  const link = async (s) => {
+    setBusy(true); setError(null)
+    try {
+      const r = await api.bank.match(txn.id, { matched_type: s.type, matched_id: s.id })
+      invalidate('/bank')
+      await onChanged()
+      // L'appariement est posé même si QuickBooks refuse : on le dit, le geste
+      // reste rejouable depuis la ligne.
+      if (r?.qbError) setError(`Lié, mais pas publié dans QuickBooks — ${r.qbError}`)
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="space-y-2 text-sm">
+      {items == null && <div className="text-slate-400 text-xs">Recherche…</div>}
+      {items?.length === 0 && (
+        <div className="text-xs text-slate-500">Aucun document au même montant à ±7 jours — souvent une facture manquante.</div>
+      )}
+      {items?.map((s) => (
+        <div key={`${s.type}:${s.id}`} className="flex items-center justify-between gap-2 bg-white border border-slate-200 rounded-lg px-3 py-2">
+          <div className="min-w-0">
+            <div className="truncate">{docLink(s.type, s.id, s.label)}</div>
+            <div className="text-xs text-slate-500">
+              {fmtDate(s.date)} · {money(s.total, currency)} · {Math.round(s.confidence * 100)} %{s.quickbooks_id ? ' · publié dans QuickBooks' : ''}
+            </div>
+          </div>
+          <button type="button" disabled={busy}
+            className="shrink-0 inline-flex items-center gap-1 text-xs px-2 py-1 rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+            onClick={() => link(s)}><Link2 size={12} /> Lier</button>
+        </div>
+      ))}
+      {error && <div className="text-xs text-red-600">{error}</div>}
+    </div>
+  )
+}
+
+// Le document est apparié mais son écriture n'est jamais partie : ce bouton la
+// fait partir. Un clic humain, comme partout ailleurs.
+function PublishMatchedButton({ txn, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const go = async () => {
+    setBusy(true); setError(null)
+    try {
+      await api.bank.publishMatched(txn.id)
+      invalidate('/bank')
+      await onChanged()
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <span className="flex items-center gap-2 min-w-0">
+      <button type="button" disabled={busy} onClick={go}
+        className="shrink-0 px-2 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50">
+        {busy ? 'Publication…' : 'Comptabiliser dans QuickBooks'}
+      </button>
+      {error && <span className="truncate text-red-600" title={error}>{error}</span>}
+    </span>
+  )
+}
+
+// Ce que la ligne dépliée montre : le geste attendu, ouvert d'emblée, et les
+// autres à un clic. Rien à préparer ⇒ on dit pourquoi, court.
+// Les deux marques de Michel, au bout des doigts en tête de ligne : le rond
+// rouge au crayon (« à réviser », recopié en X dans TRX_Orisha) et le signet
+// orange (où il s'est arrêté — un seul par compte). Discrètes jusqu'au survol,
+// bien visibles une fois posées.
+function RowMarks({ row, bookmarked, onReview, onBookmark }) {
+  const [busy, setBusy] = useState(false)
+  const red = !!row.review_flag
+  const run = (fn) => async (e) => {
+    e.stopPropagation()
+    setBusy(true)
+    try { await fn() } finally { setBusy(false) }
+  }
+  return (
+    <span className="lg-marks flex items-center justify-center gap-1.5 h-full">
+      <button type="button" disabled={busy} data-testid="review-mark" aria-pressed={red}
+        aria-label={red ? 'Retirer « à réviser »' : 'À réviser'} title={red ? 'Retirer « à réviser »' : 'À réviser'}
+        onClick={run(() => onReview(row, !red))} className="lg-mark-pen" />
+      <button type="button" disabled={busy} data-testid="row-bookmark" aria-pressed={bookmarked}
+        aria-label={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'} title={bookmarked ? 'Retirer le signet' : 'Poser le signet ici'}
+        onClick={run(() => onBookmark(bookmarked ? null : row.id))} className="lg-mark-ribbon" />
+    </span>
+  )
+}
+
+// Les comptes en onglets au pied de la page, comme les feuilles d'un classeur.
+// Le rond rouge compte les lignes que Michel a encore à réviser.
+function AccountTabs({ accounts, accountId, onChange }) {
+  return (
+    <nav aria-label="Comptes" data-testid="account-tabs"
+      className="lg-tabs flex items-stretch overflow-x-auto">
+      {accounts.map((a) => (
+        <button key={a.id} type="button" onClick={() => onChange(a.id)} aria-current={a.id === accountId ? 'page' : undefined}
+          title={[a.institution, a.account_number, a.currency].filter(Boolean).join(' · ')}
+          className={`lg-tab shrink-0 flex items-center gap-2 px-4 whitespace-nowrap ${a.id === accountId ? 'lg-tab-on' : ''}`}>
+          {a.name}
+          {a.review_count > 0 && <span className="lg-count" data-testid="account-review-count">{a.review_count}</span>}
+        </button>
+      ))}
+    </nav>
+  )
+}
+
+function QbRowExpansion({ txn, currency, next, onChanged, onOpenPanel, collapse }) {
+  // Une ligne qui porte une proposition s'ouvre dessus : c'est le geste que la
+  // page attend d'abord, avant celui que `next-actions` a calculé.
+  const ready = txn.proposal_count > 0
+  const [pane, setPane] = useState(ready ? 'ready' : NEXT_META[next?.kind || 'rien'].pane)
+  const [busy, setBusy] = useState(false)
+
+  if (txn._ghost) {
+    return <div className="px-4 py-3 text-xs text-slate-500">Écriture QuickBooks sans ligne au relevé.</div>
+  }
+
+  // Confirmée : la ligne change de couleur et le dépliage se referme.
+  const proposalDone = async () => { await onChanged(); collapse() }
+
+  const settled = txn.matched_id || txn.transfer_txn_id || txn.status === 'rapproche' || txn.status === 'ignore'
+  if (settled) {
+    // Réglée mais encore porteuse d'une proposition ouverte : on la montre
+    // quand même, sinon elle n'est atteignable que par le panneau latéral.
+    return (
+      <div className="px-4 py-3 space-y-3 max-w-3xl">
+        {ready && <ProposalCards txn={txn} currency={currency} onChanged={proposalDone} />}
+        <div className="flex items-center gap-3 text-xs text-slate-500">
+          {txn.matched_id
+            ? <span className="flex items-center gap-1.5">{docLink(txn.matched_type, txn.matched_id, txn.matched_label)}<QbLink txn={txn} /></span>
+            : <span>{STATUS_META[bucketOf(txn)].hint}</span>}
+          {next?.kind === 'comptabiliser' && <PublishMatchedButton txn={txn} onChanged={onChanged} />}
+          <button type="button" className="px-2 py-1 rounded border border-slate-300 hover:bg-white"
+            onClick={() => onOpenPanel(txn)}>Ouvrir le dossier</button>
+        </div>
+      </div>
+    )
+  }
+
+  const exclude = async () => {
+    setBusy(true)
+    try { await api.bank.updateTransaction(txn.id, { status: 'ignore' }); invalidate('/bank'); await onChanged() }
+    finally { setBusy(false) }
+  }
+
+  const tab = (key, label) => (
+    <button key={key} type="button" onClick={() => setPane(key)} aria-pressed={pane === key}
+      className={`px-2 py-1 text-xs rounded-md ${pane === key ? 'bg-white ring-1 ring-slate-300 text-slate-900 font-medium' : 'text-slate-500 hover:bg-white/60'}`}>
+      {label}
     </button>
+  )
+
+  return (
+    <div className="px-4 py-3 space-y-3 max-w-3xl">
+      <div className="flex items-center gap-1 flex-wrap">
+        {ready && tab('ready', 'Prêt')}
+        {txn.amount < 0 && tab('add', 'Comptabiliser')}
+        {tab('match', 'Apparier')}
+        {tab('transfer', 'Virement interne')}
+        <button type="button" disabled={busy} onClick={exclude}
+          className="px-2 py-1 text-xs rounded-md text-slate-500 hover:bg-white/60 disabled:opacity-50">Exclure</button>
+        <button type="button" onClick={() => onOpenPanel(txn)}
+          className="ml-auto px-2 py-1 text-xs rounded-md text-slate-500 hover:bg-white/60">Dossier complet</button>
+      </div>
+
+      {pane === 'ready' && ready && (
+        <ProposalCards txn={txn} currency={currency} onChanged={proposalDone} />
+      )}
+      {pane === 'add' && txn.amount < 0 && (
+        <AddExpenseForm txn={txn} currency={currency} onDone={() => { collapse(); onChanged() }} onCancel={collapse} />
+      )}
+      {pane === 'add' && txn.amount > 0 && (
+        <div className="text-xs text-slate-500">Une entrée ne se comptabilise pas en dépense — l'apparier à un dépôt ou à un virement.</div>
+      )}
+      {pane === 'match' && <QbMatchPane txn={txn} currency={currency} onChanged={async () => { collapse(); await onChanged() }} />}
+      {pane === 'transfer' && (
+        <TransferForm txn={txn} currency={currency} onDone={() => { collapse(); onChanged() }} onCancel={collapse} />
+      )}
+    </div>
   )
 }
 
 export default function RapprochementBancaire() {
+  const navigate = useNavigate()
   const [accounts, setAccounts] = useState([])
   const [accountId, setAccountIdRaw] = useState(null)
   // Compte reflété dans l'URL (?compte=) : le sous-menu de la sidebar peut
   // ouvrir un compte précis, et le lien reste partageable.
   const [params, setParams] = useSearchParams()
   const askedAccount = params.get('compte')
+  // « Ouvre CETTE ligne » : le lien vient de la page Propositions. La ligne se
+  // déplie sur son volet « Prêt » et défile à l'écran.
+  const askedRow = params.get('ligne')
   const setAccountId = useCallback((next) => {
     setAccountIdRaw(prev => {
       const id = typeof next === 'function' ? next(prev) : next
-      if (id) setParams({ compte: id }, { replace: true })
+      if (id) setParams((prev) => { const next = new URLSearchParams(prev); next.set('compte', id); return next }, { replace: true })
       return id
     })
   }, [setParams])
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
-  const [showImport, setShowImport] = useState(false)
+  const [showDrop, setShowDrop] = useState(false)
+  const [droppedFiles, setDroppedFiles] = useState(null)
+  const [pageDrag, setPageDrag] = useState(false)
   const [notice, setNotice] = useState(null)
+  const [rulesOpen, setRulesOpen] = useState(false)
   // null = toute la liste ; sinon une clé de STATUS_META ou 'ghost'.
   const [colorFilter, setColorFilter] = useState(null)
-
   const account = accounts.find((a) => a.id === accountId) || null
 
   const loadAccounts = useCallback(async () => {
@@ -1547,24 +2091,60 @@ export default function RapprochementBancaire() {
     setReconcileKey((k) => k + 1)
   }, [loadTxns, loadAccounts])
 
+  useEffect(() => subscribe('sale_receipt:list', () => {
+    invalidate('/bank')
+    refresh().catch(() => {})
+  }), [refresh])
+
   const rec = useReconcile(account, reconcileKey, refresh)
+
+  // Le geste attendu par chaque ligne, en un seul appel par compte.
+  const [nextActions, setNextActions] = useState({})
+  useEffect(() => {
+    if (!accountId) { setNextActions({}); return undefined }
+    let alive = true
+    api.bank.nextActions(accountId)
+      .then((m) => { if (alive) setNextActions(m || {}) })
+      .catch(() => { if (alive) setNextActions({}) })
+    return () => { alive = false }
+  }, [accountId, reconcileKey])
 
   // Ouverture du panneau depuis un bouton de ligne : quelle ligne, dans quel
   // mode. `null` = le panneau s'ouvre sur sa vue habituelle.
   const [peekOpen, setPeekOpen] = useState({ id: null, mode: null, forId: null })
 
-  // Sync TRX_Orisha : icône discrète dans le header (TrxSheetIndicator),
-  // panneau replié par défaut sous les onglets de comptes (TrxSheetPanel) —
-  // auto-ouvert une seule fois si des anomalies apparaissent.
-  const trx = useTrxSheetStatus(refresh)
-  const [trxOpen, setTrxOpen] = useState(false)
-  const trxAutoOpenedRef = useRef(false)
+  // La page bouge toute seule. Une ligne change sans qu'on ait cliqué dessus :
+  // la vérification QuickBooks retrouve son écriture, un avis d'Intuit arrive,
+  // la facture appariée est publiée. On écoute le canal DU COMPTE affiché — le
+  // canal global ferait clignoter la page à cause d'un autre compte.
+  //
+  // La charge utile ne porte que les colonnes qui bougent : on fusionne sur
+  // place. L'écart, lui, appelle QuickBooks : il attend une accalmie de 3 s.
+  const liveSoon = useRef(null)
+  const liveUnknown = useRef(false)
   useEffect(() => {
-    if (trx.anomalies.length > 0 && !trxAutoOpenedRef.current) {
-      trxAutoOpenedRef.current = true
-      setTrxOpen(true)
-    }
-  }, [trx.anomalies.length])
+    if (!accountId) return undefined
+    const off = subscribe(`bank_account:${accountId}`, (msg) => {
+      const p = msg?.payload
+      if (!p?.id) return
+      setRows((prev) => {
+        const i = prev.findIndex((r) => r.id === p.id)
+        // Ligne inconnue de l'onglet (créée depuis) : la charge utile ne porte
+        // pas de quoi l'afficher, il faut relire la liste.
+        if (i === -1) { liveUnknown.current = true; return prev }
+        const next = prev.slice()
+        next[i] = { ...next[i], ...p }
+        return next
+      })
+      clearTimeout(liveSoon.current)
+      liveSoon.current = setTimeout(() => {
+        if (liveUnknown.current) { liveUnknown.current = false; invalidate('/bank'); loadTxns().catch(() => {}) }
+        setReconcileKey((k) => k + 1)
+        rec.loadQb()
+      }, 3000)
+    })
+    return () => { clearTimeout(liveSoon.current); off() }
+  }, [accountId, loadTxns, rec.loadQb]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ce qui cloche sur une ligne, dit sur la ligne elle-même plutôt que dans une
   // section repliée au-dessus du tableau : solde qui ne suit pas, doublon,
@@ -1609,13 +2189,23 @@ export default function RapprochementBancaire() {
     ))
   }, [decorated, ghosts])
 
+  const peekRow = allRows.find((r) => r.id === peekOpen.id)
+  const openTransaction = (r) => {
+    if (!r._ghost && r.status === 'facture_recue' && r.matched_type === 'receipt' && r.matched_id) {
+      navigate(`/sale-receipts/${r.matched_id}`)
+      return
+    }
+    setPeekOpen({ id: r.id, mode: null, forId: r.id })
+  }
+
   // Compteurs sur TOUTE la liste : ils ne doivent pas bouger quand on filtre.
   const counts = useMemo(() => {
-    const c = { ghost: 0, proposals: 0 }
+    const c = { ghost: 0, proposals: 0, missing: 0 }
     for (const k of LEGEND_ORDER) c[k] = 0
     for (const r of allRows) {
       c[bucketOf(r)] += 1
       if (r.proposal_count) c.proposals += r.proposal_count
+      if (r.missing_invoice) c.missing += 1
     }
     return c
   }, [allRows])
@@ -1623,6 +2213,11 @@ export default function RapprochementBancaire() {
   const visibleRows = useMemo(() => {
     if (!colorFilter) return allRows
     if (colorFilter === 'proposals') return allRows.filter((r) => r.proposal_count > 0)
+    // Les plus vieilles d'abord : c'est l'ancienneté qui dit ce qui presse.
+    if (colorFilter === 'missing') {
+      return allRows.filter((r) => r.missing_invoice)
+        .sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)))
+    }
     return allRows.filter((r) => bucketOf(r) === colorFilter)
   }, [allRows, colorFilter])
 
@@ -1638,17 +2233,76 @@ export default function RapprochementBancaire() {
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(null), 6000) }
 
+  // Glisser un relevé n'importe où sur la page ouvre la fenêtre de dépôt avec
+  // le fichier déjà pris en charge — aucun bouton à trouver d'abord. On ne
+  // réagit qu'à un vrai fichier, pas au déplacement d'une sélection de texte.
+  useEffect(() => {
+    let depth = 0
+    const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes('Files')
+    const onEnter = (e) => { if (hasFiles(e)) { e.preventDefault(); depth++; setPageDrag(true) } }
+    const onOver = (e) => { if (hasFiles(e)) e.preventDefault() }
+    const onLeave = () => { if (--depth <= 0) { depth = 0; setPageDrag(false) } }
+    const onDrop = (e) => {
+      if (!hasFiles(e)) return
+      e.preventDefault()
+      depth = 0
+      setPageDrag(false)
+      const files = [...(e.dataTransfer.files || [])]
+      if (!files.length) return
+      setDroppedFiles(files)
+      setShowDrop(true)
+    }
+    window.addEventListener('dragenter', onEnter)
+    window.addEventListener('dragover', onOver)
+    window.addEventListener('dragleave', onLeave)
+    window.addEventListener('drop', onDrop)
+    return () => {
+      window.removeEventListener('dragenter', onEnter)
+      window.removeEventListener('dragover', onOver)
+      window.removeEventListener('dragleave', onLeave)
+      window.removeEventListener('drop', onDrop)
+    }
+  }, [])
+
   const currency = account?.currency
+
+  const saveComment = useCallback(async (id, comment) => {
+    const updated = await api.bank.updateTransaction(id, { comment })
+    invalidate('/bank')
+    setRows((current) => current.map((row) => row.id === id ? { ...row, comment: updated.comment } : row))
+  }, [])
+
+  // Rond rouge : posé sur place, puis relu (compteur de l'onglet du compte).
+  const setReview = useCallback(async (row, on) => {
+    setRows((cur) => cur.map((r) => r.id === row.id ? { ...r, review_flag: on ? 1 : 0 } : r))
+    try { await api.bank.setReview(row.id, on) } finally { invalidate('/bank'); loadAccounts().catch(() => {}) }
+  }, [loadAccounts])
+  const setBookmark = useCallback(async (txnId) => {
+    if (!accountId) return
+    setAccounts((cur) => cur.map((a) => a.id === accountId ? { ...a, bookmark_txn_id: txnId } : a))
+    await api.bank.updateAccount(accountId, { bookmark_txn_id: txnId })
+    invalidate('/bank')
+  }, [accountId])
+
+  // Polices du classeur, chargées seulement quand la page s'ouvre.
+  useEffect(() => {
+    if (document.getElementById('ledger-fonts')) return
+    const l = document.createElement('link')
+    l.id = 'ledger-fonts'; l.rel = 'stylesheet'
+    l.href = 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400;1,600&display=swap'
+    document.head.appendChild(l)
+  }, [])
 
   const COLUMNS = useMemo(() => {
     const num = (v, cls = '') => v == null
       ? <span className="block text-right text-slate-200">·</span>
       : <span className={`block text-right tabular-nums ${cls}`}>{money(v, currency)}</span>
     const RENDERS = {
+      comment: (r) => r._ghost ? '—' : <TransactionComment key={r.id} txn={r} onSave={saveComment} />,
       txn_date: (r) => (
         <span className="whitespace-nowrap text-slate-500 tabular-nums">
           {!!r.pending && <Clock size={11} className="inline mr-1 -mt-0.5 text-slate-400" title="En attente à la banque (pas encore posée)" />}
-          {fmtDate(r.txn_date)}
+          {r.review_flag ? <span className="lg-pen">{fmtDate(r.txn_date)}</span> : fmtDate(r.txn_date)}
         </span>
       ),
       // Une seule ligne : la description de la banque, souvent générique, part
@@ -1661,22 +2315,27 @@ export default function RapprochementBancaire() {
           {txnLabel(r)}
         </span>
       ),
+      // La description de la banque, quand elle dit autre chose que le libellé.
+      bank_description: (r) => txnSubLabel(r)
+        ? <span className="block truncate text-slate-500" title={txnSubLabel(r)}>{txnSubLabel(r)}</span>
+        : <span className="text-slate-200">·</span>,
       debit: (r) => num(r._ghost ? (r.amount < 0 ? -r.amount : null) : r.debit, 'text-slate-700'),
       credit: (r) => num(r._ghost ? (r.amount > 0 ? r.amount : null) : r.credit, 'text-green-700'),
       amount: (r) => num(r.amount, r.amount < 0 ? 'text-slate-700' : 'text-green-700'),
       balance: (r) => num(r.balance, 'text-slate-400'),
-      // Le statut se lit à la couleur, comme les cases peintes du vieux fichier.
-      status: (r) => {
-        // La ligne est déjà peinte : la pastille ne garde que son texte.
-        if (r._ghost) return <span className="block truncate text-xs text-slate-500" title={GHOST_META.hint}>{GHOST_META.label}</span>
-        const m = STATUS_META[r.status] || STATUS_META.a_traiter
-        return <span className={`block truncate text-xs font-medium ${m.cell}`} title={m.hint}>{m.label}</span>
-      },
       // Fournisseur : reconnu par le document apparié (lien) ou deviné du
       // libellé (gris, avec la manière dont il a été reconnu en infobulle).
       vendor: (r) => {
         if (r.matched_id && r.matched_label) {
-          return <span className="block truncate">{docLink(r.matched_type, r.matched_id, r.matched_label)}</span>
+          // Le document n'a plus sa colonne : son bouton vit ici, à côté du nom
+          // qu'il a donné à la ligne, avec le lien vers l'écriture QuickBooks.
+          return (
+            <span className="flex items-center gap-1 min-w-0">
+              <span className="truncate">{docLink(r.matched_type, r.matched_id, r.matched_label)}</span>
+              <MatchedDocument txn={r} doc={null} onChanged={refresh} icon />
+              <QbLink txn={r} />
+            </span>
+          )
         }
         if (r.resolved_vendor) {
           return (
@@ -1689,117 +2348,110 @@ export default function RapprochementBancaire() {
         }
         return <span className="text-slate-200">·</span>
       },
-      matched_label: (r) => (
-        <span className="flex items-center gap-1.5 min-w-0">
-          <span className="truncate">
-            {r.matched_id ? docLink(r.matched_type, r.matched_id, r.matched_label) : <span className="text-slate-200">·</span>}
-          </span>
-          {r.qb_url && (
-            <a href={r.qb_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()}
-              title={r.qb_match_method
-                ? `Ouvrir dans QuickBooks — retrouvée par ${MATCH_METHOD[r.qb_match_method] || r.qb_match_method}${r.qb_match_rate ? ` ${r.qb_match_rate}` : ''}${r.qb_match_account ? ` (${r.qb_match_account})` : ''}${r.qb_match_delta ? `, écart de ${r.qb_match_delta.toFixed(2)} $` : ''}`
-                : 'Ouvrir dans QuickBooks'}
-              className={`shrink-0 ${r.qb_match_delta ? 'text-amber-500' : 'text-slate-300'} hover:text-brand-600`}>
-              <ExternalLink size={12} />
-            </a>
-          )}
-        </span>
-      ),
+      bank_state: (r) => {
+        const st = BANK_STATE_META[r.bank_state]
+        if (!st) return <span className="text-slate-200">·</span>
+        return <span className={`block truncate ${st.cls}`}>{st.label}</span>
+      },
       match_confidence: (r) => r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—',
     }
-    const cols = TABLE_COLUMN_META.bank_transactions.map((meta) => ({ ...meta, render: RENDERS[meta.id] }))
+    // Le statut se lit à la couleur pour tous les comptes de cette page.
+    const cols = TABLE_COLUMN_META.bank_transactions
+      .filter((meta) => meta.id !== 'status')
+      .map((meta) => ({ ...meta, render: RENDERS[meta.id] }))
     // Les deux gestes de « Opérations bancaires », à portée de clic sur la
     // ligne : le panneau s'ouvre déjà dans le bon formulaire. La colonne est
     // TOUJOURS là (sa largeur ne saute plus quand on filtre) ; c'est son rendu
     // qui se tait sur les lignes où il n'y a plus rien à décider. En TÊTE de
     // ligne : en queue, la colonne sortait de l'écran dès que les colonnes
     // larges (libellé, document) prenaient toute la place.
-    const act = (e, r, mode) => { e.stopPropagation(); setPeekOpen({ id: r.id, mode, forId: r.id }) }
-    const btn = 'p-1 rounded text-slate-400 hover:text-brand-600 hover:bg-white'
+    // Une seule colonne d'action, en tête : elle porte le geste que la ligne
+    // attend. Le clic n'arrête PAS la propagation — il déplie la ligne, qui
+    // s'ouvre déjà sur le bon volet.
+    // Les marques de Michel (rond rouge, signet) : à droite, juste après le
+    // solde (demande de Charles, 2026-09-22). `alwaysVisible` : sans ça, la
+    // liste de colonnes déjà mémorisée par l'utilisateur (vue, pill,
+    // localStorage) masquerait à jamais une colonne ajoutée après coup. Id neuf
+    // (`_marks`, l'ancien `_review` vivait en tête) : absent de la vue
+    // enregistrée, il est inséré après sa voisine déclarée — le solde.
+    const marks = {
+      id: '_marks', label: '', width: 56, alwaysVisible: true,
+      sortable: false, filterable: false, groupable: false,
+      render: (r) => (r._ghost ? null : (
+        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id}
+          onReview={setReview} onBookmark={setBookmark} />
+      )),
+    }
+    const at = cols.findIndex((c) => c.id === 'balance')
+    const withMarks = at === -1 ? [...cols, marks] : [...cols.slice(0, at + 1), marks, ...cols.slice(at + 1)]
     return [{
-      id: '_actions', label: '', width: 62, sortable: false, filterable: false, groupable: false,
+      id: '_next', label: '', width: 190, sortable: false, filterable: false, groupable: false,
       render: (r) => {
-        if (r._ghost || r.matched_id || r.transfer_txn_id) return null
-        if (r.status === 'rapproche' || r.status === 'ignore') return null
+        if (r._ghost || r.status === 'rapproche' || r.status === 'ignore') return null
+        const pending = nextActions[r.id]
+        // Déjà dans QuickBooks : plus aucun geste à proposer sur la ligne.
+        if (r.qb_txn_id && !pending) return null
+        if ((r.matched_id || r.transfer_txn_id) && pending?.kind !== 'comptabiliser') {
+          return <span className="text-xs text-slate-400 truncate">{r.matched_label || 'Virement'}</span>
+        }
+        const n = pending || { kind: 'rien', label: null }
+        const meta = NEXT_META[n.kind] || NEXT_META.rien
+        // D'où vient ce qui est proposé : la règle qui a préparé l'écriture,
+        // sinon rien — on ne fait pas dire à la ligne ce qu'on ne sait pas.
+        const from = r.rule_name ? `Préparée par la règle « ${r.rule_name} »` : null
         return (
-          <span className="flex items-center gap-0.5">
-            {r.amount < 0 && (
-              <button type="button" title="Ajouter — comptabiliser cette ligne sans facture"
-                className={btn} onClick={(e) => act(e, r, 'add')}><Plus size={14} /></button>
-            )}
-            <button type="button" title="Transfert — apparier à la ligne miroir d'un autre compte"
-              className={btn} onClick={(e) => act(e, r, 'transfer')}><ArrowLeftRight size={13} /></button>
+          <span className="flex items-center gap-2 min-w-0">
+            <button type="button" title={from || undefined}
+              className={`shrink-0 text-xs px-2 py-1 rounded-md ${meta.cls}`}>{meta.label}</button>
+            {n.label && <span className="truncate text-xs text-slate-500" title={from || n.label}>{n.label}</span>}
           </span>
         )
       },
-    }, ...cols]
-  }, [currency])
+    }, ...withMarks]
+  }, [currency, saveComment, refresh, nextActions, account?.bookmark_txn_id, setReview, setBookmark])
 
   return (
     <Layout>
-      <div className="p-6">
-        <div className="flex items-center justify-between mb-3">
-          <PageTitle>Rapprochement bancaire</PageTitle>
-          <div className="flex items-center gap-1.5">
-            {/* TRX_Orisha alimente de nouveau TOUS les comptes, y compris ceux
-                branchés à Plaid (la banque ne livrait pas) : l'indicateur et le
-                collage manuel ne se cachent plus sur ces comptes-là. */}
-            <TrxSheetIndicator trx={trx} open={trxOpen} onToggle={() => setTrxOpen((v) => !v)} />
-            <TrxSheetSyncButton trx={trx} />
-            <button type="button" title="Importer un relevé (collage)"
-              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-              disabled={!accountId} onClick={() => setShowImport(true)}>
-              <Upload size={15} />
-            </button>
-            {!!account?.plaid_account_id && (
-              <button type="button"
-                className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-                title="Rechercher dans QuickBooks (recherche approfondie, tout l'historique) une écriture pour chaque transaction non rapprochée"
-                disabled={rec.qbAuditBusy || !account.qb_account_id} onClick={rec.runQbAudit}>
-                <SearchCheck size={15} className={rec.qbAuditBusy ? 'animate-pulse' : ''} />
-              </button>
-            )}
-            <button type="button" title="Recalculer la comparaison QuickBooks"
-              className="inline-flex items-center justify-center w-8 h-8 rounded-lg border border-slate-300 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50"
-              disabled={rec.qbLoading || !account?.qb_account_id} onClick={rec.loadQb}>
-              <RefreshCw size={15} className={rec.qbLoading ? 'animate-spin' : ''} />
-            </button>
-            <button type="button" data-testid="reconcile-auto-btn"
-              className="inline-flex items-center gap-1.5 px-3 h-8 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-              title="Apparier les transactions aux documents de l'ERP puis aux écritures QuickBooks"
-              disabled={rec.busy || !accountId} onClick={rec.runAuto}>
-              <Wand2 size={15} /> {rec.busy ? 'Rapprochement…' : 'Rapprocher'}
-            </button>
-          </div>
-        </div>
-
-        {/* Comptes — les onglets du vieux classeur */}
-        <div className="flex flex-wrap items-center gap-x-3 border-b border-slate-200 mb-2">
-          {accounts.map((a) => (
-            <Tab key={a.id} active={a.id === accountId} onClick={() => setAccountId(a.id)}
-              title={[a.institution, a.account_number, a.currency, a.last_txn_date && `dernière trx ${fmtDate(a.last_txn_date)}`]
-                .filter(Boolean).join(' · ')}>
-              {a.name}
-              {a.a_traiter_count > 0 && <span className="ml-1.5 text-xs text-red-600 tabular-nums">{a.a_traiter_count}</span>}
-            </Tab>
-          ))}
-        </div>
-
-        {trxOpen && <TrxSheetPanel trx={trx} onGoToAccount={(id) => setAccountId(id)} />}
-
-        {/* La légende des couleurs à gauche (elle fait le filtre), le seul
-            chiffre qui compte à droite. */}
-        <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-b border-slate-200 mb-3">
-          <StatusLegend counts={counts} value={colorFilter} onChange={setColorFilter} />
-          <div className="pb-1.5 min-w-0"><EcartBar account={account} rec={rec} /></div>
-        </div>
+      <div className="px-3 pt-3">
+        {/* Plus d'en-tête (2026-09-15) : le titre ne sert qu'aux lecteurs
+            d'écran, le compte, l'écart et les actions vivent dans la barre
+            d'outils du tableau. */}
+        <h1 className="sr-only">Rapprochement bancaire</h1>
 
         {notice && <div className="mb-3 text-sm bg-green-50 text-green-800 rounded-lg px-3 py-2">{notice}</div>}
 
         <DataTable
           table="bank_transactions"
+          skin="ledger"
+          expandToggle={false}
+          height="calc(100vh - 205px)"
           manageViews
+          toolbarStart={
+            <span data-testid="account-picker" className="lg-title mr-2 text-2xl italic leading-none whitespace-nowrap">{account?.name || ''}</span>
+          }
+          toolbarEnd={
+            <div className="flex items-center gap-2 ml-2 min-w-0">
+              <StatusLegend counts={counts} value={colorFilter} onChange={setColorFilter} />
+              <button type="button" data-testid="reconcile-rules-link"
+                title="Règles bancaires — ce qui prépare les écritures"
+                onClick={() => setRulesOpen(true)}
+                className="px-2.5 h-7 inline-flex items-center text-xs rounded-md text-slate-500 hover:bg-slate-50 whitespace-nowrap">
+                Règles
+              </button>
+              <EcartBar account={account} rec={rec} />
+              {/* Le seul bouton d'action de la page : apparier aux documents,
+                  vérifier dans QuickBooks, recalculer l'écart. */}
+              <button type="button" data-testid="reconcile-auto-btn"
+                className="inline-flex items-center gap-1.5 px-2.5 h-7 text-xs rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+                title="Apparier aux documents de l'ERP, vérifier dans QuickBooks, recalculer l'écart"
+                disabled={rec.busy || !accountId} onClick={rec.runUpdate}>
+                <RefreshCw size={14} className={rec.busy ? 'animate-spin' : ''} /> {rec.busy ? 'Mise à jour…' : 'Mettre à jour'}
+              </button>
+              <MoreMenu onDrop={() => setShowDrop(true)} flash={flash} />
+            </div>
+          }
           columns={COLUMNS}
+          openKey={askedRow}
           data={visibleRows}
           loading={loading}
           rowKey="id"
@@ -1822,16 +2474,31 @@ export default function RapprochementBancaire() {
               onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real)) },
             },
             {
-              key: 'accept-proposals', label: 'Confirmer les propositions', icon: Wand2, busyLabel: 'Confirmation…',
-              show: (rows) => rows.some((r) => r.proposal_count > 0),
+              // Une dépense (ou une répartition AGA) publie dans QuickBooks :
+              // elle ne part JAMAIS en lot, elle attend son clic. Le bouton
+              // annonce donc ce qu'il va vraiment confirmer, et le serveur
+              // refuse les autres de toute façon.
+              key: 'accept-proposals', icon: Wand2, busyLabel: 'Confirmation…',
+              label: (rows) => {
+                const n = rows.reduce((s, r) => s + Math.max(0, (r.proposal_count || 0) - (r.publishing_count || 0)), 0)
+                return n > 1 ? `Confirmer ${n} propositions` : 'Confirmer la proposition'
+              },
+              show: (rows) => rows.some((r) => (r.proposal_count || 0) - (r.publishing_count || 0) > 0),
               onClick: async (ids) => {
                 const rows = allRows.filter((r) => ids.includes(r.id) && r.proposal_count > 0)
                 if (!rows.length) return
                 const props = (await Promise.all(rows.map((r) => api.bank.txnProposals(r.id)))).flat()
-                const open = props.filter((p) => p.status === 'proposee').map((p) => p.id)
-                if (open.length) await api.bank.acceptProposals(open)
+                const open = props.filter((p) => p.status === 'proposee')
+                const batch = open.filter((p) => !p.publishes).map((p) => p.id)
+                const held = open.length - batch.length
+                if (batch.length) await api.bank.acceptProposals(batch)
                 invalidate('/bank')
                 await refresh()
+                if (held) {
+                  flash(held > 1
+                    ? `${held} écritures restent à confirmer une par une — elles publient dans QuickBooks.`
+                    : 'Une écriture reste à confirmer sur sa ligne — elle publie dans QuickBooks.')
+                }
               },
             },
             {
@@ -1858,31 +2525,60 @@ export default function RapprochementBancaire() {
               },
             },
           ]}
-          peek={{
-            title: (r) => txnLabel(r),
-            subtitle: (r) => fmtDate(r.txn_date),
-            width: 420,
-            openId: peekOpen.id,
-            onOpenConsumed: () => setPeekOpen((p) => ({ ...p, id: null })),
-            render: (r) => r._ghost
-              ? <GhostPeek row={r} currency={currency} />
-              : <TxnPeek txn={r} currency={currency} onChanged={refresh}
-                  initialMode={peekOpen.forId === r.id ? peekOpen.mode : null} />,
-          }}
+          renderExpanded={(row, { collapse }) => (
+            <QbRowExpansion key={row.id} txn={row} currency={currency} next={nextActions[row.id]}
+              onChanged={refresh} onOpenPanel={openTransaction} collapse={collapse} />
+          )}
           emptyState={{
             title: 'Aucune transaction',
             description: 'Importer un relevé pour commencer le rapprochement.',
           }}
         />
+        <div className="dt-skin-ledger">
+          <AccountTabs accounts={accounts} accountId={accountId} onChange={setAccountId} />
+        </div>
       </div>
 
-      {showImport && account && (
-        <ImportModal
-          account={account}
-          onClose={() => setShowImport(false)}
-          onDone={async (res) => {
-            setShowImport(false)
-            flash(`${res.inserted} importée${res.inserted > 1 ? 's' : ''} (${res.duplicates} doublon${res.duplicates > 1 ? 's' : ''} ignoré${res.duplicates > 1 ? 's' : ''}), ${res.autoMatched} appariée${res.autoMatched > 1 ? 's' : ''} automatiquement.`)
+      <RecordPeekDrawer open={!!peekRow}
+        onClose={() => setPeekOpen({ id: null, mode: null, forId: null })}
+        title={peekRow ? txnLabel(peekRow) : ''}
+        subtitle={peekRow ? fmtDate(peekRow.txn_date) : ''} width={420}>
+        {peekRow && <RecordScope id={peekRow.id}>
+          {peekRow._ghost
+            ? <GhostPeek row={peekRow} currency={currency} />
+            : <TxnPeek key={peekRow.id} txn={peekRow} currency={currency} onChanged={refresh}
+                initialMode={peekOpen.forId === peekRow.id ? peekOpen.mode : null} />}
+        </RecordScope>}
+      </RecordPeekDrawer>
+
+      <RecordPeekDrawer open={rulesOpen} onClose={() => setRulesOpen(false)} peekKey="bank-rules"
+        title="Règles bancaires" subtitle="Elles préparent l'écriture, jamais la publication" width={480}>
+        <Suspense fallback={<div className="text-sm text-slate-400">Chargement…</div>}>
+          <BankRulesList footer={
+            <Link to="/regles-bancaires" className="text-xs text-brand-700 hover:underline">
+              Atelier, ménage et import QuickBooks →
+            </Link>
+          } />
+        </Suspense>
+      </RecordPeekDrawer>
+
+      {pageDrag && !showDrop && (
+        <div className="fixed inset-0 z-40 pointer-events-none flex items-center justify-center bg-brand-600/10 border-4 border-dashed border-brand-500">
+          <span className="px-4 py-2 rounded-lg bg-white text-sm shadow">Lâchez le relevé ici</span>
+        </div>
+      )}
+
+      {showDrop && (
+        <StatementDropModal
+          accounts={accounts}
+          initialFiles={droppedFiles}
+          onClose={() => { setShowDrop(false); setDroppedFiles(null) }}
+          onDone={async (results) => {
+            setShowDrop(false)
+            setDroppedFiles(null)
+            const inserted = results.reduce((n, r) => n + r.inserted, 0)
+            const matched = results.reduce((n, r) => n + r.autoMatched, 0)
+            flash(`${inserted} importée${inserted > 1 ? 's' : ''} depuis ${results.length} relevé${results.length > 1 ? 's' : ''}, ${matched} appariée${matched > 1 ? 's' : ''}.`)
             await refresh()
           }}
         />

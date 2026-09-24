@@ -141,6 +141,50 @@ test('GET /facture/:id liste les paiements de la facture', async () => {
   assert.equal(body[0].qb_skip_reason, 'hors_bande')
 })
 
+test('GET /facture/:id identifie les créateurs des paiements et remboursements', async () => {
+  const fid = seedFacture()
+  const pierre = createTestUser({ name: 'Pierre-Alexandre' })
+  const antoine = createTestUser({ name: 'Antoine' })
+  for (const [direction, creator] of [['in', pierre], ['out', antoine]]) {
+    const { status } = await apiFetch(base, creator.token, 'POST', '/api/payments', {
+      facture_id: fid, direction, method: 'interac', amount: 10,
+      skip_qb: true, qb_skip_reason: 'autre',
+    })
+    assert.equal(status, 201)
+  }
+  // Données historiques sans auteur et lignes reçues de Stripe.
+  const insert = db.prepare(`INSERT INTO payments
+    (id, facture_id, direction, method, received_at, amount, currency, created_by)
+    VALUES (?, ?, ?, ?, '2026-09-03', 10, 'CAD', ?)`)
+  const cases = [
+    ['out', 'stripe', null, 'Intégration Stripe'],
+    ['in', 'stripe', null, 'Intégration Stripe'],
+    ['in', 'cheque', null, null],
+    ['out', 'stripe', antoine.id, 'Antoine'],
+  ].map(([direction, method, creator, expected]) => {
+    const id = randomUUID()
+    insert.run(id, fid, direction, method, creator)
+    return { id, expected }
+  })
+  const { status, body } = await apiFetch(base, adminToken, 'GET', `/api/payments/facture/${fid}`)
+  assert.equal(status, 200)
+  assert.equal(body.find(p => p.created_by === pierre.id).created_by_name, 'Pierre-Alexandre')
+  assert.equal(body.find(p => p.direction === 'out' && p.method === 'interac').created_by_name, 'Antoine')
+  for (const { id, expected } of cases) {
+    assert.equal(body.find(p => p.id === id).created_by_name, expected)
+  }
+})
+
+test('GET /facture/:id attribue le paiement Stripe synthétique à son intégration', async () => {
+  const fid = seedFacture()
+  db.prepare("UPDATE factures SET paid_at='2026-09-03', paid_charge_id='ch_creator_test' WHERE id=?").run(fid)
+  const { status, body } = await apiFetch(base, adminToken, 'GET', `/api/payments/facture/${fid}`)
+  assert.equal(status, 200)
+  assert.equal(body.length, 1)
+  assert.equal(body[0].synthetic, true)
+  assert.equal(body[0].created_by_name, 'Intégration Stripe')
+})
+
 test('DELETE /:id refusé aux non-admins → 403', async () => {
   const fid = seedFacture()
   const created = await apiFetch(base, adminToken, 'POST', '/api/payments', {
@@ -278,4 +322,40 @@ test('DELETE /:id en admin → 200 et ligne supprimée', async () => {
   assert.equal(del.body.ok, true)
   const row = db.prepare('SELECT id FROM payments WHERE id=?').get(pid)
   assert.equal(row, undefined)
+})
+
+function seedLinkedPayment(method = 'interac') {
+  const factureId = seedFacture()
+  const id = randomUUID()
+  db.prepare(`INSERT INTO payments (id, facture_id, direction, method, received_at, amount, currency,
+    qb_deposit_id, qb_credit_account_id, qb_credit_account_name)
+    VALUES (?, ?, 'in', ?, '2026-09-21', 50, 'CAD', '123', '239', 'Avances')`).run(id, factureId, method)
+  return id
+}
+
+test('deposit-link: délier conserve le paiement et bloque une nouvelle publication QB', async () => {
+  const id = seedLinkedPayment()
+  const { status } = await apiFetch(base, adminToken, 'PATCH', `/api/payments/${id}/deposit-link`, {
+    qb_deposit_id: null, previous_deposit_id: '123',
+  })
+  assert.equal(status, 200)
+  const p = db.prepare('SELECT * FROM payments WHERE id = ?').get(id)
+  assert.equal(p.qb_deposit_id, null)
+  assert.equal(p.qb_credit_account_id, null)
+  assert.equal(p.qb_credit_account_name, null)
+  assert.equal(p.amount, 50)
+  assert.equal(p.qb_skipped, 1)
+  assert.equal((await apiFetch(base, adminToken, 'POST', `/api/payments/${id}/retry-qb`, {})).status, 409)
+})
+
+test('deposit-link: refuse les non-admins, liens périmés, identifiants invalides et paiements Stripe', async () => {
+  const id = seedLinkedPayment()
+  const path = `/api/payments/${id}/deposit-link`
+  const body = { qb_deposit_id: null, previous_deposit_id: '123' }
+  assert.equal((await apiFetch(base, salesToken, 'PATCH', path, body)).status, 403)
+  assert.equal((await apiFetch(base, adminToken, 'PATCH', path, { ...body, previous_deposit_id: '456' })).status, 409)
+  assert.equal((await apiFetch(base, adminToken, 'PATCH', path, { ...body, qb_deposit_id: '../123' })).status, 400)
+  const stripe = seedLinkedPayment('stripe')
+  assert.equal((await apiFetch(base, adminToken, 'PATCH', `/api/payments/${stripe}/deposit-link`, body)).status, 409)
+  assert.equal(db.prepare('SELECT qb_deposit_id FROM payments WHERE id = ?').get(id).qb_deposit_id, '123')
 })

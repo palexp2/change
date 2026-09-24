@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 // Travaux — quatre listes, réunies sur une page.
 //
 // 1. « Ma file » remplace le Google Doc de prompts : on empile ses demandes, le
@@ -37,6 +38,7 @@ import { Modal } from '../components/Modal.jsx'
 import { ClaudeUsageStrip, ClaudeModelControl, modelLabel } from '../components/ClaudeUsage.jsx'
 import { PageLink } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useTravauxQuick } from '../components/TravauxQuickPanel.jsx'
 import Spinner from '../components/Spinner.jsx'
 // Briques partagées avec le panneau rapide (accessible depuis toute l'app) :
 // lecture temps réel de la file, pastille d'état, choix d'une question, réponse.
@@ -106,6 +108,8 @@ function useElapsed(startedAt, live) {
   return m ? `${m} min ${String(secs % 60).padStart(2, '0')} s` : `${secs} s`
 }
 
+const sameTrimmed = (a, b) => String(a ?? '').trim() === String(b ?? '').trim()
+
 /**
  * Champs d'un record en autosave, SANS interruption de frappe.
  *
@@ -119,8 +123,11 @@ function useElapsed(startedAt, live) {
  * `save(patch)` peut renvoyer la ligne serveur : elle sert à accepter une
  * normalisation côté serveur (titre vidé → titre automatique) sans écraser une
  * frappe arrivée entre-temps.
+ *
+ * `same(a, b)` dit quand la valeur serveur équivaut à celle de l'écran : un
+ * serveur qui rogne les espaces ne doit pas manger l'espace qu'on vient de taper.
  */
-function useRecordDraft(server, save, delay = 600) {
+function useRecordDraft(server, save, delay = 600, same = Object.is) {
   const [draft, setDraft] = useState(server)
   const awaiting = useRef({})   // champ → dernière valeur envoyée, pas encore confirmée
   const timer = useRef(null)
@@ -136,14 +143,14 @@ function useRecordDraft(server, save, delay = 600) {
       let next = prev
       for (const k of Object.keys(srv)) {
         if (awaiting.current[k] === undefined) {
-          if (prev[k] !== srv[k]) next = { ...next, [k]: srv[k] }
-        } else if (awaiting.current[k] === srv[k]) {
+          if (!same(prev[k], srv[k])) next = { ...next, [k]: srv[k] }
+        } else if (same(awaiting.current[k], srv[k])) {
           delete awaiting.current[k]      // notre frappe est revenue : le champ est à jour
         }
       }
       return next
     })
-  }, [signature])
+  }, [signature, same])
 
   const flush = useCallback(async () => {
     if (timer.current) { clearTimeout(timer.current); timer.current = null }
@@ -155,9 +162,9 @@ function useRecordDraft(server, save, delay = 600) {
       if (awaiting.current[k] !== sent) continue
       delete awaiting.current[k]
       const got = row?.[k] ?? null
-      if (got !== null && got !== sent) setDraft(d => ({ ...d, [k]: got }))
+      if (got !== null && !same(got, sent)) setDraft(d => ({ ...d, [k]: got }))
     }
-  }, [save])
+  }, [save, same])
 
   const edit = useCallback((k, v) => {
     setDraft(d => ({ ...d, [k]: v }))
@@ -1366,14 +1373,14 @@ function SuggestionChat({ s }) {
   )
 }
 
-function SuggestionCard({ s, onAccept, onDismiss }) {
+function SuggestionCard({ s, onAccept, onDismiss, simplified = false }) {
   const [open, setOpen] = useState(false)
   const [prompt, setPrompt] = useState(s.prompt)
   useEffect(() => { setPrompt(s.prompt) }, [s.prompt])
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-      <div className="flex items-start gap-3">
+      <div className={simplified ? 'flex flex-col sm:flex-row items-start gap-3' : 'flex items-start gap-3'}>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             {s.kind === 'integration' && (
@@ -1406,9 +1413,9 @@ function SuggestionCard({ s, onAccept, onDismiss }) {
             <button className={btnPrimary} data-testid="suggestion-accept-last" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, false)} title="Ajouter à la fin de ma file">
               <Check size={14} /> Ajouter à la fin
             </button>
-            <button className={btnCls} data-testid="suggestion-accept-first" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, true)} title="Ajouter en tête de file — partira avant tout le reste">
+            {!simplified && <button className={btnCls} data-testid="suggestion-accept-first" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, true)} title="Ajouter en tête de file — partira avant tout le reste">
               <ChevronsUp size={14} /> En premier
-            </button>
+            </button>}
             <button className={btnCls} onClick={() => onDismiss(s.id)}><X size={14} /> Rejeter</button>
           </div>
         )}
@@ -1444,39 +1451,84 @@ function groupSuggestionsByArea(suggestions) {
     .filter(g => g.items.length > 0)
 }
 
-function SuggestionsTab({ toast, space }) {
+function SuggestionsTab({ toast, space, simplified = false }) {
   const [suggestions, setSuggestions] = useState([])
   const [status, setStatus] = useState('new')
-  const [kind, setKind] = useState('')
+  const [kind, setKind] = useState(simplified ? 'chantier' : '')
   // Domaine métier sélectionné ('' = tous). Filtre purement client : la liste
   // tient en mémoire, et garder les suggestions non filtrées permet d'afficher
   // le compte de chaque domaine sur ses pastilles.
   const [area, setArea] = useState('')
   const [loading, setLoading] = useState(true)
   const [generating, setGenerating] = useState(false)
+  const reviewsEnabled = kind !== 'integration'
+  const [reviewSettings, setReviewSettings] = useState(null)
+  const [criteriaError, setCriteriaError] = useState('')
+  const [criteriaSaving, setCriteriaSaving] = useState(false)
+  const [criteriaReady, setCriteriaReady] = useState(false)
+  const criteriaWrites = useRef(Promise.resolve())
+  const loadReviewSettings = useCallback(async () => {
+    setCriteriaError('')
+    try { setReviewSettings(await api.travaux.getReviewSettings()) }
+    catch (e) { setCriteriaError(e.message) }
+  }, [])
+  useEffect(() => { if (reviewsEnabled) loadReviewSettings() }, [reviewsEnabled, loadReviewSettings])
+  const saveCriteria = useCallback(patch => {
+    // Sérialiser les autosaves : une réponse lente ne doit pas rétablir un
+    // ancien texte après une saisie plus récente.
+    const request = criteriaWrites.current.catch(() => {}).then(async () => {
+      setCriteriaSaving(true)
+      setCriteriaError('')
+      try {
+        const next = await api.travaux.updateReviewSettings(patch)
+        setReviewSettings(next)
+        return next
+      } catch (e) {
+        setCriteriaError(`Critères non enregistrés : ${e.message}`)
+        throw e
+      } finally { setCriteriaSaving(false) }
+    })
+    criteriaWrites.current = request
+    return request
+  }, [])
+  const criteriaDraft = useRecordDraft({ criteria: reviewSettings?.criteria || '' }, saveCriteria, 600, sameTrimmed)
+  // Laisser le brouillon recevoir le texte chargé avant d’autoriser la frappe.
+  // Sinon le premier caractère peut être saisi pendant son initialisation.
+  useEffect(() => { if (reviewSettings) setCriteriaReady(true) }, [reviewSettings])
 
   const load = useCallback(async () => {
     try {
       const { suggestions } = await api.travaux.listSuggestions({
+        ...(simplified ? { source: 'app_review' } : {}),
         ...(status ? { status } : {}),
         ...(kind ? { kind } : {}),
       })
       setSuggestions(suggestions)
     } catch (e) { toast.error(e.message) }
     finally { setLoading(false) }
-  }, [status, kind, toast])
+  }, [status, kind, simplified, toast])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
-    const onEvt = () => { setGenerating(false); load() }
+    const onEvt = event => {
+      setGenerating(false)
+      load()
+      const review = event.detail?.review
+      if (review?.error) toast.error(`Analyse impossible : ${review.error}`)
+      else if (review && review.added === 0) toast.info('Analyse terminée : aucune amélioration fiable trouvée.')
+    }
     window.addEventListener('travaux:suggestions:updated', onEvt)
     return () => window.removeEventListener('travaux:suggestions:updated', onEvt)
-  }, [load])
+  }, [load, toast])
 
   const generate = async () => {
     setGenerating(true)
     try {
-      await api.travaux.generateSuggestions(kind || null)
+      if (reviewsEnabled) {
+        await criteriaDraft.flush()
+        await criteriaWrites.current
+      }
+      await api.travaux.generateSuggestions(kind || null, simplified ? 'app_review' : null)
       toast.info(kind === 'integration'
         ? 'Recherche d\'outils à brancher lancée — les propositions apparaîtront ici'
         : 'Analyse lancée — les suggestions apparaîtront ici')
@@ -1506,6 +1558,29 @@ function SuggestionsTab({ toast, space }) {
 
   return (
     <div>
+      {reviewsEnabled && <div className="mb-6">
+        <label htmlFor="app-review-criteria" className="block text-sm font-medium text-slate-800 mb-2">Critères d’analyse</label>
+        <textarea
+          id="app-review-criteria"
+          className={`${inputCls} w-full resize-y disabled:opacity-60`}
+          rows={3}
+          maxLength={reviewSettings?.maxLength || 4000}
+          value={criteriaDraft.draft.criteria}
+          placeholder={reviewSettings?.defaultCriteria || 'Ex. : simplifier les formulaires, repérer les lenteurs, ignorer les changements de couleurs.'}
+          disabled={!criteriaReady || generating}
+          onChange={e => criteriaDraft.edit('criteria', e.target.value)}
+          onBlur={() => criteriaDraft.flush().catch(() => {})}
+          aria-describedby="app-review-criteria-help"
+        />
+        <div id="app-review-criteria-help" className="mt-1.5 text-xs text-slate-500 flex flex-wrap justify-between gap-2">
+          <span>Partagés · utilisés pour les prochaines analyses, manuelles et quotidiennes. Vide : bugs et fiabilité.</span>
+          <span role="status">{criteriaSaving ? 'Enregistrement…' : !reviewSettings ? 'Chargement…' : criteriaError ? '' : !sameTrimmed(criteriaDraft.draft.criteria, reviewSettings.criteria) ? 'À enregistrer' : 'Enregistré'}</span>
+        </div>
+        {criteriaError && <div role="alert" className="mt-2 text-sm text-rose-700">
+          {criteriaError}
+          <button className={`${btnCls} ml-2`} onClick={() => reviewSettings ? criteriaDraft.flush().catch(() => {}) : loadReviewSettings()}>Réessayer</button>
+        </div>}
+      </div>}
       <div className="flex items-center justify-between gap-3 mb-4 flex-wrap">
         <div className="flex items-center gap-1.5 flex-wrap">
           {/* Pas de section « Dans ma file » : une suggestion ajoutée EST un item de
@@ -1517,8 +1592,8 @@ function SuggestionsTab({ toast, space }) {
               onClick={() => setStatus(v)}
             >{l}</button>
           ))}
-          <span className="w-px h-5 bg-slate-200 mx-1.5" />
-          {SUGGESTION_KINDS.map(([v, l]) => (
+          {!simplified && <span className="w-px h-5 bg-slate-200 mx-1.5" />}
+          {!simplified && SUGGESTION_KINDS.map(([v, l]) => (
             <button
               key={v || 'all'}
               className={`px-3 py-1.5 text-sm rounded-lg inline-flex items-center gap-1.5 ${kind === v ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
@@ -1529,19 +1604,19 @@ function SuggestionsTab({ toast, space }) {
         <button
           className={btnCls}
           onClick={generate}
-          disabled={generating}
+          disabled={generating || (reviewsEnabled && !criteriaReady)}
           title={kind === 'integration' ? 'Chercher des outils externes à brancher'
             : kind === 'chantier' ? 'Chercher des chantiers'
               : 'Chercher des chantiers ET des outils à brancher'}
         >
           {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-          {kind === 'integration' ? 'Chercher des intégrations' : 'Générer maintenant'}
+          {simplified ? 'Analyser l’app' : kind === 'integration' ? 'Chercher des intégrations' : 'Générer maintenant'}
         </button>
       </div>
 
       {/* Filtre par domaine : sept domaines au plus, tous visibles d'un coup — pas
           besoin de dropdown ni de recherche (règle des >10 options). */}
-      {areaChips.length > 1 && (
+      {!simplified && areaChips.length > 1 && (
         <div className="flex items-center gap-1.5 flex-wrap mb-4" data-testid="suggestion-area-filter">
           <button
             className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${area === '' ? 'bg-slate-900 text-white border-slate-900' : 'text-slate-600 border-slate-200 hover:bg-slate-100'}`}
@@ -1561,12 +1636,12 @@ function SuggestionsTab({ toast, space }) {
         </div>
       )}
 
-      <p className="text-xs text-slate-500 mb-4">
+      {simplified ? <p className="text-sm text-slate-500 mb-5">La revue du code par Codex propose ici ses corrections. Tu choisis celles à ajouter à ta file.</p> : <p className="text-xs text-slate-500 mb-4">
         L'agent regarde chaque matin les travaux que tu fais encore à la main, les chantiers récents et les erreurs de synchronisation,
         puis propose ici les prochaines étapes. Il propose aussi des <strong className="font-medium text-slate-600">intégrations</strong> — des
         logiciels ou des API externes à brancher à l'ERP, en tenant compte de ce qui est déjà connecté — avec ce que le branchement débloquerait.
         Rien ne s'exécute avant que tu ne l'ajoutes à ta file.
-      </p>
+      </p>}
 
       {loading ? (
         <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
@@ -1587,7 +1662,7 @@ function SuggestionsTab({ toast, space }) {
               </button>
               <div className="space-y-2.5">
                 {items.map(s => (
-                  <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} />
+                  <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} simplified={simplified} />
                 ))}
               </div>
             </div>
@@ -3128,7 +3203,7 @@ function AgentSettingsControl({ toast }) {
           ]}
           onSave={v => savePromptField('questionPrompt', v)}
         />
-        {user?.role === 'admin' && <ClaudeMdPanel />}
+        {hasRole(user, 'admin') && <ClaudeMdPanel />}
       </Modal>
     </>
   )
@@ -3142,6 +3217,10 @@ const TABS = [
   { key: 'idees', label: 'De côté & idées', icon: Lightbulb },
   { key: 'recurrents', label: 'Travaux récurrents', icon: RefreshCw },
 ]
+const SIMPLE_TABS = [
+  { key: 'file', label: 'Ma file', icon: ListOrdered },
+  { key: 'suggestions', label: 'Améliorations', icon: Sparkles },
+]
 // L'onglet des idées héberge aussi les items mis de côté : « ?onglet=de-cote » y
 // mène. Les liens existants (?onglet=idees) restent valides — une clé d'URL déjà
 // partagée ne doit jamais mourir.
@@ -3152,6 +3231,22 @@ const TAB_ALIASES = { 'de-cote': 'idees' }
 const SPACE_TITLE = 'Travaux'
 
 export default function Travaux({ space = 'finance' }) {
+  const { user } = useAuth()
+  const quick = useTravauxQuick()
+  const [fullView, setFullView] = useState(null)
+  const [identityError, setIdentityError] = useState(false)
+  const [identityRetry, setIdentityRetry] = useState(0)
+  useEffect(() => {
+    let alive = true
+    setFullView(null)
+    setIdentityError(false)
+    // Le JWT ne contient pas l’email. On lit le compte pour éviter d’identifier
+    // Antoine par un nom modifiable ou de confondre deux homonymes.
+    api.auth.me().then(account => {
+      if (alive) setFullView(account.email?.trim().toLowerCase() === 'antoine.lambert96@gmail.com')
+    }).catch(() => { if (alive) setIdentityError(true) })
+    return () => { alive = false }
+  }, [user?.id, identityRetry])
   const { addToast } = useToast()
   // Adaptateur : les onglets appellent toast.error/success/info, le provider
   // expose addToast({ message, type }).
@@ -3166,13 +3261,25 @@ export default function Travaux({ space = 'finance' }) {
   const [params, setParams] = useSearchParams()
   const raw = params.get('onglet')
   const asked = TAB_ALIASES[raw] || raw
-  const tab = TABS.some(x => x.key === asked) ? asked : 'file'
+  const tabs = fullView ? TABS : SIMPLE_TABS
+  const tab = tabs.some(x => x.key === asked) ? asked : 'file'
   const select = (key) => setParams({ onglet: key }, { replace: true })
 
   return (
     <Layout>
-      <div className="p-6 max-w-5xl" data-travaux-space={space}>
-        <PageTitle>{SPACE_TITLE}</PageTitle>
+      <div className="p-4 sm:p-6 max-w-5xl" data-travaux-space={space} data-travaux-view={fullView === null ? 'loading' : fullView ? 'full' : 'simple'}>
+        {fullView === null ? (
+          identityError ? <div role="alert" className="text-sm text-slate-600">
+            Impossible de charger ton espace.
+            <button className={`${btnCls} ml-3`} onClick={() => setIdentityRetry(n => n + 1)}>Réessayer</button>
+          </div> : <Spinner label="Chargement…" />
+        ) : <>
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <PageTitle>{SPACE_TITLE}</PageTitle>
+          {!fullView && quick && <button className={btnPrimary} onClick={() => quick.setOpen(true)}>
+            <Plus size={15} /> Nouveau prompt
+          </button>}
+        </div>
 
         {/* Consommation de Claude + commandes, à la même hauteur : le bandeau ne
             porte que des mesures, les boutons (modèle, pause, réglages) sont à
@@ -3181,16 +3288,19 @@ export default function Travaux({ space = 'finance' }) {
             même si la lecture de l'utilisation échoue (le bandeau, lui, s'efface
             silencieusement). */}
         <div className="flex flex-wrap items-center gap-2 mt-4 mb-5">
-          <ClaudeUsageStrip className="mb-0 flex-1 min-w-[300px]" />
-          <ClaudeModelControl />
-          <QueuePauseControl toast={toast} />
-          <AgentSettingsControl toast={toast} />
+          <ClaudeUsageStrip className="mb-0 flex-1 min-w-0" />
+          {fullView && <>
+            <ClaudeModelControl />
+            <QueuePauseControl toast={toast} />
+            <AgentSettingsControl toast={toast} />
+          </>}
         </div>
 
-        <div className="flex items-center gap-1 border-b border-slate-200 mb-5">
-          {TABS.map(t => (
+        <nav aria-label="Sections des travaux" className="flex items-center gap-1 border-b border-slate-200 mb-5 overflow-x-auto">
+          {tabs.map(t => (
             <button
               key={t.key}
+              aria-current={tab === t.key ? 'page' : undefined}
               className={`inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-medium border-b-2 -mb-px ${
                 tab === t.key ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'
               }`}
@@ -3199,12 +3309,13 @@ export default function Travaux({ space = 'finance' }) {
               <t.icon size={14} /> {t.label}
             </button>
           ))}
-        </div>
+        </nav>
 
         {tab === 'file' && <QueueTab toast={toast} space={space} />}
-        {tab === 'suggestions' && <SuggestionsTab toast={toast} space={space} />}
+        {tab === 'suggestions' && <SuggestionsTab key={fullView ? 'full' : 'simple'} toast={toast} space={space} simplified={!fullView} />}
         {tab === 'idees' && <IdeasTab toast={toast} space={space} />}
         {tab === 'recurrents' && <RecurringTab toast={toast} />}
+        </>}
       </div>
     </Layout>
   )

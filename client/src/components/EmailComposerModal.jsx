@@ -6,6 +6,7 @@ import { useUndoSend } from './UndoSendProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { splitEmailHtml, joinEmailHtml, isValidEmailList } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
+import AttachmentPreview from './AttachmentPreview.jsx'
 
 // Modale de composition unique pour TOUS les courriels partant de l'ERP
 // (instructions de retour, suivi d'un envoi, bon de commande au fournisseur…).
@@ -34,6 +35,11 @@ export default function EmailComposerModal({
   onSend,               // async ({ to, cc, subject, bodyHtml }) => any
   onSent,
   canSend = true,
+  reviewBeforeSend = false,
+  // Option : clic sur un destinataire suggéré → ({ subject, bodyHtml } | null).
+  // Le texte proposé remplace objet et corps seulement s'ils n'ont pas été
+  // retouchés à la main (ex. langue du contact pour un bon de commande).
+  onPickRecipient,
 }) {
   const scheduleSend = useUndoSend()
   const { addToast } = useToast()
@@ -47,11 +53,14 @@ export default function EmailComposerModal({
   const [showBcc, setShowBcc] = useState(false)
   const [subject, setSubject] = useState('')
   const [error, setError] = useState('')
+  const [editing, setEditing] = useState(!reviewBeforeSend)
   const bodyRef = useRef(null)
   const partsRef = useRef({ prefix: '', suffix: '' })
+  const autoRef = useRef({ subject: '', inner: '' })
 
   useEffect(() => {
     if (!isOpen) { setDraft(null); setError(''); setLoadError(''); return }
+    setEditing(!reviewBeforeSend)
     let alive = true
     const apply = (d) => {
       if (!alive) return
@@ -84,7 +93,25 @@ export default function EmailComposerModal({
     const parts = splitEmailHtml(draft.bodyHtml || '')
     partsRef.current = { prefix: parts.prefix, suffix: parts.suffix }
     bodyRef.current.innerHTML = parts.inner
+    autoRef.current = { subject: draft.subject || '', inner: bodyRef.current.innerHTML }
   }, [draft])
+
+  function pickRecipient(r) {
+    setTo(r.email)
+    const next = onPickRecipient?.(r)
+    if (!next) return
+    const auto = autoRef.current
+    if (next.subject != null && subject === auto.subject) {
+      setSubject(next.subject)
+      auto.subject = next.subject
+    }
+    if (next.bodyHtml != null && bodyRef.current && bodyRef.current.innerHTML === auto.inner) {
+      const parts = splitEmailHtml(next.bodyHtml)
+      partsRef.current = { prefix: parts.prefix, suffix: parts.suffix }
+      bodyRef.current.innerHTML = parts.inner
+      auto.inner = bodyRef.current.innerHTML
+    }
+  }
 
   function handleSend() {
     const cleanTo = String(to || '').trim()
@@ -132,6 +159,9 @@ export default function EmailComposerModal({
       ) : (
         <div className="space-y-3" data-testid="email-composer">
           {headerExtra}
+          {reviewBeforeSend && (
+            <p className="text-xs text-brand-700">{editing ? 'Modification du courriel' : 'Révision avant envoi'}</p>
+          )}
 
           {draft?.from && (
             <div className="text-xs text-slate-500">De <span className="font-mono text-slate-700">{draft.from}</span></div>
@@ -141,6 +171,7 @@ export default function EmailComposerModal({
             <label className="text-xs text-slate-500" htmlFor="email-composer-to">À</label>
             <input
               id="email-composer-to"
+              readOnly={!editing}
               type="email"
               className="input"
               value={to}
@@ -152,6 +183,7 @@ export default function EmailComposerModal({
                 <label className="text-xs text-slate-500" htmlFor="email-composer-cc">Cc</label>
                 <input
                   id="email-composer-cc"
+                  readOnly={!editing}
                   className="input"
                   value={cc}
                   onChange={e => setCc(e.target.value)}
@@ -164,6 +196,7 @@ export default function EmailComposerModal({
                 <label className="text-xs text-slate-500" htmlFor="email-composer-bcc">Cci</label>
                 <input
                   id="email-composer-bcc"
+                  readOnly={!editing}
                   className="input"
                   value={bcc}
                   onChange={e => setBcc(e.target.value)}
@@ -171,7 +204,7 @@ export default function EmailComposerModal({
                 />
               </>
             )}
-            {(!showCc || (allowBcc && !showBcc)) && (
+            {editing && (!showCc || (allowBcc && !showBcc)) && (
               <>
                 <span />
                 <div className="flex gap-3">
@@ -187,6 +220,7 @@ export default function EmailComposerModal({
             <label className="text-xs text-slate-500" htmlFor="email-composer-subject">Objet</label>
             <input
               id="email-composer-subject"
+              readOnly={!editing}
               className="input"
               value={subject}
               onChange={e => setSubject(e.target.value)}
@@ -194,12 +228,12 @@ export default function EmailComposerModal({
             />
           </div>
 
-          {suggestions.length > 0 && (
+          {editing && suggestions.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {suggestions.map(r => (
                 <button
                   key={r.email}
-                  onClick={() => setTo(r.email)}
+                  onClick={() => pickRecipient(r)}
                   className="text-xs px-2 py-0.5 rounded-full border border-slate-200 text-slate-600 hover:border-brand-400 hover:text-brand-700"
                   title={r.email}
                 >
@@ -211,7 +245,8 @@ export default function EmailComposerModal({
 
           <div
             ref={bodyRef}
-            contentEditable
+            contentEditable={editing}
+            aria-label="Contenu du courriel"
             suppressContentEditableWarning
             className="border border-slate-200 rounded-xl bg-white px-4 py-3 text-sm overflow-y-auto focus:outline-none focus:border-brand-400"
             style={{ maxHeight: 360, minHeight: 160 }}
@@ -219,13 +254,21 @@ export default function EmailComposerModal({
           />
 
           {attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5" data-testid="email-composer-attachments">
+            <div className="flex flex-wrap items-start gap-1.5" data-testid="email-composer-attachments">
               {attachments.map((a, i) => {
                 const name = typeof a === 'string' ? a : a.name
                 const url = typeof a === 'string' ? null : a.url
                 const chip = <span className="inline-flex items-center gap-1"><Paperclip size={11} /> {name}</span>
                 return url ? (
-                  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="text-xs px-2 py-0.5 rounded-lg border border-slate-200 link-record">{chip}</a>
+                  <AttachmentPreview
+                    key={i}
+                    url={url}
+                    fileName={name}
+                    contentType={a.contentType || a.content_type}
+                    size="compact"
+                    overModal
+                    testId={`email-composer-attachment-${i}`}
+                  />
                 ) : (
                   <span key={i} className="text-xs px-2 py-0.5 rounded-lg border border-slate-200 text-slate-600">{chip}</span>
                 )
@@ -242,8 +285,13 @@ export default function EmailComposerModal({
 
           {error && <ErrorBanner>{error}</ErrorBanner>}
 
-          <div className="flex justify-end gap-2 pt-1">
+          <div className="flex flex-wrap justify-end gap-2 pt-1">
             <button onClick={onClose} className="btn-secondary">Annuler</button>
+            {reviewBeforeSend && (
+              <button onClick={() => setEditing(value => !value)} className="btn-secondary" data-testid="email-composer-edit">
+                {editing ? 'Terminer les modifications' : 'Modifier'}
+              </button>
+            )}
             <button
               onClick={handleSend}
               disabled={!to || !canSend}

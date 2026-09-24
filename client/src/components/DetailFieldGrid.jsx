@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { Children, Fragment, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { GripVertical, ChevronUp, ChevronDown, X, SlidersHorizontal, Plus, Check, Edit2, Trash2 } from 'lucide-react'
@@ -101,6 +102,8 @@ export function DetailFieldGrid({
   savingKeys = NO_SAVING,
   taken = NO_TAKEN,
   selectPills = false,
+  // Rend les adresses web des champs texte cliquables, sur demande de la fiche.
+  linkifyTextUrls = false,
   onDeleted = null,
   // Restriction des candidats d'un champ LIEN personnalisé, décidée par la
   // fiche parce qu'elle dépend de l'enregistrement affiché (le filtre réglé sur
@@ -115,6 +118,9 @@ export function DetailFieldGrid({
   // règle la présence choisie par l'utilisateur, la règle règle celle qui dépend
   // du record.
   wrapField = null,
+  // Disposition de lecture propre à une fiche, après l'ordre et la visibilité
+  // enregistrés. Le mode personnalisation conserve les champs indépendants.
+  arrangeFields = null,
 }) {
   const { user } = useAuth()
   const peek = usePeekFieldEdit()
@@ -196,17 +202,21 @@ export function DetailFieldGrid({
           // Ligne custom_fields brute : de quoi ouvrir la modale de champ sur
           // le bon champ (clic droit en mode édition).
           cf: f.field,
-          children: editor || <div className="text-sm text-slate-700">{f.render(record[f.key])}</div>,
+          children: editor || <div className="text-sm text-slate-700">{f.render(record[f.key], { linkifyTextUrls })}</div>,
         }
       }) : []),
     ],
-    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, customFieldLinkFilters],
+    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, linkifyTextUrls, customFieldLinkFilters],
   )
 
   const { fields, hiddenFields, applyOrder, hide, show } = useDetailFieldLayout(entityType, declared)
+  const displayFields = useMemo(
+    () => arrangeFields ? arrangeFields(fields) : fields,
+    [fields, arrangeFields],
+  )
 
   // Édition réservée aux admins : la disposition est commune à tous.
-  const canEdit = user?.role === 'admin'
+  const canEdit = hasRole(user, 'admin')
   const editing = canEdit && (peek ? peek.editing : localEditing)
 
   // Sans cet enregistrement, le panneau latéral ne sait pas qu'il y a des champs
@@ -381,7 +391,7 @@ export function DetailFieldGrid({
     </div>
   ) : (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-      {fields.map(f => wrap(f, (
+      {displayFields.map(f => wrap(f, (
         <div
           key={f.key}
           data-testid={f.testId}

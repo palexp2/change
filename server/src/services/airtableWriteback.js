@@ -3,7 +3,7 @@ import { getAccessToken, airtablePatch, airtablePost } from '../connectors/airta
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 import { logSync } from './syncLog.js'
 import {
-  ENVOIS_FIELD_MAP_PLAN, ORDERS_FIELD_MAP_PLAN, PAIES_FIELD_MAP_PLAN,
+  ENVOIS_FIELD_MAP_PLAN, ORDERS_FIELD_MAP_PLAN, PAIES_FIELD_MAP_PLAN, PIECES_FIELD_MAP_PLAN,
   PROJETS_FIELD_MAP_PLAN, RETOUR_ITEMS_FIELD_MAP_PLAN, SERIALS_FIELD_MAP_PLAN,
   fieldMapFromUi,
 } from './airtableUiFieldMap.js'
@@ -273,9 +273,8 @@ export const WRITEBACK_MODULES = {
   // « Adresse de livraison » (linked record, cf. `linkColumns`).
   // `neverPush` couvre les deux champs FORMULE d'Airtable — « Statut » et
   // « # de commande » — qu'un PATCH ferait échouer en 422 : la garde tient même
-  // si l'utilisateur y règle un sens push/both dans l'interface. Les autres liens
-  // (entreprise, projet) sortent d'eux-mêmes du payload : leur mapping porte un
-  // link_target_table et la colonne ERP un id local, sans déclaration ici.
+  // si l'utilisateur y règle un sens push/both dans l'interface. Les liens
+  // entreprise/projet ne sont posés qu'à la création via `linkedRecords`.
   orders: {
     erpTable: 'orders',
     uiFieldMapPlan: ORDERS_FIELD_MAP_PLAN,
@@ -287,11 +286,17 @@ export const WRITEBACK_MODULES = {
     // miroir porte des record ids bruts (mapping sans table cible) — le tableau
     // poussé est donc déjà celui d'Airtable ; `adresses` ne sert qu'aux valeurs
     // écrites en id Boréal (adresse créée ici, sans jumeau Airtable).
-    linkColumns: { adresse_de_livraison: 'adresses' },
+    linkColumns: { adresse_de_livraison: 'adresses', adresse_de_la_ferme_pour_coordonnees_geographiques: 'adresses' },
     // La colonne ERP est un 0/1 ; le champ Airtable « Abonnement » est un
     // singleSelect Oui/Non (pas une case à cocher) — sans ce codec, Airtable
     // reçoit un entier et rejette l'écriture.
     valueCodecs: { is_subscription: v => (v ? 'Oui' : 'Non') },
+    // Associations initiales uniquement ; les sens de mise à jour restent inchangés.
+    linkedRecords: {
+      company: row => airtableLinkIds('companies', row.company_id),
+      project: row => airtableLinkIds('projects', row.project_id),
+      address: row => airtableLinkIds('adresses', row.address_id),
+    },
     configSource: { table: 'airtable_orders_config', baseCol: 'base_id', tableIdCol: 'orders_table_id', fieldMapCol: 'field_map_orders' },
   },
   // Retours (RMA) et leurs articles. Deux tables nées dans Airtable, où une
@@ -378,8 +383,8 @@ export const WRITEBACK_MODULES = {
   // tant que l'utilisateur n'a pas choisi : il rend le sens choisissable, point.
   order_items: {
     erpTable: 'order_items',
-    // 'order'     : lien vers la commande — c'est lui qui rattache la ligne à
-    //               l'import, le ré-écrire depuis l'ERP n'a pas de sens.
+    // 'order'     : lien vers la commande, posé à la création via linkedRecords,
+    //               puis conservé lors des mises à jour.
     // 'unit_cost' : « Coût unitaire actuel » est un lookup Airtable (dérivé du
     //               produit lié) — non écrivable, un PATCH dessus renvoie 422.
     skipKeys: new Set(['order', 'unit_cost']),
@@ -387,9 +392,85 @@ export const WRITEBACK_MODULES = {
     // Colonne ERP portant un id local → champ Airtable linked record. Valeur
     // poussée : [record id du produit], ou [] si l'ERP a retiré le produit.
     linkColumns: { product_id: 'products' },
+    linkedRecords: {
+      order: row => airtableLinkIds('orders', row.order_id),
+    },
+    requiredCreationLinks: { order: 'order_id', product: 'product_id' },
     defaultDirection: 'pull',
     configSource: { table: 'airtable_orders_config', baseCol: 'base_id', tableIdCol: 'items_table_id', fieldMapCol: 'field_map_items' },
   },
+  // Pièces (table ERP `products`). L'inventaire se calcule encore dans Airtable
+  // (« Quantité en inventaire » est une formule) : la section « Ajustement
+  // d'inventaire » de la fiche pousse « Ajustement manuel » et sa raison, puis
+  // Airtable recalcule et le webhook ramène la quantité. `defaultDirection:
+  // 'pull'` : seuls les champs passés en bidirectionnel (seed dans schema.js)
+  // sont poussés.
+  pieces: {
+    erpTable: 'products',
+    uiFieldMapPlan: PIECES_FIELD_MAP_PLAN,
+    skipKeys: new Set(),
+    keyToColumn: {},
+    defaultDirection: 'pull',
+  },
+  // Mouvements d'inventaire. Field_map cœur à 6 clés (cf. CORE_PLANS du moteur),
+  // dont 2 visent des champs calculés d'Airtable (« Created », « Valeur du
+  // mouvement ») : buildColumnMap les écarte d'office. `defaultDirection:
+  // 'pull'` : déclarer le module rend le sens choisissable dans
+  // /champs/stock_movements, il ne pousse rien tant que personne n'a choisi.
+  //
+  // Le modèle ERP n'est pas celui d'Airtable : Airtable stocke une variation
+  // SIGNÉE (« Changement ») et un libellé (« Type », singleSelect) ; l'import en
+  // tire `qty` = |variation|, `type` in/out/adjustment et `reason` = le libellé.
+  // `pushValues` fait le chemin inverse — `type` Airtable ← `reason`, pas la
+  // colonne `type` (« in » n'est pas un libellé Airtable).
+  stock_movements: {
+    erpTable: 'stock_movements',
+    skipKeys: new Set(),
+    keyToColumn: { product: 'product_id', qty_change: 'qty', type: 'reason', occurred_at: 'created_at' },
+    linkColumns: { product_id: 'products' },
+    defaultDirection: 'pull',
+    pushValues: {
+      qty: row => stockMovementSignedChange(row),
+      reason: row => stockMovementLabel(row),
+    },
+    // Un mouvement né dans Boréal part vers Airtable avec sa pièce, mais
+    // seulement si au moins un champ est en Boréal → Airtable : sinon le lien
+    // seul suffirait à créer des mouvements vides côté Airtable.
+    createRequiresPush: true,
+    linkedRecords: {
+      product: row => airtableLinkIds('products', row.product_id),
+    },
+    requiredCreationLinks: { product: 'product_id' },
+  },
+}
+
+// Variation signée d'un mouvement (champ « Changement » d'Airtable). Un
+// ajustement saisi dans Boréal stocke le niveau CIBLE dans `qty` : l'appelant
+// passe alors la vraie variation en `signed_change` (cf. createInAirtable,
+// `rowOverrides`). Sinon le signe vient du type, ou du libellé pour un
+// ajustement importé (« Ajustement (diminution) »).
+export function stockMovementSignedChange(row) {
+  if (row.signed_change != null) return Number(row.signed_change)
+  const qty = Math.abs(Number(row.qty) || 0)
+  if (row.type === 'out') return -qty
+  if (row.type === 'adjustment' && /diminution/i.test(row.reason || '')) return -qty
+  return qty
+}
+
+// Libellé « Type » d'Airtable. Un ajustement garde un libellé « Ajustement… » :
+// c'est lui qui, au retour, redonne le type ajustement à l'import.
+export function stockMovementLabel(row) {
+  if (row.type === 'adjustment' && !/ajustement/i.test(row.reason || '')) {
+    return stockMovementSignedChange(row) < 0 ? 'Ajustement (diminution)' : 'Ajustement (augmentation)'
+  }
+  return row.reason || null
+}
+
+// Valeur d'une colonne à pousser : dérivée de la ligne quand le module le
+// déclare (`pushValues`), sinon la colonne brute.
+function pushedValue(cfg, col, row) {
+  const derive = cfg?.pushValues?.[col]
+  return airtableFieldValue(cfg, col, derive ? derive(row) : row[col])
 }
 
 // Table ERP → module write-back (réciproque de WRITEBACK_MODULES.erpTable).
@@ -872,7 +953,7 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
         fields[atField] = ids
         continue
       }
-      fields[atField] = airtableFieldValue(cfg, col, row[col])  // null = effacer le champ Airtable
+      fields[atField] = pushedValue(cfg, col, row)  // null = effacer le champ Airtable
     }
     if (cfg.primaryFieldMirror && fields[cfg.primaryFieldMirror.from] != null) {
       fields[cfg.primaryFieldMirror.to] = fields[cfg.primaryFieldMirror.from]
@@ -965,7 +1046,9 @@ async function importCreatedComputedFields(cfg, recordId, atFields) {
   return filled
 }
 
-export async function createInAirtable(module, recordId) {
+// `rowOverrides` : valeurs connues de l'appelant seulement, lues à la place de
+// la ligne (ex. la variation d'un ajustement de stock, que la table ne garde pas).
+export async function createInAirtable(module, recordId, { initialFields = {}, rowOverrides = {} } = {}) {
   const cfg = WRITEBACK_MODULES[module]
   if (!cfg) return { skipped: 'module non éligible' }
 
@@ -980,9 +1063,10 @@ export async function createInAirtable(module, recordId) {
     const config = readAirtableConfig(module)
     if (writebackConfigMissing(module, config)) return { skipped: 'config Airtable absente' }
 
-    const row = db.prepare(`SELECT * FROM ${cfg.erpTable} WHERE id=?`).get(recordId)
-    if (!row) return { skipped: 'record introuvable' }
-    if (row.airtable_id) return { skipped: 'record déjà lié à Airtable' }
+    const dbRow = db.prepare(`SELECT * FROM ${cfg.erpTable} WHERE id=?`).get(recordId)
+    if (!dbRow) return { skipped: 'record introuvable' }
+    if (dbRow.airtable_id) return { skipped: 'record déjà lié à Airtable' }
+    const row = { ...dbRow, ...rowOverrides }
 
     const fieldMap = readFieldMap(module, config)
     if (!fieldMap) return { skipped: 'field_map illisible' }
@@ -1005,11 +1089,14 @@ export async function createInAirtable(module, recordId) {
         if (ids && ids.length) fields[atField] = ids
         continue
       }
-      const v = airtableFieldValue(cfg, col, row[col])
+      const v = pushedValue(cfg, col, row)
       if (v != null && v !== '') fields[atField] = v
     }
     if (cfg.primaryFieldMirror && fields[cfg.primaryFieldMirror.from] != null) {
       fields[cfg.primaryFieldMirror.to] = fields[cfg.primaryFieldMirror.from]
+    }
+    if (cfg.createRequiresPush && !Object.keys(fields).length) {
+      return { skipped: 'aucun champ en Boréal → Airtable' }
     }
 
     // Linked records (commande, adresse, items) — seulement si le field_map nomme le
@@ -1019,6 +1106,18 @@ export async function createInAirtable(module, recordId) {
       if (!atField) continue
       const ids = resolve(row)
       if (ids && ids.length) fields[atField] = ids
+    }
+
+    // Valeurs initiales explicites d'un formulaire de création (validées par
+    // l'appelant serveur). Aucun effet sur les sens de sync des mises à jour.
+    Object.assign(fields, initialFields)
+
+    // Ne jamais créer une ligne détachée de sa commande ou de son produit.
+    for (const [key, column] of Object.entries(cfg.requiredCreationLinks || {})) {
+      const atField = fieldMap[key]
+      if (!atField || !Array.isArray(fields[atField]) || !fields[atField].length) {
+        throw new Error(`Lien Airtable requis manquant : ${column}`)
+      }
     }
 
     if (Object.keys(fields).length === 0) return { skipped: 'aucun champ à pousser' }

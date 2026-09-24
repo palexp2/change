@@ -358,11 +358,11 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
       const qbAcc = findAccount(job.accountName)
       const qbBalance = Number(qbAcc?.CurrentBalance ?? NaN)
       if (!Number.isFinite(qbBalance)) {
-        setPrepError(`Solde QB du compte "${job.accountName}" indisponible — impossible de calculer l'ajustement`)
+        setPrepError(`Solde QuickBooks du compte "${job.accountName}" indisponible — impossible de calculer l'ajustement`)
         return
       }
       if (!stockId || !offsetId) {
-        setPrepError(`Comptes QB introuvables pour l'ajustement: ${[!stockId && job.accountName, !offsetId && ADJUSTMENT_OFFSET_ACCOUNT].filter(Boolean).join(', ')}`)
+        setPrepError(`Comptes QuickBooks introuvables pour l'ajustement: ${[!stockId && job.accountName, !offsetId && ADJUSTMENT_OFFSET_ACCOUNT].filter(Boolean).join(', ')}`)
         return
       }
       const expectedAfter = qbBalance + computeAccountImpact(job.accountName)
@@ -432,7 +432,7 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
         </div>
         <div>
           <label className="label">N° de document</label>
-          <input type="text" className="input" value={docNumber} onChange={e => setDocNumber(e.target.value)} />
+          <input type="text" className="input" placeholder="Automatique (ERP-JE-…)" value={docNumber} onChange={e => setDocNumber(e.target.value)} />
         </div>
         <div>
           <label className="label">Mémo</label>
@@ -736,7 +736,7 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
                               <td className="px-2 py-1 text-right tabular-nums">{fmtCad(reco.erpBalance)}</td>
                             </tr>
                             <tr>
-                              <td className="px-2 py-1 text-slate-700">QB — {reco.accountName} (actuel)</td>
+                              <td className="px-2 py-1 text-slate-700">QuickBooks — {reco.accountName} (actuel)</td>
                               <td className="px-2 py-1"></td>
                               <td className="px-2 py-1 text-slate-400" colSpan={2}>—</td>
                               <td className="px-2 py-1 text-right tabular-nums">
@@ -752,7 +752,7 @@ function CreateJournalEntryForm({ accounts, initialDefaults, onSaved, onCancel, 
                               </td>
                             </tr>
                             <tr className="bg-slate-50">
-                              <td className="px-2 py-1 text-slate-700 font-medium">QB — projeté après opérations</td>
+                              <td className="px-2 py-1 text-slate-700 font-medium">QuickBooks — projeté après opérations</td>
                               <td className="px-2 py-1"></td>
                               <td className="px-2 py-1 text-slate-400" colSpan={2}>—</td>
                               <td className="px-2 py-1 text-right tabular-nums font-medium">

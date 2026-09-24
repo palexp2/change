@@ -20,7 +20,7 @@ import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { findBestVendorMatch } from '../lib/vendorMatch.js'
 
-import { fmtCad } from '../utils/formatters.js'
+import { fmtCad, fmtMoney } from '../utils/formatters.js'
 
 const round2 = x => Math.round((Number(x) || 0) * 100) / 100
 
@@ -365,12 +365,36 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         // panneau « dernière compta » ne s'applique ensuite que si le profil n'avait
         // pas de compte de dépense).
         let fromProfile = false
+        // L'ARGENT EST DÉJÀ SORTI DU COMPTE : ce n'est plus une facture à payer,
+        // c'est une dépense. Le fait du relevé prime sur l'habitude du profil —
+        // publier un « à payer » sur une somme déjà débitée créerait une dette
+        // fantôme au grand livre. Un brouillon (choix déjà fait) le garde.
+        const bankSaysExpense = Number(receipt.bank_txn?.amount) < 0
         if (draftType) setType(draftType)
+        else if (bankSaysExpense) setType('purchase')
         else if (defaults?.qb_type) { setType(defaults.qb_type); fromProfile = true }
         if (draftExpenseId) setExpenseAccountId(draftExpenseId)
         else if (defaults?.expense_account_id) { setExpenseAccountId(defaults.expense_account_id); fromProfile = true }
+        // LA LIGNE DU RELEVÉ prime sur le profil : le compte qui a RÉELLEMENT payé
+        // est un fait, pas une habitude. Un brouillon (choix déjà fait) le garde.
+        const bankPaymentId = receipt.bank_txn?.qb_account_id && accs.some(a => a.Id === receipt.bank_txn.qb_account_id)
+          ? receipt.bank_txn.qb_account_id : null
+        // LA CARTE LUE SUR LE DOCUMENT est un fait elle aussi : les 4 derniers
+        // chiffres imprimés désignent le compte payeur — carte de l'entreprise, ou
+        // compte « rembourser à » quand un employé a avancé la dépense.
+        const cardPaymentId = receipt.card_match?.qb_account_id && accs.some(a => a.Id === receipt.card_match.qb_account_id)
+          ? receipt.card_match.qb_account_id : null
         if (draftPaymentId) setPaymentAccountId(draftPaymentId)
+        else if (bankPaymentId) setPaymentAccountId(bankPaymentId)
+        else if (cardPaymentId) setPaymentAccountId(cardPaymentId)
         else if (defaults?.payment_account_id) { setPaymentAccountId(defaults.payment_account_id); fromProfile = true }
+        // Montant réellement débité : lu au relevé quand la banque a converti la
+        // facture (facture en USD, compte en CAD).
+        if (receipt.bank_charged_total == null && receipt.bank_txn
+            && (receipt.bank_txn.currency || 'CAD').toUpperCase() !== recCur) {
+          const charged = Math.abs(Number(receipt.bank_txn.amount) || 0)
+          if (charged > 0) { setBankChargedTotal(String(charged)); setBankFieldOpen(true) }
+        }
         // Un brouillon type/comptes = des choix DÉJÀ faits par l'opérateur : on les
         // traite comme des éditions manuelles pour que ni l'auto-apply « dernière
         // compta » ni le compte de pièces LIA ne viennent les écraser au retour.
@@ -683,6 +707,18 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         </div>
       </div>
 
+      {/* VU AU RELEVÉ : le jour où l'argent est sorti. C'est cette date qui sera
+          comptabilisée (et non celle imprimée sur la facture), et c'est ce compte
+          qui a payé. */}
+      {receipt.bank_txn && (
+        <p data-testid="qb-bank-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 leading-snug">
+          Passé au compte {receipt.bank_txn.account_name} le <strong>{fmtDate(receipt.bank_txn.txn_date)}</strong>
+          {' — '}c'est cette date qui sera comptabilisée{type === 'purchase' && Number(receipt.bank_txn.amount) < 0 ? ', en dépense' : ''}
+          {(receipt.bank_txn.currency || 'CAD').toUpperCase() !== (receipt.currency || 'CAD').toUpperCase()
+            ? `, et ${fmtMoney(Math.abs(receipt.bank_txn.amount), receipt.bank_txn.currency)} a été débité.`
+            : '.'}
+        </p>
+      )}
       {profileApplied && (
         <p data-testid="qb-profile-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 leading-snug">
           Pré-rempli depuis le <Link to="/fournisseurs" className="underline font-medium">profil fournisseur</Link>
@@ -768,6 +804,12 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
               options={type === 'cc_credit' ? creditCardOptions : paymentOptions}
               onChange={touchAndDraft(setPaymentAccountId, 'payment_account_id')}
             />
+            {receipt.card_match && (
+              <p className="text-[11px] text-slate-500 mt-1.5 leading-snug" data-testid="qb-card-match">
+                Carte ••{receipt.card_match.last4} — {receipt.card_match.holder}
+                {receipt.card_match.ownership === 'personal' ? ' (à rembourser)' : ''}
+              </p>
+            )}
             {type === 'cc_credit' && (
               <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
                 Le montant sera crédité (remboursé) sur ce compte de carte de crédit — saisissez les montants du reçu en positif.
@@ -925,7 +967,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             <div className="text-[11px] mt-1.5 leading-snug bg-white border border-slate-200 rounded px-2 py-1.5" data-testid="qb-fiscal-expected">
               <span className="text-slate-500">Statut fiscal attendu : </span>
               <strong className="text-slate-700">{selectedType.statusLabel}</strong>
-              <span className="text-slate-500"> → code QB </span>
+              <span className="text-slate-500"> → code QuickBooks </span>
               <strong className="text-slate-700">« {selectedType.recommendedCode} »</strong>
               {selectedType.note && <span className="block text-slate-400 mt-0.5">{selectedType.note}</span>}
             </div>
@@ -1114,7 +1156,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Vérification du statut fiscal</p>
             <div className="text-[13px] text-slate-700 space-y-0.5">
               <div>Type : <strong>{selectedType?.label || '—'}</strong></div>
-              <div>Statut attendu : <strong>{selectedType?.statusLabel || '—'}</strong> → code QB <strong>« {selectedType?.recommendedCode || '—'} »</strong></div>
+              <div>Statut attendu : <strong>{selectedType?.statusLabel || '—'}</strong> → code QuickBooks <strong>« {selectedType?.recommendedCode || '—'} »</strong></div>
               <div>Code sélectionné : <strong>« {selectedTaxName || 'Aucune taxe'} »</strong></div>
             </div>
 
@@ -1455,6 +1497,7 @@ const IDENTITY_TEXT = {
   sku: ({ label }) => `SKU ${label} sur la facture`,
   alias: () => 'libellé déjà vu chez ce fournisseur',
   name: () => 'nom concordant',
+  qty: () => 'seule commande à cette quantité',
 }
 
 function LiaCompare({ item, purchase, identity }) {
@@ -1520,7 +1563,28 @@ function LiaCompare({ item, purchase, identity }) {
   )
 }
 
-function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, linkCheck, onSelect }) {
+// Menu d'achat en petit tableau : Code | Pièce | Fournisseur | Qté | Cmd.
+const LIA_GRID = 'grid grid-cols-[3.75rem_minmax(0,1fr)_5.25rem_2rem_3rem] gap-x-1.5 items-baseline'
+// « 30.0 » → « 30 » ; les vraies décimales restent (2.5).
+const liaQty = v => {
+  if (v == null || v === '') return ''
+  const n = Number(v)
+  return Number.isFinite(n) ? String(n) : String(v)
+}
+const liaShortDate = d => {
+  const day = String(d || '').slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return ''
+  const [y, m, dd] = day.split('-').map(Number)
+  return new Date(y, m - 1, dd).toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' }).replace('.', '')
+}
+const LIA_MENU_HEADER = (
+  <div className={`${LIA_GRID} px-3 py-1 text-[10px] font-medium text-slate-400`}>
+    <span>Code</span><span>Pièce</span><span>Fournisseur</span><span className="text-right">Qté</span><span>Cmd</span>
+  </div>
+)
+const liaFilter = (o, q) => [o.lia_ref, o.part_name, o.supplier].some(v => String(v || '').toLowerCase().includes(q))
+
+function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, linkCheck, linked, review, onSelect }) {
   const reused = linkedPurchase?.linked_receipts || []
   // Tout ce qui ne sert PAS à trancher « est-ce le bon achat ? » passe au survol :
   // date de commande, fournisseur (toujours celui de la facture — les candidats sont
@@ -1532,9 +1596,18 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
   // candidats (autre fournisseur, achat archivé…) : sans option correspondante,
   // le sélecteur affichait « — », c'est-à-dire « aucun achat », alors que la ligne
   // EST rattachée. On ajoute l'achat rattaché à la liste pour qu'il s'affiche.
+  // Ordre du menu : la suggestion de la ligne, les autres achats du fournisseur, puis
+  // « Autres fournisseurs » (choix manuel seulement). L'achat rattaché hors « à
+  // recevoir » reste la valeur affichée, sans revenir dans la liste.
+  const suggestedId = !item.purchase_id && suggestion ? String(suggestion.purchase_id) : null
+  const ordered = [
+    ...options.filter(o => String(o.value) === suggestedId),
+    ...options.filter(o => !o.other_vendor && String(o.value) !== suggestedId),
+    ...options.filter(o => o.other_vendor && String(o.value) !== suggestedId),
+  ]
   const selectOptions = item.purchase_id && !options.some(o => String(o.value) === String(item.purchase_id))
-    ? [{ value: item.purchase_id, label: item.lia_ref || 'Achat rattaché' }, ...options]
-    : options
+    ? [{ value: item.purchase_id, label: [item.lia_ref || 'Achat rattaché', linkedPurchase?.part_name].filter(Boolean).join(' · '), hidden: true }, ...ordered]
+    : ordered
   return (
     <div className="space-y-0.5">
       <SearchableSelect
@@ -1543,6 +1616,34 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
         options={selectOptions}
         emptyOption="— Aucun achat —"
         onChange={val => onSelect(val || null)}
+        hideOption={o => o.hidden}
+        filterOption={liaFilter}
+        getOptionGroup={o => (o.other_vendor ? 'Autres fournisseurs' : null)}
+        optionClassName={o => (String(o.value) === suggestedId ? 'bg-emerald-50 hover:bg-emerald-100' : '')}
+        searchAside={`${options.filter(o => !o.other_vendor).length || options.length} à recevoir`}
+        listHeader={LIA_MENU_HEADER}
+        hideCheck
+        quietSelection={!!suggestedId}
+        menuClassName="ring-[6px] ring-white"
+        minMenuWidth={420}
+        renderOption={o => (
+          <span className={LIA_GRID}>
+            {/* La pastille de confiance vit sous le code : elle ne prend plus
+                de place au nom de la pièce. */}
+            <span className="flex flex-col items-start gap-0.5 min-w-0">
+              <span className="font-semibold text-slate-800 truncate max-w-full">{o.lia_ref}</span>
+              {String(o.value) === suggestedId && (
+                <span className="px-1 rounded-full bg-emerald-600 text-white text-[10px] leading-4 tabular-nums">
+                  {Math.round(suggestion.score * 100)} %
+                </span>
+              )}
+            </span>
+            <span className="truncate" title={o.part_name || undefined}>{o.part_name || '—'}</span>
+            <span className="truncate text-slate-500" title={o.supplier || undefined}>{o.supplier || '—'}</span>
+            <span className="text-right tabular-nums">{liaQty(o.qty_ordered)}</span>
+            <span className="text-slate-500 whitespace-nowrap">{liaShortDate(o.order_date)}</span>
+          </span>
+        )}
       />
       {item.purchase_id && (
         <div className="px-1 text-[11px] text-slate-500 flex items-baseline gap-x-1.5 gap-y-0.5 flex-wrap min-w-0">
@@ -1555,6 +1656,23 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
             {item.lia_ref || 'Achat'}
           </Link>
           <LiaCompare item={item} purchase={linkedPurchase} identity={linkCheck?.identity} />
+          {linked && (
+            <span
+              data-testid={`receipt-item-lia-date-${index}`}
+              className={linked.pending_at_expense === false ? 'text-amber-700 font-medium' : 'text-slate-400'}
+              title={linked.pending_at_expense === false ? 'Déjà reçu — hors « À recevoir »' : undefined}
+            >
+              {linked.pending_at_expense === false && '⚠ '}cmd {linked.order_date ? fmtDate(linked.order_date) : '?'}
+            </span>
+          )}
+          {reused.length === 0 && linked?.other_links?.length > 0 && (
+            <span
+              className="text-amber-600"
+              title={linked.other_links.map(o => [o.reference, o.date, o.vendor].filter(Boolean).join(' · ')).join('\n')}
+            >
+              déjà facturé ailleurs
+            </span>
+          )}
           {reused.length > 0 && (
             <span
               className="text-amber-600"
@@ -1597,6 +1715,15 @@ function LiaCell({ index, item, options, suggestion, blockedBy, linkedPurchase, 
       {/* Aucune proposition parce que l'achat qui correspond le mieux est déjà facturé :
           on le dit plutôt que de proposer un code libre moins pertinent. Il reste
           sélectionnable dans la liste (dépôt + solde, correction d'un rattachement). */}
+      {!item.purchase_id && !suggestion && !blockedBy && review && (
+        <div
+          data-testid={`receipt-item-lia-review-${index}`}
+          title={`Achats à égalité : ${review.lia_refs.join(', ')}`}
+          className="px-1.5 py-1 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded"
+        >
+          À vérifier · {review.lia_refs.join(', ')}
+        </div>
+      )}
       {!item.purchase_id && !suggestion && blockedBy && (
         <div
           data-testid={`receipt-item-lia-blocked-${index}`}
@@ -1617,9 +1744,6 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   const initialJsonRef = useRef(JSON.stringify(receipt.items || []))
   // Achats LIA du même fournisseur + suggestion par ligne (lecture seule côté serveur).
   const [lia, setLia] = useState({ candidates: [], lines: [] })
-  // Sélecteur d'achat LIA cadré sur la section « À recevoir » ; l'historique complet du
-  // fournisseur est derrière ce dépliant (correction, dépôt + solde, facture partielle).
-  const [showAllLia, setShowAllLia] = useState(false)
   const liaCandidates = lia.candidates
 
   // Sync depuis le serveur uniquement quand on change de reçu — sinon les
@@ -1773,35 +1897,27 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   // un choix ici l'emporte, pour les achats qui touchent plus d'un compte.
   const lineAccountOptions = expenseAccountOptions(accounts)
 
-  // Achats LIA proposés dans le sélecteur. Par défaut, la liste est celle de la section
-  // « À recevoir » d'Airtable : les commandes sans date de réception complète, c'est-à-dire
-  // celles dont la facture est attendue. L'historique du fournisseur (des centaines de
-  // codes déjà facturés) n'est pas une aide, il noie la liste — il reste accessible d'un
-  // clic (« Tous les achats du fournisseur ») pour les cas de correction ou de facture
-  // partielle. Les achats déjà rattachés à une ligne du reçu et ceux que le moteur
-  // propose restent toujours dans la liste, même hors « À recevoir ».
-  const liaLinkedIds = new Set(items.map(it => it.purchase_id).filter(Boolean))
-  const liaSuggestedIds = new Set(lia.lines.map(l => l.match?.purchase_id).filter(Boolean))
-  const liaVisible = liaCandidates.filter(c =>
-    showAllLia || c.pending_reception || liaLinkedIds.has(c.id) || liaSuggestedIds.has(c.id))
-  const liaHiddenCount = liaCandidates.length - liaVisible.length
-  const liaOptions = liaVisible.map(c => ({
-    value: c.id,
-    label: `${c.lia_ref} · ${c.part_name || '(pièce non liée)'}${c.qty_ordered ? ` — ${c.qty_ordered} u.` : ''}${c.order_date ? ` — ${c.order_date}` : ''}`
-      + (c.consumed ? ' · déjà facturé' : c.pending_reception ? ' · à recevoir' : ' · reçu')
-      // Filet « autre fournisseur » : le fournisseur est alors l'information décisive,
-      // puisque ces achats ne viennent pas du fournisseur du reçu.
-      + (c.other_vendor && c.supplier ? ` · ${c.supplier}` : ''),
-  }))
-  // Aucun achat rattaché à ce fournisseur : le serveur a ouvert la liste à tous les
-  // achats encore à recevoir (cf. listCandidatePurchases). Rien n'est proposé d'office
-  // dans ce cas — la sélection est manuelle, d'où la mention.
-  const liaOtherVendorOnly = liaCandidates.length > 0 && liaCandidates.every(c => c.other_vendor)
+  // Achats LIA du menu : la section « À recevoir » d'Airtable seulement — ni reçus, ni
+  // déjà facturés. Ceux des autres fournisseurs suivent, pour un choix manuel.
+  const liaOptions = liaCandidates
+    .filter(c => c.pending_reception && !c.consumed)
+    .map(c => ({
+      value: c.id,
+      label: `${c.lia_ref} · ${c.part_name || '(pièce non liée)'}`,
+      lia_ref: c.lia_ref,
+      part_name: c.part_name,
+      supplier: c.supplier,
+      qty_ordered: c.qty_ordered,
+      order_date: c.order_date,
+      other_vendor: !!c.other_vendor,
+    }))
   const suggestionFor = i => (lia.lines.find(l => l.index === i)?.match) || null
   const blockedFor = i => (lia.lines.find(l => l.index === i)?.blocked_by) || null
   // Contrôle du rattachement DÉJÀ posé sur la ligne : sur quoi le serveur fonde
   // l'identification de la pièce (référence, SKU, libellé appris).
   const linkCheckFor = i => (lia.lines.find(l => l.index === i)?.link_check) || null
+  const linkedFor = i => (lia.lines.find(l => l.index === i)?.linked) || null
+  const reviewFor = i => (lia.lines.find(l => l.index === i)?.review) || null
   const candidateById = id => liaCandidates.find(c => c.id === id) || null
 
   // Aperçu de la ligne « Frais de conversion » que le push QB ajoutera (voir
@@ -1907,6 +2023,8 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
                   blockedBy={blockedFor(i)}
                   linkedPurchase={candidateById(item.purchase_id)}
                   linkCheck={linkCheckFor(i)}
+                  linked={linkedFor(i)}
+                  review={reviewFor(i)}
                   onSelect={id => setLiaPurchase(i, id)}
                 />
               </div>
@@ -1963,25 +2081,6 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
           Totaux ci-dessus incluant{prorata.freight > 0 ? ` transport ${fmtCad(prorata.freight)}` : ''}
           {prorata.freight > 0 && prorata.discount > 0 ? ' et' : ''}
           {prorata.discount > 0 ? ` escompte ${fmtCad(prorata.discount)}` : ''} réparti au prorata des lignes.
-        </p>
-      )}
-      {liaOtherVendorOnly && (
-        <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
-          Aucun achat n'est rattaché à ce fournisseur dans Achats : la liste est ouverte à
-          <strong> tous les achats à recevoir</strong>, tous fournisseurs confondus. Aucune
-          suggestion automatique dans ce cas — le fournisseur affiché est celui de l'achat.
-        </p>
-      )}
-      {liaCandidates.length > 0 && (liaHiddenCount > 0 || showAllLia) && (
-        <p className="text-[11px] mt-1.5 leading-snug">
-          <button
-            type="button"
-            data-testid="lia-show-all"
-            onClick={() => setShowAllLia(v => !v)}
-            className="link-record"
-          >
-            {showAllLia ? 'Revenir à « À recevoir »' : 'Tous les achats du fournisseur'}
-          </button>
         </p>
       )}
     </div>
@@ -2209,7 +2308,7 @@ const sameMoney = (a, b) => a == null || b == null || Math.abs(round2(a) - round
 // Une ligne de la confrontation papier ↔ dossier.
 function PaperRow({ label, paper, filed, off }) {
   return (
-    <div className={`grid grid-cols-[1fr_auto_auto] gap-x-3 items-baseline px-1.5 py-0.5 ${off ? 'bg-red-50' : ''}`}>
+    <div className={`grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-3 items-baseline px-1.5 py-0.5 ${off ? 'bg-red-50' : ''}`}>
       <span className={`truncate text-[11px] ${off ? 'text-red-700' : 'text-slate-500'}`}>{label}</span>
       <span className={`tabular-nums text-xs text-right w-24 ${off ? 'text-red-700 font-semibold' : 'text-slate-600'}`}>{paper}</span>
       <span className={`tabular-nums text-xs text-right w-24 ${off ? 'text-red-700 font-semibold' : 'text-slate-800'}`}>{filed}</span>
@@ -2231,17 +2330,25 @@ function PrintedInvoiceCheck({ receipt, paper, shipmentCount }) {
     rows.push({ key: 'num', label: 'N° de facture', paper: paper.invoice_number, filed: receipt.receipt_number || '—', off })
   }
   if (paper.invoice_date) {
-    const off = (receipt.receipt_date || '').slice(0, 10) !== paper.invoice_date
-    rows.push({ key: 'date', label: 'Date', paper: fmtDate(paper.invoice_date), filed: receipt.receipt_date ? fmtDate(receipt.receipt_date) : '—', off })
+    // La date du dossier suit le débit bancaire quand il y en a un : c'est la
+    // date LUE sur le document (`document_date`) qu'on confronte au papier.
+    const read = receipt.document_date || receipt.receipt_date
+    const off = (read || '').slice(0, 10) !== paper.invoice_date
+    rows.push({ key: 'date', label: 'Date', paper: fmtDate(paper.invoice_date), filed: read ? fmtDate(read) : '—', off })
   }
   if (shipmentCount != null && paper.shipment_count) {
     const off = shipmentCount !== paper.shipment_count
     rows.push({ key: 'ship', label: 'Expéditions', paper: paper.shipment_count, filed: shipmentCount, off })
   }
   rows.push({ key: 'sub', label: 'Sous-total', paper: fmtCad(paper.subtotal), filed: fmtCad(filedSubtotal), off: !sameMoney(paper.subtotal, filedSubtotal) })
+  // Une taxe ABSENTE du papier n'est pas une taxe à zéro : si la facture
+  // n'imprime aucune ligne de taxe nommée, il n'y a rien à confronter — on ne
+  // transforme pas un « pas lu » en écart.
+  const paperHasTaxes = (paper.taxes || []).length > 0
   for (const [field, label] of [['tps', 'TPS'], ['tvq', 'TVQ'], ['other_taxes', 'TVH']]) {
     const p = paper[field] || 0, f = round2(receipt[field] || 0)
     if (!p && !f) continue
+    if (!paperHasTaxes) continue
     rows.push({ key: field, label, paper: fmtCad(p), filed: fmtCad(f), off: !sameMoney(p, f) })
   }
   if (paper.total_due != null) {
@@ -2267,7 +2374,9 @@ function PrintedInvoiceCheck({ receipt, paper, shipmentCount }) {
           ? <AlertCircle size={13} className="text-red-600 shrink-0 relative top-px" />
           : <CheckCircle size={13} className="text-green-600 shrink-0 relative top-px" />}
         <span className={`text-xs font-semibold ${offCount ? 'text-red-700' : 'text-green-800'}`}>
-          {offCount ? `${offCount} écart${offCount > 1 ? 's' : ''} avec la facture` : 'Conforme à la facture'}
+          {offCount
+            ? (offCount === 1 ? `Écart — ${rows.find(r => r.off).label}` : `${offCount} écarts avec la facture`)
+            : 'Conforme à la facture'}
         </span>
         {!offCount && (
           <span className="text-[11px] text-green-700/80 truncate">
@@ -2281,7 +2390,9 @@ function PrintedInvoiceCheck({ receipt, paper, shipmentCount }) {
       </button>
       {show && (
         <div className="mt-1.5 border-t border-slate-200 pt-1">
-          <div className="grid grid-cols-[1fr_auto_auto] gap-x-3 px-1.5 text-[10px] uppercase tracking-wide text-slate-400">
+          {/* `dt-caps` et non `uppercase tracking-wide` : en panneau latéral, ce couple
+              de classes est le crochet qui reflow toute la grille (voir index.css). */}
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] gap-x-3 px-1.5 text-[10px] dt-caps text-slate-400">
             <span></span>
             <span className="text-right w-24">Facture</span>
             <span className="text-right w-24">Dossier</span>
@@ -2649,7 +2760,7 @@ const BLOCKING_ANOMALY_KINDS = new Set(['duplicate_number', 'duplicate_amount', 
 // Bandeau « document obsolète » : la pièce n'a rien à apporter à la comptabilité —
 // soit un document à 0 $ (facture soldée / confirmation de débit automatique), soit
 // la copie d'un document déjà publié sur QuickBooks. On montre POURQUOI (message de
-// l'anomalie), le lien vers la transaction QB existante pour vérifier d'un clic, et
+// l'anomalie), le lien vers la transaction QuickBooks existante pour vérifier d'un clic, et
 // l'archivage en un clic. « À comptabiliser quand même » rejette l'anomalie source.
 function ObsoleteBanner({ receipt, acting, onArchive, onDismissed }) {
   const { addToast } = useToast()
@@ -2888,7 +2999,7 @@ function PrepaidStatementBanner({ receipt, onDone, onArchive }) {
             className="inline-flex items-center gap-1.5 text-xs font-medium text-white bg-indigo-600 rounded-lg px-2.5 py-1.5 hover:bg-indigo-700 disabled:opacity-50"
           >
             <Paperclip size={12} />
-            {busy ? 'Rattachement…' : sameMonth ? 'Rejoindre aux transactions' : 'Joindre aux transactions QB'}
+            {busy ? 'Rattachement…' : sameMonth ? 'Rejoindre aux transactions' : 'Joindre aux transactions QuickBooks'}
           </button>
         </div>
       </div>
@@ -3091,7 +3202,9 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
   return (
     <>
       <DetailShell className="p-6">
-        <div className="flex items-start gap-4 mb-4">
+        {/* En-tête collé en haut : les actions (Relire, Archiver…) restent
+            visibles quand on descend dans la fiche. */}
+        <div className="sticky top-0 z-30 -mx-6 px-6 -mt-6 pt-6 pb-3 mb-4 bg-slate-50/95 backdrop-blur-sm border-b border-slate-200 flex items-start gap-4">
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
               <PageTitle className="min-w-0" titleClassName="text-2xl font-bold text-slate-900 truncate">
@@ -3107,11 +3220,11 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
                     data-testid="qb-link"
                     className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 hover:bg-green-200 px-2 py-0.5 rounded-full"
                   >
-                    <BookOpen size={10} /> QB #{receipt.quickbooks_id}
+                    <BookOpen size={10} /> QuickBooks #{receipt.quickbooks_id}
                   </a>
                 ) : (
                   <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full">
-                    <BookOpen size={10} /> QB #{receipt.quickbooks_id}
+                    <BookOpen size={10} /> QuickBooks #{receipt.quickbooks_id}
                   </span>
                 )
               )}

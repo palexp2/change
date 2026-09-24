@@ -367,14 +367,17 @@ export const EMILIE_RECURRING_TASK_ID = 'rt-al-depenses-emilie'
 
 function markWeeklyRecurringDone(dayIso) {
   try {
-    return completeFromAutomation(EMILIE_RECURRING_TASK_ID, {
+    const completion = completeFromAutomation(EMILIE_RECURRING_TASK_ID, {
       date: dayIso,
       note: 'Message des dépenses envoyé à Émilie',
     })
+    return completion
+      ? { ...completion, done: true }
+      : { done: false, warning: 'Tâche non cochée : elle est absente ou désactivée.' }
   } catch (e) {
     // Un cochage raté ne doit jamais faire passer un envoi réussi pour un échec.
     console.error('marketingBudget : cochage du travail récurrent :', e.message)
-    return null
+    return { done: false, warning: 'La tâche n’a pas pu être cochée. Cochez-la dans vos travaux récurrents.' }
   }
 }
 
@@ -422,7 +425,9 @@ export function shouldSendWeekly({ relevantCount, pendingCount: pending }) {
 export async function checkWeeklyMarketingSlack({ force = false, trigger = 'schedule', today = null } = {}) {
   const t0 = Date.now()
   try {
-    if (!isSystemAutomationActive(MARKETING_SLACK_AUTOMATION_ID)) return { skipped: 'inactive' }
+    // L'interrupteur coupe l'envoi planifié, pas le bouton « Envoyer maintenant »
+    // (clic explicite) — sinon rien ne permet d'écrire à Émilie hors du mardi.
+    if (!force && !isSystemAutomationActive(MARKETING_SLACK_AUTOMATION_ID)) return { skipped: 'inactive' }
     const cfg = getMarketingSlackConfig()
     const dayIso = today || localDay()
     const sendDay = Math.min(7, Math.max(1, Number(cfg.send_weekday) || 2))
@@ -473,9 +478,9 @@ export async function checkWeeklyMarketingSlack({ force = false, trigger = 'sche
       status: 'success', duration_ms: Date.now() - t0, triggerData: { trigger, day: dayIso },
       result: `${scheduled ? `HEBDO ${isoWeekKey(dayIso)}` : 'ENVOI MANUEL'} — ${expenses.length} dépense(s) annoncée(s) à ${cfg.recipient}` +
         (pending ? ` · ⚠️ ${pending} en attente de validation (non incluses)` : '') +
-        (checked?.created ? ` · travail récurrent coché (${checked.period_key})` : ''),
+        (checked.done ? ` · travail récurrent ${checked.created ? 'coché' : 'déjà coché'} (${checked.period_key})` : ` · ${checked.warning}`),
     })
-    return { ok: true, sent: true, count: expenses.length, pending, message }
+    return { ok: true, sent: true, count: expenses.length, pending, message, completion: checked }
   } catch (e) {
     logSystemRun(MARKETING_SLACK_AUTOMATION_ID, {
       status: 'error', duration_ms: Date.now() - t0, triggerData: { trigger }, error: e,

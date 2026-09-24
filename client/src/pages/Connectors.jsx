@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { CheckCircle, XCircle, Link2, RefreshCw, Trash2, Mail, Database, CreditCard, BarChart3, Plus, Phone, Eye, EyeOff, Copy, BookOpen, Truck, Users, Send, Percent, ShoppingCart, User, Instagram, Cpu, FileText, Landmark, MessageCircle } from 'lucide-react'
 import { usePlaidLink } from 'react-plaid-link'
@@ -334,6 +335,7 @@ const CONNECTORS = [
   { id: 'calls',      name: 'Appels',      icon: Phone,      color: 'bg-green-50 text-green-600', alwaysConnected: true },
   { id: 'quickbooks', name: 'QuickBooks',  icon: BookOpen,   color: 'bg-green-50 text-green-700' },
   { id: 'plaid',      name: 'Plaid',       icon: Landmark,   color: 'bg-slate-50 text-slate-700', customConnect: true },
+  { id: 'venn',       name: 'Venn',        icon: Landmark,   color: 'bg-teal-50 text-teal-700',    apiKeyManaged: true },
   { id: 'stripe',     name: 'Stripe',      icon: CreditCard, color: 'bg-purple-50 text-purple-600', apiKeyManaged: true },
   { id: 'novoxpress', name: 'Novoxpress',  icon: Truck,      color: 'bg-orange-50 text-orange-600', apiKeyManaged: true },
   { id: 'ups',        name: 'UPS',         icon: Truck,      color: 'bg-amber-50 text-amber-800',  apiKeyManaged: true },
@@ -914,7 +916,7 @@ function PostmarkConfig() {
   )
 }
 
-function QuickBooksConfig({ accounts, onRefresh }) {
+function QuickBooksConfig({ accounts, config, onRefresh }) {
   const connectedAccounts = accounts.filter(a => a.connector === 'quickbooks')
   const [taxModalOpen, setTaxModalOpen] = useState(false)
   const confirm = useConfirm()
@@ -947,7 +949,7 @@ function QuickBooksConfig({ accounts, onRefresh }) {
             <span className="text-sm text-slate-700">QuickBooks connecté</span>
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser QuickBooks (si le token a expiré)">
+            <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser QuickBooks (si l'accès a expiré)">
               <Link2 size={12} /> Reconnecter
             </button>
             <button onClick={() => disconnect(a)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
@@ -967,14 +969,67 @@ function QuickBooksConfig({ accounts, onRefresh }) {
             <button
               onClick={() => setTaxModalOpen(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50"
-              title="Mapping des taxes Stripe → QuickBooks"
+              title="Correspondance des taxes Stripe → QuickBooks"
             >
-              <Percent size={12} /> Taxes Stripe → QB
+              <Percent size={12} /> Taxes Stripe → QuickBooks
             </button>
           </div>
+          <QbWebhookConfig config={config} onRefresh={onRefresh} />
           <TaxMappingModal isOpen={taxModalOpen} onClose={() => setTaxModalOpen(false)} />
         </>
       )}
+    </div>
+  )
+}
+
+// Avis QuickBooks (Intuit Event Notifications) : l'adresse à déclarer chez Intuit
+// et le jeton qui signe les avis. Sans ce jeton, tout avis reçu est refusé — c'est
+// lui qui fait la différence entre « la ligne bouge en quelques secondes » et « on
+// attend le passage horaire ». Le jeton ne se relit jamais (masqué par le serveur) :
+// on le remplace.
+function QbWebhookConfig({ config, onRefresh }) {
+  const isSet = !!config?.quickbooks?.webhook_verifier_token
+  const [token, setToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const url = `${window.location.origin}/erp/api/quickbooks/webhook`
+
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(url); setCopied(true); setTimeout(() => setCopied(false), 1500) } catch { /* presse-papiers refusé */ }
+  }
+
+  const save = async () => {
+    setBusy(true)
+    try {
+      await api.connectors.saveConfig('quickbooks', { webhook_verifier_token: token.trim() })
+      setToken('')
+      onRefresh?.()
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="pt-2 border-t border-slate-100 space-y-2">
+      <div className="flex items-center gap-1.5 text-xs font-medium text-slate-600">
+        <Send size={12} /> Avis QuickBooks
+        {isSet
+          ? <CheckCircle size={12} className="text-green-500" />
+          : <XCircle size={12} className="text-slate-300" />}
+      </div>
+      <div className="flex items-center gap-1">
+        <code className="flex-1 min-w-0 truncate text-[11px] bg-slate-50 border border-slate-200 rounded px-2 py-1 text-slate-600">{url}</code>
+        <button type="button" onClick={copy} className="text-slate-400 hover:text-slate-600 p-1" title="Copier l'adresse à déclarer chez Intuit">
+          {copied ? <CheckCircle size={12} className="text-green-500" /> : <Copy size={12} />}
+        </button>
+      </div>
+      <div className="flex items-center gap-1">
+        <label className="text-xs text-slate-500 shrink-0">Jeton</label>
+        <input type="password" value={token} onChange={e => setToken(e.target.value)}
+          className="flex-1 min-w-0 text-xs border border-slate-200 rounded px-2 py-1" />
+        <button type="button" onClick={save} disabled={busy || !token.trim()}
+          className="btn-secondary btn-sm text-xs disabled:opacity-40">
+          {busy ? '…' : isSet ? 'Remplacer' : 'Enregistrer'}
+        </button>
+      </div>
     </div>
   )
 }
@@ -1002,9 +1057,9 @@ function QuickBooksUserConnections() {
   const load = async () => {
     try { setConns(await api.connectors.qbConnections()) } catch { setConns([]) }
   }
-  useEffect(() => { if (user?.role === 'admin') load() }, [user?.role])
+  useEffect(() => { if (hasRole(user, 'admin')) load() }, [user?.role])
 
-  if (user?.role !== 'admin') return null
+  if (!hasRole(user, 'admin')) return null
   const personal = conns.filter(c => !c.isDefault)
   if (personal.length === 0) return null
 
@@ -1084,7 +1139,7 @@ function AmazonConfig({ accounts, configured, syncStatus, onRefresh }) {
             <span className="text-sm text-slate-700">Amazon Business connecté</span>
           </div>
           <div className="flex items-center gap-1">
-            <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser Amazon (si le token a expiré)">
+            <button onClick={reconnect} className="btn-secondary btn-sm text-xs" title="Réautoriser Amazon (si l'accès a expiré)">
               <Link2 size={12} /> Reconnecter
             </button>
             <button onClick={() => disconnect(a)} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter">
@@ -1759,7 +1814,7 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
   }
 
   const removeToken = async () => {
-    if (!(await confirm('Supprimer le token HubSpot ? Le sync s\'arrêtera.'))) return
+    if (!(await confirm('Supprimer l’accès HubSpot ? La synchronisation s\'arrêtera.'))) return
     try {
       await api.hubspot.deleteToken()
       setConfigured(false)
@@ -1819,7 +1874,7 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
           <div className="bg-slate-50 rounded-xl p-4 space-y-3">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Mapping utilisateurs ERP ↔ owners HubSpot</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Correspondance utilisateurs ERP ↔ propriétaires HubSpot</p>
                 {info && !info.error && (
                   <p className="text-xs text-slate-500 mt-0.5" data-testid="hubspot-mapping-count">{mappedCount}/{users.length} mappés · auto par email avec override manuel possible</p>
                 )}
@@ -2122,7 +2177,219 @@ function PlaidBankHealth({ health, itemId }) {
   )
 }
 
-function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured, digikeyConfigured, upsConfigured }) {
+/**
+ * Venn — deuxième banque d'Orisha (CAD + USD), en LECTURE SEULE.
+ *
+ * Trois gestes, dans l'ordre : coller la clé, tester (les comptes Venn
+ * apparaissent avec leurs soldes), relier chaque compte Venn à son compte
+ * bancaire de l'ERP. Ensuite la lecture se fait toute seule chaque nuit, et les
+ * transactions arrivent dans /rapprochement comme celles de la BNC.
+ *
+ * Les adresses d'API sont repliées sous « Réglages avancés » : elles ne servent
+ * que si Venn nomme ses routes autrement que nos défauts — c'est le garde-fou
+ * qui évite un déploiement pour un renommage.
+ */
+function VennConfig({ configured: initialConfigured, onRefresh }) {
+  const { addToast } = useToast()
+  const confirm = useConfirm()
+  const [status, setStatus] = useState(null)
+  const [configured, setConfigured] = useState(initialConfigured)
+  const [apiKey, setApiKey] = useState('')
+  const [showKey, setShowKey] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+  const [test, setTest] = useState(null)       // { ok, message, accounts }
+  const [syncing, setSyncing] = useState(false)
+  const [advanced, setAdvanced] = useState(false)
+
+  const load = useCallback(async () => {
+    try {
+      const st = await api.venn.status()
+      setStatus(st)
+      setConfigured(st.configured)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }, [addToast])
+  useEffect(() => { load() }, [load])
+
+  const saveKey = async () => {
+    setSaving(true)
+    try {
+      await api.venn.saveConfig({ api_key: apiKey })
+      setApiKey(''); setTest(null)
+      await load(); onRefresh?.()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSaving(false) }
+  }
+
+  // Réglages non secrets : autosave (règle de design CLAUDE.md).
+  const saveField = async (key, value) => {
+    if ((status?.config?.[key] ?? '') === value) return
+    try {
+      const r = await api.venn.saveConfig({ [key]: value })
+      setStatus(st => ({ ...st, config: r.config }))
+      setTest(null)
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const removeKey = async () => {
+    if (!(await confirm({
+      title: 'Supprimer la clé Venn',
+      message: 'La lecture quotidienne cessera. Les transactions déjà importées restent en place.',
+      confirmLabel: 'Supprimer',
+    }))) return
+    try { await api.venn.deleteConfig(); setTest(null); await load(); onRefresh?.() }
+    catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const testConnection = async () => {
+    setTesting(true); setTest(null)
+    try {
+      const r = await api.venn.test()
+      setTest({ ok: true, accounts: r.accounts || [] })
+      await load()
+    } catch (e) {
+      // Message BRUT de Venn, jamais masqué (CLAUDE.md).
+      setTest({ ok: false, message: e.message })
+      await load()
+    } finally { setTesting(false) }
+  }
+
+  const link = async (bankAccountId, vennAccountId) => {
+    try { await api.venn.linkAccount(bankAccountId, vennAccountId); await load() }
+    catch (e) { addToast({ message: e.message, type: 'error' }) }
+  }
+
+  const sync = async () => {
+    setSyncing(true)
+    try {
+      const r = await api.venn.sync()
+      const bad = (r.results || []).filter(x => x.error)
+      addToast({
+        message: bad.length
+          ? bad.map(x => `${x.account || 'Venn'} : ${x.error}`).join(' · ')
+          : (r.results || []).map(x => `${x.account} : ${x.inserted} nouvelle(s)`).join(' · ') || 'Aucun compte relié',
+        type: bad.length ? 'error' : 'success',
+      })
+      await load()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setSyncing(false) }
+  }
+
+  const cfg = status?.config || {}
+  const defaults = status?.defaults || {}
+  const session = status?.session
+  const bankAccounts = status?.bank_accounts || []
+  const vennAccounts = test?.accounts || []
+
+  return (
+    <div className="mt-4 space-y-4" data-testid="venn-config">
+      <div className="bg-slate-50 rounded-xl p-4 space-y-3">
+        {configured
+          ? <p className="text-sm text-green-600 font-medium flex items-center gap-1.5"><CheckCircle size={14} /> Clé enregistrée</p>
+          : <p className="text-sm text-amber-600 font-medium flex items-center gap-1.5"><XCircle size={14} /> Aucune clé</p>
+        }
+        <label className="block">
+          <span className={lblCls}>Clé d'API Venn</span>
+          <div className="relative">
+            <input
+              type={showKey ? 'text' : 'password'}
+              className="input pr-8 font-mono text-sm"
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              autoComplete="new-password"
+              data-testid="venn-api-key"
+            />
+            <button onClick={() => setShowKey(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+              {showKey ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+          </div>
+        </label>
+        <div className="flex gap-2">
+          <button onClick={saveKey} disabled={saving || !apiKey} className="btn-primary btn-sm text-xs">
+            {saving ? 'Enregistrement…' : 'Enregistrer'}
+          </button>
+          <button onClick={testConnection} disabled={testing || !configured} className="btn-secondary btn-sm text-xs">
+            {testing ? 'Test…' : 'Tester la connexion'}
+          </button>
+          {configured && (
+            <button onClick={removeKey} className="text-red-400 hover:text-red-600 p-1" title="Supprimer la clé">
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+        {test && (
+          <p className={`text-xs ${test.ok ? 'text-green-600' : 'text-red-600'}`} data-testid="venn-test-result">
+            {test.ok
+              ? vennAccounts.map(a => `${a.name} : ${(a.balance_available ?? a.balance_current ?? '—')} ${a.currency || ''}`).join(' · ') || 'Aucun compte'
+              : test.message}
+          </p>
+        )}
+        {session && session.status !== 'ok' && (
+          <p className="text-xs text-red-600">{session.detail}</p>
+        )}
+      </div>
+
+      {/* Rattachement : quel compte Venn alimente quel compte de l'ERP. */}
+      <div className="bg-slate-50 rounded-xl p-4 space-y-2">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Comptes</p>
+        {bankAccounts.filter(b => b.institution === 'Venn' || b.venn_account_id).map(b => {
+          const st = (status?.accounts || []).find(a => a.account_id === b.id)
+          return (
+            <div key={b.id} className="flex items-center gap-2 text-xs">
+              <span className="text-slate-500 w-32 truncate">{b.name}</span>
+              <SearchableSelect
+                value={b.venn_account_id || ''}
+                emptyOption="—"
+                // Tant que « Tester la connexion » n'a pas tourné, on n'a que
+                // l'identifiant déjà posé : on le garde dans la liste pour ne
+                // pas l'effacer en rouvrant l'écran.
+                options={vennAccounts.length
+                  ? vennAccounts.map(a => ({ value: a.venn_account_id, label: `${a.name}${a.currency ? ` (${a.currency})` : ''}` }))
+                  : b.venn_account_id ? [{ value: b.venn_account_id, label: b.venn_account_id }] : []}
+                onChange={v => link(b.id, v)}
+                className="input text-xs w-56"
+              />
+              {st?.venn_count ? (
+                <span className="text-slate-400">{st.venn_count} trx · jusqu'au {st.last_txn_date}</span>
+              ) : st ? (
+                <span className="text-amber-700">aucune transaction</span>
+              ) : null}
+            </div>
+          )
+        })}
+        <button onClick={sync} disabled={syncing || !configured} className="btn-secondary btn-sm text-xs">
+          <RefreshCw size={12} className={syncing ? 'animate-spin' : ''} /> Lire maintenant
+        </button>
+        {status?.last_sync && (
+          <p className="text-xs text-slate-400">
+            {status.last_sync.status === 'success' ? 'Dernière lecture' : 'Dernier échec'} : {formatRelativeTime(status.last_sync.created_at)}
+            {status.last_sync.error_message ? ` — ${status.last_sync.error_message}` : ''}
+          </p>
+        )}
+      </div>
+
+      <button onClick={() => setAdvanced(v => !v)} className="text-xs text-slate-400 hover:text-slate-600">
+        Réglages avancés
+      </button>
+      {advanced && (
+        <div className="bg-slate-50 rounded-xl p-4 space-y-2">
+          {['api_base', 'accounts_path', 'transactions_path', 'auth_header', 'auth_scheme', 'page_size', 'lookback_days'].map(key => (
+            <label key={key} className="block">
+              <span className={lblCls}>{key}</span>
+              <input
+                className="input font-mono text-xs"
+                defaultValue={cfg[key] ?? defaults[key] ?? ''}
+                onBlur={e => saveField(key, e.target.value)}
+              />
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, onRefresh, stripeConfigured, novoxpressConfigured, hubspotConfigured, amazonConfigured, digikeyConfigured, upsConfigured, vennConfigured }) {
   // Retour d'une banque OAuth (BNC…) au milieu du flux Plaid Link : l'utilisateur
   // revient sur /erp?oauth_state_id=... — on doit rouvrir la section Plaid,
   // déjà repliée par défaut, pour que PlaidConfig puisse reprendre le flux.
@@ -2138,6 +2405,7 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
         connector.id === 'hubspot' ? hubspotConfigured :
         connector.id === 'digikey' ? digikeyConfigured :
         connector.id === 'ups' ? upsConfigured :
+        connector.id === 'venn' ? vennConfigured :
         false
       )
     : connectorAccounts.length > 0
@@ -2221,6 +2489,9 @@ function ConnectorCard({ connector, accounts, config, syncConfigs, syncStatus, o
           )}
           {connector.id === 'ups' && (
             <UpsConfig configured={upsConfigured} onRefresh={onRefresh} />
+          )}
+          {connector.id === 'venn' && (
+            <VennConfig configured={vennConfigured} onRefresh={onRefresh} />
           )}
         </div>
       )}
@@ -2336,11 +2607,11 @@ const SYNC_LABELS = {
   gmail: 'Gmail', drive: 'Drive', airtable: 'CRM Airtable',
   projets: 'Projets', pieces: 'Pièces', orders: 'Commandes',
   achats: 'Achats', billets: 'Billets', serials: 'N° de série', envois: 'Envois',
-  stripe: 'Stripe', 'qb-achats': 'QB Achats', hubspot_tasks: 'HubSpot Tasks',
+  stripe: 'Stripe', 'qb-achats': 'QuickBooks Achats', hubspot_tasks: 'HubSpot Tasks',
 }
 
 export function ConnectorsContent() {
-  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false, digikey_configured: false, ups_configured: false })
+  const [data, setData] = useState({ accounts: [], config: {}, airtable_sync: {}, projets_sync: {}, pieces: {}, orders_sync: {}, achats: {}, billets: {}, serials: {}, envois: {}, stripe_configured: false, novoxpress_configured: false, hubspot_configured: false, amazon_configured: false, digikey_configured: false, ups_configured: false, venn_configured: false })
   const [loading, setLoading] = useState(true)
   const { status: syncStatus, anyRunning } = useSyncStatus(3000)
 
@@ -2402,6 +2673,7 @@ export function ConnectorsContent() {
                   amazonConfigured={!!data.amazon_configured}
                   digikeyConfigured={!!data.digikey_configured}
                   upsConfigured={!!data.ups_configured}
+                  vennConfigured={!!data.venn_configured}
                   syncConfigs={{
                     contacts:      data.contacts_sync    || {},
                     companies:     data.companies_sync   || {},

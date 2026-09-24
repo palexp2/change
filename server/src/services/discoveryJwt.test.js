@@ -10,7 +10,7 @@ const calc = (greenhouses, options = {}, extra = {}) => calculateDiscoveryEquipm
 test('JWT : une permission par fonction et par serre, ventilation partagée sans sorties V2 supplémentaires', () => {
   const greenhouse = {
     permission_level: 'chief_grower', irrigation_zones: 4, furnaces: [{}, {}], num_fans: 2,
-    has_louvers: true, louvers: [{ voltage: '110', control_type: 'spring_loaded', has_fan: false }], has_roof_vents: true,
+    has_louvers: true, louvers: [{ voltage: '110', control_type: 'spring_loaded', has_fan: false }],
   }
   const result = calc([greenhouse, greenhouse], { humidity_retention: true })
   assert.equal(permissions(result).length, 10)
@@ -18,6 +18,12 @@ test('JWT : une permission par fonction et par serre, ventilation partagée sans
   assert.deepEqual(result.orderItems.map(i => i.role).sort(), Object.keys(products).sort())
   assert(result.greenhouses.every(g => g.slots === 9 && g.activation_modules === 3))
   assert(result.orderItems.every(i => /Serre #1.*Serre #2/.test(i.label) && /programmer.*montage/.test(i.label)))
+})
+
+test('JWT : un toit ouvrant déclaré par le client demande la ventilation partagée, à vérifier', () => {
+  const result = calc([{ permission_level: 'chief_grower', has_roof_vents: true, num_roof_vents: 1 }])
+  assert(permissions(result).some(i => i.role === 'jwt_advanced_ventilation'))
+  assert(result.warnings.some(w => w.code === 'roof_review'))
 })
 
 test('JWT : prévention systématique en Chef de culture, aucune permission avancée en Helper', () => {

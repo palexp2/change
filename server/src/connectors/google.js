@@ -1,3 +1,4 @@
+import { encryptCredentials, decryptCredentials } from '../utils/encryption.js'
 import { google } from 'googleapis'
 import db from '../db/database.js'
 import { APP_URL } from '../config/appUrl.js'
@@ -114,15 +115,15 @@ export async function getOAuthClientForAccount(connectorOAuthId) {
 
   const oauth2 = makeOAuth2Client()
   oauth2.setCredentials({
-    access_token: row.access_token,
-    refresh_token: row.refresh_token,
+    access_token: decryptCredentials(row.access_token),
+    refresh_token: decryptCredentials(row.refresh_token),
     expiry_date: row.expiry_date,
   })
   oauth2.on('tokens', (tokens) => {
     db.prepare(`
       UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
       expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
-    `).run(tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null, row.id)
+    `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null, row.id)
   })
   return oauth2
 }

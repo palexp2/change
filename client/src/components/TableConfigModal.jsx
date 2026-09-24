@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect } from 'react'
 import { Plus, X, Pencil, Check, Lock, Unlock } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
@@ -45,7 +46,7 @@ export function TableConfigModal({ table, bulkDelete = false }) {
     }
   }
 
-  if (user?.role !== 'admin') return null
+  if (!hasRole(user, 'admin')) return null
 
   async function handleAddView() {
     const name = newViewName.trim()

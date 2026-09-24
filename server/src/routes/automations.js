@@ -1,6 +1,7 @@
+import { scriptRuntimeStatus } from '../services/scriptSandbox.js'
 import { Router } from 'express'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAdmin } from '../middleware/auth.js'
 import { newId } from '../utils/ids.js'
 import { runAutomation } from '../services/automationEngine.js'
 import { scheduleAutomation, unscheduleAutomation } from '../services/automationScheduler.js'
@@ -150,6 +151,21 @@ const CONFIGURABLE_SYSTEM_SPECS = {
     actionKeys: new Set(['kinds_enabled', 'min_confidence_doc', 'tie_margin', 'max_open']),
     validateKey: () => null,
   },
+  // Contrôles comptables : chaque contrôle s'allume ou s'éteint ('on'/'off'),
+  // plus le seuil d'écart de solde toléré.
+  sys_audit_controles: {
+    actionKeys: new Set([
+      'bank_lien_partage', 'bank_doublon_releve', 'bank_lien_introuvable',
+      'qb_type_inconnu', 'bank_ecart_solde', 'bank_rapprochement', 'bank_chaine_solde',
+      'ecart_solde_seuil',
+    ]),
+    validateKey: (key, v) => {
+      if (key === 'ecart_solde_seuil') {
+        return Number.isFinite(Number(v)) && Number(v) >= 0 ? null : 'Seuil invalide'
+      }
+      return ['on', 'off'].includes(String(v).trim()) ? null : "Valeur attendue : « on » ou « off »"
+    },
+  },
   sys_revenue_recognition: {
     allowedTables: ['shipments', 'factures'],
     actionKeys: new Set(['deferred_acctnum', 'sale_acctnum', 'ar_cad_acctnum', 'ar_usd_acctnum']),
@@ -240,22 +256,57 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
     },
   },
+  // Lecture bancaire Venn : rien à configurer côté action (clé, adresses d'API
+  // et fenêtre relue vivent sur le connecteur), mais l'entrée doit exister —
+  // sans elle l'interrupteur répondrait 400 « lecture seule ».
+  sys_venn_sync: { actionKeys: new Set() },
   sys_bank_debit_link: { actionKeys: new Set() },
   sys_receipt_bank_match: { actionKeys: new Set() },
   // Même cas : déclarées configurables sans spec, leur interrupteur répondait
   // 400 « lecture seule » — impossible de les mettre en pause depuis la page.
   // Rien à configurer côté action, mais l'entrée doit exister.
-  sys_plaid_qb_audit: { actionKeys: new Set() },
   sys_treasury_qb_clear: { actionKeys: new Set() },
+  sys_bill_payment_qb: {
+    actionKeys: new Set(['enabled_sources', 'allow_card_accounts', 'since_date']),
+    validateKey(key, v) {
+      if (key === 'allow_card_accounts' && !['0', '1'].includes(String(v))) {
+        throw new Error('allow_card_accounts : 0 ou 1')
+      }
+      if (key === 'enabled_sources' && !/^[a-z_,\s]*$/.test(String(v))) {
+        throw new Error('enabled_sources : origines séparées par des virgules')
+      }
+      if (key === 'since_date' && String(v).trim() && !/^\d{4}-\d{2}-\d{2}$/.test(String(v).trim())) {
+        throw new Error('since_date : date au format AAAA-MM-JJ')
+      }
+    },
+  },
   sys_treasury_solde_sheet: { actionKeys: new Set() },
+  sys_treasury_sheet_mirror: { actionKeys: new Set() },
   sys_fiscal_anomalies_sheet: { actionKeys: new Set() },
   sys_invoice_collection: { actionKeys: new Set() },
   // Sync TRX_Orisha : le seul réglage ouvert est la liste des appariements
   // QuickBooks posés SANS demander. Les autres deviennent des propositions à
   // confirmer ; vider la liste coupe tout appariement automatique.
-  sys_bank_trx_sheet: {
-    actionKeys: new Set(['auto_apply_methods']),
+  sys_bank_qb_verify: {
+    actionKeys: new Set(['window_days', 'grace_days', 'auto_apply_methods', 'deep_since']),
     validateKey(key, v) {
+      if (key === 'window_days') {
+        // Plancher dur : en deçà de 30 jours, l'orientation des signes ne peut
+        // plus être votée sur le pool d'écritures et les appariements
+        // s'inversent (voir detectSign dans services/bankQbSearch.js).
+        if (!/^\d{1,4}$/.test(v || '') || Number(v) < 30) {
+          throw new Error('window_days : un nombre de jours, jamais moins de 30')
+        }
+        return
+      }
+      if (key === 'grace_days') {
+        if (!/^\d{1,3}$/.test(v || '')) throw new Error('grace_days : un nombre de jours')
+        return
+      }
+      if (key === 'deep_since') {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) throw new Error('deep_since : une date AAAA-MM-JJ')
+        return
+      }
       if (key !== 'auto_apply_methods' || !v) return
       const known = new Set(['exact', 'fenetre', 'devise', 'tolerance', 'conversion', 'autre_compte', 'agregat', 'agregat_inverse'])
       for (const m of String(v).split(',').map((x) => x.trim()).filter(Boolean)) {
@@ -263,6 +314,9 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
     },
   },
+  // Avis QuickBooks : rien à régler côté action (le jeton vit dans
+  // Connecteurs), mais l'entrée doit exister pour que l'interrupteur réponde.
+  sys_qb_webhook: { actionKeys: new Set() },
   sys_work_suggestions: { actionKeys: new Set() },
   sys_month_end_provisions: { actionKeys: new Set() },
   sys_address_check: { actionKeys: new Set() },
@@ -496,6 +550,24 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       if (!v) return
       if (key === 'max_threads' && !/^([1-9]|[1-9]\d|[1-4]\d{2}|500)$/.test(v)) {
         throw new Error('max_threads : un entier de 1 à 500 (conversations relues par tournée)')
+      }
+    },
+  },
+  sys_instagram_segments: {
+    actionKeys: new Set(['model', 'max_per_run', 'bot_threshold', 'profiles_per_run', 'profile_refresh_days', 'profile_model', 'msg_coach', 'msg_fleurs', 'msg_question', 'msg_commentaire', 'msg_abonne']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'max_per_run' && !/^([1-9]|[1-9]\d|[1-4]\d\d|500)$/.test(v)) {
+        throw new Error('max_per_run : un entier de 1 à 500')
+      }
+      if (key === 'profiles_per_run' && !/^([0-9]|[1-9]\d|100)$/.test(v)) {
+        throw new Error('profiles_per_run : un entier de 0 à 100 (0 = ne lit aucun profil)')
+      }
+      if (key === 'profile_refresh_days' && !/^([1-9]|[1-9]\d|[1-3]\d\d)$/.test(v)) {
+        throw new Error('profile_refresh_days : un entier de 1 à 399')
+      }
+      if (key === 'bot_threshold' && !(Number(v) >= 2 && Number(v) <= 12)) {
+        throw new Error('bot_threshold : entre 2 et 12 — plus bas, on supprime plus large')
       }
     },
   },
@@ -812,7 +884,8 @@ function ensureBaselineVersion(automationRow) {
 }
 
 const router = Router()
-router.use(requireAuth)
+router.use(requireAdmin)
+router.get('/runtime/status', (_req, res) => res.json(scriptRuntimeStatus()))
 
 // GET /api/automations
 router.get('/', (req, res) => {

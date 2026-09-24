@@ -50,3 +50,15 @@ export function txnFacts(txn) {
   const check = txn?.check_number || extractCheckNumber(txn?.description, txn?.reference)
   return { foreign, check }
 }
+
+// L'état d'une transaction à la banque. Trois valeurs seulement, quelle que
+// soit la source : autorisée (la banque a réservé les fonds), en attente (pas
+// encore passée), complétée (passée au compte). Rien d'autre n'est un état.
+export function normalizeBankState(raw) {
+  const v = String(raw ?? '').trim().toLowerCase()
+  if (!v) return null
+  if (/autoris/.test(v)) return 'autorise'
+  if (/pending|attente|en cours|processing/.test(v)) return 'en_attente'
+  if (/complet|posted|settled|termin/.test(v)) return 'complete'
+  return null
+}

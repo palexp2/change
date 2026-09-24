@@ -114,11 +114,29 @@ const COLUMNS = TABLE_COLUMN_META.automations.map(meta => ({ ...meta, render: RE
 export default function Automations() {
   const [automations, setAutomations] = useState([])
   const [loading, setLoading] = useState(true)
+  const [runtime, setRuntime] = useState(null)
   const navigate = useNavigate()
   const { addToast } = useToast()
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load() }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    let pending = false
+    const refresh = async () => {
+      if (document.hidden || pending) return
+      pending = true
+      try {
+        const status = await api.automations.runtimeStatus()
+        if (!cancelled) setRuntime(status)
+      } catch { if (!cancelled) setRuntime(null) }
+      finally { pending = false }
+    }
+    refresh()
+    const timer = setInterval(refresh, 3000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [])
 
   // Pas `useListData` : la route renvoie un tableau nu et l'échec doit remonter en toast.
   async function load() {
@@ -151,6 +169,12 @@ export default function Automations() {
         </button>
       </>}
     >
+      {runtime && (
+        <p className="px-4 py-2 text-xs text-slate-500" data-testid="script-queue-status">
+          Scripts : {runtime.active} en cours · {runtime.queued} en attente
+          <span className="ml-3">{runtime.memoryMb} Mio · {runtime.timeoutMs / 1000} s maximum</span>
+        </p>
+      )}
       <DataTable
         table="automations"
         manageViews

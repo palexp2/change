@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFollowUpPrompt, buildRecapMessage, resolveReply, futureStart, briefFor, REQUESTER_MARKER, pickLane, SCHEDULED_LANE } from './promptQueue.js'
+import { buildFollowUpPrompt, resolveReply, futureStart, briefFor, REQUESTER_MARKER, pickLane, SCHEDULED_LANE } from './promptQueue.js'
 import { detectSessionLimit, detectRateLimitEvent, extractPendingQuestion, QUESTION_MARKER } from './taskRunner.js'
 
 // ── Continuité d'un fil ───────────────────────────────────────────────────────
@@ -66,40 +66,6 @@ test('relance : le demandeur suit le fil', () => {
   assert.ok(b.includes(REQUESTER_MARKER))
   assert.match(b, /Émilie/)
 })
-
-// ── Recap Slack ───────────────────────────────────────────────────────────────
-
-test('recap terminé : une ligne, coche verte et titre', () => {
-  const msg = buildRecapMessage({ status: 'done', title: 'Import X' }, { user_summary: 'C\'est fait.' })
-  assert.match(msg, /white_check_mark/)
-  assert.match(msg, /Import X/)
-  assert.equal(msg.includes('\n'), false, 'le recap doit tenir sur une seule ligne')
-})
-
-test('recap : jamais de compte-rendu du travail (il vit dans le fil de l\'ERP)', () => {
-  const msg = buildRecapMessage({ status: 'done', title: 'Import X' }, { user_summary: 'J\'ai corrigé le tri des achats.' })
-  assert.doesNotMatch(msg, /corrigé le tri/)
-  assert.ok(msg.length < 300, `recap trop long (${msg.length})`)
-})
-
-test('recap bloqué : triangle d\'avertissement et lien pour répondre', () => {
-  const msg = buildRecapMessage({ status: 'blocked', title: 'Import X' }, { user_summary: 'Quel onglet ?' })
-  assert.match(msg, /warning/)
-  assert.match(msg, /travaux\?onglet=file/)
-})
-
-test('recap : « arrêter après celle-ci » annonce la pause sur la même ligne', () => {
-  const msg = buildRecapMessage({ status: 'done', title: 'Import X' }, { user_summary: 'Fait.' }, { stopped: true })
-  assert.match(msg, /file en pause/)
-  assert.equal(msg.includes('\n'), false)
-})
-
-// ── Compte-rendu du fil ───────────────────────────────────────────────────────
-// Le fil ne doit JAMAIS se retrouver avec un placeholder : c'était le bug — le
-// compte-rendu de secours arrivait après l'écriture du message et personne ne
-// voyait plus ce qui avait été fait.
-// NB : ces tâches n'existent pas dans le store de l'agent, la génération de secours
-// se termine donc immédiatement sans lancer de subprocess.
 
 test('pas de compte-rendu mais un rapport : le rapport technique est rendu', async () => {
   const text = await resolveReply({ id: 'inconnue-1', status: 'done', agent_result: 'J\'ai corrigé le tri des colonnes.' })
@@ -212,22 +178,6 @@ test('au plus 4 options, vides écartées', () => {
   const raw = `R.\n\n${QUESTION_MARKER}\n{"question":"Q ?","options":["1","","2","3","4","5"]}`
   assert.deepEqual(extractPendingQuestion(raw).question.options, ['1', '2', '3', '4'])
 })
-
-test('recap Slack : une question en attente change le titre et l\'appel à l\'action', () => {
-  const prompt = { status: 'done', title: 'Tri des achats' }
-  const task = { user_summary: 'Fait.', pending_question: { question: 'Date ou montant ?', options: [] } }
-  const msg = buildRecapMessage(prompt, task)
-  assert.match(msg, /Question à répondre/)
-  assert.match(msg, /Répondre/)
-  // La question elle-même reste dans le fil : le DM dit seulement qu'il y en a une.
-  assert.doesNotMatch(msg, /Date ou montant/)
-  // Sans question, le recap annonce simplement la fin de la tâche.
-  assert.match(buildRecapMessage(prompt, { user_summary: 'Fait.' }), /Tâche terminée/)
-})
-
-// ── Départ différé (« ce soir, 19 h ») ────────────────────────────────────────
-// Seule une heure à VENIR diffère le départ : une heure passée, vide ou illisible
-// laisse l'item partir normalement — jamais de tâche coincée à cause de ça.
 
 test('heure à venir : retenue, normalisée en ISO UTC', () => {
   const at = new Date(Date.now() + 3600_000)

@@ -1,3 +1,5 @@
+import { hasRole } from '../../../shared/roles.mjs'
+import { useAuth } from '../lib/auth.jsx'
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Plus, Trash2, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
@@ -98,6 +100,8 @@ const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-
 
 // `onClose` ferme le panneau après suppression du record.
 export default function EmployeeDetail({ recordId: id, onClose }) {
+  const { user } = useAuth()
+  const isHR = hasRole(user, 'rh')
   // Portier des champs supprimés, libellés, champs personnalisés, ordre et
   // présence : tout est appliqué par la carte de champs commune.
   const leaveRecord = () => onClose?.()
@@ -177,6 +181,7 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
   // sont rendus par <DetailFieldGrid> : la fiche ne fournit que l'éditeur.
   function fieldEditor(field) {
     const val = form[field.key]
+    if (!isHR) return <span className="text-sm whitespace-pre-wrap">{field.type === 'checkbox' ? (val ? 'Oui' : 'Non') : (val ?? '—')}</span>
     if (field.type === 'checkbox') {
       return (
         <input
@@ -257,18 +262,18 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
         }}
       >
         <div className="space-y-6">
-          <VacationsSection
+          {isHR && <VacationsSection
             employeeId={id}
             allowance={form.vacation_days_per_year}
             onAllowanceChange={v => change('vacation_days_per_year', v)}
-          />
+          />}
 
           {/* Carte de champs commune : une seule liste, réordonnable depuis la
               fiche (bouton « Personnaliser les champs »). Les champs
               personnalisés de la table s'y posent seuls — d'où `record`. */}
           <DetailFieldGrid
-            entityType="employees"
-            record={employee}
+            entityType={isHR ? "employees" : undefined}
+            record={isHR ? employee : undefined}
             taken={TAKEN_ELSEWHERE}
             className="card p-5"
             testId="employee-fields"
@@ -280,12 +285,12 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
             ))}
           </DetailFieldGrid>
 
-          <div className="flex justify-end pt-2">
+          {isHR && <div className="flex justify-end pt-2">
             <button onClick={handleDelete}
               className="text-sm text-slate-400 hover:text-red-600 flex items-center gap-1.5">
               <Trash2 size={14} /> Supprimer cet employé
             </button>
-          </div>
+          </div>}
         </div>
       </DetailShell>
   )

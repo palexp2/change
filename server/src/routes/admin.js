@@ -1,3 +1,4 @@
+import { rolesOf, validateRoles, legacyRole } from '../../../shared/roles.mjs'
 import { Router } from 'express';
 import { newRecordId } from '../utils/recordId.js';
 import bcrypt from 'bcrypt';
@@ -413,27 +414,36 @@ router.post('/factures/cleanup-supprimees', (req, res) => {
   res.json({ deleted: result, skipped })
 })
 
+// Minimal directory for linking accounts; no personal or payroll fields.
+router.get('/employee-options', (req, res) => {
+  res.json({ data: db.prepare('SELECT id, first_name, last_name FROM employees ORDER BY last_name, first_name').all() })
+})
+
 // GET /api/admin/users
 router.get('/users', (req, res) => {
   const users = db.prepare(`
-    SELECT u.id, u.email, u.name, u.role, u.active, u.created_at, u.employee_id,
+    SELECT u.id, u.email, u.name, u.role, u.roles, u.active, u.created_at, u.employee_id,
            TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,'')) as employee_name
     FROM users u
     LEFT JOIN employees e ON u.employee_id = e.id
     WHERE u.deleted_at IS NULL
     ORDER BY u.name
   `).all();
-  res.json(users);
+  res.json(users.map(user => ({ ...user, roles: rolesOf(user) })));
 });
 
 // POST /api/admin/users
 router.post('/users', async (req, res) => {
-  const { email, name, password, role } = req.body;
+  const { email, name, password } = req.body;
+  let roles
+  try { roles = validateRoles(req.body.roles ?? (req.body.role ? rolesOf({ role: req.body.role }) : [])) }
+  catch (error) { return res.status(400).json({ error: error.message }) }
+  const role = legacyRole(roles);
   if (!email || !name || !password || !role) {
     return res.status(400).json({ error: 'email, name, password, role are required' });
   }
-  const validRoles = ['admin', 'sales', 'support', 'ops', 'rh'];
-  if (!validRoles.includes(role)) {
+  const validRoles = ['user', 'admin', 'sales', 'support', 'ops', 'rh'];
+  if (req.body.role !== undefined && !validRoles.includes(req.body.role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
 
@@ -445,10 +455,10 @@ router.post('/users', async (req, res) => {
   const id = newRecordId();
   const passwordHash = await bcrypt.hash(password, 10);
   db.prepare(
-    'INSERT INTO users (id, email, password_hash, name, role) VALUES (?, ?, ?, ?, ?)'
-  ).run(id, email.toLowerCase().trim(), passwordHash, name, role);
+    'INSERT INTO users (id, email, password_hash, name, role, roles) VALUES (?, ?, ?, ?, ?, ?)'
+  ).run(id, email.toLowerCase().trim(), passwordHash, name, role, JSON.stringify(roles));
 
-  res.status(201).json(db.prepare('SELECT id, email, name, role, active, created_at FROM users WHERE id = ?').get(id));
+  res.status(201).json({ ...db.prepare('SELECT id, email, name, role, active, created_at FROM users WHERE id = ?').get(id), roles });
 });
 
 // PUT /api/admin/users/:id
@@ -457,7 +467,12 @@ router.put('/users/:id', async (req, res) => {
   if (!user) return res.status(404).json({ error: 'User not found' });
 
   const { name, email, role, active, password, employee_id } = req.body;
-  const validRoles = ['admin', 'sales', 'support', 'ops', 'rh'];
+  let roles
+  try {
+    if (req.body.roles !== undefined) roles = validateRoles(req.body.roles)
+    else if (role !== undefined) roles = rolesOf({ role })
+  } catch (error) { return res.status(400).json({ error: error.message }) }
+  const validRoles = ['user', 'admin', 'sales', 'support', 'ops', 'rh'];
   if (role && !validRoles.includes(role)) {
     return res.status(400).json({ error: 'Invalid role' });
   }
@@ -479,18 +494,20 @@ router.put('/users/:id', async (req, res) => {
     db.prepare('UPDATE users SET password_hash=? WHERE id = ?').run(hash, req.params.id);
   }
 
-  const current = db.prepare('SELECT name, email, role, employee_id FROM users WHERE id = ?').get(req.params.id);
-  db.prepare('UPDATE users SET name=?, email=?, role=?, active=?, employee_id=? WHERE id = ?')
+  const current = db.prepare('SELECT name, email, role, roles, active, employee_id FROM users WHERE id = ?').get(req.params.id);
+  db.prepare('UPDATE users SET name=?, email=?, role=?, roles=?, active=?, employee_id=? WHERE id = ?')
     .run(
       name ?? current.name,
       email ? email.toLowerCase().trim() : current.email,
-      role ?? current.role,
-      active !== undefined ? (active ? 1 : 0) : 1,
+      roles ? legacyRole(roles) : current.role,
+      JSON.stringify(roles ?? rolesOf(current)),
+      active !== undefined ? (active ? 1 : 0) : current.active,
       employee_id !== undefined ? (employee_id || null) : current.employee_id,
       req.params.id,
     );
 
-  res.json(db.prepare('SELECT id, email, name, role, active, employee_id, created_at FROM users WHERE id = ?').get(req.params.id));
+  const updated = db.prepare('SELECT id, email, name, role, roles, active, employee_id, created_at FROM users WHERE id = ?').get(req.params.id);
+  res.json({ ...updated, roles: rolesOf(updated) });
 });
 
 // POST /api/admin/users/:id/reset-password

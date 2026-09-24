@@ -29,9 +29,23 @@ export const VENDOR_LABELS = Object.fromEntries(
 )
 
 // Domaine dont un import de session doit porter les cookies, par collecteur.
+// C'est un FRAGMENT de vérification (« amazon. » couvre .ca comme .com), pas un
+// domaine interrogeable.
 export const VENDOR_DOMAINS = {
   amazon: 'amazon.', wix: 'wix.com', bell: 'bell.ca', digikey: 'digikey.ca',
   simplex: 'simplexwireless.com', fedex: 'fedex.com',
+}
+
+// Domaines RÉELS à interroger pour récupérer les témoins, par collecteur — ce
+// que le module de navigateur passe à `chrome.cookies.getAll`. Distinct de
+// VENDOR_DOMAINS : un fragment comme « amazon. » n'y rendrait rien.
+export const BRIDGE_DOMAINS = {
+  amazon: ['amazon.ca', 'amazon.com'],
+  wix: ['wix.com'],
+  bell: ['bell.ca'],
+  digikey: ['digikey.ca'],
+  simplex: ['simplexwireless.com'],
+  fedex: ['fedex.com'],
 }
 
 const artifactsRoot = uploadsPath('scrapers')
@@ -102,6 +116,21 @@ async function settleNeed({ hit, receiptId, log }) {
   }
 }
 
+// Ce que la sortie d'argent nous apprend AVANT d'ouvrir le document. On le dit
+// à la lecture comme un repère, jamais comme une consigne : si le PDF contredit
+// la banque, c'est le PDF qui a raison (frais de conversion, paiement partiel).
+function bankContextForNeed(need) {
+  if (!need) return null
+  const amount = Math.abs(Number(need.amount) || 0).toFixed(2)
+  return [
+    'CONTEXTE BANCAIRE (repère, pas une consigne) — ce document a été téléchargé pour',
+    `une sortie d'argent de ${amount} ${need.currency || 'CAD'} passée au compte le ${need.txn_date},`,
+    `libellée « ${String(need.bank_description || '').trim()} » au relevé.`,
+    "Utilise-le pour lever une ambiguïté de lecture (devise, total, date). Ne recopie",
+    'JAMAIS ces valeurs : tout ce que tu renvoies doit être lu sur le document.',
+  ].join(' ')
+}
+
 async function execute({ accountId, trigger, userId }) {
   const account = getAccount(accountId)
   if (!account) throw new Error('Compte de collecte introuvable')
@@ -131,12 +160,24 @@ async function execute({ accountId, trigger, userId }) {
 
   try {
     if (!chromiumAvailable()) throw new Error('Chromium introuvable sur le serveur')
-    if (!account.username || !account.password_enc) throw new Error('Identifiants manquants sur le compte')
 
     const storageState = account.storage_state_enc
       ? JSON.parse(decryptCredentials(account.storage_state_enc))
       : null
     if (storageState) log('session existante réutilisée')
+
+    // Portails qui protègent leur formulaire de connexion par un captcha
+    // (reCAPTCHA chez Bell, Turnstile chez DigiKey) : un navigateur sans
+    // humain ne le passera jamais. Inutile d'aller échouer sur le formulaire —
+    // et surtout inutile de le faire chaque nuit en laissant croire à un
+    // sélecteur cassé. Sans session importée, la tournée s'arrête ici avec le
+    // geste à faire.
+    if (!storageState && scraper.requiresImportedSession) {
+      throw new Error(`${scraper.label} bloque toute connexion automatisée (case « je ne suis pas un robot ») — envoyer la session depuis le module de navigateur`)
+    }
+    if (!scraper.requiresImportedSession && (!account.username || !account.password_enc)) {
+      throw new Error('Identifiants manquants sur le compte')
+    }
 
     ;({ browser, context } = await launchContext({ storageState, downloadsDir: dir }))
     const page = await context.newPage()
@@ -146,17 +187,18 @@ async function execute({ accountId, trigger, userId }) {
       context,
       log,
       lookbackDays: account.lookback_days || 60,
+      collectMode: account.collect_mode || 'ciblee',
       credentials: {
         username: account.username,
-        password: decryptCredentials(account.password_enc),
+        password: account.password_enc ? decryptCredentials(account.password_enc) : null,
         totpSecret: account.totp_secret_enc ? decryptCredentials(account.totp_secret_enc) : null,
       },
       totp: () => {
         const secret = account.totp_secret_enc ? decryptCredentials(account.totp_secret_enc) : null
         return secret ? generateTotp(secret) : null
       },
-      snapshot: async name => {
-        const file = await snapshot(page, dir, name)
+      snapshot: async (name, activePage = page) => {
+        const file = await snapshot(activePage, dir, name)
         if (file) {
           artifacts.push(file)
           updateRun(runId, { artifacts: JSON.stringify(artifacts) })
@@ -191,7 +233,7 @@ async function execute({ accountId, trigger, userId }) {
        * Remet une facture au pipeline d'extraction.
        * @returns {{status:'imported'|'duplicate'|'empty', id:string|null}}
        */
-      deliver: ({ externalId, buffer, filename, date = null, amount = null, currency = null, url = null }) => {
+      deliver: ({ externalId, buffer, filename, date = null, amount = null, currency = null, url = null, bankContext = null }) => {
         found++
         const key = String(externalId)
         if (!buffer?.length) { skipped++; log(`⚠️ ${key} : fichier vide, ignoré`); return { status: 'empty', id: null } }
@@ -201,6 +243,7 @@ async function execute({ accountId, trigger, userId }) {
           ext: '.pdf',
           source: `scraper:${account.vendor}`,
           userId: account.created_by || userId,
+          bankContext,
         })
         db.prepare(`
           INSERT OR REPLACE INTO scraper_documents
@@ -284,6 +327,7 @@ async function execute({ accountId, trigger, userId }) {
         amount: doc.amount,
         currency: doc.currency,
         url: doc.url,
+        bankContext: hit ? bankContextForNeed(hit.need) : null,
       })
       // `duplicate` = ce PDF est déjà en base (saisi à la main, ou reçu par
       // courriel). C'est le cas le plus fréquent au premier passage, et il
@@ -332,14 +376,22 @@ async function execute({ accountId, trigger, userId }) {
  * Tournée planifiée sur tous les comptes actifs. Séquentiel : un Chromium à la
  * fois sur un serveur qui fait déjà tourner l'API.
  */
-export async function runAllScrapers(trigger = 'scheduled') {
+export async function runAllScrapers(trigger = 'scheduled', { userId = null, onlyWithSession = false } = {}) {
   const accounts = db.prepare(
-    'SELECT id, vendor FROM scraper_accounts WHERE deleted_at IS NULL AND enabled=1'
+    'SELECT id, vendor, label, storage_state_enc FROM scraper_accounts WHERE deleted_at IS NULL AND enabled=1'
   ).all()
   const results = []
   for (const a of accounts) {
-    try { results.push({ vendor: a.vendor, ...(await runScraper({ accountId: a.id, trigger })) }) }
-    catch (e) { results.push({ vendor: a.vendor, status: 'error', error: e.message }) }
+    const label = a.label || VENDOR_LABELS[a.vendor] || a.vendor
+    // Le bouton « Tout récolter » ne relance pas les portails à captcha qui
+    // n'ont pas reçu de session : ce serait repartir pour le même échec.
+    const needsSession = SCRAPERS[a.vendor]?.requiresImportedSession
+    if (!a.storage_state_enc && (needsSession || onlyWithSession)) {
+      results.push({ vendor: a.vendor, label, status: 'skipped', error: 'session absente' })
+      continue
+    }
+    try { results.push({ vendor: a.vendor, label, ...(await runScraper({ accountId: a.id, trigger, userId })) }) }
+    catch (e) { results.push({ vendor: a.vendor, label, status: 'error', error: e.message }) }
   }
   return results
 }

@@ -63,7 +63,8 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
   // on montre les pastilles sans « × » — on est en train de CHOISIR, et un
   // retrait sous le panneau laisserait l'éditeur sur une valeur périmée.
   const showRemove = active && !editing
-  const showAdd = active && (multi || keys.length === 0)
+  // Certaines pages ne proposent que la dissociation du lien existant.
+  const showAdd = col.linkAllowAdd !== false && active && (multi || keys.length === 0)
 
   // Cellule vide : le conteneur reste rendu (avec sa hauteur) même sans
   // pastille. Un div réellement vide s'effondre à 0 px de haut — la case
@@ -71,7 +72,7 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
   // premier lien.
   return (
     <div
-      className={`flex min-h-[1.5rem] min-w-0 items-center gap-1 overflow-hidden${active ? '' : ' dt-inert-links'}`}
+      className={`flex min-h-[1.5rem] min-w-0 items-center gap-1 ${col.linkChipsScrollable ? 'overflow-x-auto' : 'overflow-hidden'}${active ? '' : ' dt-inert-links'}`}
       data-testid="link-chips-cell"
     >
       {keys.map((key, i) => {
@@ -82,11 +83,11 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
         const chip = href
           ? <Link to={href} onClick={e => e.stopPropagation()} title={title} className="chip-record">{label}</Link>
           : <span className="chip-record" title={title}>{label}</span>
-        if (!showRemove) return <span key={`${key}-${i}`} className="min-w-0 truncate">{chip}</span>
+        if (!showRemove) return <span key={`${key}-${i}`} className={`min-w-0 truncate${col.linkChipsScrollable ? ' shrink-0' : ''}`}>{chip}</span>
         return (
           <span
             key={`${key}-${i}`}
-            className={`inline-flex min-w-0 items-center gap-0.5 rounded pr-0.5 ${href ? 'bg-brand-50' : 'bg-slate-100'}`}
+            className={`inline-flex min-w-0 items-center gap-0.5 rounded pr-0.5${col.linkChipsScrollable ? ' shrink-0' : ''} ${href ? 'bg-brand-50' : 'bg-slate-100'}`}
           >
             {chip}
             <button

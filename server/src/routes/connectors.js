@@ -1,3 +1,6 @@
+import { hasRole } from '../../../shared/roles.mjs'
+import { encryptCredentials } from '../utils/encryption.js'
+import { createOAuthState, consumeOAuthState } from '../services/oauthState.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import { buildAirtableTableToErp } from '../services/airtableTableMap.js'
@@ -33,6 +36,7 @@ import { getAuthUrl as amazonAuthUrl, exchangeCode as amazonExchange, isAmazonCo
 import { syncAmazon } from '../services/amazon.js'
 import { isDigikeyConfigured } from '../connectors/digikey.js'
 import { isUpsConfigured } from '../connectors/ups.js'
+import { isVennConfigured } from '../connectors/venn.js'
 import { syncDigikey } from '../services/digikey.js'
 import { syncAllAchatsToQB, importFromQB } from '../services/quickbooks.js'
 import { syncAllMailboxes } from '../services/gmail.js'
@@ -47,7 +51,7 @@ import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUs
 import { isNovoxpressConfigured } from '../services/novoxpress.js'
 import { processWebhookPing, registerWebhookForBaseTraced } from '../services/airtableWebhooks.js'
 import { backfillFactureLinks } from '../services/factureLinks.js'
-import { routeSync } from '../services/airtableMirrorEngine.js'
+import { routeSync, ENGINE_ONLY_SYNCS } from '../services/airtableMirrorEngine.js'
 import { listFromAddresses, getDefaultFrom, setDefaultFrom } from '../services/postmarkConfig.js'
 import { logSync } from '../services/syncLog.js'
 import { listFrozenColumns, setFrozen } from '../services/airtableFrozenColumns.js'
@@ -64,6 +68,7 @@ import {
 } from '../services/airtableFieldTypes.js'
 import { nativeMappedColumn } from '../services/airtableNativeMappedColumns.js'
 import { uploadsPath } from '../config/uploads.js'
+import { emit } from '../services/realtime.js'
 
 // Wrap a sync call with logging
 function trackedWithLog(module, fn, trigger) {
@@ -82,6 +87,16 @@ function trackedWithLog(module, fn, trigger) {
 }
 
 const router = Router()
+
+// Clés de connector_config qui ne doivent jamais repartir vers le navigateur.
+// Le masque revient tel quel quand l'utilisateur enregistre sans y toucher :
+// la sauvegarde l'ignore plutôt que d'écraser le vrai secret par « •••• ».
+const SECRET_CONFIG_KEY_RE = /secret|token|key|password/i
+// La clé publiable de Stripe porte « key » dans son nom mais est publique par
+// construction (elle part dans le navigateur du client).
+const PUBLIC_CONFIG_KEYS = new Set(['publishable_key'])
+const isSecretConfigKey = (k) => SECRET_CONFIG_KEY_RE.test(k) && !PUBLIC_CONFIG_KEYS.has(k)
+const SECRET_MASK = '••••••••'
 
 // ── Registre des modules Airtable à contrôle de champ ──────────────────────
 // Chaque module synchronisé depuis Airtable peut exposer un contrôle fin de
@@ -141,9 +156,15 @@ const AIRTABLE_FIELD_MODULES = {
   // (moteur unifié, webhook + rattrapage quotidien), mais elle ne figurait pas
   // ici : /champs/stock_movements (et le tableau « Mouvements » d'une fiche
   // produit) n'offrait AUCUNE colonne « Champ Airtable », comme si les données
-  // naissaient dans Boréal. PAS de write-back (absent de WRITEBACK_MODULES) :
-  // le sens reste l'import.
+  // naissaient dans Boréal. Write-back depuis le 2026-09-22
+  // (WRITEBACK_MODULES.stock_movements, défaut 'pull') : le sens se choisit
+  // champ par champ.
   stock_movements: { erpTable: 'stock_movements', label: "Mouvements d'inventaire", source: 'module', syncKey: 'stock_movements' },
+  // Fournitures et leurs achats — miroirs « moteur seul » (migration 086).
+  // Leur mapping cœur est décrit dans CORE_FIELD_SPECS ; cette entrée ouvre en
+  // plus le branchement de champs Airtable supplémentaires dans /champs.
+  fournitures:        { erpTable: 'fournitures',        label: 'Fournitures',        source: 'module', syncKey: 'fournitures' },
+  achats_fournitures: { erpTable: 'achats_fournitures', label: 'Achats fournitures', source: 'module', syncKey: 'achats_fournitures' },
 }
 
 // Résout la config Airtable d'un module : { module, erpTable, label, syncKey,
@@ -202,11 +223,17 @@ router.get('/', requireAuth, (req, res) => {
     FROM connector_oauth ORDER BY connector, account_email
   `).all()
 
+  // Les clés secrètes ne SORTENT PLUS d'ici. Cette route renvoyait à tout
+  // utilisateur connecté la totalité de connector_config, jeton Stripe compris.
+  // La page n'a besoin que de savoir si la valeur est posée : on renvoie un
+  // masque, et la valeur réelle ne se relit jamais (on la remplace).
   const config = {}
   const configRows = db.prepare('SELECT connector, key, value FROM connector_config').all()
   for (const r of configRows) {
     if (!config[r.connector]) config[r.connector] = {}
-    config[r.connector][r.key] = r.value
+    config[r.connector][r.key] = isSecretConfigKey(r.key)
+      ? (r.value ? SECRET_MASK : null)
+      : r.value
   }
 
   const airtableSync = db.prepare('SELECT * FROM airtable_sync_config').get() || {}
@@ -242,6 +269,7 @@ router.get('/', requireAuth, (req, res) => {
     amazon_configured: isAmazonConfigured(),
     digikey_configured: isDigikeyConfigured(),
     ups_configured: isUpsConfigured(),
+    venn_configured: isVennConfigured(),
     ...moduleConfigs,
   })
 })
@@ -297,7 +325,7 @@ router.get('/google/connect', requireAuth, (req, res) => {
   //  • n'importe qui depuis Paramètres → Gmail (?scope=me) : SA boîte à lui.
   // Un non-admin est TOUJOURS en mode personnel — sa boîte, et rien d'autre :
   // les courriels synchronisés atterrissent dans le CRM partagé.
-  const personal = req.query.scope === 'me' || req.user.role !== 'admin'
+  const personal = req.query.scope === 'me' || !hasRole(req.user, 'admin')
   const mine = myEmail(req.user.id)
   if (personal && !mine) {
     return res.redirect(`${SETTINGS_GMAIL}?error=google_no_email`)
@@ -306,20 +334,20 @@ router.get('/google/connect', requireAuth, (req, res) => {
   // Pré-sélectionne le compte et, pour les comptes de DRAFT_SCOPE_ACCOUNTS,
   // demande en plus gmail.compose.
   const loginHint = personal ? mine : req.query.account
-  const state = Buffer.from(JSON.stringify({
-    user_id: req.user.id,
+  const state = createOAuthState(req, res, 'google', {
+    user_id: req.user.id, adminOnly: !personal,
     ...(personal ? { ret: 'settings', expect: mine } : {}),
-  })).toString('base64url')
+  })
   res.redirect(googleAuthUrl(state, { loginHint }))
 })
 
 // ── Google OAuth callback
 router.get('/google/callback', async (req, res) => {
-  const { code, state, error } = req.query
+  const { code, error } = req.query
   // Le retour se fait là d'où l'on est parti : page Connecteurs (admin) ou
   // section Gmail des Paramètres (connexion de sa propre boîte).
   let parsed = {}
-  try { parsed = JSON.parse(Buffer.from(String(state || ''), 'base64url').toString()) } catch { /* state illisible */ }
+  try { parsed = consumeOAuthState(req, res, 'google') } catch { return res.status(400).json({ error: 'Invalid or expired OAuth state' }) }
   const back = parsed.ret === 'settings' ? SETTINGS_GMAIL : '/erp/connectors'
   if (error) return res.redirect(`${back}?error=google_denied`)
   try {
@@ -338,12 +366,12 @@ router.get('/google/callback', async (req, res) => {
       db.prepare(`
         UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
         expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
-      `).run(tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null, existing.id)
+      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null, existing.id)
     } else {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, account_email, access_token, refresh_token, expiry_date)
         VALUES (?,?,?,?,?,?,?)
-      `).run(newRecordId(), 'google', email, email, tokens.access_token, tokens.refresh_token || null, tokens.expiry_date || null)
+      `).run(newRecordId(), 'google', email, email, encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expiry_date || null)
     }
 
     res.redirect(`${back}?success=google`)
@@ -380,20 +408,20 @@ router.delete('/google/my-mailbox', requireAuth, (req, res) => {
 })
 
 // ── Airtable OAuth start (PKCE)
-router.get('/airtable/connect', requireAuth, (req, res) => {
+router.get('/airtable/connect', requireAdmin, (req, res) => {
   const verifier = randomBytes(32).toString('base64url')
   const challenge = createHash('sha256').update(verifier).digest('base64url')
-  const state = Buffer.from(JSON.stringify({ verifier })).toString('base64url')
+  const state = createOAuthState(req, res, 'airtable', { verifier, adminOnly: true })
   const url = airtableAuthUrl(state, challenge)
   res.redirect(url)
 })
 
 // ── Airtable OAuth callback
 router.get('/airtable/callback', async (req, res) => {
-  const { code, state, error } = req.query
+  const { code, error } = req.query
   if (error) return res.redirect('/erp/connectors?error=airtable_denied')
   try {
-    const { verifier } = JSON.parse(Buffer.from(state, 'base64url').toString())
+    const { verifier } = consumeOAuthState(req, res, 'airtable')
     const tokens = await airtableExchange(code, verifier)
 
     const existing = db.prepare(`
@@ -404,12 +432,12 @@ router.get('/airtable/callback', async (req, res) => {
     if (existing) {
       db.prepare(`
         UPDATE connector_oauth SET access_token=?, refresh_token=?, expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
-      `).run(tokens.access_token, tokens.refresh_token, expiry, existing.id)
+      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token), expiry, existing.id)
     } else {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date)
         VALUES (?,?,?,?,?,?)
-      `).run(newRecordId(), 'airtable', 'default', tokens.access_token, tokens.refresh_token, expiry)
+      `).run(newRecordId(), 'airtable', 'default', encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token), expiry)
     }
 
     res.redirect('/erp/connectors?success=airtable')
@@ -426,18 +454,18 @@ router.get('/airtable/callback', async (req, res) => {
 })
 
 // ── Amazon Business OAuth start
-router.get('/amazon/connect', requireAuth, (req, res) => {
-  const state = Buffer.from(JSON.stringify({ user_id: req.user.id })).toString('base64url')
+router.get('/amazon/connect', requireAdmin, (req, res) => {
+  const state = createOAuthState(req, res, 'amazon', { adminOnly: true })
   const url = amazonAuthUrl(state)
   res.redirect(url)
 })
 
 // ── Amazon Business OAuth callback
 router.get('/amazon/callback', async (req, res) => {
-  const { code, state, error } = req.query
+  const { code, error } = req.query
   if (error) return res.redirect('/erp/connectors?error=amazon_denied')
   try {
-    JSON.parse(Buffer.from(state, 'base64url').toString())
+    consumeOAuthState(req, res, 'amazon')
     const tokens = await amazonExchange(code)
 
     const existing = db.prepare(`SELECT id FROM connector_oauth WHERE connector='amazon'`).get()
@@ -446,12 +474,12 @@ router.get('/amazon/callback', async (req, res) => {
       db.prepare(`
         UPDATE connector_oauth SET access_token=?, refresh_token=COALESCE(?,refresh_token),
         expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?
-      `).run(tokens.access_token, tokens.refresh_token || null, expiry, existing.id)
+      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, expiry, existing.id)
     } else {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date)
         VALUES (?,?,?,?,?,?)
-      `).run(newRecordId(), 'amazon', 'default', tokens.access_token, tokens.refresh_token || null, expiry)
+      `).run(newRecordId(), 'amazon', 'default', encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, expiry)
     }
 
     res.redirect('/erp/connectors?success=amazon')
@@ -462,7 +490,7 @@ router.get('/amazon/callback', async (req, res) => {
 })
 
 // ── Disconnect account
-router.delete('/accounts/:id', requireAuth, (req, res) => {
+router.delete('/accounts/:id', requireAdmin, (req, res) => {
   const row = db.prepare('SELECT * FROM connector_oauth WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   db.prepare('DELETE FROM connector_oauth WHERE id=?').run(req.params.id)
@@ -470,13 +498,27 @@ router.delete('/accounts/:id', requireAuth, (req, res) => {
 })
 
 // ── Save connector config
-router.put('/config/:connector', requireAuth, (req, res) => {
+router.put('/config/:connector', requireAdmin, (req, res) => {
   const { connector } = req.params
+  const allowed = {
+    google: ['drive_folders', 'drive_folder_id', 'invoice_autodetect_mailboxes', 'invoice_trash_after_import_mailboxes', 'invoice_only_mailboxes', 'invoice_autodetect_senders'],
+    quickbooks: ['webhook_verifier_token'],
+    stripe: ['secret_key', 'webhook_secret', 'publishable_key'],
+    hubspot: ['access_token'],
+  }[connector]
+  if (!allowed || !req.body || Array.isArray(req.body) || Object.keys(req.body).some(key => !allowed.includes(key))) {
+    return res.status(400).json({ error: 'Configuration non autorisée' })
+  }
+  if (Object.values(req.body).some(value => value !== null && (typeof value !== 'string' || value.length > 100000))) {
+    return res.status(400).json({ error: 'Valeur de configuration invalide' })
+  }
   for (const [key, value] of Object.entries(req.body)) {
+    // Le masque renvoyé tel quel = « je n'y ai pas touché ».
+    if (isSecretConfigKey(key) && value === SECRET_MASK) continue
     db.prepare(`
       INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
       ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
-    `).run(connector, key, value ?? null)
+    `).run(connector, key, isSecretConfigKey(key) ? encryptCredentials(value) : (value ?? null))
   }
   res.json({ ok: true })
 })
@@ -1684,10 +1726,41 @@ const CORE_FIELD_SPECS = {
     fields: [
       { key: 'product',        column: 'product_id',     label: 'Produit (lien)', required: true, hint: 'Champ lié vers la table des pièces — sans produit, le mouvement est ignoré à l’import', candidates: ['pièces', 'pieces', 'produit', 'product'] },
       { key: 'qty_change',     column: 'qty',            label: 'Quantité',       hint: 'Variation signée : la quantité du mouvement en est la valeur absolue, et son signe décide entrée / sortie', candidates: ['changement', 'quantité', 'quantite', 'qty', 'change'] },
-      { key: 'type',           column: 'type',           label: 'Type',           hint: 'Texte repris tel quel dans « Raison » ; « Ajustement » donne le type ajustement, sinon le signe de la quantité décide', candidates: ['type', 'raison', 'reason'] },
+      // Colonne `reason` : c'est elle que le champ « Type » de l'ERP affiche
+      // (mêmes choix qu'Airtable) ; `type` n'est qu'un sens dérivé.
+      { key: 'type',           column: 'reason',         label: 'Type',           hint: 'Choix repris tel quel ; « Ajustement » donne le sens ajustement, sinon le signe de la quantité décide', candidates: ['type', 'raison', 'reason'] },
       { key: 'occurred_at',    column: 'created_at',     label: 'Date',           hint: 'À défaut, la date de création du record Airtable', candidates: ['created', 'date', 'créé le', 'cree le'] },
       { key: 'unit_cost',      column: 'unit_cost',      label: 'Coût unitaire',  candidates: ['coût unitaire au moment du mouvement', 'cout unitaire', 'coût unitaire', 'unit cost'] },
       { key: 'movement_value', column: 'movement_value', label: 'Valeur',         candidates: ['valeur du mouvement', 'valeur', 'movement value', 'value'] },
+    ],
+  },
+  // Fournitures (miroir « moteur seul »). Chaque clé déclare sa colonne : le
+  // mapping se règle ligne à ligne dans /champs/fournitures. Les clés sont
+  // aussi celles qu'utilisent la création et l'autosave (routes/fournitures.js)
+  // pour écrire dans Airtable — ne pas les renommer.
+  fournitures: {
+    erpTable: 'fournitures',
+    label: 'Fournitures',
+    syncKey: 'fournitures',
+    fields: [
+      { key: 'name',            column: 'name',            label: 'Nom', required: true, candidates: ['name', 'nom'] },
+      { key: 'supplier',        column: 'supplier',        label: 'Fournisseur',         candidates: ['fournisseur', 'supplier'] },
+      { key: 'reference_price', column: 'reference_price', label: 'Prix de référence',   candidates: ['prix de référence', 'prix de reference', 'prix'] },
+      { key: 'unit',            column: 'unit',            label: 'Unité de mesure',     candidates: ['unité de mesure', 'unite de mesure', 'unité', 'unit'] },
+      { key: 'web_url',         column: 'web_url',         label: 'Lien web',            candidates: ['lien web', 'lien', 'url'] },
+      { key: 'image',           column: 'image_url',       label: 'Image',               hint: 'Copiée localement : le lien Airtable expire', candidates: ['image', 'photo'] },
+      { key: 'notes',           column: 'notes',           label: 'Notes',               candidates: ['notes', 'note'] },
+    ],
+  },
+  achats_fournitures: {
+    erpTable: 'achats_fournitures',
+    label: 'Achats fournitures',
+    syncKey: 'achats_fournitures',
+    fields: [
+      { key: 'fourniture',   column: 'fourniture_id', label: 'Fourniture (lien)', required: true, hint: 'Champ lié vers la table Fournitures', candidates: ['fourniture', 'fournitures'] },
+      { key: 'purchased_at', column: 'purchased_at',  label: 'Date',              candidates: ['date', "date d'achat"] },
+      { key: 'qty',          column: 'qty',           label: 'Quantité',          candidates: ['quantité', 'quantite', 'qty'] },
+      { key: 'unit_price',   column: 'unit_price',    label: 'Prix unitaire',     candidates: ['prix unitaire payé av. tx.', 'prix unitaire', 'prix'] },
     ],
   },
 }
@@ -1799,6 +1872,17 @@ router.get('/airtable/core-map-modules', requireAuth, (req, res) => {
   })))
 })
 
+// Mapping cœur ou sens d'un champ modifié : les panneaux ouverts ailleurs
+// (autre session, autre onglet) relisent le mapping du module.
+function emitCoreMapChanged(moduleKey, actorUserId = null) {
+  emit(`airtable_core_map:${moduleKey}`, {
+    type: 'airtable_core_map:updated',
+    payload: { module: moduleKey },
+    actorUserId,
+    ts: Date.now(),
+  })
+}
+
 // PUT /api/connectors/airtable/module-fields/:module/core-map
 // Body : { field_map: { <clé spec>: '<nom de champ Airtable>' | '' | null } }
 // Ne touche que field_map — base_id/table_id restent gérés par la page Connecteurs.
@@ -1844,6 +1928,7 @@ router.put('/airtable/module-fields/:module/core-map', requireAdmin, (req, res) 
   // Les clés ne visent plus les mêmes champs Airtable : le verrouillage du sens
   // sur les champs calculés doit être recalculé.
   resetComputedKeyCache()
+  emitCoreMapChanged(moduleKey, req.user?.id)
   // Réponse filtrée aux clés de la spec, comme le GET : le client en refait son
   // draft et le renverra tel quel au prochain enregistrement — une clé hors spec
   // le ferait alors échouer (« Champ inconnu »).
@@ -1926,6 +2011,7 @@ router.put('/airtable/module-fields/:module/field-direction', requireAuth, (req,
   } catch (e) {
     return res.status(400).json({ error: e.message })
   }
+  emitCoreMapChanged(moduleKey, req.user?.id)
   res.json({ ok: true, field_key, direction })
 })
 
@@ -2099,6 +2185,12 @@ router.post('/sync/stock_movements', requireAuth, async (req, res) => {
   trackedWithLog('stock_movements', syncStockMovements, 'manual')
   res.json({ ok: true })
 })
+for (const [module, fn] of Object.entries(ENGINE_ONLY_SYNCS)) {
+  router.post(`/sync/${module}`, requireAuth, async (req, res) => {
+    trackedWithLog(module, fn, 'manual')
+    res.json({ ok: true })
+  })
+}
 // Prospects Instagram : ne remonte que le suivi et les notes édités par Philippe
 // (l'ERP est la source de vérité, cf. syncInstagramProspects).
 router.post('/sync/instagram', requireAuth, async (req, res) => {
@@ -2128,6 +2220,7 @@ router.post('/sync/airtable-all', requireAuth, async (req, res) => {
     ['paies',         syncPaies],
     ['paie_items',    syncPaieItems],
     ['stock_movements', syncStockMovements],
+    ...Object.entries(ENGINE_ONLY_SYNCS),
   ]
   ALL_AIRTABLE_MODULES.forEach(([key, fn]) => {
     trackedWithLog(key, fn, 'manual')
@@ -2165,7 +2258,7 @@ router.get('/whisper', requireAuth, (req, res) => {
 
 // PUT /api/connectors/whisper — sauvegarder la clé API
 router.put('/whisper', requireAuth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   const { api_key } = req.body
   if (!api_key?.startsWith('sk-')) return res.status(400).json({ error: 'Clé OpenAI invalide (doit commencer par sk-)' })
   updateEnvKey('OPENAI_API_KEY', api_key)
@@ -2298,7 +2391,7 @@ router.get('/ftp', requireAuth, (req, res) => {
 })
 
 // POST /api/connectors/ftp/phones — ajouter un téléphone
-router.post('/ftp/phones', requireAuth, (req, res) => {
+router.post('/ftp/phones', requireAdmin, (req, res) => {
   const { ftpUser, ftpPass, nom, erpUserId } = req.body
   if (!ftpUser || !ftpPass || !nom || !erpUserId) return res.status(400).json({ error: 'ftpUser, ftpPass, nom et erpUserId requis' })
 
@@ -2320,7 +2413,7 @@ router.post('/ftp/phones', requireAuth, (req, res) => {
 })
 
 // DELETE /api/connectors/ftp/phones/:ftpUser — supprimer un téléphone
-router.delete('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
+router.delete('/ftp/phones/:ftpUser', requireAdmin, (req, res) => {
   const { ftpUser } = req.params
   const result = mutateFtpUsers(users => {
     const idx = users.findIndex(u => u.ftpUser === ftpUser)
@@ -2338,7 +2431,7 @@ router.delete('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
 })
 
 // PUT /api/connectors/ftp/phones/:ftpUser — modifier le mot de passe
-router.put('/ftp/phones/:ftpUser', requireAuth, (req, res) => {
+router.put('/ftp/phones/:ftpUser', requireAdmin, (req, res) => {
   const { ftpPass } = req.body
   if (!ftpPass) return res.status(400).json({ error: 'ftpPass requis' })
 
@@ -2597,20 +2690,20 @@ router.get('/quickbooks/connect', requireAuth, (req, res) => {
   // Sinon → connexion principale ('default'), repli pour les écritures automatiques
   // (webhooks Stripe, syncs). Réautoriser le compte principal exige un admin.
   const personal = req.query.scope === 'me'
-  if (!personal && req.user.role !== 'admin') {
+  if (!personal && !hasRole(req.user, 'admin')) {
     return res.status(403).json({ error: 'Admin requis pour la connexion principale QuickBooks' })
   }
   const accountKey = personal ? req.user.id : 'default'
-  const state = Buffer.from(JSON.stringify({ accountKey })).toString('base64url')
+  const state = createOAuthState(req, res, 'quickbooks', { accountKey, adminOnly: !personal })
   const url = qbAuthUrl(state)
   res.redirect(url)
 })
 
 router.get('/quickbooks/callback', async (req, res) => {
-  const { code, state, realmId, error } = req.query
+  const { code, realmId, error } = req.query
   if (error) return res.redirect('/erp/connectors?error=quickbooks_denied')
   try {
-    const parsed = JSON.parse(Buffer.from(state, 'base64url').toString())
+    const parsed = consumeOAuthState(req, res, 'quickbooks')
     const accountKey = parsed.accountKey || 'default'
     const isPersonal = accountKey !== 'default'
 
@@ -2650,12 +2743,12 @@ router.get('/quickbooks/callback', async (req, res) => {
         UPDATE connector_oauth
         SET access_token=?, refresh_token=?, expiry_date=?, metadata=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
-      `).run(tokens.access_token, tokens.refresh_token, expiry, metadata, existing.id)
+      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token), expiry, metadata, existing.id)
     } else {
       db.prepare(`
         INSERT INTO connector_oauth (id, connector, account_key, access_token, refresh_token, expiry_date, metadata)
         VALUES (?,?,?,?,?,?,?)
-      `).run(newRecordId(), 'quickbooks', accountKey, tokens.access_token, tokens.refresh_token, expiry, metadata)
+      `).run(newRecordId(), 'quickbooks', accountKey, encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token), expiry, metadata)
     }
 
     res.redirect('/erp/connectors?success=quickbooks')
@@ -2793,8 +2886,8 @@ router.get('/stripe', requireAuth, (req, res) => {
 })
 
 // PUT /api/connectors/stripe — enregistrer la clé secrète (+/- publishable)
-router.put('/stripe', requireAuth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+router.put('/stripe', requireAdmin, (req, res) => {
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   const { secret_key, publishable_key } = req.body
   if (secret_key !== undefined) {
     if (!secret_key || !secret_key.startsWith('sk_')) {
@@ -2803,7 +2896,7 @@ router.put('/stripe', requireAuth, (req, res) => {
     db.prepare(`
       INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
       ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
-    `).run('stripe', 'secret_key', secret_key)
+    `).run('stripe', 'secret_key', encryptCredentials(secret_key))
   }
   if (publishable_key !== undefined) {
     if (!publishable_key || !publishable_key.startsWith('pk_')) {
@@ -2826,8 +2919,8 @@ router.get('/stripe/publishable-key', (req, res) => {
 })
 
 // DELETE /api/connectors/stripe — supprimer la clé
-router.delete('/stripe', requireAuth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+router.delete('/stripe', requireAdmin, (req, res) => {
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   db.prepare(
     "DELETE FROM connector_config WHERE connector='stripe' AND key IN ('secret_key','publishable_key')"
   ).run()
@@ -2849,8 +2942,8 @@ router.get('/hubspot', requireAuth, async (req, res) => {
 })
 
 // PUT /api/connectors/hubspot — enregistrer le token Private App
-router.put('/hubspot', requireAuth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+router.put('/hubspot', requireAdmin, (req, res) => {
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   const { access_token } = req.body
   if (!access_token || !access_token.startsWith('pat-')) {
     return res.status(400).json({ error: 'Token HubSpot invalide (doit commencer par pat-)' })
@@ -2858,13 +2951,13 @@ router.put('/hubspot', requireAuth, (req, res) => {
   db.prepare(`
     INSERT INTO connector_config (connector, key, value) VALUES (?,?,?)
     ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
-  `).run('hubspot', 'access_token', access_token)
+  `).run('hubspot', 'access_token', encryptCredentials(access_token))
   res.json({ ok: true })
 })
 
 // DELETE /api/connectors/hubspot — supprimer le token et reset le curseur
-router.delete('/hubspot', requireAuth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+router.delete('/hubspot', requireAdmin, (req, res) => {
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   db.prepare("DELETE FROM connector_config WHERE connector='hubspot'").run()
   res.json({ ok: true })
 })
@@ -2878,7 +2971,7 @@ router.post('/sync/hubspot', requireAuth, async (req, res) => {
 
 // PUT /api/connectors/hubspot/mapping — override explicite user ERP → owner HS
 router.put('/hubspot/mapping', requireAuth, (req, res) => {
-  if (req.user.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   const { user_id, hubspot_owner_id } = req.body || {}
   if (!user_id) return res.status(400).json({ error: 'user_id requis' })
   try {

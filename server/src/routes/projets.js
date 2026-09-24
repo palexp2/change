@@ -1444,6 +1444,7 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
         }
       })
     return {
+      id: inv.id,
       date: new Date(inv.created * 1000).toISOString(),
       amount: amountCents / 100,
       currency: inv.currency?.toUpperCase(),
@@ -1502,6 +1503,31 @@ router.get('/abonnements/:id/stripe-details', async (req, res) => {
   })
 
   res.json({ items, history, invoices: invoiceHistory, discount })
+})
+
+// GET /abonnements/:id/invoices/:invoiceId/pdf
+// Relais du PDF Stripe d'une facture de l'abonnement : le lien `invoice_pdf`
+// est externe (pas de CORS, téléchargement forcé), donc ni vignette ni modale
+// possibles côté navigateur. On le sert same-origin, lien frais à chaque fois.
+router.get('/abonnements/:id/invoices/:invoiceId/pdf', async (req, res) => {
+  const row = db.prepare('SELECT id, stripe_id FROM subscriptions WHERE id=?').get(req.params.id)
+  if (!row?.stripe_id) return res.status(404).json({ error: 'Abonnement ou stripe_id introuvable' })
+  const key = getStripeKey()
+  if (!key) return res.status(503).json({ error: 'Stripe non configuré' })
+  try {
+    const inv = await new Stripe(key).invoices.retrieve(req.params.invoiceId)
+    const subId = inv?.parent?.subscription_details?.subscription || inv?.subscription
+    const subStripeId = typeof subId === 'object' ? subId?.id : subId
+    if (subStripeId !== row.stripe_id) return res.status(404).json({ error: 'Facture hors de cet abonnement' })
+    if (!inv.invoice_pdf) return res.status(404).json({ error: 'Aucun PDF pour cette facture' })
+    const pdf = await fetch(inv.invoice_pdf)
+    if (!pdf.ok) return res.status(502).json({ error: `PDF Stripe : HTTP ${pdf.status}` })
+    res.set('Content-Type', 'application/pdf')
+    res.set('Content-Disposition', `inline; filename="${(inv.number || inv.id).replace(/[^\w.-]/g, '_')}.pdf"`)
+    res.send(Buffer.from(await pdf.arrayBuffer()))
+  } catch (e) {
+    res.status(502).json({ error: e.message || 'PDF indisponible' })
+  }
 })
 
 router.patch('/abonnements/:id', (req, res) => {

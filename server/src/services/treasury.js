@@ -789,8 +789,12 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
 
   // Fraîcheur du solde saisi : sans saisie récente, toute la projection dérive.
   const staleDays = Math.max(1, Number(cfg.balance_stale_days) || 7)
-  const balanceAgeDays = balanceRow
-    ? Math.floor((today - new Date(balanceRow.noted_at)) / (24 * 3600 * 1000))
+  // La fraîcheur, c'est la dernière CONFIRMATION du montant par la banque, pas
+  // la date de la dernière saisie : un solde stable relu toutes les 15 min est
+  // frais, même s'il n'a pas changé depuis deux jours.
+  const balanceCheckedAt = balanceRow ? (balanceRow.confirmed_at || balanceRow.noted_at) : null
+  const balanceAgeDays = balanceCheckedAt
+    ? Math.floor((today - new Date(balanceCheckedAt)) / (24 * 3600 * 1000))
     : null
 
   return {
@@ -816,6 +820,7 @@ export function computeProjection({ days = null, today = new Date(), scenario = 
     learned,
     // Paiements de carte chiffrés sur le relevé de la carte, avec leur période.
     card_statements,
+    balance_checked_at: balanceCheckedAt,
     balance_age_days: balanceAgeDays,
     balance_stale_days: staleDays,
     balance_stale: balanceAgeDays == null || balanceAgeDays >= staleDays,
@@ -1250,7 +1255,13 @@ export function recordBalance({ balance, source = null, userId = null, minAgeMin
     const last = db.prepare('SELECT * FROM treasury_balances ORDER BY noted_at DESC LIMIT 1').get()
     if (last && Math.abs(Number(last.balance) - rounded) < 0.005) {
       const ageMin = (Date.now() - new Date(last.noted_at).getTime()) / 60000
-      if (ageMin < minAgeMinutes) return { entry: last, skipped: true }
+      if (ageMin < minAgeMinutes) {
+        // Rien de nouveau à enregistrer, mais la banque vient de confirmer ce
+        // montant : c'est CETTE date que la page doit montrer.
+        db.prepare("UPDATE treasury_balances SET confirmed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(last.id)
+        const refreshed = db.prepare('SELECT * FROM treasury_balances WHERE id=?').get(last.id)
+        return { entry: refreshed, skipped: true }
+      }
     }
   }
   const id = newRecordId()

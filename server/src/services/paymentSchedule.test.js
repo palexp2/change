@@ -21,10 +21,16 @@ test('la fenêtre va jusqu\'au mardi suivant inclus, et s\'arrête au mercredi',
   assert.equal(w.pay_day, '2026-08-11')
   assert.equal(w.end, '2026-08-18')      // mardi suivant : encore payé aujourd'hui
   assert.equal(w.cutoff, '2026-08-19')   // mercredi : plus dans la cédule
-  // Consultée un jeudi, la cédule est celle de la prochaine séance (le mardi).
+  assert.equal(w.off_session, false)
+  // Consultée un jeudi : seulement ce qui ne peut pas attendre la séance du
+  // mardi 18 — ce qui échoit après s'y paiera.
   const jeudi = scheduleWindow('2026-08-13')
   assert.equal(jeudi.pay_day, '2026-08-18')
-  assert.equal(jeudi.end, '2026-08-25')
+  assert.equal(jeudi.end, '2026-08-18')
+  assert.equal(jeudi.cutoff, '2026-08-19')
+  assert.equal(jeudi.off_session, true)
+  // Un mercredi (lendemain de séance) : jusqu'au mardi qui vient, pas celui d'après.
+  assert.equal(scheduleWindow('2026-09-23').end, '2026-09-29')
   // Franchit le changement de mois sans arithmétique maison.
   assert.equal(scheduleWindow('2026-08-25').end, '2026-09-01')
 })

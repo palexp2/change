@@ -1094,6 +1094,12 @@ async function notifyNewAnomalies(anomalies, previous) {
 // ── Sync complète ────────────────────────────────────────────────────────────
 
 export async function syncSoldeSheet({ trigger = 'manual', apply = true, userId = null } = {}) {
+  // Once the workbook belongs to the outgoing mirror, importing it would
+  // manufacture payments from our own forecast. Pausing export must not
+  // restore the old direction either.
+  if (db.prepare('SELECT 1 FROM automations WHERE id=? AND system=1').get('sys_treasury_sheet_mirror')) {
+    return { skipped: true, reason: 'Ce fichier est maintenant alimenté par Boréal (miroir sortant)' }
+  }
   const t0 = Date.now()
   const cfg = getSoldeSheetConfig()
   const todayIso = new Date().toISOString().slice(0, 10)

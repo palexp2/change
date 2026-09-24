@@ -147,7 +147,7 @@ function FieldRow({
   // les lignes se décalent entre elles et sous l'en-tête).
   showMapping,
   // Mapping « cœur » (field_map du module) fusionné : quand la colonne est
-  // portée par une clé cœur, c'est ce mapping-là qui l'alimente — le picker des
+  // portée par une clé cœur, c'est cette correspondance-là qui l'alimente — le picker des
   // champs dynamiques n'a plus rien à y faire (il créerait un doublon d'import).
   core,
   // Sens de sync d'un champ dynamique mappé (module write-back) : `dynModule` =
@@ -358,7 +358,7 @@ function FieldRow({
                 // générique que le sens « pull » librement choisi.
                 title={mapAt?.mapped
                   ? (directionLockTitle(mapAt.direction_reason, moduleLabel) || DIRECTIONS.pull.title)
-                  : 'Aucun mapping Airtable — ce champ n’est pas importé'}
+                  : 'Aucune correspondance Airtable — ce champ n’est pas importé'}
                 data-testid={`fieldcfg-direction-${col.id}`}
                 data-direction={mapAt?.mapped ? 'pull' : 'none'}
                 className={`w-5 flex-shrink-0 inline-flex justify-center cursor-help ${mapAt?.mapped ? 'text-slate-600' : 'text-slate-400'}`}
@@ -441,7 +441,7 @@ function FieldRow({
           ? (
             // Colonne ERP sans champ configuré : typiquement le résidu d'un champ
             // supprimé (la colonne SQLite n'est jamais droppée) ou une colonne
-            // jamais adoptée. Rien à supprimer — c'est le mapping qui l'alimente.
+            // jamais adoptée. Rien à supprimer — c'est la correspondance qui l'alimente.
             <span
               title="Colonne ERP sans champ configuré — rien à supprimer ici. Videz son « Champ Airtable » pour couper l’import."
               data-testid={`fieldcfg-delete-disabled-${col.id}`}
@@ -495,7 +495,15 @@ export default function FieldConfig() {
     const declaredById = new Map(declared.map(c => [c.id ?? c.field, c]))
     return fromNav.map(c => {
       const d = declaredById.get(c.id ?? c.field)
-      return d?.mappingColumn && !c.mappingColumn ? { ...c, mappingColumn: d.mappingColumn } : c
+      if (!d) return c
+      // Ce state survit au rechargement : une colonne qui a changé depuis
+      // (champ lu, choix d'une Sélection) garderait son ancienne définition.
+      return {
+        ...c,
+        field: d.field ?? c.field,
+        ...(d.options ? { options: d.options } : {}),
+        ...(d.mappingColumn && !c.mappingColumn ? { mappingColumn: d.mappingColumn } : {}),
+      }
     })
   }, [location.state, table])
   // Ce state de navigation est figé dans l'entrée d'historique : il SURVIT au
@@ -624,7 +632,7 @@ export default function FieldConfig() {
     // Colonne ERP déjà pilotée par la ligne d'un champ affiché (`mappingColumn`,
     // ex. `vendeur_ref` sous « Vendeur ») : pas de seconde ligne pour elle.
     // Sauf si cette ligne-là est SUPPRIMÉE (champ à la corbeille) : elle ne
-    // s'affiche plus, et son mapping deviendrait inatteignable — c'est ce qui
+    // s'affiche plus, et sa correspondance deviendrait inatteignable — c'est ce qui
     // cachait « Entreprise » (`company_id`) des contacts, dont la colonne
     // « Entreprise » (`company_name`) avait été supprimée. La colonne ERP
     // reprend alors sa propre ligne, comme n'importe quelle colonne mappée que
@@ -1050,6 +1058,9 @@ export default function FieldConfig() {
           ? { column: nativeModal.col, override: overrides.get(nativeModal.col.id) || null }
           : null}
         mappingSlot={mappingSlot}
+        // Formules : champs proposés et cherchés sous le nom affiché ici.
+        formulaColumns={columns}
+        formulaLabelSearch
         onSaved={() => {
           if (nativeModal) { reloadOverrides(); return }
           reloadCustomFields()

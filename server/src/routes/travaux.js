@@ -1,7 +1,7 @@
 // Routes de la page /travaux : file de prompts, suggestions de l'agent, travaux
 // récurrents. Validation manuelle, erreurs uniformes { error }.
 import { Router } from 'express'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAdmin } from '../middleware/auth.js'
 import {
   listPrompts, getPrompt, createPrompt, updatePrompt, deletePrompt,
   reorderPrompts, moveToFront, advanceQueue, listMessages, replyToPrompt,
@@ -22,13 +22,15 @@ import {
 } from '../services/workIdeas.js'
 import { KNOWN_MODELS } from '../services/agentModel.js'
 import {
-  getSettings, isRunnerBusy, findAgentTask,
+  getSettings, setSettings, isRunnerBusy, findAgentTask,
   getRunningQuestionCount, getMaxParallelQuestions, stopRunningTask,
   getRunningExecutionCount, getExecLaneCount, execLaneOf,
 } from '../services/taskRunner.js'
+import { spellfix, MAX_SPELLFIX_LENGTH } from '../services/textSpellfix.js'
+import { DEFAULT_REVIEW_CRITERIA, MAX_REVIEW_CRITERIA_LENGTH, normalizeReviewCriteria } from '../services/appReview.js'
 
 const router = Router()
-router.use(requireAuth)
+router.use(requireAdmin)
 
 // ─── File de prompts ──────────────────────────────────────────────────────────
 
@@ -175,6 +177,18 @@ router.get('/prompts', (req, res) => {
   })
 })
 
+// Autocorrecteur de la fenêtre « Modifier le système » : renvoie le texte
+// corrigé (ou l'original si la correction est refusée par le garde-fou).
+router.post('/spellfix', async (req, res) => {
+  const text = String(req.body?.text ?? '')
+  if (text.length > MAX_SPELLFIX_LENGTH) return res.status(400).json({ error: 'texte trop long' })
+  try {
+    res.json({ text: await spellfix(text) })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
+})
+
 router.post('/prompts', (req, res) => {
   const { title, prompt, mode, preset, status, priority, space, model, start_at } = req.body || {}
   if (!prompt || !String(prompt).trim()) return res.status(400).json({ error: 'prompt requis' })
@@ -311,14 +325,29 @@ router.post('/queue/pause', (req, res) => {
 
 // ─── Suggestions de l'agent ───────────────────────────────────────────────────
 
+function reviewSettings() {
+  return { criteria: getSettings().appReviewCriteria || '', defaultCriteria: DEFAULT_REVIEW_CRITERIA, maxLength: MAX_REVIEW_CRITERIA_LENGTH }
+}
+router.get('/review-settings', (req, res) => res.json(reviewSettings()))
+router.put('/review-settings', (req, res) => {
+  let criteria
+  try { criteria = normalizeReviewCriteria(req.body?.criteria) } catch (error) {
+    return res.status(400).json({ error: error.message })
+  }
+  setSettings({ appReviewCriteria: criteria })
+  res.json(reviewSettings())
+})
+
 router.get('/suggestions', (req, res) => {
   const status = req.query.status || null
   const kind = req.query.kind || null
+  const source = req.query.source || null
+  if (source && !['legacy', 'app_review'].includes(source)) return res.status(400).json({ error: 'source invalide' })
   if (status && !['new', 'accepted', 'dismissed'].includes(status)) {
     return res.status(400).json({ error: 'status invalide' })
   }
   if (kind && !SUGGESTION_KINDS.includes(kind)) return res.status(400).json({ error: 'kind invalide' })
-  res.json({ suggestions: listSuggestions({ status, kind }) })
+  res.json({ suggestions: listSuggestions({ status, kind, source }) })
 })
 
 router.post('/suggestions', (req, res) => {
@@ -378,8 +407,10 @@ router.post('/suggestions/:id/messages', (req, res) => {
 // `kind` restreint à un moteur (chantiers ou intégrations) ; sans lui, les deux.
 router.post('/suggestions/generate', (req, res) => {
   const kind = req.body?.kind || null
+  const source = req.body?.source || null
+  if (source && source !== 'app_review') return res.status(400).json({ error: 'source invalide' })
   if (kind && !SUGGESTION_KINDS.includes(kind)) return res.status(400).json({ error: 'kind invalide' })
-  runSuggestionEngines({ kind }).catch(e => console.error('🤖 Suggestions de travaux:', e.message))
+  runSuggestionEngines({ kind, source }).catch(e => console.error('🤖 Suggestions de travaux:', e.message))
   res.status(202).json({ ok: true })
 })
 

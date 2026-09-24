@@ -63,7 +63,7 @@ export function HubSpotExportModal({ isOpen, onClose, filteredContacts }) {
     const listName = name.trim()
     const plural = emails.length > 1
     const ok = await confirm({
-      title: 'Confirmer le push vers HubSpot',
+      title: 'Confirmer l’envoi vers HubSpot',
       message: (
         <>
           {'Cette action va modifier votre compte HubSpot :'}

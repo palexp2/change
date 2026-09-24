@@ -1,7 +1,9 @@
-const { test, before, after } = require('node:test')
+const { test, before, after, describe } = require('node:test')
 const assert = require('node:assert/strict')
 const { chromium } = require('playwright')
-
+// Enveloppé dans describe : sous Node 18, un after() de premier niveau n'est joué
+// qu'une fois la boucle vide — un navigateur ouvert l'en empêche, le test pend.
+describe('sale-receipt-qb-taxcode', () => {
 const URL = process.env.ERP_URL || 'http://localhost:3004/erp'
 const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
@@ -67,4 +69,5 @@ test('le code de taxe se choisit dans un menu déroulant', async () => {
     select.getByText('TPS/TVQ repas', { exact: true }).waitFor({ timeout: 5000 }),
     'le menu ne reflète pas le code sélectionné',
   )
+})
 })

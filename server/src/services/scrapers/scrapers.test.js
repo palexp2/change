@@ -8,6 +8,8 @@ import { parseSessionPayload, sessionCoversDomain } from './session.js'
 // index.js ouvre la base au chargement : on n'importe ici que le collecteur.
 import simplex, { parseSimplexDate, parseSimplexAmount, parseSimplexRows } from './simplex.js'
 import fedex, { parseFedexDate, parseFedexAmount, parseFedexRows } from './fedex.js'
+import bell from './bell.js'
+import digikey from './digikey.js'
 
 // Vecteur officiel RFC 6238 (secret ASCII « 12345678901234567890 », T = 59 s).
 test('generateTotp suit le vecteur RFC 6238', () => {
@@ -254,4 +256,47 @@ test('isDue espace les nouvelles tentatives puis abandonne', () => {
   assert.equal(isDue({ status: 'introuvable', attempts: 2, last_attempt_at: '2026-08-19T00:00:00Z' }, t0), false)
   assert.equal(isDue({ status: 'introuvable', attempts: 2, last_attempt_at: '2026-08-19T00:00:00Z' }, t0 + 3 * day), true)
   assert.equal(isDue({ status: 'introuvable', attempts: 3, last_attempt_at: '2026-08-01T00:00:00Z' }, t0), false)
+})
+
+// ── Pont de session (module de navigateur) ──────────────────────────────────────────
+
+test('parseSessionPayload accepte les témoins bruts de chrome.cookies', () => {
+  // Ce que `chrome.cookies.getAll` rend : `expirationDate` en secondes, et
+  // sameSite en mots de l'API Chrome. Le pont les envoie tels quels.
+  const state = parseSessionPayload(JSON.stringify([
+    { name: 'BID', value: 'x', domain: '.bell.ca', path: '/', httpOnly: true, secure: true, sameSite: 'no_restriction', expirationDate: 1800000000.123 },
+    { name: 'sess', value: 'y', domain: 'mybell.bell.ca', path: '/', httpOnly: false, secure: true, sameSite: 'unspecified' },
+  ]), 'bell.ca')
+  assert.equal(state.cookies.length, 2)
+  assert.equal(state.cookies[0].expires, 1800000000)
+  assert.equal(state.cookies[0].sameSite, 'None')
+  assert.equal(state.cookies[1].expires, -1) // cookie de session
+  assert.ok(sessionCoversDomain(state, 'bell.ca'))
+})
+
+test('une session qui ne couvre pas le portail est refusée', () => {
+  const state = parseSessionPayload(JSON.stringify([
+    { name: 'a', value: 'b', domain: '.google.com', path: '/' },
+  ]), 'bell.ca')
+  assert.equal(sessionCoversDomain(state, 'bell.ca'), false)
+})
+
+test('les portails à captcha exigent une session importée', () => {
+  assert.equal(bell.requiresImportedSession, true)
+  assert.equal(digikey.requiresImportedSession, true)
+  // Ceux qui savent encore se connecter seuls ne doivent pas être bloqués.
+  assert.ok(!fedex.requiresImportedSession)
+  assert.ok(!simplex.requiresImportedSession)
+})
+
+// ── Factures manquantes ──────────────────────────────────────────────────────
+
+test("un besoin sans fournisseur n'est jamais relancé", () => {
+  // Il n'y a aucun portail à interroger : le relancer ferait tourner une
+  // tournée dans le vide et masquerait la seule action utile (apprendre le
+  // fournisseur du libellé).
+  const at = Date.parse('2026-09-19T12:00:00Z')
+  assert.equal(isDue({ status: 'sans_fournisseur', attempts: 0, last_attempt_at: null }, at), false)
+  assert.equal(isDue({ status: 'sans_collecteur', attempts: 0, last_attempt_at: null }, at), false)
+  assert.equal(isDue({ status: 'en_attente', attempts: 0, last_attempt_at: null }, at), true)
 })

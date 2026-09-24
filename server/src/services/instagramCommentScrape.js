@@ -45,8 +45,8 @@ import {
 export const INSTAGRAM_SCRAPE_AUTOMATION_ID = 'sys_instagram_comment_scrape'
 
 export const API_ROOT = 'https://www.instagram.com/api/v1'
-const WEB_APP_ID = '936619743392459'
-const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
+export const WEB_APP_ID = '936619743392459'
+export const UA = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36'
 
 // Pages de commentaires maximum par publication. 20 × ~20 commentaires couvre
 // largement nos publications ; le plafond existe pour qu'une publication virale
@@ -106,7 +106,7 @@ export function hasSessionCookie() { return getSessionCookie().sessionid.length 
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 /** Erreur qui doit arrêter la tournée immédiatement (cookie mort). */
-class SessionExpired extends Error {}
+export class SessionExpired extends Error {}
 
 /**
  * Instagram nous met de côté sans nous déconnecter : il renvoie l'appel vers
@@ -114,21 +114,26 @@ class SessionExpired extends Error {}
  * d'appels. Ce n'est PAS un cookie mort — envoyer quelqu'un en recoller un
  * serait une fausse piste — mais ça arrête quand même la tournée, bruyamment.
  */
-class Throttled extends Error {}
+export class Throttled extends Error {}
 
 /**
  * GET avec repli exponentiel. Renvoie le JSON, ou null quand les tentatives
  * sont épuisées (publication sautée, tournée poursuivie). Un 401/403 lève
  * SessionExpired : inutile d'insister, et le message doit remonter clair.
  */
-export async function igGet(url, { sessionid, dsUserId }, attempts = 4) {
-  const cookie = [`sessionid=${sessionid}`, dsUserId ? `ds_user_id=${dsUserId}` : null].filter(Boolean).join('; ')
+export async function igGet(url, { sessionid, dsUserId, csrf }, attempts = 4) {
+  const cookie = [
+    `sessionid=${sessionid}`,
+    dsUserId ? `ds_user_id=${dsUserId}` : null,
+    csrf ? `csrftoken=${csrf}` : null,
+  ].filter(Boolean).join('; ')
   for (let i = 0; i < attempts; i++) {
     let res
     try {
       res = await fetch(url, {
         headers: {
           'x-ig-app-id': WEB_APP_ID, 'User-Agent': UA, cookie, accept: '*/*',
+          ...(csrf ? { 'x-csrftoken': csrf } : {}),
           // Sans ces en-têtes, Instagram répond 400 « SecFetch Policy violation »
           // même avec un cookie valide — il vérifie qu'une requête « same-origin »
           // ressemble à celle d'un vrai onglet du navigateur.
@@ -185,27 +190,147 @@ export async function igGet(url, { sessionid, dsUserId }, attempts = 4) {
   return null
 }
 
+/**
+ * Ouvre la session « web » : charge une page de profil comme le ferait un
+ * onglet, et en extrait les deux jetons que le site joint à ses propres appels
+ * (`lsd` et `csrf_token`).
+ *
+ * POURQUOI : la liste des publications ne se lit plus par l'API REST. Instagram
+ * renvoie `/api/v1/feed/user/…` vers son accueil (302) pour un appel venant
+ * d'un serveur, quelle que soit la validité du cookie — mesuré des jours
+ * durant, avec et sans cookie complet. La même liste passe par la requête
+ * GraphQL que le site utilise lui-même, à condition de porter ces jetons.
+ * Les commentaires, eux, restent lisibles en REST.
+ */
+async function openWebSession(account, session) {
+  const { lsd, csrf, missing } = await loadProfilePage(account, session)
+  if (missing) throw new Throttled(`Le compte @${account} est introuvable sur Instagram.`)
+  return { ...session, lsd, csrf }
+}
+
+/**
+ * La page d'un profil, telle qu'un onglet la reçoit, avec ses deux jetons.
+ * `missing` : le compte n'existe plus (404) — pas une panne de session.
+ */
+export async function loadProfilePage(account, session) {
+  const res = await fetch(`https://www.instagram.com/${encodeURIComponent(account)}/`, {
+    headers: {
+      'User-Agent': UA,
+      cookie: [`sessionid=${session.sessionid}`, session.dsUserId ? `ds_user_id=${session.dsUserId}` : null].filter(Boolean).join('; '),
+      accept: 'text/html,application/xhtml+xml',
+      'sec-fetch-site': 'none', 'sec-fetch-mode': 'navigate', 'sec-fetch-dest': 'document',
+    },
+    redirect: 'manual',
+    signal: AbortSignal.timeout(30_000),
+  })
+  const loc = res.headers.get('location') || ''
+  if (/\/(accounts\/login|login|signin)\b/i.test(loc)) {
+    throw new SessionExpired(
+      'Instagram renvoie vers la page de connexion — le cookie de session est expiré ou invalide. ' +
+      'Recoller un « sessionid » frais dans Connecteurs → Instagram.'
+    )
+  }
+  if (res.status === 404) return { missing: true }
+  if (!res.ok) {
+    throw new Throttled(
+      "Instagram refuse de répondre pour le moment (trop d'appels rapprochés) : la session reste valide, " +
+      'il faut simplement relancer la lecture plus tard.'
+    )
+  }
+  const html = await res.text()
+  const lsd = (html.match(/"LSD",\[\],\{"token":"([^"]+)"/) || [])[1]
+  const csrf = (html.match(/"csrf_token":"([^"]+)"/) || [])[1]
+  if (!lsd || !csrf) {
+    throw new Throttled(
+      "Instagram a servi une page inattendue : la lecture des publications est momentanément refusée."
+    )
+  }
+  await sleep(600 + Math.random() * 600)
+  return { html, lsd, csrf }
+}
+
+// Requête du site pour « les publications de ce profil ». L'identifiant change
+// quand Instagram redéploie son client ; il est isolé ici pour être remplaçable
+// en un geste, et son échec est signalé, jamais silencieux.
+const PROFILE_POSTS_DOC_ID = '9310670392322965'
+
+/** Une page de 12 publications du profil, via la requête du site. */
+export async function fetchPostsPage(account, web, after) {
+  const body = new URLSearchParams({
+    av: web.dsUserId || '0',
+    __a: '1',
+    lsd: web.lsd,
+    fb_api_caller_class: 'RelayModern',
+    fb_api_req_friendly_name: 'PolarisProfilePostsQuery',
+    doc_id: PROFILE_POSTS_DOC_ID,
+    variables: JSON.stringify({
+      after: after || null, before: null, first: 12, last: null,
+      data: {
+        count: 12, include_reel_media_seen_timestamp: true, include_relationship_info: true,
+        latest_besties_reel_media: true, latest_reel_media: true,
+      },
+      username: account,
+      __relay_internal__pv__PolarisIsLoggedInrelayprovider: true,
+      __relay_internal__pv__PolarisShareSheetV3relayprovider: false,
+    }),
+  })
+  const res = await fetch('https://www.instagram.com/graphql/query', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-www-form-urlencoded',
+      'x-ig-app-id': WEB_APP_ID, 'User-Agent': UA, accept: '*/*',
+      'x-csrftoken': web.csrf, 'x-fb-lsd': web.lsd,
+      'x-fb-friendly-name': 'PolarisProfilePostsQuery', 'x-asbd-id': '129477',
+      cookie: [`sessionid=${web.sessionid}`, web.dsUserId ? `ds_user_id=${web.dsUserId}` : null, `csrftoken=${web.csrf}`].filter(Boolean).join('; '),
+      referer: `https://www.instagram.com/${account}/`,
+      'sec-fetch-site': 'same-origin', 'sec-fetch-mode': 'cors', 'sec-fetch-dest': 'empty',
+    },
+    body: body.toString(),
+    redirect: 'manual',
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (res.status === 401 || res.status === 403) {
+    throw new SessionExpired(
+      `Instagram a répondu ${res.status} — le cookie de session est expiré ou invalide. ` +
+      'Recoller un « sessionid » frais dans Connecteurs → Instagram.'
+    )
+  }
+  if (!res.ok) return null
+  let payload
+  try { payload = await res.json() } catch { return null }
+  await sleep(600 + Math.random() * 600)
+  return payload?.data?.xdt_api__v1__feed__user_timeline_graphql_connection || null
+}
+
 /** Publications du compte dans [sinceTs, untilTs). Remonte le fil du plus récent. */
-async function fetchPosts(account, session, sinceTs, untilTs) {
+async function fetchPosts(account, web, sinceTs, untilTs) {
   const out = []
-  let maxId = null
+  let after = null
   // Plafond de pagination : 20 pages × 12 = 240 publications, très au-delà de
   // n'importe quelle fenêtre raisonnable. Empêche une boucle infinie si
-  // `more_available` reste vrai sans que `next_max_id` avance.
+  // `has_next_page` reste vrai sans que le curseur avance.
   for (let page = 0; page < 20; page++) {
-    let url = `${API_ROOT}/feed/user/${encodeURIComponent(account)}/username/?count=12`
-    if (maxId) url += `&max_id=${encodeURIComponent(maxId)}`
-    const payload = await igGet(url, session)
-    const items = payload?.items || []
-    if (!items.length) break
+    const conn = await fetchPostsPage(account, web, after)
+    const items = (conn?.edges || []).map(e => e?.node).filter(Boolean)
+    if (!items.length) {
+      // Première page vide = on n'a rien lu du tout : le dire, ne pas rendre
+      // une tournée « réussie » sans une seule publication.
+      if (page === 0) {
+        throw new Throttled(
+          `Instagram n'a renvoyé aucune publication pour @${account} : lecture refusée pour le moment.`
+        )
+      }
+      break
+    }
     for (const item of items) {
       if (item.taken_at >= sinceTs && item.taken_at < untilTs) out.push(item)
     }
     // Tout le lot est plus vieux que la borne : le fil étant antichronologique,
     // la suite l'est aussi.
     if (items.every(i => i.taken_at < sinceTs)) break
-    if (!payload.more_available || !payload.next_max_id) break
-    maxId = payload.next_max_id
+    const next = conn?.page_info
+    if (!next?.has_next_page || !next?.end_cursor || next.end_cursor === after) break
+    after = next.end_cursor
   }
   return out
 }
@@ -337,9 +462,13 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
 
     // Dédup par `pk` du média : une publication en collab apparaît sur la
     // grille des deux comptes, mais n'a qu'un seul fil de commentaires.
+    // Une seule ouverture de session web pour toute la tournée : les jetons
+    // valent pour tous les profils lus.
+    const web = await openWebSession(accounts[0], session)
+
     const byMedia = new Map()
     for (const account of accounts) {
-      for (const post of await fetchPosts(account, session, sinceTs, untilTs)) {
+      for (const post of await fetchPosts(account, web, sinceTs, untilTs)) {
         if (!byMedia.has(String(post.pk))) byMedia.set(String(post.pk), post)
       }
     }
@@ -355,7 +484,7 @@ export async function runCommentScrape({ force = false, trigger = 'schedule', da
     const toPush = new Set()
     for (const post of withComments) {
       const postUrl = post.code ? `https://www.instagram.com/p/${post.code}/` : null
-      for (const c of await fetchComments(post.pk, session, own)) {
+      for (const c of await fetchComments(post.pk, web, own)) {
         scanned++
         if (!c.username || own.has(c.username.toLowerCase())) continue
         // `keywords` ne FILTRE plus rien (tous les commentaires sont captés) :

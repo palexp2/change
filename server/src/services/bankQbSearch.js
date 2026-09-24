@@ -28,6 +28,7 @@ import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
 import { TXN_TYPE_ENTITY } from './bankQbLink.js'
 import { shiftDate, daysBetween } from '../utils/datetime.js'
 import { round2 } from '../utils/money.js'
+import { touchBankTxns } from './realtimeEmitters.js'
 // Réexport de compatibilité : l'ancien export local `dayDiff` (valeur absolue)
 // correspond au `daysBetween` canonique.
 export { shiftDate, daysBetween as dayDiff }
@@ -41,6 +42,24 @@ export const MATCH_LABELS = {
   agregat: 'plusieurs écritures QB pour une ligne',
   agregat_inverse: 'plusieurs lignes du relevé pour une écriture',
   conversion: 'conversion de devise (taux vérifié dans QuickBooks)',
+  devise_taux: 'écriture en devise étrangère (taux vérifié dans QuickBooks)',
+}
+
+// Écriture libellée en devise étrangère mais portée à un compte canadien : le
+// grand livre l'affiche dans SA devise (575 US), le relevé dans celle du compte
+// (796,67 $). Pour chaque type d'écriture, le champ qui porte son montant —
+// multiplié par son propre `ExchangeRate`, il doit retomber au cent près sur la
+// ligne de relevé. Les types absents d'ici ne se vérifient pas et ne sont donc
+// jamais appariés par ce chemin.
+export const QB_RATE_ENTITY = {
+  expense: ['purchase', 'Purchase', 'TotalAmt'],
+  check: ['purchase', 'Purchase', 'TotalAmt'],
+  creditcardcredit: ['purchase', 'Purchase', 'TotalAmt'],
+  billpayment: ['billpayment', 'BillPayment', 'TotalAmt'],
+  deposit: ['deposit', 'Deposit', 'TotalAmt'],
+  recvpayment: ['payment', 'Payment', 'TotalAmt'],
+  salesreceipt: ['salesreceipt', 'SalesReceipt', 'TotalAmt'],
+  refundreceipt: ['refundreceipt', 'RefundReceipt', 'TotalAmt'],
 }
 
 // Une conversion de devise apparaît au relevé dans la devise du compte et dans
@@ -297,6 +316,38 @@ function assignConversions(bankTxns, entries, sign, results, usedEntries) {
   }
 }
 
+// Écriture en devise étrangère sur un compte d'une autre devise. Même mécanique
+// que la conversion, mais sur n'importe quel type d'écriture : le rapport entre
+// les deux montants doit tomber dans la plage des taux plausibles ET le libellé
+// doit concorder (le fournisseur du relevé est celui de l'écriture). Le taux est
+// ensuite relu sur l'écriture elle-même — sans cette relecture, rien n'est posé.
+function assignForeignAmounts(bankTxns, entries, sign, results, usedEntries) {
+  const pairs = []
+  for (const t of bankTxns) {
+    if (results.has(t.id)) continue
+    for (const e of entries) {
+      if (usedEntries.has(e)) continue
+      if (!QB_RATE_ENTITY[e.entity] || !e.qbId) continue
+      const gap = daysBetween(t.txn_date, e.date)
+      if (gap > 5) continue
+      if (!labelAffinity(t, e)) continue
+      const rate = fxRate(round2(sign * Number(t.amount)), e.amount)
+      if (!rate) continue
+      pairs.push({ t, e, gap, rate, cost: 3.5 + gap * 0.2 })
+    }
+  }
+  pairs.sort((a, b) => a.cost - b.cost)
+  for (const p of pairs) {
+    if (results.has(p.t.id) || usedEntries.has(p.e)) continue
+    usedEntries.add(p.e)
+    results.set(p.t.id, {
+      entries: [p.e], method: 'devise_taux',
+      delta: round2(sign * Number(p.t.amount) - p.e.amount),
+      rate: p.rate, gap: p.gap, cost: p.cost,
+    })
+  }
+}
+
 // Une ligne de relevé = plusieurs écritures QB du même jour (dépôt groupé, lot
 // de paiements) : on cherche un sous-ensemble de 2 à 4 écritures non utilisées
 // dont la somme fait le montant de la ligne.
@@ -362,6 +413,8 @@ export function searchAccount(account, bankTxns, index) {
   // 5. conversions de devise, avant les agrégats (une conversion ne doit pas
   // être reconstituée en additionnant des écritures sans rapport).
   assignConversions(bankTxns, own, sign, results, usedEntries)
+  // 5 bis. écritures en devise étrangère portées au compte (taux vérifié après).
+  assignForeignAmounts(bankTxns, own, sign, results, usedEntries)
   // 6. agrégats du même compte.
   assignAggregates(bankTxns, own, sign, results, usedEntries)
   assignReverseAggregates(bankTxns, own, sign, results, usedEntries)
@@ -378,6 +431,13 @@ export function searchAccount(account, bankTxns, index) {
 
 const defaultFetchTransfer = async (qbId) => (await qbGet(`/transfer/${qbId}`)).Transfer
 
+const defaultFetchEntity = async (entity, qbId) => {
+  const spec = QB_RATE_ENTITY[entity]
+  if (!spec) return null
+  const [path, key] = spec
+  return (await qbGet(`/${path}/${qbId}`))?.[key] || null
+}
+
 // Vérifie une conversion contre l'objet Transfer de QuickBooks.
 //
 // Le rapport GeneralLedger affiche le montant en DEVISE DE TRANSACTION des deux
@@ -387,11 +447,30 @@ const defaultFetchTransfer = async (qbId) => (await qbGet(`/transfer/${qbId}`)).
 // porte le taux (`ExchangeRate`) sur la transaction, et montant × taux tombe au
 // cent près sur la ligne de relevé. Une conversion vérifiée n'a donc AUCUN
 // écart ; seule une conversion invérifiable en garde un.
-export async function verifyConversions(matches, txnById, fetchTransfer = defaultFetchTransfer) {
+export async function verifyConversions(matches, txnById, fetchTransfer = defaultFetchTransfer,
+  fetchEntity = defaultFetchEntity) {
   for (const [txnId, m] of matches) {
-    if (m.method !== 'conversion') continue
     const e = m.entries[0]
     const txn = txnById.get(txnId)
+    // Devise étrangère : montant de l'écriture × son taux = la ligne de relevé.
+    // Sans confirmation, l'appariement est ABANDONNÉ (ni lien, ni proposition) :
+    // un rapport plausible n'est pas une preuve.
+    if (m.method === 'devise_taux') {
+      m.verified = false
+      try {
+        const obj = txn && e.qbId ? await fetchEntity(e.entity, e.qbId) : null
+        const rate = Number(obj?.ExchangeRate || 0)
+        const amount = Number(obj?.[QB_RATE_ENTITY[e.entity]?.[2]] || 0)
+        if (rate && amount && Math.abs(round2(amount * rate) - Math.abs(Number(txn.amount))) <= 0.02) {
+          m.verified = true
+          m.rate = Math.round(rate * 1000000) / 1000000
+          m.delta = 0
+        }
+      } catch { /* QB indisponible : rien n'est posé */ }
+      if (!m.verified) matches.delete(txnId)
+      continue
+    }
+    if (m.method !== 'conversion') continue
     m.verified = false
     if (e.entity !== 'transfer' || !e.qbId || !txn) continue
     try {
@@ -429,7 +508,7 @@ export function persistMatches(matches) {
     WHERE id=? AND (qb_txn_id IS NOT ? OR qb_match_method IS NOT ?
                     OR qb_match_delta IS NOT ? OR qb_match_rate IS NOT ?)
   `)
-  let n = 0
+  const touched = []
   const tx = db.transaction(() => {
     for (const [txnId, m] of matches) {
       const e = m.entries[0]
@@ -437,9 +516,13 @@ export function persistMatches(matches) {
       const res = update.run(e.entity || null, e.qbId, m.method, m.delta || null,
         e.accountName && m.method === 'autre_compte' ? e.accountName : null, m.rate || null,
         txnId, e.qbId, m.method, m.delta || null, m.rate || null)
-      n += res.changes
+      if (res.changes) touched.push(txnId)
     }
   })
   tx()
-  return n
+  // Un lien peut se poser SANS changer le statut (ligne déjà comptabilisée par
+  // son document) : refreshStatuses ne verrait rien à annoncer, alors que le
+  // lien QuickBooks, lui, vient d'apparaître sur la ligne.
+  touchBankTxns(touched)
+  return touched.length
 }

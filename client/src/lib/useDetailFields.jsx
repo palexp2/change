@@ -83,7 +83,7 @@ export function useExtraCustomFields(erpTable, takenKeys = EMPTY, includeSynced 
           // `detail` : c'est une fiche — un champ lien y prend la pastille
           // pleine taille (la même que le lien d'entreprise en haut d'une fiche
           // commande), pas la pastille compacte des cellules de tableau.
-          render: value => renderCustomFieldValue(f, value, null, { detail: true }),
+          render: (value, { linkifyTextUrls = false } = {}) => renderCustomFieldValue(f, value, null, { detail: true, linkifyTextUrls }),
         }
       })
   }, [customFields, takenKeys])

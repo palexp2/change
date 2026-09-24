@@ -2,7 +2,7 @@
 // l'action dans apply.js — ici on ne fait qu'écrire ce qui a été décidé.
 import db from '../../db/database.js'
 import { newRecordId } from '../../utils/recordId.js'
-import { reconcilePropositions } from './model.js'
+import { reconcilePropositions, PUBLISHES_TO_QB } from './model.js'
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 const json = (v) => (v == null ? null : JSON.stringify(v))
@@ -32,7 +32,10 @@ export function decode(row) {
   let payload = {}
   try { evidence = JSON.parse(row.evidence || '[]') } catch { evidence = [] }
   try { payload = JSON.parse(row.payload || '{}') } catch { payload = {} }
-  return { ...row, evidence, payload }
+  // `publishes` : cette proposition écrit-elle dans QuickBooks à l'acceptation ?
+  // Rendu par le serveur pour que les écrans n'aient plus à tenir leur propre
+  // liste des natures publiantes.
+  return { ...row, evidence, payload, publishes: PUBLISHES_TO_QB.has(row.kind) }
 }
 
 // Applique le résultat de `reconcilePropositions` : insertions, mises à jour,

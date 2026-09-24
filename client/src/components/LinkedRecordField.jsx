@@ -36,6 +36,8 @@ export default function LinkedRecordField({
   // de création puis de poser la valeur. Sans `onCreate`, rien ne change.
   onCreate = null,
   createLabel = 'Créer',
+  // Option : libellé long affiché en entier (retour à la ligne) au lieu d'être tronqué.
+  wrap = false,
 }) {
   const fieldTestId = name ? `linked-record-field-${name}` : 'linked-record-field'
   const [open, setOpen] = useState(false)
@@ -158,7 +160,7 @@ export default function LinkedRecordField({
   if (selected) {
     const href = getHref ? getHref(selected) : null
     const label = getLabel(selected)
-    const bodyCls = 'text-sm text-slate-700 truncate'
+    const bodyCls = `text-sm text-slate-700 ${wrap ? 'break-words min-w-0' : 'truncate'}`
     return (
       <div className="flex items-center gap-1.5 min-w-0" data-testid={fieldTestId} data-state="selected" title={title}>
         <span ref={btnRef} className="inline-flex items-center gap-0.5 bg-slate-100 hover:bg-slate-200/70 rounded-md max-w-full transition-colors">

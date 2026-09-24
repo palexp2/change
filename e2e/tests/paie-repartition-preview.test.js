@@ -90,7 +90,7 @@ describe('Répartition de paie & AGA — aperçus', () => {
     assert.ok(await section.locator('table tr').count() >= 2, 'lignes d\'écriture absentes')
   })
 
-  test('carte AGA sur le Dashboard comptabilité', async () => {
+  test('carte AGA sur le Comptabilité', async () => {
     await page.goto(URL + '/comptabilite', { waitUntil: 'domcontentloaded' })
     const card = page.locator('[data-testid="compta-aga"]')
     await card.waitFor({ state: 'attached', timeout: 20000 })

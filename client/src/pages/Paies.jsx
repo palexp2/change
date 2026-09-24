@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { RefreshCw, Plus, Pencil, Trash2 } from 'lucide-react'
@@ -325,7 +326,7 @@ function PaieRepartitionSection({ paie }) {
           // Action transactionnelle (publication QB) : bouton volontaire.
           <button onClick={push} disabled={pushing || !preview || preview.base <= 0}
             className="btn-primary text-sm disabled:opacity-50" data-testid="paie-repartition-push">
-            {pushing ? 'Publication…' : 'Publier sur QB'}
+            {pushing ? 'Publication…' : 'Publier dans QuickBooks'}
           </button>
         )}
       </div>
@@ -380,7 +381,7 @@ function PaieRepartitionSection({ paie }) {
 function PaieDetail({ paie, onEdit, onDeleted }) {
   const { addToast } = useToast()
   const { user } = useAuth()
-  const isHR = ['admin', 'rh'].includes(user?.role)
+  const isHR = hasRole(user, 'rh')
   const paieItemsColumns = useMemo(() => buildPaieItemsColumns(isHR), [isHR])
   const [detail, setDetail] = useState(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -532,7 +533,7 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
 
 export default function Paies() {
   const { user } = useAuth()
-  const isHR = ['admin', 'rh'].includes(user?.role)
+  const isHR = hasRole(user, 'rh')
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
   const { rows: paies, loading, reload: load } = useListData({ fetch: () => api.paies.list({ limit: 500 }), realtime: 'paie' })

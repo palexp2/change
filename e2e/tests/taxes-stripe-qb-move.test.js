@@ -45,7 +45,7 @@ describe('Déplacement du mapping taxes Stripe → QB', () => {
     await modalTitle.waitFor({ state: 'visible', timeout: 5000 })
   })
 
-  test("Le détail d'une facture n'affiche plus le bouton Publier sur QB", async () => {
+  test("Le détail d'une facture n'affiche plus le bouton Publier dans QuickBooks", async () => {
     // Récupérer une facture Stripe (invoice_id commence par 'in_')
     const invoiceId = await page.evaluate(async () => {
       const token = localStorage.getItem('erp_token')
@@ -60,8 +60,8 @@ describe('Déplacement du mapping taxes Stripe → QB', () => {
 
     await page.goto(URL + '/factures/' + invoiceId, { waitUntil: 'domcontentloaded' })
     await page.waitForTimeout(1500)
-    const count = await page.locator('button:has-text("Publier sur QB")').count()
-    assert.equal(count, 0, 'Le bouton "Publier sur QB" ne doit plus apparaître sur FactureDetail')
+    const count = await page.locator('button:has-text("Publier dans QuickBooks")').count()
+    assert.equal(count, 0, 'Le bouton "Publier dans QuickBooks" ne doit plus apparaître sur FactureDetail')
   })
 
   test("La route backend /api/projets/factures/:id/push-qb n'existe plus", async () => {

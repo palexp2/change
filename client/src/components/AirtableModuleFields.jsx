@@ -428,7 +428,7 @@ export function MappingPicker({ erpColumn, airtableFields, tableMap, onSave, sav
     if (candidates.some(c => c.airtable_field_name === name)) return null
     const f = (airtableFields || []).find(x => x.airtable_field_name === name)
     if (!f) {
-      return { level: 'error', note: 'Champ absent de la table Airtable — le sync ne remplira rien.' }
+      return { level: 'error', note: 'Champ absent de la table Airtable — la synchronisation ne remplira rien.' }
     }
     return { level: 'info', typeLabel: f.airtable_field_type }
   }, [erpColumn, candidates, airtableFields])
@@ -501,7 +501,7 @@ export function ModuleSourceStatus({ data, onSynced }) {
   async function handleSync() {
     if (!data?.sync_key || !data.configured) return
     setError(null)
-    try { await api.airtable.sync(data.sync_key) } catch (e) { setError(e.message || 'Erreur sync') }
+    try { await api.airtable.sync(data.sync_key) } catch (e) { setError(e.message || 'Échec de la synchronisation') }
   }
 
   return (
@@ -721,7 +721,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
             />
             <div className="flex items-center gap-3">
               <div className="text-xs text-slate-600">
-                Clique sur un nom pour le renommer · Le type s'autosauve · Pas de mapping = pas d'import · Sens ← : import Airtable → ERP seulement
+                Clique sur un nom pour le renommer · Le type s'autosauve · Pas de correspondance = pas d'import · Sens ← : import Airtable → ERP seulement
               </div>
               {erpTable && (
                 <button
@@ -786,7 +786,7 @@ export function AirtableModuleFields({ module: moduleProp }) {
                         const Icon = dir.Icon
                         return (
                           <span
-                            title={col.mapped ? dir.title : 'Aucun mapping — ce champ n’est pas importé'}
+                            title={col.mapped ? dir.title : 'Aucune correspondance — ce champ n’est pas importé'}
                             data-testid={`modulefields-${module}-${col.column_name}-direction`}
                             data-direction={col.mapped ? 'pull' : 'none'}
                             className={`inline-flex cursor-help ${col.mapped ? 'text-slate-600' : 'text-slate-400'}`}

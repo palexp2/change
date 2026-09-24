@@ -1,13 +1,72 @@
 import { useState, useEffect, useCallback } from 'react'
-import { FileText, Image as ImageIcon, Download, Paperclip } from 'lucide-react'
+import { FileText, Download, Paperclip } from 'lucide-react'
 import { api } from '../lib/api'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { formatBytes } from '../utils/formatters.js'
 import Spinner from './Spinner.jsx'
+import AttachmentPreview, { AttachmentPreviewModal, attachmentKind } from './AttachmentPreview.jsx'
 
-function isImage(ct, name) {
-  if (ct && ct.startsWith('image/')) return true
-  return /\.(jpe?g|png|gif|webp|heic)$/i.test(name || '')
+// URL de service du fichier, récupérée avec le jeton par `usePrivateFile`
+// (dans AttachmentPreview) — même route que le téléchargement.
+function fileUrl(contactId, interactionId, attId) {
+  return contactId
+    ? `/erp/api/contacts/${encodeURIComponent(contactId)}/email-attachments/${encodeURIComponent(attId)}/download`
+    : `/erp/api/interactions/${encodeURIComponent(interactionId)}/attachments/${encodeURIComponent(attId)}/download`
+}
+
+// Une ligne : vignette (image ou 1re page du PDF) et nom qui ouvrent le
+// document en modale ; le téléchargement reste le bouton ↓. Les formats qu'on
+// ne sait pas dessiner gardent l'icône et téléchargent au clic.
+function EmailAttachmentRow({ att, url, subject, onDownload }) {
+  const [open, setOpen] = useState(false)
+  const kind = attachmentKind({ fileName: att.file_name, contentType: att.content_type })
+  const previewable = kind === 'image' || kind === 'pdf' || kind === 'sheet'
+
+  return (
+    <li className="flex items-center gap-3 py-2.5" data-testid="email-attachment-item">
+      {previewable ? (
+        <span className="flex-shrink-0 w-14 h-14">
+          <AttachmentPreview
+            url={url}
+            fileName={att.file_name}
+            contentType={att.content_type}
+            kind={kind}
+            size="compact"
+            showFileName={false}
+            testId="email-attachment-thumb"
+          />
+        </span>
+      ) : (
+        <span className="flex-shrink-0 text-slate-400">
+          <FileText size={16} />
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <button
+          onClick={() => (previewable ? setOpen(true) : onDownload())}
+          className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
+          title={att.file_name}
+          data-testid="email-attachment-name"
+        >
+          {att.file_name}
+        </button>
+        <div className="text-xs text-slate-400 mt-0.5 truncate">
+          {formatBytes(att.file_size)}{subject ? ` · ${subject}` : ''}
+        </div>
+      </div>
+      <button onClick={onDownload} className="text-slate-400 hover:text-brand-600 p-1 flex-shrink-0" title="Télécharger">
+        <Download size={14} />
+      </button>
+      {open && (
+        <AttachmentPreviewModal
+          url={url}
+          fileName={att.file_name}
+          kind={kind}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </li>
+  )
 }
 
 /**
@@ -70,26 +129,13 @@ export default function EmailAttachments({ contactId, interactionId, embedded = 
   ) : (
     <ul className="divide-y divide-slate-100" data-testid="email-attachment-list">
       {items.map(att => (
-        <li key={att.id} className="flex items-center gap-3 py-2.5" data-testid="email-attachment-item">
-          <span className="flex-shrink-0 text-slate-400">
-            {isImage(att.content_type, att.file_name) ? <ImageIcon size={16} /> : <FileText size={16} />}
-          </span>
-          <div className="min-w-0 flex-1">
-            <button
-              onClick={() => handleDownload(att)}
-              className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
-              title={att.file_name}
-            >
-              {att.file_name}
-            </button>
-            <div className="text-xs text-slate-400 mt-0.5 truncate">
-              {formatBytes(att.file_size)}{!interactionId && att.email_subject ? ` · ${att.email_subject}` : ''}
-            </div>
-          </div>
-          <button onClick={() => handleDownload(att)} className="text-slate-400 hover:text-brand-600 p-1 flex-shrink-0" title="Télécharger">
-            <Download size={14} />
-          </button>
-        </li>
+        <EmailAttachmentRow
+          key={att.id}
+          att={att}
+          url={fileUrl(contactId, interactionId, att.id)}
+          subject={!interactionId ? att.email_subject : null}
+          onDownload={() => handleDownload(att)}
+        />
       ))}
     </ul>
   )

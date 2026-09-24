@@ -15,7 +15,7 @@ if (!PASS) throw new Error('ERP_PASS env var required')
 // serveur ne les reçoit jamais. Chaque test vérifie ensuite via l'API que
 // l'enregistrement visé existe toujours.
 const FINANCE_PAGES = [
-  ['/comptabilite', 'Dashboard comptabilité'],
+  ['/comptabilite', 'Comptabilité'],
   ['/paiements-emis', 'Paiements et virements émis'],
   ['/rapprochement', 'Rapprochement bancaire'],
   ['/comptes-prepayes', 'Comptes prépayés'],

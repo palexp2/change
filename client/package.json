@@ -13,6 +13,7 @@
     "@svg-maps/canada": "^2.0.0",
     "@svg-maps/usa": "^2.0.0",
     "@tanstack/react-virtual": "^3.13.23",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.378.0",
     "pdfjs-dist": "^4.10.38",
     "react": "^18.3.1",
@@ -20,7 +21,8 @@
     "react-grid-layout": "^2.2.3",
     "react-plaid-link": "^5.0.0",
     "react-router-dom": "^6.24.1",
-    "recharts": "^3.8.0"
+    "recharts": "^3.8.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

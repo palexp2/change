@@ -1,3 +1,5 @@
+import { hasRole } from '../../../shared/roles.mjs'
+import { useAuth } from '../lib/auth.jsx'
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Database, ChevronDown, ChevronRight, Users, Plus } from 'lucide-react'
@@ -111,7 +113,7 @@ function SyncPanel({ onSynced }) {
       const cfg = await api.employees.syncConfig()
       setConfig(cfg)
       onSynced?.()
-    } catch (e) { setError(e.message || 'Erreur sync') }
+    } catch (e) { setError(e.message || 'Échec de la synchronisation') }
     finally { setSyncing(false) }
   }
 
@@ -196,6 +198,8 @@ function SyncPanel({ onSynced }) {
 }
 
 export default function Employees() {
+  const { user } = useAuth()
+  const isHR = hasRole(user, 'rh')
   const navigate = useNavigate()
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
@@ -206,8 +210,8 @@ export default function Employees() {
 
   return (
     <ListPage
-      title="Employés"
-      create={{
+      title={isHR ? "Employés" : "Ma fiche personnelle"}
+      create={isHR ? {
         label: 'Nouvel employé', table: 'employees', fields: EMPLOYEE_FORM_FIELDS, columns: 2,
         onSubmit: async form => { const emp = await api.employees.create(form); navigate(`/employees/${emp.id}`) },
         submitLabel: 'Créer et ouvrir',
@@ -217,11 +221,11 @@ export default function Employees() {
             Les autres informations s'éditent directement sur la fiche de l'employé (autosave).
           </p>
         ),
-      }}
+      } : undefined}
     >
       {({ openCreate }) => (
         <>
-          <SyncPanel onSynced={load} />
+          {isHR && hasRole(user, 'admin') && <SyncPanel onSynced={load} />}
 
           <DataTable
             table="employees"
@@ -239,7 +243,7 @@ export default function Employees() {
               render: (row, { close }) => <EmployeeDetail recordId={row.id} embedded onClose={close} />,
             }}
             searchFields={['first_name', 'last_name', 'matricule', 'email_work', 'email_personal']}
-            emptyState={{ icon: Users, title: 'Aucun employé', description: "Aucun employé n'est encore enregistré. Ajoute un employé pour gérer la paie et les feuilles de temps.", cta: { label: 'Nouvel employé', icon: Plus, onClick: openCreate } }}
+            emptyState={!isHR ? { icon: Users, title: "Aucune fiche liée", description: "Demandez à un administrateur de relier votre compte à votre fiche employé." } : { icon: Users, title: 'Aucun employé', description: "Aucun employé n'est encore enregistré. Ajoute un employé pour gérer la paie et les feuilles de temps.", cta: { label: 'Nouvel employé', icon: Plus, onClick: openCreate } }}
           />
         </>
       )}

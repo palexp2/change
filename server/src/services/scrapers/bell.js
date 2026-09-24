@@ -66,6 +66,17 @@ async function submitOwnForm(field) {
   if (!ok) await field.press('Enter').catch(() => {})
 }
 
+// Un captcha ne se contourne pas : le dire franchement vaut mieux qu'un message
+// de sélecteur cassé, qui envoie chercher un bogue là où il n'y en a pas.
+export const CAPTCHA_MESSAGE =
+  "MyBell demande « Je ne suis pas un robot » — envoyer la session depuis le module de navigateur (aucun robot ne passe cet écran)"
+
+export async function captchaPresent(page) {
+  return !!(await page.locator(
+    '.g-recaptcha, iframe[src*="recaptcha"], iframe[title*="reCAPTCHA" i], [data-sitekey]'
+  ).count().catch(() => 0))
+}
+
 async function signIn(ctx) {
   const { page, log, credentials } = ctx
   log('connexion à MyBell…')
@@ -103,6 +114,7 @@ async function signIn(ctx) {
   await pwd.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {})
   if (!(await pwd.count())) {
     await ctx.snapshot('bell-etape-mot-de-passe')
+    if (await captchaPresent(page)) throw new Error(CAPTCHA_MESSAGE)
     throw new Error("MyBell n'a pas présenté de champ mot de passe — identifiant refusé ou écran inattendu, voir la capture")
   }
   await pwd.fill(credentials.password)
@@ -121,6 +133,7 @@ async function signIn(ctx) {
 
   if (LOGIN_HOST.test(page.url())) {
     await ctx.snapshot('bell-login-echec')
+    if (await captchaPresent(page)) throw new Error(CAPTCHA_MESSAGE)
     throw new Error('Connexion MyBell refusée — voir la capture de la tournée, ou importer une session ouverte à la main')
   }
   log('connecté')
@@ -129,6 +142,10 @@ async function signIn(ctx) {
 export default {
   label: 'Bell Mobilité',
   fields: { username: 'Identifiant MyBell', password: 'Mot de passe', totp: 'Secret 2FA (optionnel)' },
+  // Depuis septembre 2026, MyBell pose un reCAPTCHA « Je ne suis pas un robot »
+  // sur l'écran d'identifiant : aucun navigateur sans humain ne le passe. La
+  // seule voie est une session ouverte à la main puis envoyée à l'ERP.
+  requiresImportedSession: true,
 
   async list(ctx) {
     const { page, context, log } = ctx

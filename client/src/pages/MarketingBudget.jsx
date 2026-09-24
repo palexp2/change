@@ -266,9 +266,21 @@ export default function MarketingBudget() {
     setBusy(true)
     try {
       const out = await api.marketingBudget.slackSend()
-      addToast({ message: `Message envoyé — ${out.count} dépense(s) annoncée(s)`, type: 'success' })
+      if (!out.sent) {
+        addToast({
+          message: out.skipped === 'inactive' ? 'Envoi désactivé dans les automatisations.' : `Message non envoyé : ${out.reason || 'réessayez plus tard.'}`,
+          type: 'error',
+        })
+        return
+      }
+      addToast({
+        message: `Message envoyé — ${out.count} dépense(s) annoncée(s)` +
+          (out.completion?.done ? ' · Tâche cochée dans vos travaux récurrents' : ''),
+        type: 'success',
+      })
+      if (out.completion?.warning) addToast({ message: out.completion.warning, type: 'error' })
       setPreview(null)
-      await load()
+      await load().catch(() => addToast({ message: 'Message envoyé, mais la page n’a pas pu être actualisée.', type: 'error' }))
     } catch (e) {
       addToast({ message: `Envoi échoué : ${e.message}`, type: 'error' })
     } finally {

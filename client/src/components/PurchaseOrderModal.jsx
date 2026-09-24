@@ -7,6 +7,7 @@ import { SearchableSelect } from './SearchableSelect.jsx'
 import EmailComposerModal from './EmailComposerModal.jsx'
 import { textToHtml } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
+import TableThumb, { TABLE_THUMB_CLASS } from './TableThumb.jsx'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -118,7 +119,8 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
         product_id: sp.id,
         product: sp.label || '',
         qty: Number(sp.order_qty) > 0 ? Number(sp.order_qty) : 1,
-        rate: Number(sp.unit_cost) || 0,
+        rate: 0,
+        image_url: sp.image_url || null,
       }],
     }))
   }
@@ -169,13 +171,23 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
     attachments: [`${po.po_number}.pdf`],
     recipients: supplierContacts.map(c => ({
       email: c.email,
-      name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+      name: c.name || c.email,
+      lang: c.lang,
     })),
   } : null
 
+  // Contact choisi → le courriel (et le PO joint) passent dans sa langue.
+  function pickRecipient(r) {
+    if (!r.lang || r.lang === po.lang) return null
+    setField('lang', r.lang)
+    const t = emailTemplate(r.lang, po.po_number)
+    return { subject: t.subject, bodyHtml: textToHtml(t.body) }
+  }
+
   const total = (po?.items || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.rate) || 0), 0)
   const createdCount = (sendResult?.purchase_ids || []).length
-  const skipped = { no_product: 0, zero_qty: 0, already_created: 0, ...(sendResult?.purchases_skipped || {}) }
+  const skipped = { no_product: 0, zero_qty: 0, already_created: 0, not_linked: 0, no_supplier: 0, error: 0, ...(sendResult?.purchases_skipped || {}) }
+  const purchaseErrors = sendResult?.purchases_errors || []
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Bon de commande" size="xl">
@@ -199,18 +211,25 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
                   <span className="font-medium text-slate-700">{po.po_number}</span> —{' '}
                   <Link to="/purchases" onClick={onClose} className="link-record">voir les achats</Link>
                 </p>
-              ) : (
-                <p>Aucun achat créé : les lignes du bon de commande ne pointent vers aucun produit du catalogue.</p>
+              ) : skipped.already_created === 0 && (
+                <p>Aucun achat créé.</p>
               )}
               {skipped.already_created > 0 && (
                 <p>{skipped.already_created} achat{skipped.already_created > 1 ? 's' : ''} existai{skipped.already_created > 1 ? 'ent' : 't'} déjà pour cette référence (non recréé{skipped.already_created > 1 ? 's' : ''}).</p>
               )}
-              {skipped.no_product > 0 && createdCount > 0 && (
-                <p>{skipped.no_product} ligne{skipped.no_product > 1 ? 's' : ''} sans produit du catalogue — pas d’achat pour celle{skipped.no_product > 1 ? 's-ci' : '-ci'}.</p>
+              {skipped.no_product > 0 && (
+                <p>{skipped.no_product} ligne{skipped.no_product > 1 ? 's' : ''} hors catalogue — pas d’achat.</p>
+              )}
+              {skipped.not_linked > 0 && (
+                <p>{skipped.not_linked} produit{skipped.not_linked > 1 ? 's' : ''} non lié{skipped.not_linked > 1 ? 's' : ''} à Airtable — pas d’achat.</p>
+              )}
+              {skipped.no_supplier > 0 && (
+                <p>{skipped.no_supplier} ligne{skipped.no_supplier > 1 ? 's' : ''} sans fournisseur Airtable — pas d’achat.</p>
               )}
               {skipped.zero_qty > 0 && (
                 <p>{skipped.zero_qty} ligne{skipped.zero_qty > 1 ? 's' : ''} à quantité 0 — pas d’achat.</p>
               )}
+              {purchaseErrors.map(e => <p key={e} className="text-amber-700">{e}</p>)}
             </div>
           </div>
           <button onClick={onClose} className="btn-secondary">Fermer</button>
@@ -290,7 +309,12 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
                     return (
                       <tr key={i} className="border-t border-slate-100">
                         <td className="px-2 py-1.5">
-                          <input className={inp} value={it.product} onChange={e => setItem(i, 'product', e.target.value)} />
+                          <div className="flex items-center gap-2">
+                            {it.image_url
+                              ? <TableThumb src={it.image_url} alt={it.product || ''} className="shrink-0 border border-slate-200" />
+                              : <div className={`${TABLE_THUMB_CLASS} shrink-0 rounded border border-dashed border-slate-200`} />}
+                            <input className={inp} value={it.product} onChange={e => setItem(i, 'product', e.target.value)} />
+                          </div>
                         </td>
                         <td className="px-2 py-1.5">
                           <input type="number" min="0" step="1" className={`${inp} text-right`} value={it.qty} onChange={e => setItem(i, 'qty', e.target.value)} />
@@ -351,6 +375,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
         onClose={() => setShowSend(false)}
         title="Envoyer au fournisseur"
         draft={emailDraft}
+        onPickRecipient={pickRecipient}
         canSend={Boolean(fromAccount)}
         headerExtra={
           <div>
@@ -445,7 +470,10 @@ function SupplierProductPicker({ products, existingIds, onPick }) {
                   onClick={() => { onPick(p); setOpen(false); setQuery('') }}
                   className={`w-full text-left px-3 py-1.5 text-sm flex items-center justify-between gap-2 ${already ? 'text-slate-400 cursor-not-allowed' : 'hover:bg-slate-50 text-slate-700'}`}
                 >
-                  <span className="truncate">
+                  {p.image_url
+                    ? <TableThumb src={p.image_url} className="shrink-0 border border-slate-200" />
+                    : <div className={`${TABLE_THUMB_CLASS} shrink-0 rounded border border-dashed border-slate-200`} />}
+                  <span className="truncate flex-1">
                     {p.label || p.sku || '—'}
                     {p.sku && p.label && <span className="text-slate-400"> · {p.sku}</span>}
                   </span>

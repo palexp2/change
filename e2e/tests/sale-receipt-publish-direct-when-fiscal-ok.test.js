@@ -1,7 +1,9 @@
-const { test, before, after } = require('node:test')
+const { test, before, after, describe } = require('node:test')
 const assert = require('node:assert/strict')
 const { chromium } = require('playwright')
-
+// Enveloppé dans describe : sous Node 18, un after() de premier niveau n'est joué
+// qu'une fois la boucle vide — un navigateur ouvert l'en empêche, le test pend.
+describe('sale-receipt-publish-direct-when-fiscal-ok', () => {
 const URL = process.env.ERP_URL || 'http://localhost:3004/erp'
 const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
@@ -127,4 +129,5 @@ test('écart fiscal → modale ; conforme → publication directe sans modale', 
   await pushReq // la publication est partie directement
   assert.equal(pushCount, 1, 'la publication doit partir au clic quand le statut fiscal est conforme')
   assert.equal(await page.getByTestId('qb-confirm-modal').count(), 0, 'aucune modale de confirmation ne doit s’afficher quand c’est conforme')
+})
 })

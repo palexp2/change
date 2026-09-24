@@ -1,10 +1,15 @@
+import { roofInverterSupplyKey } from '../lib/discoveryRoofs.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { EQUIPMENT_LABELS as ROLE_LABELS, EQUIPMENT_OUTPUTS, SENSOR_PRODUCTS } from '../lib/discoveryEquipmentCatalog.js'
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, Trash2, ShoppingCart } from 'lucide-react'
+import { ExternalLink, Trash2, ShoppingCart, Pencil } from 'lucide-react'
+import { Modal } from '../components/Modal.jsx'
+import DiscoveryFormOptions from '../components/DiscoveryFormOptions.jsx'
+import DiscoveryExtrasTable, { additionalEquipment } from '../components/DiscoveryExtrasTable.jsx'
 import api from '../lib/api.js'
 import { Badge } from '../components/Badge.jsx'
+import TableThumb, { TABLE_THUMB_CLASS } from '../components/TableThumb.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -39,8 +44,8 @@ const PIPE_LABELS = {
   steel_O: 'Acier (profil rond)',
 }
 const GUIDE_LABELS = {
-  present: 'Déjà présents',
-  needed: 'À fournir',
+  present: 'Oui',
+  needed: 'Non',
 }
 const PERMISSION_LABELS = {
   chief_grower: 'Chef de culture',
@@ -50,7 +55,7 @@ const PERMISSION_LABELS = {
 // Les tables ci-dessus abrègent les choix livrés par le code pour la lecture
 // interne. Un choix ajouté dans l'éditeur n'y figure pas : on le résout alors
 // dans le calque, où vit son libellé.
-function choiceLabel(schema, listId, value, labels) {
+function choiceLabel(schema, listId, value, labels = {}) {
   if (value == null || value === '') return null
   return labels[value] ?? schema.opts(listId).find(o => o.value === value)?.label ?? String(value)
 }
@@ -60,10 +65,10 @@ function yesNo(v) {
   return v ? 'Oui' : 'Non'
 }
 
-function Row({ label, children }) {
+function Row({ label, children, wide = false }) {
   const empty = children == null || children === '' || children === false
   return (
-    <div className="min-w-0 break-words">
+    <div className={`min-w-0 break-words${wide ? ' col-span-full' : ''}`}>
       <div className="text-xs font-medium text-slate-500 mb-1">{label}</div>
       <div className="text-sm text-slate-900">{empty ? <span className="text-slate-400">—</span> : children}</div>
     </div>
@@ -110,7 +115,7 @@ function ResponseGroup({ title, children, checks = [], verification, onCheck, sa
   )
 }
 
-function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) {
+function GreenhouseCard({ g, idx, form, equipment, images, types, response, onCheck, saving }) {
   const perm = PERMISSION_LABELS[g.permission_level]
   // Serre Helper : côtés ouvrants seulement — les autres automatisations ne lui
   // sont pas demandées, inutile de montrer leurs lignes.
@@ -151,14 +156,33 @@ function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) 
             <Row label="Hauteur côtés (pi)">{g.side_vent_height || (g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : null)}</Row>
             <Row label="Tuyau de côté">{choiceLabel(form, 'greenhouse.side_pipe_type_options', g.side_pipe_type, PIPE_LABELS)}</Row>
             <Row label="Diamètre côté">{g.side_pipe_diameter}</Row>
-            <Row label="Tuyaux guides">{choiceLabel(form, 'greenhouse.guide_pipes_options', g.guide_pipes_state, GUIDE_LABELS)}</Row>
+            <Row label="Tuyaux guides 1 à 1 5/16 po">{choiceLabel(form, 'greenhouse.guide_pipes_options', g.guide_pipes_state, GUIDE_LABELS)}</Row>
             <Row label="Diamètre guides">{g.guide_pipe_diameter}</Row>
             {g.wants_compatible_guide_pipes && <Row label="Guides compatibles">À fournir</Row>}
           </>
         )}
         {g.has_existing_side_vent_motors && <Row label="Moteurs déclarés">{[g.side_vent_motor_brand, g.side_vent_motor_model].filter(Boolean).join(' ') || null}</Row>}
+        {g.has_existing_side_vent_motors && typeof g.side_has_inverters === 'boolean' && <Row label="Inverseurs">{g.side_has_inverters
+          ? [g.side_inverter_model === 'other' ? [g.side_inverter_brand_other, g.side_inverter_model_other].filter(Boolean).join(' ') || 'Autre' : g.side_inverter_model, { per_motor: 'un par moteur', per_two: 'un pour deux moteurs' }[g.side_inverter_ratio]].filter(Boolean).join(', ')
+          : 'Aucun'}</Row>}
         </div>
         </ResponseGroup>
+        {(g.has_roof_vents != null || g.num_roof_vents != null || g.roof_motor_voltage) && <ResponseGroup title="Toits ouvrants">
+            <Row label="Toit ouvrant">{yesNo(g.has_roof_vents)}</Row>
+            <Row label="Nombre de toits ouvrants">{g.num_roof_vents}</Row>
+            {(g.has_roof_vents || g.roof_motor_voltage) && <>
+              <Row label="Tension du moteur">{choiceLabel(form, 'roofs.voltage_options', g.roof_motor_voltage)}</Row>
+              <Row label="Inverseur déjà disponible">{yesNo(g.has_roof_inverter)}</Row>
+              {g.has_roof_inverter === true && <>
+                <Row label="Inverseur">{choiceLabel(form, 'roofs.inverter_options', g.roof_inverter_type)}</Row>
+                {g.roof_inverter_type === 'other' && <><Row label="Marque">{g.roof_inverter_brand}</Row><Row label="Modèle">{g.roof_inverter_model}</Row></>}
+              </>}
+              {g.has_roof_inverter === false && <>
+                {g.roof_motor_voltage === '240' && <Row label="Ridder RW240, 1 phase, 5 fils">{yesNo(g.roof_motor_ridder_rw240)}</Row>}
+                <Row label="Fourniture de l’inverseur">{form.t(roofInverterSupplyKey(g))}</Row>
+              </>}
+            </>}
+          </ResponseGroup>}
         {!helperOnly && <>
           {!g.has_louvers || !g.louvers?.length ? <ResponseGroup title="Louvres">
           <Row label="Louvres">{g.has_louvers === false ? 'Aucune' : g.louvers?.length || null}</Row>
@@ -172,30 +196,34 @@ function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) 
             {Number(g.num_fans) === 2 && <Row label="Puissance ventilateurs">{fansHpLabel(g)}</Row>}
           </div>
         </ResponseGroup>}
-        {g.permission_level === 'chief_grower' && furnaces.length === 0 && <ResponseGroup title="Fournaises">
+        {(g.permission_level === 'chief_grower' || g.has_furnaces != null) && furnaces.length === 0 && <ResponseGroup title="Fournaises">
           <Row label="Fournaises">{yesNo(g.has_furnaces)}</Row>
         </ResponseGroup>}
           {furnaces.map((f, i) => (
             <ResponseGroup key={i} title={`Fournaise #${i + 1}`} {...checkProps([[`furnace:${i}`, `Fournaise #${i + 1} vérifiée`]])}>
             <div className="system-response-grid">
-              <Row label="Marque / modèle">{[f.brand, f.model === 'Autre' ? f.model_other : f.model].filter(Boolean).join(' ') || null}</Row>
+              <Row label="Thermostat mural">{form.opts('furnace.dry_contact_options').find(o => o.value === f.dry_contact_24v)?.label || null}</Row>
+              {/* Les réponses d'avant la question du contact sec ne portent que la marque et le modèle. */}
+              {(f.brand || f.model) && <Row label="Marque / modèle">{[f.brand === 'Autre' ? f.brand_other || f.brand : f.brand, f.model === 'Autre' ? f.model_other : f.model].filter(Boolean).join(' ') || null}</Row>}
               <Row label="Filage (pi)">{f.control_wire_feet || null}</Row>
               <Row label="Thermostat de secours">{yesNo(f.backup_thermostat)}</Row>
             </div>
             </ResponseGroup>
           ))}
-        {g.permission_level === 'chief_grower' && <ResponseGroup title="Irrigation" {...checkProps([
+        {(g.permission_level === 'chief_grower' || (g.irrigation_zones != null && g.irrigation_zones !== '')) && <ResponseGroup title="Irrigation" {...checkProps([
           zones > 0 && g.needs_orisha_valves === false && ['valves', 'Valves du client vérifiées'],
         ])}>
           <div className="system-response-grid">
-            <Row label="Zones d'irrigation">{zones || null}</Row>
-            {zones > 0 && <Row label="Valves 1 po par Orisha">{yesNo(g.needs_orisha_valves)}</Row>}
+            <Row label="Zones">{g.irrigation_zones === 0 || g.irrigation_zones === '0' ? 0 : zones || null}</Row>
+            {zones > 0 && <Row label="Valves à fournir">{g.needs_orisha_valves === true ? (g.orisha_valves_count || null) : g.needs_orisha_valves === false ? 0 : null}</Row>}
+            {zones > 0 && <Row label="Fil à fournir (pi)">{g.valve_control_wire_feet ?? null}</Row>}
+            {g.needs_orisha_valves === false && <Row label="Valves en place">{g.valve_brand === 'Autre marque' ? [g.valve_brand_other, g.valve_model].filter(Boolean).join(' ') || g.valve_brand : [g.valve_brand, g.valve_model].filter(Boolean).join(' ') || null}</Row>}
           </div>
         </ResponseGroup>}
         {!helperOnly && response.form_options?.humidity_retention && <ResponseGroup title="Rétention d’humidité">
           <div className="system-response-grid">
             <Row label="Valve humidité">{yesNo(g.humidity_valve)}</Row>
-            <Row label="HAF à fournir">{g.humidity_haf ? g.humidity_haf_count : 0}</Row>
+            <Row label="HAF à automatiser">{yesNo(g.humidity_haf)}</Row>
           </div>
         </ResponseGroup>}
         {extraRows.length > 0 && <ResponseGroup title="Autres réponses">
@@ -203,23 +231,39 @@ function GreenhouseCard({ g, idx, form, equipment, response, onCheck, saving }) 
         </ResponseGroup>}
       </div>
       </div>
-      {equipment && <EquipmentPreview equipment={equipment} />}
+      {equipment && <EquipmentPreview equipment={equipment} images={images} types={types} />}
       </div>
     </section>
   )
 }
 
-function EquipmentPreview({ equipment: g }) {
+// Regroupe les équipements par type de produit, dans l'ordre d'apparition.
+function groupByType(items, types) {
+  const groups = new Map()
+  for (const item of items) {
+    const type = types[item.role] || 'Autre'
+    if (!groups.has(type)) groups.set(type, [])
+    groups.get(type).push(item)
+  }
+  return [...groups]
+}
+
+function EquipmentPreview({ equipment: g, images = {}, types = {} }) {
   return <div className="system-greenhouse-equipment min-w-0">
-    <h3 className="text-sm font-semibold text-slate-900">Équipements suggérés</h3>
+    <h3 className="text-sm font-semibold text-slate-900">Équipements</h3>
     <p className="text-xs text-slate-500 mt-1 mb-3">{g.slots == null ? 'Dimensionnement à compléter' : `${g.slots} sortie${g.slots !== 1 ? 's' : ''} · ${g.activation_modules} module${g.activation_modules !== 1 ? 's' : ''} V2`}</p>
     {g.items.length > 0 ? <table className="w-full text-sm">
-      <caption className="sr-only">Équipements suggérés pour la serre #{g.greenhouse}</caption>
+      <caption className="sr-only">Équipements pour la serre #{g.greenhouse}</caption>
       <thead><tr className="text-xs text-slate-500 border-b border-slate-200"><th scope="col" className="font-medium text-left pb-2">Équipement</th><th scope="col" className="font-medium text-right pb-2 pl-3">Qté</th></tr></thead>
-      <tbody>{g.items.map((item, i) => <tr key={i} className="border-b border-slate-100 last:border-0">
-        <td className="py-2 text-slate-700 break-words">{ROLE_LABELS[item.role] || item.role}{item.note && item.role !== 'activation_v2' && <span className="block text-xs text-slate-500">{item.note}</span>}</td>
+      {groupByType(g.items, types).map(([type, items]) => <tbody key={type}>
+      <tr><th scope="colgroup" colSpan={2} className="pt-3 pb-1 text-left text-xs font-medium text-slate-500">{type}</th></tr>
+      {items.map((item, i) => <tr key={i} className="border-b border-slate-100 last:border-0">
+        <td className="py-2 text-slate-700 break-words"><div className="flex items-start gap-2">{images[item.role] ? <TableThumb src={images[item.role]} className="shrink-0 border border-slate-200" /> : <div className={`${TABLE_THUMB_CLASS} shrink-0`} />}<div className="min-w-0">{ROLE_LABELS[item.role] || item.role}{item.note && item.role !== 'activation_v2' && <span className="block text-xs text-slate-500">{item.note}</span>}{item.role === 'activation_v2' && g.slot_sources?.length > 0 && <ul className="mt-1 text-xs text-slate-500">
+          {g.slot_sources.map(s => <li key={s.label} className="flex justify-between gap-2"><span className="min-w-0">{s.label}{s.qty > 1 && ` ×${s.qty}`}</span><span className="tabular-nums shrink-0">{s.slots}</span></li>)}
+          <li className="flex justify-between gap-2 border-t border-slate-100 mt-0.5 pt-0.5 font-medium"><span>Sorties</span><span className="tabular-nums">{g.slots} / {item.qty * 4}</span></li>
+        </ul>}</div></div></td>
         <td className="py-2 pl-3 text-right align-top font-medium tabular-nums text-slate-900">{item.qty}</td>
-      </tr>)}</tbody>
+      </tr>)}</tbody>)}
     </table> : <p className="text-sm text-slate-500">Aucun équipement à ajouter.</p>}
   </div>
 }
@@ -233,6 +277,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
   const [previewAttempt, setPreviewAttempt] = useState(0)
   const [creatingOrder, setCreatingOrder] = useState(false)
   const [savingVerification, setSavingVerification] = useState(false)
+  const [editingOptions, setEditingOptions] = useState(false)
 
   const { record: form, setRecord, loading, loadError, reload } = useDetailRecord(
     () => api.discoveryForms.get(id), [id], { clearOnError: true },
@@ -294,7 +339,12 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
   }
   async function createOrder() {
     setCreatingOrder(true)
-    try { const order = await api.discoveryForms.createOrder(id); setRecord(current => current?.id === form.id ? { ...current, generated_order_id: order.id, generated_order_number: order.order_number } : current); addToast({ message: `Commande #${order.order_number} créée`, type: 'success' }); reload() }
+    try {
+      const order = await api.discoveryForms.createOrder(id)
+      setRecord(current => current?.id === form.id ? { ...current, generated_order_id: order.id, generated_order_number: order.order_number } : current)
+      addToast({ message: `Commande #${order.order_number} créée`, type: 'success' })
+      reload()
+    }
     catch (err) { addToast({ message: err.message || 'Création impossible', type: 'error' }) }
     finally { setCreatingOrder(false) }
   }
@@ -302,6 +352,11 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
   const submitted = form.status === 'submitted'
   const greenhouses = form.greenhouses || []
   const extras = form.extras || []
+  // Équipements supplémentaires fixés par Orisha à la création, par serre.
+  const extraRows = (Array.isArray(form.form_options?.additional_equipment) ? form.form_options.additional_equipment : [])
+    .map((e, i) => [i, [['furnaces', 'fournaise'], ['valves', 'valve'], ['rollups', 'roll-up'], ['roofs', 'toit ouvrant']]
+      .filter(([key]) => e?.[key] > 0).map(([key, label]) => `${e[key]} ${label}${e[key] > 1 ? 's' : ''}`).join(', ')])
+    .filter(([, text]) => text)
   const sameShipping = form.shipping_same_as_farm === true
   // Questions hors serre, toutes sections confondues, dans l'ordre de l'éditeur.
   const formLevelCustom = CUSTOM_SECTIONS
@@ -332,6 +387,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
         ),
         actions: (
           <div className="flex flex-wrap items-center gap-2">
+            {!form.generated_order_id && <button onClick={() => setEditingOptions(true)} className="btn-ghost btn-sm"><Pencil size={14} /> Modifier</button>}
             {!form.generated_order_id && <button onClick={createOrder} disabled={creatingOrder || savingVerification || preview?.calculationComplete === false} className="btn-primary btn-sm"><ShoppingCart size={14} /> {creatingOrder ? 'Création…' : 'Créer une commande'}</button>}
             <button onClick={handleDelete} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg" title="Supprimer" aria-label="Supprimer ce système"><Trash2 size={16} /></button>
           </div>
@@ -350,7 +406,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
         {[["farm", "Adresse de la ferme"], ["shipping", "Adresse de livraison"]].map(([kind, label]) => {
           const address = form[`${kind}_address`]
           const addressId = form[`${kind}_address_id`]
-          return <Row key={kind} label={label}>
+          return <Row key={kind} label={label} wide>
             <LinkedRecordField
               name={`${kind}_address_id`}
               value={addressId}
@@ -359,6 +415,7 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
               searchFilter={[{ column: 'company_id', op: 'is', value: form.company_id }]}
               getHref={a => `/adresses/${a.id}`}
               allowClear={false}
+              wrap
               saving={savingVerification}
               disabled={savingVerification || creatingOrder}
               onChange={value => saveAddress(`${kind}_address_id`, value)}
@@ -393,15 +450,15 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
 
       {greenhouses.length === 0
         ? <div className="card p-5 text-sm text-slate-400">Les serres apparaîtront ici lorsque le client aura rempli le formulaire.</div>
-        : greenhouses.map((g, i) => <GreenhouseCard key={i} g={g} idx={i} form={formSchema} equipment={submitted ? preview?.greenhouses.find(item => item.greenhouse === i + 1) : null} response={form} onCheck={setVerification} saving={savingVerification} />)}
+        : greenhouses.map((g, i) => <GreenhouseCard key={i} g={g} idx={i} form={formSchema} equipment={submitted ? preview?.greenhouses.find(item => item.greenhouse === i + 1) : null} images={preview?.productImages} types={preview?.productTypes} response={form} onCheck={setVerification} saving={savingVerification} />)}
 
 
-      {(form.form_options?.mobile_controller || form.form_options?.humidity_retention || SENSOR_PRODUCTS.some(([role]) => form.form_options?.sensors?.[role] > 0)) && <Section title="Options achetées" cols={1}>
+      {(form.form_options?.mobile_controller || form.form_options?.humidity_retention || SENSOR_PRODUCTS.some(([role]) => form.form_options?.sensors?.[role] > 0) || extraRows.length > 0) && <Section title="Options achetées" cols={1}>
+        {extraRows.map(([i, text]) => <Row key={i} label={`Serre #${i + 1} · extras`}>{text}</Row>)}
         {form.form_options.mobile_controller && <Row label="Internet">Contrôleur mobile</Row>}
         {form.form_options.humidity_retention && <Row label="Option">Conservation de l’humidité</Row>}
         {SENSOR_PRODUCTS.filter(([role]) => form.form_options.sensors?.[role] > 0).map(([role, label]) => <Row key={role} label={label}>{form.form_options.sensors[role]}</Row>)}
       </Section>}
-      {preview?.siteItems?.length > 0 && <Section title="Équipements du site" cols={1}>{preview.siteItems.map((item, i) => <div key={i} className="flex justify-between gap-4 text-sm"><span>{ROLE_LABELS[item.role] || item.role}</span><span className="font-medium tabular-nums">{item.qty}</span></div>)}</Section>}
       {extras.length > 0 && (
         <Section title="Extras" cols={1}>
           {extras.map((it, i) => (
@@ -412,6 +469,40 @@ export default function DiscoveryFormDetail({ recordId: id, onClose, onDeleted }
         </Section>
       )}
     </div>
+    <Modal isOpen={editingOptions} title="Modifier le système" onClose={() => setEditingOptions(false)}>
+      {editingOptions && <EditOptionsForm form={form} onClose={() => setEditingOptions(false)} onSaved={() => { setEditingOptions(false); reload(); setPreviewAttempt(n => n + 1) }} />}
+    </Modal>
     </DetailShell>
+  )
+}
+
+// Options achetées et extras par serre : ce qu'Orisha a fixé à la création.
+function EditOptionsForm({ form, onClose, onSaved }) {
+  const { addToast } = useToast()
+  const initial = form.form_options || {}
+  const [options, setOptions] = useState({ ...initial, sensors: { ...(initial.sensors || {}) } })
+  const cards = (form.greenhouses || []).map((g, i) => ({ key: String(i), helper: sideVentsOnly(g.permission_level || form.permission_level) }))
+  const [extras, setExtras] = useState(() => Object.fromEntries(cards.map((card, i) => [card.key, { ...(initial.additional_equipment?.[i] || {}) }])))
+  const [saving, setSaving] = useState(false)
+  async function handleSubmit(e) {
+    e.preventDefault()
+    setSaving(true)
+    try {
+      await api.discoveryForms.saveOptions(form.id, { ...options, additional_equipment: additionalEquipment(extras, cards) })
+      onSaved()
+    } catch (err) {
+      addToast({ message: err.message || 'Enregistrement impossible', type: 'error' })
+      setSaving(false)
+    }
+  }
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <DiscoveryExtrasTable cards={cards} values={extras} onChange={setExtras} disabled={saving} />
+      <DiscoveryFormOptions value={options} onChange={setOptions} disabled={saving} />
+      <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
+        <button type="button" onClick={onClose} className="btn-ghost">Annuler</button>
+        <button type="submit" disabled={saving} className="btn-primary">{saving ? 'Enregistrement…' : 'Enregistrer'}</button>
+      </div>
+    </form>
   )
 }

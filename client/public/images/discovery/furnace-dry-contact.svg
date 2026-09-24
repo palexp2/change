@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <rect width="640" height="300" fill="#fff"/>
+
+  <!-- Fournaise suspendue, panneau de contrôle ouvert -->
+  <g stroke="#64748b" stroke-width="3" stroke-linecap="round">
+    <path d="M70 84V60M190 84V60"/>
+  </g>
+  <rect x="48" y="84" width="164" height="112" rx="8" fill="#e2e8f0" stroke="#64748b" stroke-width="3.4"/>
+  <circle cx="98" cy="150" r="30" fill="#f8fafc" stroke="#64748b" stroke-width="3"/>
+  <path d="M78 130l40 40M78 170l40-40M98 120v60" fill="none" stroke="#64748b" stroke-width="3"/>
+  <rect x="150" y="116" width="22" height="52" rx="4" fill="#f59e0b"/>
+  <g fill="none" stroke="#b45309" stroke-width="3" stroke-linecap="round">
+    <path d="M72 208q-14 12 0 24M118 208q-14 12 0 24M164 208q-14 12 0 24"/>
+  </g>
+
+  <!-- Deux fils de contrôle jusqu'au bornier, agrandi à droite -->
+  <path d="M212 132h44q10 0 10-10V74q0-10 10-10h64" fill="none" stroke="#22a34a" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M212 152h60q10 0 10 10v66q0 10 10 10h48" fill="none" stroke="#22a34a" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Bornier : R / W et T1 / T2 -->
+  <rect x="340" y="46" width="252" height="208" rx="14" fill="#f8fafc" stroke="#64748b" stroke-width="3.4"/>
+  <g fill="#fff" stroke="#64748b" stroke-width="3">
+    <circle cx="384" cy="96" r="16"/>
+    <circle cx="384" cy="204" r="16"/>
+  </g>
+  <g fill="none" stroke="#64748b" stroke-width="3" stroke-linecap="round">
+    <path d="M375 87l18 18M393 87l-18 18M375 195l18 18M393 195l-18 18"/>
+  </g>
+  <g font-family="system-ui, sans-serif" font-size="26" font-weight="600" fill="#334155">
+    <text x="416" y="90">R</text>
+    <text x="416" y="198">W</text>
+  </g>
+  <g font-family="system-ui, sans-serif" font-size="19" fill="#94a3b8">
+    <text x="416" y="114">T1</text>
+    <text x="416" y="222">T2</text>
+  </g>
+
+  <!-- Contact sec : deux bornes reliées par un simple interrupteur -->
+  <path d="M478 96h40M478 204h40M518 96v36M518 204v-36" fill="none" stroke="#22a34a" stroke-width="3.4" stroke-linecap="round"/>
+  <path d="M518 132l40-16" fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="518" cy="132" r="6" fill="#22a34a"/>
+  <circle cx="518" cy="168" r="6" fill="#22a34a"/>
+  <text x="556" y="176" font-family="system-ui, sans-serif" font-size="22" font-weight="600" fill="#22a34a" text-anchor="middle">24 V</text>
+
+  <rect x="0" y="268" width="640" height="8" rx="4" fill="#22a34a"/>
+</svg>

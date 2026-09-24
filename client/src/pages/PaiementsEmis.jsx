@@ -127,6 +127,8 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
   const { addToast } = useToast()
   const [busy, setBusy] = useState(false)
   const [open, setOpen] = useState(false)
+  // Ouvert par le raccourci « + n° » : le curseur va droit dans le champ.
+  const [focusRef, setFocusRef] = useState(false)
   const sp = spec(p.method)
   // Comparaison String() (valeurs d'inputs vs nombres en fiche), pas de
   // conversion '' → null, et re-fetch même en échec pour resynchroniser la ligne.
@@ -143,9 +145,27 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
     catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setBusy(false) }
   }
+  // Rejoue l'envoi de l'écriture de paiement dans QuickBooks quand il a échoué
+  // ou qu'il avait été écarté (facture publiée depuis, montant corrigé…).
+  const qbPush = async () => {
+    setBusy(true)
+    try {
+      const out = await api.treasury.payments.qbPush(p.id)
+      addToast({
+        message: out.pushed ? 'Facture marquée payée dans QuickBooks' : (out.reason || out.error),
+        type: out.pushed ? 'success' : 'error',
+      })
+      onChanged()
+    } catch (e) { addToast({ message: e.message, type: 'error' }) }
+    finally { setBusy(false) }
+  }
   const remove = async () => {
     setBusy(true)
-    try { await api.treasury.payments.delete(p.id); onChanged() }
+    try {
+      const out = await api.treasury.payments.delete(p.id)
+      if (out?.warning) addToast({ message: out.warning, type: 'error' })
+      onChanged()
+    }
     catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setBusy(false) }
   }
@@ -219,6 +239,16 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
         <span className="shrink-0 hidden sm:block max-w-[240px] truncate text-xs text-slate-500" title={meta}>
           {meta}
         </span>
+        {/* En vol sans n° de confirmation : on revient souvent l'écrire après
+            coup (il se lit sur le site de la banque) — raccourci sur la ligne. */}
+        {!cleared && !p.reference && !sp.transfer && p.direction !== 'in' && (
+          <button type="button" data-testid={`payment-add-reference-${p.id}`}
+            onClick={() => { setOpen(true); setFocusRef(true) }}
+            className="shrink-0 text-[11px] text-amber-700 hover:underline"
+            title={`Ajouter le ${(sp.refLabel || 'n° de confirmation').toLowerCase()}`}>
+            + n°
+          </button>
+        )}
 
         <span className={`shrink-0 w-28 text-right text-sm font-medium tabular-nums ${p.direction === 'in' ? 'text-emerald-700' : 'text-slate-800'}`}
           title={cleared ? 'Passé à la banque' : 'Pas encore sorti du compte'}>
@@ -268,7 +298,9 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
             </Field>
             <Field label={sp.refLabel || 'Référence'}>
               <input defaultValue={p.reference || ''} className={inputXs} data-testid={`payment-reference-${p.id}`}
-                onBlur={e => save('reference', e.target.value)} />
+                autoFocus={focusRef}
+                onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+                onBlur={e => { setFocusRef(false); save('reference', e.target.value) }} />
             </Field>
             <Field as="div" label="N° de facture">
               {p.achat_id
@@ -358,6 +390,23 @@ function PaymentRow({ p, accounts, onChanged, onReuse, particularites }) {
               Voir l'écriture QuickBooks
             </a>
           )}
+          {/* La facture est-elle réglée dans les livres ? Verte avec le lien vers
+              l'écriture ; ambre avec la raison, et un clic pour réessayer. */}
+          {p.qb_billpayment_applies && (p.qb_billpayment_url ? (
+            <a href={p.qb_billpayment_url} target="_blank" rel="noreferrer"
+              className="mt-2 ml-3 inline-flex items-center gap-1 text-xs text-emerald-700 hover:underline"
+              data-testid={`payment-billpayment-link-${p.id}`}
+              title="Écriture de paiement créée par Boréal — la facture est soldée dans QuickBooks">
+              <CheckCircle2 size={12} /> Payée dans QuickBooks
+            </a>
+          ) : (
+            <button type="button" onClick={qbPush} disabled={busy}
+              className="mt-2 ml-3 inline-flex items-center gap-1 text-xs text-amber-700 hover:underline disabled:opacity-50"
+              data-testid={`payment-billpayment-retry-${p.id}`}
+              title={p.qb_billpayment_error || 'Envoyer maintenant'}>
+              <AlertTriangle size={12} /> Pas payée dans QuickBooks
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -1486,7 +1535,7 @@ export default function PaiementsEmis() {
                 « aujourd'hui », dans le même fil. */}
             {pile !== 'envol' && pile !== 'passes' && (
               <div className="mb-5" data-testid="payments-a-payer">
-                <PaymentSchedule />
+                <PaymentSchedule onChanged={load} />
               </div>
             )}
 

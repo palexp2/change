@@ -13,16 +13,17 @@ import api from '../lib/api.js'
 import { fmtMoney } from '../utils/formatters.js'
 import { fmtDate } from '../lib/formatDate.js'
 
-// Ce que chaque nature veut dire, en clair. Deux d'entre elles publient dans
-// QuickBooks une fois acceptées : elles le disent.
+// Ce que chaque nature veut dire, en clair. Celles qui publient dans QuickBooks
+// une fois acceptées le disent — et c'est le SERVEUR qui l'affirme, par le
+// champ `publishes` de chaque proposition : la liste n'est plus recopiée ici.
 const KIND = {
   qb_link: { label: 'Écriture retrouvée dans QuickBooks' },
   doc_match: { label: 'Pièce que nous avions déjà' },
   invoice_found: { label: 'Facture retrouvée' },
-  vendor_expense: { label: 'Dépense sans facture', publishes: true },
+  vendor_expense: { label: 'Dépense sans facture' },
   payment_clear: { label: 'Paiement passé au compte' },
   paie_debit: { label: 'Débit de la paie' },
-  aga_repartition: { label: 'Assurance collective', publishes: true },
+  aga_repartition: { label: 'Assurance collective' },
   debt_payment: { label: 'Versement de dette' },
 }
 
@@ -109,11 +110,11 @@ export default function Propositions() {
               <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
                 {KIND[kind]?.label || kind}
               </span>
-              {KIND[kind]?.publishes && (
+              {list.some((p) => p.publishes) && (
                 <span className="text-[11px] text-amber-700">publie dans QuickBooks</span>
               )}
               <span className="ml-auto text-xs text-slate-400 tabular-nums">{list.length}</span>
-              {status === 'proposee' && list.length > 1 && !KIND[kind]?.publishes && (
+              {status === 'proposee' && list.length > 1 && !list.some((p) => p.publishes) && (
                 <button type="button" disabled={busy === 'lot'} onClick={() => acceptGroup(list)}
                   className="text-xs px-2 py-0.5 rounded-lg border border-slate-300 text-slate-600 hover:bg-white disabled:opacity-40">
                   Tout confirmer

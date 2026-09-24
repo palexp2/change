@@ -12,6 +12,9 @@ import { validateTaxCodeAgainstType, getTransactionType } from './fiscalStatus.j
 import { completeLiaDescription } from './purchaseLiaMatch.js'
 import { round2, round2Safe } from '../utils/money.js'
 import { uploadsPath } from '../config/uploads.js'
+import { consolidateSingleItemCharges } from './saleReceiptSingleItem.js'
+import { canonicalVendorName } from './vendorIdentity.js'
+import { invoiceNetHtCents, recognitionNetAmount } from './invoiceAccountingAmounts.js'
 
 const SALE_RECEIPT_MIME = {
   '.jpg':  'image/jpeg',
@@ -118,7 +121,11 @@ function withCurrencySuffix(name, currency) {
 }
 
 export async function findOrCreateVendor(vendorName, currency = 'CAD') {
-  const effectiveName = withCurrencySuffix(vendorName, currency)
+  // Canonisation AVANT toute création : une variante de raison sociale (« Amazon.com.ca
+  // ULC », « Federal Express Canada Corporation »…) doit retomber sur le fournisseur QB
+  // déjà en place, jamais créer son doublon. Règle de Charles (2026-09-19) : on ne crée
+  // JAMAIS un fournisseur Amazon — la boutique, c'est « Amazon.ca », et rien d'autre.
+  const effectiveName = withCurrencySuffix(canonicalVendorName(vendorName) || vendorName, currency)
 
   // 1. Chercher dans companies par nom pour récupérer un quickbooks_vendor_id déjà connu
   const existing = db.prepare(
@@ -192,6 +199,25 @@ function fieldError(message, field) {
   return Object.assign(new Error(message), { field })
 }
 
+// Les parts d'un achat coupé en plusieurs comptes, si elles tiennent debout :
+// chacune avec son compte et son montant, et leur somme égale à la base de
+// l'écriture. Sinon `null`, et l'écriture garde sa ligne unique.
+function splitLinesOf(row, base) {
+  let parsed
+  try { parsed = JSON.parse(row.lines || 'null') } catch { return null }
+  if (!Array.isArray(parsed) || parsed.length < 2) return null
+  const parts = parsed.map((l) => ({
+    account_id: String(l?.account_id || '').trim(),
+    amount: Math.round((Number(l?.amount) || 0) * 100) / 100,
+    tax_code_id: l?.tax_code_id || null,
+    description: l?.description || null,
+  }))
+  if (parts.some((l) => !l.account_id || !(l.amount > 0))) return null
+  const sum = Math.round(parts.reduce((n, l) => n + l.amount, 0) * 100) / 100
+  if (Math.abs(sum - Math.round(base * 100) / 100) > 0.02) return null
+  return parts
+}
+
 export async function pushAchatToQB(achatId) {
   const row = db.prepare('SELECT * FROM achats_fournisseurs WHERE id=?').get(achatId)
   if (!row) throw new Error('Achat introuvable')
@@ -233,6 +259,32 @@ export async function pushAchatToQB(achatId) {
   const lineDetail = { AccountRef: { value: expenseAccountId } }
   if (applyTax) lineDetail.TaxCodeRef = { value: row.tax_code_id }
 
+  // Écriture coupée en plusieurs comptes : chaque part devient une ligne. On
+  // ne s'en sert que si les parts sont complètes ET qu'elles totalisent
+  // exactement la base — un `lines` hérité d'ailleurs ne doit jamais déformer
+  // une écriture. Sur une facture fournisseur, chaque ligne doit porter son
+  // code de taxe, sinon QuickBooks ignore la taxe.
+  const expenseLines = (description) => {
+    const parts = splitLinesOf(row, lineBase)
+    if (!parts) {
+      return [{
+        Amount: lineBase,
+        DetailType: 'AccountBasedExpenseLineDetail',
+        AccountBasedExpenseLineDetail: lineDetail,
+        Description: description,
+      }]
+    }
+    return parts.map((l) => ({
+      Amount: round2Safe(l.amount),
+      DetailType: 'AccountBasedExpenseLineDetail',
+      AccountBasedExpenseLineDetail: {
+        AccountRef: { value: l.account_id },
+        ...(applyTax ? { TaxCodeRef: { value: l.tax_code_id || row.tax_code_id } } : {}),
+      },
+      Description: l.description || description,
+    }))
+  }
+
   // CurrencyRef obligatoire dès que la devise de l'achat diffère de la home currency —
   // QB rejette sinon la transaction (le fournisseur, lui, est créé/résolu dans cette
   // même devise par resolveQBVendor). Taux Banque du Canada à la date de l'achat.
@@ -263,12 +315,7 @@ export async function pushAchatToQB(achatId) {
       AccountRef: { value: paymentAccountId },
       TxnDate: row.date_achat,
       TotalAmt: row.total_cad,
-      Line: [{
-        Amount: lineBase,
-        DetailType: 'AccountBasedExpenseLineDetail',
-        AccountBasedExpenseLineDetail: lineDetail,
-        Description: row.description || row.category,
-      }],
+      Line: expenseLines(row.description || row.category),
       ...currencyFields,
       ...taxDetail,
     }
@@ -297,12 +344,7 @@ export async function pushAchatToQB(achatId) {
   const bill = {
     VendorRef: { value: vendorId },
     TxnDate: row.date_achat,
-    Line: [{
-      Amount: lineBase,
-      DetailType: 'AccountBasedExpenseLineDetail',
-      AccountBasedExpenseLineDetail: lineDetail,
-      Description: row.notes || row.vendor_invoice_number || row.vendor,
-    }],
+    Line: expenseLines(row.notes || row.vendor_invoice_number || row.vendor),
     ...currencyFields,
     ...taxDetail,
   }
@@ -824,6 +866,7 @@ export const NO_TAX_CODE = '__none__'
 // générique). Sans montant d'article exploitable : une ligne unique au HT, description
 // = descriptions jointes ou libellé de repli.
 export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescription } = {}) {
+  items = consolidateSingleItemCharges(items)
   // lineDetail = détail de base (AccountRef + éventuel TaxCodeRef global). Selon le
   // tax_code_id de l'article, sa ligne reçoit (comme dans QuickBooks) :
   //  - un Id de code QB → ce TaxCodeRef précis ;
@@ -1018,7 +1061,16 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   }
 
   const items = JSON.parse(rec.items || '[]')
-  const txnDate = rec.receipt_date || new Date().toISOString().slice(0, 10)
+  // DATE DE COMPTABILISATION : celle du passage AU COMPTE quand la ligne du
+  // relevé est appariée à ce document. Une facture datée du 11 débitée le 14
+  // appartient au 14 — c'est la date qui permet au rapprochement de retomber
+  // sur ses pieds. Sans ligne au relevé, la date du document reste la seule.
+  const bankLine = db.prepare(`
+    SELECT txn_date FROM bank_transactions
+    WHERE matched_type='receipt' AND matched_id=? AND deleted_at IS NULL
+    ORDER BY txn_date LIMIT 1
+  `).get(String(receiptId))
+  const txnDate = bankLine?.txn_date || rec.receipt_date || new Date().toISOString().slice(0, 10)
   let totalAmt = rec.total || 0
   let subtotalAmt = rec.subtotal || 0
   let tpsAmt = rec.tps || 0
@@ -1924,12 +1976,7 @@ async function getStripeTaxRateInfo(taxRateId) {
 // = base de la taxe (= taxable_amount sur n'importe quelle ligne tax)
 // Utiliser cette valeur (pas invoice.subtotal qui est pré-remise) pour les SR/RR.
 export function stripeInvoiceNetHtCents(invoice) {
-  if (!invoice) return 0
-  const taxes = Array.isArray(invoice.total_taxes) ? invoice.total_taxes
-    : Array.isArray(invoice.total_tax_amounts) ? invoice.total_tax_amounts
-    : []
-  const totalTax = taxes.reduce((s, t) => s + (t.amount || 0), 0)
-  return (invoice.total || 0) - totalTax
+  return invoiceNetHtCents(invoice) ?? 0
 }
 
 // Lit les taxes appliquées sur une invoice Stripe, peu importe le format (nouveau
@@ -2805,20 +2852,20 @@ function buildPaymentMemo(method, f) {
 // invoice.subtotal (Stripe) est AVANT rabais — sur une facture à rabais, il peut
 // dépasser invoice.total et faire déraper le ratio subtotal/total au-delà de 1
 // (HT gonflé au-delà du TTC reçu — vu sur le Deposit 17936, sept. 2026 : ratio
-// 11000/8853.10 au lieu de 7700/8853.10 net du rabais de 3300 $). On soustrait
-// donc `total_discount_amounts` du subtotal avant de calculer le ratio.
+// 11000/8853.10 au lieu de 7700/8853.10 net du rabais de 3300 $). On
+// utilise le total HT net fourni par Stripe (ou total moins taxes), avec
+// subtotal moins rabais uniquement comme repli pour les anciens objets.
 export function deriveHtFromTtc(amountTtc, invoiceForTax, facture) {
   let subtotal = null, total = null
-  if (invoiceForTax?.subtotal != null && invoiceForTax?.total != null) {
-    const discountTotal = (invoiceForTax.total_discount_amounts || [])
-      .reduce((s, d) => s + (d.amount || 0), 0)
-    subtotal = (invoiceForTax.subtotal - discountTotal) / 100
+  const netCents = invoiceNetHtCents(invoiceForTax)
+  if (netCents != null && invoiceForTax?.total != null) {
+    subtotal = netCents / 100
     total = invoiceForTax.total / 100
   } else if (facture?.amount_before_tax_cad && facture?.total_amount) {
     subtotal = facture.amount_before_tax_cad
     total = facture.total_amount
   }
-  if (total > 0 && subtotal > 0 && Math.abs(subtotal - total) > 0.001) {
+  if (total > 0 && subtotal >= 0 && Math.abs(subtotal - total) > 0.001) {
     return Math.round(amountTtc * (subtotal / total) * 100) / 100
   }
   return amountTtc
@@ -2872,9 +2919,9 @@ export async function buildPaymentDeposit(params) {
   let invoiceForTax = null
   if (applyTax) {
     invoiceForTax = params.invoice || null
-    if (!invoiceForTax && f.stripe_invoice_id) {
+    if (!invoiceForTax && f.stripe_invoice_id?.startsWith('in_')) {
       try { invoiceForTax = await getStripeClient().invoices.retrieve(f.stripe_invoice_id) }
-      catch (e) { console.error(`Invoice Stripe non récupérée pour facture ${f.id}:`, e.message) }
+      catch (e) { throw new Error(`Impossible de vérifier le montant net de rabais de la facture Stripe : ${e.message}`) }
     }
     taxCodeId = params.taxCodeId || null
     if (!taxCodeId && invoiceForTax) {
@@ -3053,7 +3100,20 @@ export async function postPaymentDeposit(paymentId, options = {}) {
     `).run(lineAmount, Math.round(lineAmount * exchangeRate * 100) / 100, currency, `deposit:${depositId}`, p.facture_id)
   }
 
-  return { qb_deposit_id: depositId, amount, currency, credit_account: creditLabel }
+  // Le PDF de la facture suit l'écriture : le dépôt ne disait pas ce qu'il
+  // encaissait, il fallait ouvrir Stripe pour le savoir. Un échec ici ne
+  // remet pas le dépôt en cause, il se raconte dans la réponse.
+  let attachment = null
+  try {
+    const { attachFacturePdfToQbEntity } = await import('./factureQbAttachment.js')
+    attachment = await attachFacturePdfToQbEntity({
+      factureId: p.facture_id, entityType: 'Deposit', entityId: depositId,
+    })
+  } catch (e) {
+    attachment = { attached: false, error: e.message }
+  }
+
+  return { qb_deposit_id: depositId, amount, currency, credit_account: creditLabel, attachment }
 }
 
 // Alias rétrocompatible — l'ancien nom est encore importé par routes/admin.js.
@@ -3208,23 +3268,16 @@ export async function postRevenueRecognitionJE(factureId, options = {}) {
     // deferred_revenue_at force aussi le pivot 23900 (passif déjà matérialisé par le
     // Deposit du payout, cas normal où le payout précède l'expédition).
     const useDeferred = !!f.deferred_revenue_at || (f.kind === 'order' && f.status === 'Payé')
-    let amount, currency
+    // Relire le total net Stripe : les anciens montants déférés et certains
+    // mappings ERP peuvent encore contenir le subtotal avant rabais.
+    const invoice = f.invoice_id?.startsWith('in_')
+      ? await getStripeClient().invoices.retrieve(f.invoice_id)
+      : null
+    let amount = recognitionNetAmount(f, invoice)
+    const currency = f.deferred_revenue_at ? (f.deferred_revenue_currency || 'CAD') : (f.currency || 'CAD')
     if (f.deferred_revenue_at) {
-      if (!f.deferred_revenue_amount_native) throw new Error('Montant déféré inconnu — relance le push du payout')
-      amount = Math.round(f.deferred_revenue_amount_native * 100) / 100
-      currency = f.deferred_revenue_currency || 'CAD'
-      // Garde-fou HT : le constat de vente porte toujours sur le montant avant
-      // taxes. Certains montants déférés stockés avant le fix TVH du push de
-      // payout incluent la taxe (TTC) — on recoupe avec la charge Stripe et on
-      // constate le HT réel si le montant stocké le dépasse.
       const ht = stripeChargeHtForFacture(f.invoice_id)
       if (ht != null && ht > 0 && amount > ht + 0.01) amount = ht
-    } else {
-      // Montant HT de la facture (amount_before_tax_cad porte le subtotal dans la devise
-      // native, malgré son nom historique). Devise = facture.currency.
-      if (!f.amount_before_tax_cad) throw new Error('Montant HT inconnu sur la facture')
-      amount = Math.round(f.amount_before_tax_cad * 100) / 100
-      currency = f.currency || 'CAD'
     }
 
     const today = new Date().toISOString().slice(0, 10)

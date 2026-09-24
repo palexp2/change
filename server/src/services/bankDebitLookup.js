@@ -11,6 +11,7 @@
 // tranche.
 import db from './../db/database.js'
 import { normalizeLabel } from './bankReconciliation.js'
+import { touchBankTxns } from './realtimeEmitters.js'
 
 export function shiftDate(iso, days) {
   const d = new Date(`${iso}T00:00:00Z`)
@@ -106,5 +107,6 @@ export function linkTxnToQbEntity(txnId, { qbTxnId, qbTxnType = 'purchase' } = {
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
     WHERE id=? AND deleted_at IS NULL AND qb_txn_id IS NULL
   `).run(String(qbTxnId), qbTxnType, txnId)
+  if (res.changes) touchBankTxns([txnId])
   return res.changes > 0
 }

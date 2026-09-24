@@ -34,7 +34,7 @@ const TX_TYPE_LABELS = {
   application_fee: 'Frais app',
   adjustment: 'Ajustement',
   dispute: 'Litige',
-  payout: 'Payout',
+  payout: 'Versement',
 }
 
 const INFO_LABEL_CLASS = 'text-xs text-slate-400 uppercase tracking-wide font-medium'
@@ -50,7 +50,7 @@ function InfoField({ label, value }) {
   )
 }
 
-// Valeur d'un champ du payout. Le libellé, l'ordre et la présence du champ sont
+// Valeur d'un champ du versement. Le libellé, l'ordre et la présence du champ sont
 // rendus par la carte de champs commune (<DetailFieldGrid>), qui applique aussi
 // le portier des champs supprimés (/champs/stripe_payouts).
 function PayoutValue({ value }) {
@@ -120,7 +120,7 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
 
   async function handleUnlink() {
     const ok = await askConfirm({
-      title: 'Délier le Deposit QB',
+      title: 'Délier le Deposit QuickBooks',
       message: `Délier le Deposit QB #${payout.qb_deposit_id} de ce payout ? L'ERP vérifiera auprès de QuickBooks que le Deposit n'existe plus avant de délier.`,
       confirmLabel: 'Délier',
       danger: true,
@@ -148,11 +148,11 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
             setActionInfo(`Deposit QB #${res.previous_qb_deposit_id} délié (forcé)`)
             await load()
           } catch (e2) {
-            setActionError(e2.message || 'Erreur unlink (force)')
+            setActionError(e2.message || "Le lien n'a pas pu être retiré")
           }
         }
       } else {
-        setActionError(e.message || 'Erreur unlink QB')
+        setActionError(e.message || "Le lien avec QuickBooks n'a pas pu être retiré")
       }
     } finally {
       setUnlinking(false)
@@ -161,9 +161,9 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
 
   async function handlePush() {
     const ok = await askConfirm({
-      title: 'Pousser vers QuickBooks',
+      title: 'Publier dans QuickBooks',
       message: `Créer un dépôt QuickBooks de ${fmtMoney(payout.amount, payout.currency)} pour ce payout ?`,
-      confirmLabel: 'Pousser',
+      confirmLabel: 'Publier',
     })
     if (!ok) return
     setActionError(null)
@@ -183,13 +183,13 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
       )
       await load()
     } catch (e) {
-      setActionError(e.message || 'Erreur push QB')
+      setActionError(e.message || 'La publication dans QuickBooks a échoué')
     } finally {
       setPushing(false)
     }
   }
 
-  const pending = detailPending({ loading, loadError: error, onRetry: load, record: payout, notFound: 'Payout introuvable.' })
+  const pending = detailPending({ loading, loadError: error, onRetry: load, record: payout, notFound: 'Versement introuvable.' })
   if (pending) return pending
 
   const alreadyPushed = !!payout.qb_deposit_id
@@ -272,7 +272,7 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
             </DetailField>
             <DetailField id="automatic" label="Automatique"><PayoutValue value={payout.automatic ? 'Oui' : 'Non'} /></DetailField>
             <DetailField id="created_date" label="Créé le"><PayoutValue value={fmtDate(payout.created_date)} /></DetailField>
-            <DetailField id="qb_pushed_at" label="Envoyé à QB"><PayoutValue value={payout.qb_pushed_at ? fmtDate(payout.qb_pushed_at) : null} /></DetailField>
+            <DetailField id="qb_pushed_at" label="Envoyé à QuickBooks"><PayoutValue value={payout.qb_pushed_at ? fmtDate(payout.qb_pushed_at) : null} /></DetailField>
             <DetailField id="description" label="Description" span2><PayoutValue value={payout.description} /></DetailField>
           </DetailFieldGrid>
 
@@ -292,7 +292,7 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
           <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
             <div>
               <h2 className="text-sm font-semibold text-slate-900">QuickBooks</h2>
-              <p className="text-xs text-slate-500 mt-0.5">Construire et pousser un Deposit à partir des balance_transactions.</p>
+              <p className="text-xs text-slate-500 mt-0.5">Construire et publier un Deposit à partir des mouvements Stripe.</p>
             </div>
             <div className="flex items-center gap-2">
               <button
@@ -308,7 +308,7 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
                   onClick={handleUnlink}
                   disabled={unlinking}
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-red-700 bg-white border border-red-200 rounded-lg hover:bg-red-50 disabled:opacity-50"
-                  title="Délier le Deposit QB si supprimé/annulé dans QuickBooks"
+                  title="Délier le Deposit si supprimé ou annulé dans QuickBooks"
                 >
                   <X size={14} /> {unlinking ? 'Déliage…' : 'Délier'}
                 </button>
@@ -319,7 +319,7 @@ export default function StripePayoutDetail({ recordId: stripeId }) {
                 className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed"
                 title={alreadyPushed ? 'Déjà envoyé à QuickBooks' : 'Créer le Deposit dans QuickBooks'}
               >
-                <Send size={14} /> {pushing ? 'Envoi…' : alreadyPushed ? 'Déjà envoyé' : 'Pousser vers QB'}
+                <Send size={14} /> {pushing ? 'Envoi…' : alreadyPushed ? 'Déjà envoyé' : 'Publier dans QuickBooks'}
               </button>
             </div>
           </div>
@@ -488,7 +488,7 @@ function PreviewPanel({ preview, currency }) {
             <thead className="bg-slate-50 text-slate-500 uppercase">
               <tr>
                 <th className="text-left px-3 py-1.5">Description</th>
-                <th className="text-left px-3 py-1.5">Compte QB</th>
+                <th className="text-left px-3 py-1.5">Compte QuickBooks</th>
                 <th className="text-right px-3 py-1.5">Montant</th>
               </tr>
             </thead>

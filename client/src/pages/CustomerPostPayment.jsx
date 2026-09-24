@@ -1,5 +1,7 @@
+import { roofInverterSupplyKey } from '../lib/discoveryRoofs.js'
 import { useEffect, useState, useCallback, useRef, useMemo, createContext, useContext, Fragment } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, HelpCircle } from 'lucide-react'
+import { Modal } from '../components/Modal.jsx'
 import { useSearchParams, useParams } from 'react-router-dom'
 import Spinner from '../components/Spinner.jsx'
 import SearchableSelect from '../components/SearchableSelect.jsx'
@@ -37,6 +39,7 @@ const btnGhost = 'inline-flex items-center justify-center gap-1.5 px-4 py-2.5 te
 // qu'on saute en silence.
 const DONT_KNOW = 'Je ne sais pas'
 const filled = (v) => v != null && String(v).trim() !== ''
+const MAX_VALVE_WIRE_FEET = 125
 
 // Illustration de chaque accès réseau livré par le code. Un choix ajouté dans
 // l'éditeur retombe sur la scène générique.
@@ -162,18 +165,17 @@ export default function CustomerPostPayment() {
 
   return (
     <FormSchemaContext.Provider value={form}>
-      <div className="min-h-screen bg-slate-50 py-10 px-4">
+      <div className="discovery-form-large min-h-screen bg-slate-50 py-10 px-4">
         <div className="max-w-2xl mx-auto space-y-5">
           <img src="/erp/orisha-logo.png" alt="Orisha" className="h-9 mx-auto" />
-          {/* En mode découverte, le titre n'est plus répété au-dessus de chaque
-              question : il devient la première page du questionnaire (cf. `cover`). */}
+          {/* En mode découverte, pas de page de titre : on entre directement dans les questions. */}
           {(!isDiscoveryMode || submitted) && <Header data={data} isDiscoveryMode={isDiscoveryMode} />}
           {saveError && <ErrorBanner>{saveError}</ErrorBanner>}
           {submitted ? (
             <SubmittedSummary resp={resp} extrasResult={extrasResult} setExtrasResult={setExtrasResult} sessionId={identifier} permission={permission} isDiscoveryMode={isDiscoveryMode} hasMobileController={hasMobileController} />
           ) : (
             <Wizard
-              cover={isDiscoveryMode ? <Header data={data} isDiscoveryMode /> : null}
+              isDiscoveryMode={isDiscoveryMode}
               resp={resp}
               flushSave={flushSave}
               queueSave={queueSave}
@@ -235,11 +237,13 @@ function Header({ data, isDiscoveryMode }) {
 
 // ─── Wizard ───────────────────────────────────────────────────────────────
 
-function Wizard({ cover, resp, queueSave, flushSave, permission, hasMobileController, lockedCount, baseUrl, submitting, setSubmitting, onSubmitted }) {
+function Wizard({ cover, isDiscoveryMode, resp, queueSave, flushSave, permission, hasMobileController, lockedCount, baseUrl, submitting, setSubmitting, onSubmitted }) {
   const [error, setError] = useState(null)
   const [outdated, setOutdated] = useState(false)
   const [activeId, setActiveId] = useState(null)
   const [moving, setMoving] = useState(false)
+  // Ouvert depuis le résumé : un bouton ramène au résumé sans refaire les étapes.
+  const [fromSummary, setFromSummary] = useState(false)
   const pageRef = useRef(null)
   const resumed = useRef(false)
   const form = useFormSchema()
@@ -277,8 +281,37 @@ function Wizard({ cover, resp, queueSave, flushSave, permission, hasMobileContro
     try {
       await flushSave()
       setActiveId(target.id)
+      if (target.id === 'submit') setFromSummary(false)
     } catch (e) { setError(e.message) }
     finally { setMoving(false) }
+  }
+
+  // Flèches gauche / droite : question précédente / suivante, même après un
+  // clic sur un choix. Ignorées dans un champ texte (le curseur s'y déplace)
+  // et vers l'avant tant que la question n'est pas répondue.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return
+      if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return
+      const t = e.target
+      if (t?.closest?.('textarea, select, [contenteditable="true"]') || (t?.tagName === 'INPUT' && !['radio', 'checkbox'].includes(t.type))) return
+      if (submitting || moving) return
+      if (e.key === 'ArrowLeft' && index > 0) { e.preventDefault(); navigate(pages[index - 1]) }
+      if (e.key === 'ArrowRight' && !last && current.complete && pages[index + 1]) { e.preventDefault(); navigate(pages[index + 1]) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  })
+
+  // Serre `idx` et section du résumé → première page de cette section.
+  function editFromSummary(idx, section) {
+    const match = SUMMARY_SECTION_PAGES[section]
+    const target = idx == null
+      ? pages.find(p => p.id === section) || pages.find(p => !p.cover)
+      : pages.find(p => p.id.startsWith(`greenhouse:${idx}:`) && match?.test(p.id.slice(`greenhouse:${idx}:`.length)))
+    if (!target) return
+    setFromSummary(true)
+    navigate(target)
   }
 
   async function handleSubmit() {
@@ -315,6 +348,7 @@ function Wizard({ cover, resp, queueSave, flushSave, permission, hasMobileContro
           {last ? <Card title="Prêt à envoyer ?">
             <p className="text-sm text-slate-600">{ready ? 'Vos réponses sont enregistrées.' : form.t('submit.incomplete')}</p>
             {firstIncomplete && <button type="button" className={btnGhost} onClick={() => navigate(firstIncomplete)}>Compléter</button>}
+            <AnswersSummary resp={resp} permission={permission} hasMobileController={hasMobileController} grouped={isDiscoveryMode} className="border-t border-slate-100 pt-3" onEdit={editFromSummary} />
           </Card> : current.title ? <Card title={current.title}>{current.content}</Card> : current.content}
         </div>
         {outdated && <ErrorBanner>
@@ -324,6 +358,7 @@ function Wizard({ cover, resp, queueSave, flushSave, permission, hasMobileContro
         {error && <ErrorBanner>{error}</ErrorBanner>}
         <div className="flex flex-wrap justify-between items-center gap-3">
           {index > 0 && <button type="button" onClick={() => navigate(pages[index - 1])} className={btnGhost + ' disabled:opacity-50'}>Précédent</button>}
+          {fromSummary && !last && <button type="button" onClick={() => navigate(pages[pages.length - 1])} className={btnGhost}>Retour au résumé</button>}
           <button type="submit" disabled={last ? !ready : !current.complete} className={btnPrimary + ' ml-auto'}>
             {submitting ? 'Envoi…' : moving ? 'Enregistrement…' : last ? form.t('submit.label') : 'Suivant'}
           </button>
@@ -382,7 +417,7 @@ function canSubmit(resp, hasMobileController, form, permission) {
     // « Autre » ne porte pas de voltage : seule la commande est exigée.
     if (!helperOnly && g.has_louvers && (!(g.louvers?.length) || g.louvers.some(l => !['spring_loaded', 'open_close', 'other'].includes(l.control_type) || typeof l.has_fan !== 'boolean'
       || (l.control_type !== 'other' && (!['110', '24', '12', 'other'].includes(l.voltage) || (l.voltage === 'other' && !l.voltage_other?.trim()) || (l.voltage === '110' && l.control_type === 'open_close')))))) return false
-    if (!helperOnly && resp.form_options?.humidity_retention && (typeof g.humidity_valve !== 'boolean' || typeof g.humidity_haf !== 'boolean' || (g.humidity_haf && (!Number.isInteger(Number(g.humidity_haf_count)) || Number(g.humidity_haf_count) < 1 || Number(g.humidity_haf_count) > 100)))) return false
+    if (!helperOnly && resp.form_options?.humidity_retention && (typeof g.humidity_valve !== 'boolean' || typeof g.humidity_haf !== 'boolean')) return false
     const ghCtx = { record: g, custom: g.custom, root: resp, rootCustom: answers }
     const perCard = [...form.custom('greenhouse', ghCtx)]
     if ((g.permission_level || resp.permission_level) === 'chief_grower') perCard.push(...form.custom('greenhouse_chief', ghCtx))
@@ -411,7 +446,7 @@ function Ask({ questionId, image, focus, height = 96, pipeType, children }) {
   return (
     <div className="flex flex-col sm:flex-row items-start gap-3">
       <div className="flex-1 min-w-0 w-full space-y-2">{children}</div>
-      <GreenhouseIllustration image={image || form.image(questionId)} focus={focus} variant={focus === 'furnaces' ? 'furnace-choice' : undefined} pipeType={pipeType} height={height} label={focusLabel(focus)} className="self-center sm:self-start" />
+      <GreenhouseIllustration image={image || form.image(questionId)} focus={focus} variant={focus === 'furnaces' ? 'furnace-choice' : focus === 'furnace_wire' ? 'furnace-wire-choice' : undefined} pipeType={pipeType} height={height} label={focusLabel(focus)} className="self-center sm:self-start" />
     </div>
   )
 }
@@ -453,7 +488,9 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
     const distance = controllerDistanceValue(resp)
     add('controller_distance', form.t('controller_distance.title'), <div className="space-y-2">
       <p className="text-sm text-slate-600">{form.t('controller_distance.prompt')}<Req /></p>
-      {form.opts('controller_distance.options').map(o => <RadioOption key={o.value} checked={distance === o.value} onChange={() => queueSave({ central_controller_distance: o.value, within_central_controller_range: o.value !== 'no' })} label={o.label} help={o.help} />)}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        {form.opts('controller_distance.options').map(o => <ControllerDistanceOption key={o.value} value={o.value} checked={distance === o.value} onChange={() => queueSave({ central_controller_distance: o.value, within_central_controller_range: o.value !== 'no' })} label={o.label} help={o.help} />)}
+      </div>
       {resp.within_central_controller_range === true && <p className="text-sm text-slate-600">{form.t('controller_distance.near')}</p>}
     </div>, typeof resp.within_central_controller_range === 'boolean')
   }
@@ -482,7 +519,8 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
       </div>
     </div>, resp.network_access)
     if (!form.isHidden('network.wifi') && ['wifi_250', 'wifi_350_coax'].includes(resp.network_access)) {
-      for (const field of ['wifi_ssid', 'wifi_password']) {
+      // Sans nom de réseau, le mot de passe ne sert à rien : on ne le demande pas.
+      for (const field of resp.wifi_ssid === DONT_KNOW ? ['wifi_ssid'] : ['wifi_ssid', 'wifi_password']) {
         const label = form.t(`network.${field === 'wifi_ssid' ? 'wifi_ssid_label' : 'wifi_password_label'}`)
         const unknown = resp[field] === DONT_KNOW
         add(field, form.t('network.title'), <Ask questionId="network.wifi" focus="network">
@@ -517,9 +555,38 @@ function buildQuestionPages({ resp, queueSave, permission, hasMobileController, 
 }
 
 const FURNACE_WIRE_PRESETS = ['25', '50', '75', '100']
+const validEquipmentCount = value => filled(value) && Number.isInteger(Number(value)) && Number(value) >= 0 && Number(value) <= 100
+
+// Permissions supplémentaires fixées par Orisha : elles ne fournissent rien,
+// elles relèvent le nombre d'appareils que le client peut déclarer dans la
+// serre. Chauffage = 2 fournaises de plus, Irrigation = 4 valves, Côtés
+// ouvrants = 2 moteurs, Toits ouvrants = 1 toit.
+const EXTRA_UNITS = { furnaces: 2, valves: 4, rollups: 2, roofs: 1 }
+const STANDARD_LIMITS = {
+  chief_grower: { rollups: 2, furnaces: 2, valves: 4, roofs: 1 },
+  helper: { rollups: 2, furnaces: 0, valves: 0, roofs: 0 },
+}
+function greenhouseLimits(options, idx, permission) {
+  const e = Array.isArray(options?.additional_equipment) ? options.additional_equipment[idx] || {} : {}
+  const base = STANDARD_LIMITS[permission] || STANDARD_LIMITS.chief_grower
+  const n = key => base[key] + Math.max(0, Number(e[key]) || 0) * EXTRA_UNITS[key]
+  return { furnaces: n('furnaces'), valves: n('valves'), rollups: n('rollups'), roofs: n('roofs') }
+}
+
+// Au-delà des choix illustrés (0 à `from`), un nombre libre jusqu'au plafond.
+function MoreCount({ from, max, value, onChange, label }) {
+  if (max <= from) return null
+  const v = Number(value)
+  return (
+    <Field label={`${label} (${from + 1} à ${max})`}>
+      <input aria-label={label} className={inputCls} type="number" min={from + 1} max={max} step={1} value={v > from ? v : ''}
+        onChange={e => { const n = Math.min(max, Math.max(0, parseInt(e.target.value) || 0)); if (n > from) onChange(n) }} />
+    </Field>
+  )
+}
 
 // Les deux profils de tuyau de côté sont proposés en photo, pas en liste.
-const SIDE_PIPE_IMAGES = { aluminum_C: 'pipe-c.png', steel_O: 'pipe-o.png' }
+const SIDE_PIPE_IMAGES = { aluminum_C: 'pipe-c.svg', steel_O: 'pipe-o.svg' }
 
 // Le diamètre se choisit en image : la mesure standard du tuyau montré, une
 // autre mesure à préciser, ou « je ne sais pas ».
@@ -542,11 +609,43 @@ const MOTORS_IMAGE_IDS = { yes: 'greenhouse.image_motors_existing', no: 'greenho
 const VENT_HEIGHT_FOCUS = { up_to_6: 'vent_height_up_to_6', over_6: 'vent_height_over_6' }
 const VENT_HEIGHT_IMAGE_IDS = { up_to_6: 'greenhouse.image_vent_height_up_to_6', over_6: 'greenhouse.image_vent_height_over_6', unknown: 'greenhouse.image_vent_height_unknown' }
 
+// Pages de chaque section du résumé, pour son bouton « Modifier ».
+const SUMMARY_SECTION_PAGES = {
+  sides: /^(side_vents|existing_motors|motor_|length|side_|guide)/,
+  roofs: /^roof/,
+  louvers: /^louver/,
+  fans: /^fans/,
+  irrigation: /^(irrigation|orisha_valves|valve)/,
+  humidity: /^(humidity|haf)/,
+  heating: /^furnace/,
+  custom: /^custom/,
+}
+
+// Moteurs de côtés déjà en place : deux modèles courants, ou un autre.
+const SIDE_MOTOR_CHOICES = [
+  { value: 'kingzo', label: 'Kingzo 24 V DC', image: 'motor-kingzo-24vdc.webp', brand: 'Kingzo', model: '24 V DC' },
+  { value: 'lvm', label: 'LVM60 / LVM100', image: 'motor-lvm60-lvm100.webp', brand: 'LVM', model: 'LVM60 / LVM100' },
+  { value: 'other', label: 'Autre' },
+]
+
+// Inverseurs des moteurs de côtés déjà en place.
+const SIDE_INVERTER_MODELS = [['8ZE133L', '8ZE133L'], ['8ZE133LDC', '8ZE133LDC'], ['other', 'Autre']]
+
+// Marques de valves proposées quand le client a déjà les siennes.
+const VALVE_BRANDS = ['Rainbird', 'Irritrol', 'Autre marque']
+
+// Mode de la serre, à côté de son numéro.
+const PERMISSION_MODES = { chief_grower: 'Chef de culture', helper: 'Assistant' }
+function GreenhouseTitle({ idx, permission, suffix }) {
+  const mode = PERMISSION_MODES[permission]
+  return <>Serre #{idx + 1}{mode && <span className="ml-2 text-sm font-normal text-slate-500">{mode}</span>}{suffix && ` · ${suffix}`}</>
+}
+
 function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   const cardPermission = g.permission_level || permission
   const helperOnly = sideVentsOnly(cardPermission)
-  const title = `Serre #${idx + 1}`
-  const page = (id, content, complete = true, suffix = '') => add(`greenhouse:${idx}:${id}`, suffix ? `${title} · ${suffix}` : title, content, complete)
+  const limit = greenhouseLimits(root.form_options, idx, cardPermission)
+  const page = (id, content, complete = true, suffix = '') => add(`greenhouse:${idx}:${id}`, <GreenhouseTitle idx={idx} permission={cardPermission} suffix={suffix} />, content, complete)
   // Toute question retient le bouton Suivant (d'où l'astérisque rouge) : par
   // défaut une réponse saisie suffit, `complete` en options dit mieux quand la
   // réponse doit remplir une condition (nombre au-delà d'un seuil, liste non
@@ -567,7 +666,8 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   }
   const select = (id, label, value, change, choices, options = {}) => question(id, label,
     <select aria-label={label} className={inputCls} value={value ?? ''} onChange={e => change(e.target.value)}><option value="">—</option>{choices.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}</select>, { complete: filled(value), ...options })
-  const boolean = (id, label, value, change, options = {}) => select(id, label, value == null ? '' : value ? 'yes' : 'no', v => change(v === '' ? null : v === 'yes'), [{ value: 'yes', label: 'Oui' }, { value: 'no', label: 'Non' }], options)
+  const boolean = (id, label, value, change, options = {}) => question(id, label,
+    <YesNoButtons value={value} onChange={change} />, { complete: typeof value === 'boolean', ...options })
   const diameter = (id, label, value, change, preset) => {
     const other = value?.startsWith('Autre:')
     const exactDiameter = other ? value.slice('Autre:'.length).trimStart() : ''
@@ -592,6 +692,7 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   if (!form.isHidden('greenhouse.side_vents')) {
     // Le nombre de côtés ouvrants à automatiser se choisit sur l'image : aucun,
     // un seul côté, ou un de chaque côté — soit un moteur par côté automatisé.
+    // Une permission Côtés ouvrants permet de déclarer davantage de moteurs.
     const sideVents = g.has_side_vents === false ? 0 : g.has_side_vents === true && filled(g.num_side_vent_motors) ? Number(g.num_side_vent_motors) : null
     const pickSideVents = n => onChange(n === 0
       ? { has_side_vents: false, side_vent_height: '', side_vent_height_range: '', side_pipe_type: '', side_pipe_diameter: '', guide_pipes_state: '', guide_pipe_diameter: '', wants_compatible_guide_pipes: false, num_side_vent_motors: 0, has_existing_side_vent_motors: null }
@@ -601,7 +702,8 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {[0, 1, 2].map(n => <SideVentCountChoice key={n} name={`side-vents-${idx}`} count={n} checked={sideVents === n} onChange={() => pickSideVents(n)} />)}
       </div>
-    </div>, sideVents != null)
+      <MoreCount from={2} max={limit.rollups} value={sideVents} onChange={pickSideVents} label="Moteurs" />
+    </div>, sideVents != null && sideVents <= Math.max(2, limit.rollups))
     if (g.has_side_vents === true) {
       const motors = g.has_existing_side_vent_motors == null ? '' : g.has_existing_side_vent_motors ? 'yes' : 'no'
       page('existing_motors', <div className="space-y-2">
@@ -615,8 +717,48 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
       </div>, typeof g.has_existing_side_vent_motors === 'boolean')
       // Moteurs déjà là : marque et modèle se demandent tout de suite après.
       if (g.has_existing_side_vent_motors) {
-        input('motor_brand', 'Marque des moteurs', g.side_vent_motor_brand, v => onChange({ side_vent_motor_brand: v }), { focus: 'side_vents', dontKnow: true })
-        input('motor_model', 'Modèle des moteurs', g.side_vent_motor_model, v => onChange({ side_vent_motor_model: v }), { focus: 'side_vents', dontKnow: true })
+        // Deux moteurs courants en photo, ou « Autre » avec marque et modèle dessous.
+        const motorChoice = g.side_vent_motor_choice
+        const otherMotor = motorChoice === 'other'
+        page('motor_brand', <fieldset className="min-w-0 space-y-2">
+          <legend className="text-sm text-slate-600">Marque des moteurs<Req /></legend>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {SIDE_MOTOR_CHOICES.map(o => <ImageOption key={o.value} name={`motor-brand-${idx}`} checked={motorChoice === o.value} label={o.label} image={o.image || 'none'}
+              onChange={() => onChange({ side_vent_motor_choice: o.value, side_vent_motor_brand: o.brand || '', side_vent_motor_model: o.model || '' })} />)}
+          </div>
+          {otherMotor && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Marque" required><input aria-label="Marque des moteurs" className={inputCls} value={g.side_vent_motor_brand || ''} onChange={e => onChange({ side_vent_motor_brand: e.target.value })} /></Field>
+            <Field label="Modèle"><input aria-label="Modèle des moteurs" className={inputCls} value={g.side_vent_motor_model || ''} onChange={e => onChange({ side_vent_motor_model: e.target.value })} /></Field>
+          </div>}
+        </fieldset>, SIDE_MOTOR_CHOICES.some(o => o.value === motorChoice) && (!otherMotor || filled(g.side_vent_motor_brand?.trim())))
+        // Inverseurs des moteurs en place : présence, répartition (si plus d'un
+        // moteur), puis modèle ; « Autre » demande marque et modèle dessous.
+        const manyMotors = Number(g.num_side_vent_motors) > 1
+        const inverterModel = g.side_inverter_model
+        const otherInverter = inverterModel === 'other'
+        const choiceRow = (items, current, pick, cols = 'grid-cols-2') => <div className={`grid ${cols} gap-3`}>
+          {items.map(([v, label]) => <RadioOption key={v} label={label} checked={current === v} onChange={() => pick(v)} />)}
+        </div>
+        page('side_inverters', <fieldset className="min-w-0 space-y-3">
+          <legend className="text-sm text-slate-600">Avez-vous des inverseurs pour ces moteurs ?<Req /></legend>
+          {choiceRow([['yes', 'Oui'], ['no', 'Non']], g.side_has_inverters == null ? '' : g.side_has_inverters ? 'yes' : 'no',
+            v => onChange({ side_has_inverters: v === 'yes', side_inverter_ratio: '', side_inverter_model: '', side_inverter_brand_other: '', side_inverter_model_other: '' }))}
+          {g.side_has_inverters === true && manyMotors && <div className="space-y-2">
+            <p className="text-sm text-slate-600">Combien d’inverseurs ?<Req /></p>
+            {choiceRow([['per_motor', 'Un par moteur'], ['per_two', 'Un pour deux moteurs']], g.side_inverter_ratio, v => onChange({ side_inverter_ratio: v }))}
+          </div>}
+          {g.side_has_inverters === true && <div className="space-y-2">
+            <p className="text-sm text-slate-600">Modèle de l’inverseur<Req /></p>
+            {choiceRow(SIDE_INVERTER_MODELS, inverterModel, v => onChange({ side_inverter_model: v, side_inverter_brand_other: '', side_inverter_model_other: '' }), 'grid-cols-3')}
+            {otherInverter && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <Field label="Marque" required><input aria-label="Marque de l’inverseur" className={inputCls} value={g.side_inverter_brand_other || ''} onChange={e => onChange({ side_inverter_brand_other: e.target.value })} /></Field>
+              <Field label="Modèle"><input aria-label="Modèle de l’inverseur" className={inputCls} value={g.side_inverter_model_other || ''} onChange={e => onChange({ side_inverter_model_other: e.target.value })} /></Field>
+            </div>}
+          </div>}
+        </fieldset>, g.side_has_inverters === false || (g.side_has_inverters === true
+          && (!manyMotors || ['per_motor', 'per_two'].includes(g.side_inverter_ratio))
+          && SIDE_INVERTER_MODELS.some(([v]) => v === inverterModel)
+          && (!otherInverter || filled(g.side_inverter_brand_other?.trim()))))
       }
     }
   }
@@ -676,22 +818,57 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
       }
       page('guide_pipes', <fieldset className="space-y-2">
         <legend className="text-sm text-slate-600">{form.t('greenhouse.guide_pipes_label')}<Req /></legend>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <img src={`${import.meta.env.BASE_URL}images/discovery/guide-pipes-present.webp`} alt="" className="w-full max-h-72 object-contain" />
+        <div className="grid grid-cols-2 gap-3">
           {form.opts('greenhouse.guide_pipes_options').map(o => (
-            <GuidePipeOption key={o.value} name={`guide-pipes-${idx}`} value={o.value} label={o.label} help={o.help}
-              checked={g.guide_pipes_state === o.value}
+            <RadioOption key={o.value} checked={g.guide_pipes_state === o.value} label={o.label} help={o.help}
               onChange={() => onChange({ guide_pipes_state: o.value, guide_pipe_diameter: '' })} />
           ))}
         </div>
       </fieldset>, filled(g.guide_pipes_state))
-      if (g.guide_pipes_state === 'present') {
-        // Aucun avertissement de compatibilité : le diamètre saisi est pris tel quel.
-        diameter('guide_diameter', 'Diamètre des tuyaux guides existants', g.guide_pipe_diameter, v => onChange({ guide_pipe_diameter: v }), '1 5/16"')
+      // La question fixe déjà le diamètre (1 po à 1 5/16 po) : rien à préciser ensuite.
+    }
+  }
+  // Toits ouvrants : Oui / Non (un toit) pour le chef de culture ; le nombre
+  // n'est demandé que si une permission Toits ouvrants en permet plus d'un.
+  // Le Helper n'y a droit qu'avec cette permission. Puis la motorisation.
+  if (limit.roofs > 0) {
+    const roofCount = Number(g.num_roof_vents)
+    page('roof_present', <fieldset className="min-w-0 space-y-2">
+      <legend className="text-sm text-slate-600">{form.t('roofs.present')}<Req /></legend>
+      <div className="grid grid-cols-2 gap-3">
+        {[['yes', 'Oui'], ['no', 'Non']].map(([v, label]) => <RadioOption key={v} label={label} checked={g.has_roof_vents === (v === 'yes')}
+          onChange={() => onChange(v === 'yes' ? { has_roof_vents: true, num_roof_vents: limit.roofs > 1 ? g.num_roof_vents || '' : 1 } : { has_roof_vents: false, num_roof_vents: 0, roof_motor_voltage: '', roof_motor_ridder_rw240: null, has_roof_inverter: null, roof_inverter_type: '', roof_inverter_brand: '', roof_inverter_model: '' })} />)}
+      </div>
+      {g.has_roof_vents === true && limit.roofs > 1 && <Field label={`${form.t('roofs.count')} (1 à ${limit.roofs})`} required>
+        <input aria-label={form.t('roofs.count')} className={inputCls} type="number" min={1} max={limit.roofs} step={1} value={g.num_roof_vents || ''} onChange={e => onChange({ num_roof_vents: e.target.value === '' ? '' : Number(e.target.value) })} />
+      </Field>}
+    </fieldset>, g.has_roof_vents === false || (g.has_roof_vents === true && Number.isInteger(roofCount) && roofCount > 0 && roofCount <= limit.roofs))
+    const roofs = g.has_roof_vents === true && roofCount > 0 ? roofCount : 0
+    if (roofs) {
+      select('roof_voltage', form.t('roofs.voltage'), g.roof_motor_voltage,
+        v => onChange({ roof_motor_voltage: v, roof_motor_ridder_rw240: null }), form.opts('roofs.voltage_options'),
+        { help: `${roofs} toit${roofs > 1 ? 's' : ''} ouvrant${roofs > 1 ? 's' : ''}` })
+      boolean('roof_inverter', form.t('roofs.inverter'), g.has_roof_inverter,
+        v => onChange({ has_roof_inverter: v, roof_motor_ridder_rw240: null, roof_inverter_type: '', roof_inverter_brand: '', roof_inverter_model: '' }))
+      if (g.has_roof_inverter === true) {
+        select('roof_inverter_type', form.t('roofs.inverter_model'), g.roof_inverter_type,
+          v => onChange({ roof_inverter_type: v, roof_inverter_brand: '', roof_inverter_model: '' }), form.opts('roofs.inverter_options'))
+        if (g.roof_inverter_type === 'other') {
+          input('roof_inverter_brand', form.t('roofs.brand'), g.roof_inverter_brand, v => onChange({ roof_inverter_brand: v }))
+          input('roof_inverter_model', form.t('roofs.model'), g.roof_inverter_model, v => onChange({ roof_inverter_model: v }))
+        }
+      } else if (g.has_roof_inverter === false) {
+        if (g.roof_motor_voltage === '240') boolean('roof_ridder', form.t('roofs.ridder'), g.roof_motor_ridder_rw240, v => onChange({ roof_motor_ridder_rw240: v }))
+        // Seul le cas où le client doit fournir l'inverseur mérite une page.
+        if (roofInverterSupplyKey(g) === 'roofs.supply_customer') {
+          page('roof_supply', <p className="text-sm text-slate-600">{form.t(roofInverterSupplyKey(g))}</p>)
+        }
       }
     }
   }
-  // Serre Helper : seuls les côtés ouvrants sont automatisables — ventilateurs,
-  // louvres et conservation de l'humidité ne sont pas proposés.
+  // Serre Helper : ventilateurs, louvres et conservation de l'humidité ne sont
+  // pas proposés.
   if (!helperOnly) {
     // Les louvres d'abord : la question des ventilateurs porte sur ceux qui
     // n'y sont pas associés, elle ne se comprend qu'une fois les louvres dites.
@@ -751,47 +928,65 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
     // Seule la plage compte pour l'équipement : on ne demande plus le nombre
     // exact de HP, que le client cherchait sur la plaque du moteur.
     if (Number(g.num_fans) === 2) page('fans_hp', <fieldset className="space-y-2">
-      <legend className="text-sm text-slate-600">Puissance combinée (HP)<Req /></legend>
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <legend className="text-sm text-slate-600 flex items-center gap-1">Puissance combinée des deux moteurs de ventilateurs (HP)<Req /><MotorHpHelp /></legend>
+      <div className="grid grid-cols-3 gap-3">
         {[...FANS_HP_RANGE_OPTIONS, { value: DONT_KNOW, label: DONT_KNOW }].map(o => (
-          <FanPowerOption key={o.value} name={`fans-hp-${idx}`} value={o.value} label={o.label}
-            checked={fansHpRangeValue(g) === o.value}
+          <RadioOption key={o.value} label={o.label} checked={fansHpRangeValue(g) === o.value}
             onChange={() => onChange({ fans_hp_range: o.value, fans_combined_hp: '' })} />
         ))}
       </div>
     </fieldset>, filled(fansHpRangeValue(g)))
     if (root.form_options?.humidity_retention) {
       boolean('humidity_valve', form.t('humidity.valve'), g.humidity_valve, v => onChange({ humidity_valve: v }), { complete: typeof g.humidity_valve === 'boolean' })
-      boolean('humidity_haf', form.t('humidity.haf'), g.humidity_haf, v => onChange({ humidity_haf: v, humidity_haf_count: v ? (g.humidity_haf_count || 1) : 0 }), { complete: typeof g.humidity_haf === 'boolean' })
-      if (g.humidity_haf) input('haf_count', form.t('humidity.haf_count'), g.humidity_haf_count, v => onChange({ humidity_haf_count: v }), { type: 'number', min: 1, max: 100, step: 1, complete: Number.isInteger(Number(g.humidity_haf_count)) && Number(g.humidity_haf_count) >= 1 && Number(g.humidity_haf_count) <= 100 })
+      // Orisha ne fournit pas les HAF : un relais 110 V les automatise, peu importe leur nombre.
+      boolean('humidity_haf', form.t('humidity.haf'), g.humidity_haf, v => onChange({ humidity_haf: v, humidity_haf_count: 0 }), { complete: typeof g.humidity_haf === 'boolean' })
     }
   }
-  if (cardPermission === 'chief_grower') {
-    if (!form.isHidden('chief.furnaces')) {
-      const furnaceCount = g.has_furnaces === false ? 0 : g.has_furnaces === true && [1, 2].includes(Number(g.num_furnaces)) ? Number(g.num_furnaces) : null
-      const pickFurnaces = count => onChange({
-        has_furnaces: count > 0,
-        num_furnaces: count,
-        furnaces: Array.from({ length: count }, (_, i) => g.furnaces?.[i] || {}),
-      })
+  // Chauffage et irrigation : posés au chef de culture, et au Helper qui a
+  // reçu la permission correspondante.
+  {
+    if (limit.furnaces > 0 && !form.isHidden('chief.furnaces')) {
+      const furnaceCount = g.has_furnaces === false ? 0 : g.has_furnaces === true && validEquipmentCount(g.num_furnaces) ? Number(g.num_furnaces) : null
+      const pickFurnaces = total => onChange({ has_furnaces: total > 0, num_furnaces: total, furnaces: Array.from({ length: total }, (_, i) => g.furnaces?.[i] || {}) })
       page('furnaces', <fieldset className="space-y-2">
         <legend className="text-sm text-slate-600">{form.t('chief.furnaces_count_label')}<Req /></legend>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {[0, 1, 2].map(n => <FurnaceCountChoice key={n} name={`furnaces-${idx}`} count={n} checked={furnaceCount === n} onChange={() => pickFurnaces(n)} />)}
+          {[0, 1, 2].filter(n => n <= limit.furnaces).map(n => <FurnaceCountChoice key={n} name={`furnaces-${idx}`} count={n} checked={furnaceCount === n} onChange={() => pickFurnaces(n)} />)}
         </div>
-      </fieldset>, furnaceCount != null)
+        <MoreCount from={2} max={limit.furnaces} value={furnaceCount} onChange={pickFurnaces} label="Fournaises" />
+      </fieldset>, furnaceCount != null && furnaceCount <= limit.furnaces)
       if (g.has_furnaces) {
         const furnaces = g.furnaces || []
         furnaces.forEach((f, i) => {
           const set = patch => onChange({ furnaces: furnaces.map((item, j) => i === j ? { ...item, ...patch } : item) })
           const opts = { suffix: `Fournaise #${i + 1}`, focus: 'furnaces' }
-          const brand = form.brands.find(b => b.brand === f.brand)
-          select(`furnace:${i}:brand`, form.t('furnace.brand_label'), f.brand, v => set({ brand: v, model: '' }), [...form.brands.map(b => ({ value: b.brand, label: b.brand })), { value: 'Autre', label: 'Autre' }, { value: DONT_KNOW, label: DONT_KNOW }], { ...opts, questionId: 'furnace.brand_label' })
-          // Marque inconnue : le modèle ne l'est pas davantage, on ne le demande pas.
-          if (f.brand !== DONT_KNOW) {
-            if (brand) select(`furnace:${i}:model`, form.t('furnace.model_label'), f.model, v => set({ model: v }), [...brand.models.map(m => ({ value: m, label: m })), { value: 'Autre', label: 'Autre / Je ne sais pas' }], { ...opts, questionId: 'furnace.brand_label' })
-            else input(`furnace:${i}:model`, form.t('furnace.model_label'), f.model, v => set({ model: v }), { ...opts, questionId: 'furnace.brand_label', dontKnow: true })
-            if (f.model === 'Autre') input(`furnace:${i}:model_other`, form.t('furnace.model_other_label'), f.model_other, v => set({ model_other: v }), { ...opts, questionId: 'furnace.brand_label', dontKnow: true })
+          // Le contact sec de 24 V AC suffit à savoir quoi brancher. Marque et
+          // modèle ne servent qu'à trancher pour qui ne connaît pas sa fournaise.
+          // Photo du thermostat en grand, puis les réponses en boutons dessous.
+          page(`furnace:${i}:dry_contact`, <fieldset className="min-w-0 space-y-2">
+            <legend className="text-sm text-slate-600">{form.t('furnace.dry_contact_label')}<Req /></legend>
+            <GreenhouseIllustration image={form.image('furnace.dry_contact_label')} focus="furnace_dry_contact" height={200} className="w-full" />
+            <div className="grid grid-cols-3 gap-3">
+              {form.opts('furnace.dry_contact_options').map(o => (
+                <RadioOption key={o.value} checked={f.dry_contact_24v === o.value} label={o.label} help={o.help}
+                  onChange={() => set({ dry_contact_24v: o.value, ...(o.value === 'unknown' ? {} : { brand: '', brand_other: '', model: '' }) })} />
+              ))}
+            </div>
+          </fieldset>, filled(f.dry_contact_24v), opts.suffix)
+          if (f.dry_contact_24v === 'unknown') {
+            // Quatre boutons ; « Autre » demande marque et modèle juste dessous.
+            const brands = form.opts('furnace.brand_options')
+            const otherBrand = f.brand === 'Autre'
+            page(`furnace:${i}:brand`, <fieldset className="min-w-0 space-y-2">
+              <legend className="text-sm text-slate-600">{form.t('furnace.brand_label')}<Req /></legend>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {brands.map(o => <RadioOption key={o.value} checked={f.brand === o.value} label={o.label} help={o.help} onChange={() => set({ brand: o.value, brand_other: '', model: '', model_other: '' })} />)}
+              </div>
+              {otherBrand && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <Field label="Marque" required><input aria-label="Marque de la fournaise" className={inputCls} value={f.brand_other || ''} onChange={e => set({ brand_other: e.target.value })} /></Field>
+                <Field label={form.t('furnace.model_label')}><input aria-label="Modèle de la fournaise" className={inputCls} value={f.model || ''} onChange={e => set({ model: e.target.value })} /></Field>
+              </div>}
+            </fieldset>, brands.some(o => o.value === f.brand) && (!otherBrand || filled(f.brand_other?.trim())), opts.suffix)
           }
           // Longueurs livrées telles quelles (25/50/75/100 pi) ; tout autre choix
           // ouvre la question du nombre exact de pieds. `control_wire_feet` reste
@@ -799,22 +994,76 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
           const wireFeet = f.control_wire_feet
           const wireRange = f.control_wire_range || (Number(wireFeet) > 0 ? (FURNACE_WIRE_PRESETS.includes(String(Number(wireFeet))) ? String(Number(wireFeet)) : 'over_100') : '')
           const wirePreset = FURNACE_WIRE_PRESETS.includes(wireRange)
-          select(`furnace:${i}:wire`, form.t('furnace.wire_label'), wireRange, v => set({ control_wire_range: v, control_wire_feet: FURNACE_WIRE_PRESETS.includes(v) ? v : '' }), form.opts('furnace.wire_options'), { ...opts, focus: 'furnace_wire', questionId: 'furnace.wire_label', help: form.t('furnace.wire_help') })
-          if (wireRange && !wirePreset) input(`furnace:${i}:wire_feet`, form.t('furnace.wire_feet_label'), wireFeet, v => set({ control_wire_feet: v }), { ...opts, type: 'number', min: 101, focus: 'furnace_wire', questionId: 'furnace.wire_label', help: form.t('furnace.wire_help'), complete: Number(wireFeet) > 100 })
-          select(`furnace:${i}:thermostat`, form.t('furnace.thermostat_label'), f.backup_thermostat == null ? '' : f.backup_thermostat ? 'yes' : 'no', v => set({ backup_thermostat: v === '' ? null : v === 'yes' }), form.opts('furnace.thermostat_options'), { ...opts, focus: 'thermostat', questionId: 'furnace.thermostat_label' })
+          page(`furnace:${i}:wire`, <fieldset className="min-w-0 space-y-2">
+            <legend className="text-sm text-slate-600">{form.t('furnace.wire_label')}<Req /></legend>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              {form.opts('furnace.wire_options').map(o => (
+                <ImageOption key={o.value} name={`furnace-wire-${idx}-${i}`} checked={wireRange === o.value}
+                  onChange={() => set({ control_wire_range: o.value, control_wire_feet: wireRange === o.value ? wireFeet : FURNACE_WIRE_PRESETS.includes(o.value) ? o.value : '' })}
+                  label={o.label} help={o.help} focus="furnace_wire" image={form.image('furnace.wire_label')} variant="furnace-wire-choice" />
+              ))}
+            </div>
+            {wireRange && !wirePreset && <Field label={form.t('furnace.wire_feet_label')} required>
+              <input aria-label={form.t('furnace.wire_feet_label')} className={inputCls} type="number" min={101} value={wireFeet ?? ''} onChange={e => set({ control_wire_feet: e.target.value })} />
+            </Field>}
+            <p className="text-xs text-slate-500">{form.t('furnace.wire_help')}</p>
+          </fieldset>, filled(wireRange) && (wirePreset || Number(wireFeet) > 100), opts.suffix)
+          const backup = f.backup_thermostat == null ? '' : f.backup_thermostat ? 'yes' : 'no'
+          page(`furnace:${i}:thermostat`, <fieldset className="min-w-0 space-y-2">
+            <legend className="text-sm text-slate-600">{form.t('furnace.thermostat_label')}<Req /></legend>
+            <GreenhouseIllustration image={form.image('furnace.thermostat_label')} focus="thermostat" height={200} className="w-full" />
+            <div className="grid grid-cols-2 gap-3">
+              {form.opts('furnace.thermostat_options').map(o => (
+                <RadioOption key={o.value} checked={backup === o.value} label={o.label} help={o.help} onChange={() => set({ backup_thermostat: o.value === 'yes' })} />
+              ))}
+            </div>
+          </fieldset>, backup !== '', opts.suffix)
         })
       }
     }
+    if (limit.valves > 0) {
     const zones = Number(g.irrigation_zones) || 0
-    // La réponse se choisit sur l'image : de 0 à 4 valves, soit le contenu d'un bloc.
-    page('irrigation_zones', <IrrigationZones name={`valves-${idx}`} label={form.t('chief.irrigation_zones_label')} value={g.irrigation_zones} onChange={v => onChange({ irrigation_zones: v })} />, filled(g.irrigation_zones))
+    // La réponse se choisit sur l'image : de 0 à 4 valves, soit le contenu d'un
+    // bloc ; au-delà (permission Irrigation), un nombre jusqu'au plafond.
+    const zonesDone = validEquipmentCount(g.irrigation_zones) && Number(g.irrigation_zones) <= limit.valves
+    page('irrigation_zones', <>
+      <IrrigationZones name={`valves-${idx}`} label={form.t('chief.irrigation_zones_label')} value={g.irrigation_zones} max={limit.valves} onChange={v => onChange({ irrigation_zones: v })} />
+    </>, zonesDone)
     if (zones > 0) {
-      select('orisha_valves', form.t('chief.orisha_valves_label'), g.needs_orisha_valves == null ? '' : g.needs_orisha_valves ? 'yes' : 'no', v => onChange({ needs_orisha_valves: v === '' ? null : v === 'yes' }), form.opts('chief.orisha_valves_options'), { focus: 'valves', questionId: 'chief.orisha_valves_label' })
-      page('valve_wire', <Ask questionId="chief.orisha_valves_label" focus="valves"><ValveWireLength value={g.valve_control_wire_feet} onChange={value => onChange({ valve_control_wire_feet: value })} /></Ask>, filled(g.valve_control_wire_feet))
-      if (!g.needs_orisha_valves) {
-        input('valve_brand', 'Marque des valves', g.valve_brand, v => onChange({ valve_brand: v }), { focus: 'valves', dontKnow: true })
-        input('valve_model', 'Modèle des valves', g.valve_model, v => onChange({ valve_model: v }), { focus: 'valves', dontKnow: true })
-      }
+      // Oui : combien de valves (une par zone). Non : quelle marque.
+      const countChoices = Array.from({ length: Math.min(limit.valves, zones) }, (_, n) => n + 1)
+      const valveCount = Number(g.orisha_valves_count)
+      const otherBrand = g.valve_brand === VALVE_BRANDS[2]
+      const valvesDone = g.needs_orisha_valves === true ? countChoices.includes(valveCount) : g.needs_orisha_valves === false && VALVE_BRANDS.includes(g.valve_brand) && (!otherBrand || filled(g.valve_brand_other?.trim()))
+      page('orisha_valves', <fieldset className="min-w-0 space-y-2">
+        <legend className="text-sm text-slate-600">{form.t('chief.orisha_valves_label')}<Req /></legend>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {form.opts('chief.orisha_valves_options').map(o => (
+            <ImageOption key={o.value} name={`orisha-valves-${idx}`} label={o.label} help={o.help}
+              checked={typeof g.needs_orisha_valves === 'boolean' && g.needs_orisha_valves === (o.value === 'yes')}
+              onChange={() => onChange({ needs_orisha_valves: o.value === 'yes', orisha_valves_count: '', valve_brand: '', valve_model: '' })}
+              focus="valves" image={o.value === 'yes' ? 'valves-needed.svg' : 'valves-existing.svg'} />
+          ))}
+        </div>
+        {g.needs_orisha_valves === true && <div className="space-y-2 pt-2">
+          <p className="text-sm text-slate-600">Combien de valves ?<Req /></p>
+          <div className="grid grid-cols-4 gap-3">
+            {countChoices.map(n => <RadioOption key={n} checked={valveCount === n} label={String(n)} onChange={() => onChange({ orisha_valves_count: n })} />)}
+          </div>
+        </div>}
+        {g.needs_orisha_valves === false && <div className="space-y-2 pt-2">
+          <p className="text-sm text-slate-600">Marque de vos valves<Req /></p>
+          <div className="grid grid-cols-3 gap-3">
+            {VALVE_BRANDS.map(b => <RadioOption key={b} checked={g.valve_brand === b} label={b} onChange={() => onChange({ valve_brand: b, valve_brand_other: '', valve_model: '' })} />)}
+          </div>
+          {otherBrand && <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Field label="Marque" required><input aria-label="Marque des valves" className={inputCls} value={g.valve_brand_other || ''} onChange={e => onChange({ valve_brand_other: e.target.value })} /></Field>
+            <Field label="Modèle"><input aria-label="Modèle des valves" className={inputCls} value={g.valve_model || ''} onChange={e => onChange({ valve_model: e.target.value })} /></Field>
+          </div>}
+        </div>}
+      </fieldset>, valvesDone)
+      page('valve_wire', <Ask questionId="chief.orisha_valves_label" focus="valves" image="none"><ValveWireLength value={g.valve_control_wire_feet} onChange={value => onChange({ valve_control_wire_feet: value })} /></Ask>, filled(g.valve_control_wire_feet) && Number.isFinite(Number(g.valve_control_wire_feet)) && Number(g.valve_control_wire_feet) >= 0 && Number(g.valve_control_wire_feet) <= MAX_VALVE_WIRE_FEET)
+    }
     }
   }
   const ghCtx = { record: g, custom: g.custom, root, rootCustom: root.custom_answers }
@@ -824,22 +1073,16 @@ function addGreenhousePages({ add, idx, g, onChange, permission, root, form }) {
   }
 }
 
-// Zones d'irrigation : 5 images de 0 à 4 valves. Au-delà de 4, le nombre exact
-// se tape ; le vendeur prendra contact pour les besoins supplémentaires.
-function IrrigationZones({ name, label, value, onChange }) {
+// Zones d'irrigation : 5 images de 0 à 4 valves.
+function IrrigationZones({ name, label, value, onChange, max = 4 }) {
   const zones = Number(value) || 0
-  const [more, setMore] = useState(zones > 4)
   return (
     <div className="space-y-2">
       <p className="text-sm text-slate-600">{label}<Req /></p>
-      {!more && <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-        {[0, 1, 2, 3, 4].map(n => <IrrigationValveChoice key={n} name={name} count={n} checked={filled(value) && zones === n} onChange={() => onChange(n)} />)}
-      </div>}
-      <label className="flex items-center gap-2 text-sm text-slate-600">
-        <input type="checkbox" checked={more} onChange={e => { setMore(e.target.checked); onChange('') }} />Plus de 4
-      </label>
-      {zones > 4 && <p className="text-sm text-slate-600">Un vendeur vous contactera pour vos zones d’irrigation supplémentaires.</p>}
-      {more && <input aria-label={label} type="number" min={5} max={50} className={inputCls} value={value ?? ''} onChange={e => onChange(e.target.value)} />}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+        {[0, 1, 2, 3, 4].filter(n => n <= max).map(n => <IrrigationValveChoice key={n} name={name} count={n} checked={filled(value) && zones === n} onChange={() => onChange(n)} />)}
+      </div>
+      <MoreCount from={4} max={max} value={filled(value) ? zones : ''} onChange={onChange} label="Valves" />
     </div>
   )
 }
@@ -982,6 +1225,26 @@ function Field({ label, required, colSpan = 1, children }) {
   )
 }
 
+const CONTROLLER_DISTANCE_IMAGES = {
+  yes: 'controller-distance-near.svg',
+  coax_350: 'controller-distance-coax.svg',
+  no: 'controller-distance-far.svg',
+}
+
+function ControllerDistanceOption({ value, checked, onChange, label, help }) {
+  const image = CONTROLLER_DISTANCE_IMAGES[value]
+  return (
+    <label className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+      {image && <img src={`${import.meta.env.BASE_URL}images/discovery/${image}`} alt="" width="300" height="190" className="w-full h-32 object-contain" draggable={false} />}
+      <span className="flex items-center gap-2 text-sm text-slate-800">
+        <input type="radio" name="controller-distance" value={value} aria-label={label} checked={checked} onChange={onChange} />
+        {label}
+      </span>
+      {help && <span className="text-xs text-slate-500 text-center">{help}</span>}
+    </label>
+  )
+}
+
 function RadioOption({ checked, onChange, label, help }) {
   return (
     <label className={`flex items-start gap-2 p-3 rounded-lg cursor-pointer border ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
@@ -994,71 +1257,26 @@ function RadioOption({ checked, onChange, label, help }) {
   )
 }
 
-// Choix illustré : l'image porte la réponse, le texte ne fait que la nommer.
-function FanPowerOption({ name, value, label, checked, onChange }) {
-  const badge = value === DONT_KNOW ? '?' : value === FANS_HP_RANGE_OPTIONS[0].value ? '1 HP max.' : '> 1 HP'
+// Oui / Non : deux boutons côte à côte plutôt qu'un menu déroulant.
+function YesNoButtons({ value, onChange }) {
   return (
-    <label className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-      <div className="relative w-full pt-6" aria-hidden="true">
-        <img src={`${import.meta.env.BASE_URL}images/discovery/fans-two.svg`} alt="" width="640" height="300" className="w-full h-28 object-contain" />
-        <span className="absolute top-0 inset-x-0 text-center text-lg font-semibold text-slate-800">{badge}</span>
-      </div>
-      <span className="flex items-center gap-2 text-sm text-slate-800">
-        <input type="radio" name={name} value={value} checked={checked} onChange={onChange} />
-        {label}
-      </span>
-    </label>
+    <div className="grid grid-cols-2 gap-3">
+      {[[true, 'Oui'], [false, 'Non']].map(([v, label]) => <RadioOption key={label} label={label} checked={value === v} onChange={() => onChange(v)} />)}
+    </div>
   )
 }
 
-// Les guides déjà installés se distinguent des tuyaux à fournir, encore libres.
-function GuidePipeOption({ name, value, label, help, checked, onChange }) {
-  const present = value === 'present'
-  const needed = value === 'needed'
-  return (
-    <label className={`flex flex-col items-center gap-2 p-3 rounded-lg cursor-pointer border focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
-      <svg viewBox={present ? '0 0 260 180' : '0 0 240 150'} className="w-full h-28" aria-hidden="true">
-        {present ? <>
-          {/* Les deux axes au sol suivent la même projection isométrique. */}
-          <path d="M17 125L139 54L234 109L112 180Z" fill="#f1f5f3" />
-          <path d="M140 58V22C140 -16 216 28 216 66V102Z" fill="#e2efed" stroke="#94a3b8" strokeWidth="2" />
-          <path d="M28 87C28 49 104 93 104 131L216 66C216 28 140 -16 140 22Z" fill="#eef8f9" stroke="#94a3b8" strokeWidth="2" />
-          <path d="M104 131L216 66V102L104 167Z" fill="#d7ece7" stroke="#94a3b8" strokeWidth="2" />
-          <g fill="none" stroke="#b0c4c1" strokeWidth="2">
-            {[28, 56, 84].map(offset => (
-              <path key={offset} transform={`translate(${offset} ${-offset * 65 / 112})`} d="M28 123V87C28 49 104 93 104 131V167" />
-            ))}
-            <path d="M66 80L178 15M104 150L216 85" />
-          </g>
-          <path d="M28 123V87C28 49 104 93 104 131V167Z" fill="#f0f9f7" fillOpacity="0.8" stroke="#94a3b8" strokeWidth="2.5" />
-          <path d="M53 137V100L79 115V152M28 123L104 167" fill="none" stroke="#b0c4c1" strokeWidth="2" />
-          {/* Tuyau d'enroulement sur le côté, moteur guidé verticalement. */}
-          <path d="M111 143L220 80" stroke="#64748b" strokeWidth="6" strokeLinecap="round" />
-          <path d="M118 112V168" stroke="#15803d" strokeWidth="7" strokeLinecap="round" />
-          <path d="M105 135L122 125L134 132L117 142Z" fill="#fde68a" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round" />
-          <path d="M105 135L117 142V159L105 152Z" fill="#fbbf24" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round" />
-          <path d="M117 142L134 132V149L117 159Z" fill="#f59e0b" stroke="#b45309" strokeWidth="1.5" strokeLinejoin="round" />
-          <path d="M112 122H124M112 163H124" stroke="#475569" strokeWidth="2.5" strokeLinecap="round" />
-          <circle cx="37" cy="28" r="19" fill="#15803d" />
-          <path d="M27 28L34 35L47 20" fill="none" stroke="#f0fdf4" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
-        </> : <>
-          <g fill="none" stroke={needed ? '#64748b' : '#94a3b8'} strokeWidth="9" strokeLinecap="round">
-            <path d="M61.5 128L95.5 33M94.5 128L128.5 33" />
-          </g>
-          <circle cx="189" cy="65" r="27" fill={needed ? '#dcfce7' : '#f1f5f9'} />
-          {needed
-            ? <path d="M175 65H203M189 51V79" stroke="#15803d" strokeWidth="5" strokeLinecap="round" />
-            : <text x="189" y="77" textAnchor="middle" fontSize="36" fontWeight="600" fill="#64748b">?</text>}
-        </>}
-        {!present && <path d="M18 137H224" stroke="#cbd5e1" strokeWidth="2" />}
-      </svg>
-      <span className="flex items-center gap-2 text-sm text-slate-800">
-        <input type="radio" name={name} value={value} checked={checked} onChange={onChange} />
-        {label}
-      </span>
-      {help && <span className="text-xs text-slate-500 text-center">{help}</span>}
-    </label>
-  )
+// Aide : où lire les HP sur la plaque signalétique du moteur.
+function MotorHpHelp() {
+  const [open, setOpen] = useState(false)
+  return <>
+    <button type="button" onClick={() => setOpen(true)} aria-label="Où trouver les HP ?" title="Où trouver les HP ?"
+      className="text-slate-400 hover:text-brand-600"><HelpCircle className="w-4 h-4" /></button>
+    <Modal isOpen={open} onClose={() => setOpen(false)} title="Où trouver les HP ?">
+      <img src={`${import.meta.env.BASE_URL}images/discovery/motor-hp-plate.webp`} alt="Plaque du moteur : HP 1/3" width="1069" height="557" className="w-full h-auto rounded-lg" />
+      <p className="mt-2 text-sm text-slate-600">Plaque du moteur, ligne « HP ». Additionnez les deux ventilateurs.</p>
+    </Modal>
+  </>
 }
 
 function ImageOption({ checked, onChange, label, help, image, focus, name, variant }) {
@@ -1075,9 +1293,9 @@ function ImageOption({ checked, onChange, label, help, image, focus, name, varia
 }
 
 function ValveWireLength({ value, onChange }) {
-  const [custom, setCustom] = useState(false)
   const hasValue = value !== '' && value != null
   const isPreset = [15, 25].includes(Number(value))
+  const [custom, setCustom] = useState(hasValue && !isPreset)
   const selection = custom || (hasValue && !isPreset) ? 'custom' : hasValue ? String(value) : ''
   return (
     <fieldset className="min-w-0">
@@ -1112,7 +1330,8 @@ function ValveWireLength({ value, onChange }) {
       </div>
       {selection === 'custom' && <label className="block mt-2 text-sm text-slate-600">
         Longueur personnalisée (pi)
-        <input type="number" min="0" className={inputCls} value={value ?? ''} onChange={e => onChange(e.target.value)} />
+        <input type="number" min="0" max={MAX_VALVE_WIRE_FEET} className={inputCls} value={value ?? ''} onChange={e => onChange(Number(e.target.value) > MAX_VALVE_WIRE_FEET ? String(MAX_VALVE_WIRE_FEET) : e.target.value)} />
+        <span className="text-xs">Maximum : {MAX_VALVE_WIRE_FEET} pi.</span>
       </label>}
     </fieldset>
   )
@@ -1151,13 +1370,7 @@ function CustomInput({ q, value, onChange, disabled }) {
         </label>
       )
     case 'yesno':
-      return (
-        <select {...common} value={value == null ? '' : (value ? 'yes' : 'no')} onChange={e => onChange(e.target.value === '' ? null : e.target.value === 'yes')}>
-          <option value="">—</option>
-          <option value="yes">Oui</option>
-          <option value="no">Non</option>
-        </select>
-      )
+      return <YesNoButtons value={value} onChange={v => !disabled && onChange(v)} />
     case 'radio':
       return (
         <div className="space-y-2">
@@ -1179,6 +1392,42 @@ function CustomInput({ q, value, onChange, disabled }) {
 }
 
 // ─── Submitted summary + extras flow ──────────────────────────────────────
+
+// Relecture des réponses : après l'envoi, et juste avant le bouton Soumettre.
+function AnswersSummary({ resp, permission, hasMobileController, grouped, className = '', onEdit }) {
+  const form = useFormSchema()
+  const addr = v => [v?.line1, v?.line2, v?.city, v?.province, v?.postal_code].filter(Boolean).join(', ') || '—'
+  const newSite = resp.is_new_site === 'new'
+  const general = [
+    ['Commande', 'order_type', [
+      [form.t('order_type.title'), form.opts('order_type.options').find(o => o.value === resp.is_new_site)?.label || '—'],
+      resp.is_new_site === 'add_to_existing' && !hasMobileController && ['Distance du contrôleur central', form.opts('controller_distance.options').find(o => o.value === controllerDistanceValue(resp))?.label || '—'],
+    ]],
+    ['Adresses', newSite ? 'farm_address' : 'shipping_address', [
+      newSite && ['Ferme', addr(resp.farm_address)],
+      ['Livraison', newSite && resp.shipping_same_as_farm !== false ? 'Même adresse que la ferme' : addr(resp.shipping_address)],
+    ]],
+    ['Serres et réseau', resp.is_new_site && !hasMobileController && newSite ? 'network' : 'greenhouse_count', [
+      ['Nombre de serres', resp.num_greenhouses || '—'],
+      newSite && !hasMobileController && ['Accès réseau', form.opts('network.options').find(o => o.value === resp.network_access)?.label || '—'],
+      resp.wifi_ssid && ['Réseau Wi‑Fi', resp.wifi_ssid],
+    ]],
+  ]
+  return (
+    <div className={`space-y-3 text-sm text-slate-700 ${className}`}>
+      {general.map(([title, pageId, items]) => <section key={title} aria-label={title} className="space-y-1">
+        <div className="flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+          {onEdit && <EditLink onClick={() => onEdit(null, pageId)} />}
+        </div>
+        <dl className="grid grid-cols-2 gap-x-3 gap-y-1">
+          {items.filter(Boolean).map(([label, value]) => <Fragment key={label}><dt className="min-w-0 break-words">{label}</dt><dd className="min-w-0 break-words font-medium text-slate-900">{value}</dd></Fragment>)}
+        </dl>
+      </section>)}
+      {(resp.greenhouses || []).map((g, i) => <GreenhouseAnswers key={i} g={g} idx={i} form={form} permission={permission} root={resp} grouped={grouped} onEdit={onEdit} />)}
+    </div>
+  )
+}
 
 function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, permission, isDiscoveryMode, hasMobileController }) {
   // Le flow extras est lié au Stripe Checkout (création d'un pending_invoice +
@@ -1214,16 +1463,8 @@ function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, perm
   return (
     <Card title={form.t('submitted.title')}>
       <p className="text-sm text-slate-700">{form.t('submitted.text')}</p>
-      {isDiscoveryMode && resp.greenhouses?.some(g => Number(g.irrigation_zones) > 4) && <p className="text-sm text-slate-700">Un vendeur vous contactera pour vos zones d’irrigation supplémentaires.</p>}
       <button type="button" className="btn-ghost btn-sm mt-2" onClick={() => setShowAnswers(v => !v)}>{showAnswers ? 'Masquer mes réponses' : 'Consulter mes réponses'}</button>
-      {showAnswers && <div className="mt-3 border-t border-slate-100 pt-3 space-y-3 text-sm text-slate-700">
-        {resp.is_new_site === 'add_to_existing' && !hasMobileController && <div>
-          <p>{form.t('controller_distance.prompt')} <strong>{form.opts('controller_distance.options').find(o => o.value === controllerDistanceValue(resp))?.label || '—'}</strong></p>
-          {resp.within_central_controller_range === true && <p>{form.t('controller_distance.near')}</p>}
-        </div>}
-        <div className="grid grid-cols-2 gap-2"><span>Nombre de serres</span><span className="font-medium text-slate-900">{resp.num_greenhouses || '—'}</span><span>Accès réseau</span><span className="font-medium text-slate-900">{form.opts('network.options').find(o => o.value === resp.network_access)?.label || '—'}</span>{resp.wifi_ssid && <><span>Réseau Wi‑Fi</span><span className="font-medium text-slate-900">{resp.wifi_ssid}</span></>}</div>
-        {(resp.greenhouses || []).map((g, i) => <GreenhouseAnswers key={i} g={g} idx={i} form={form} permission={permission} root={resp} />)}
-      </div>}
+      {showAnswers && <AnswersSummary resp={resp} permission={permission} hasMobileController={hasMobileController} grouped={isDiscoveryMode} className="mt-3 border-t border-slate-100 pt-3" />}
       {extras.items.length > 0 && !extrasResult && (
         <div className="mt-3 rounded-lg bg-blue-50 border border-blue-200 p-4">
           <h3 className="font-semibold text-blue-900">Extras suggérés selon vos réponses</h3>
@@ -1253,7 +1494,11 @@ function SubmittedSummary({ resp, extrasResult, setExtrasResult, sessionId, perm
 // répondues (côtés, tuyaux, louvres, humidité, fournaises, irrigation, questions
 // ajoutées), pas seulement les cinq premières. Une ligne n'apparaît que si elle
 // a une réponse — l'écran reste court quand le formulaire l'était.
-function GreenhouseAnswers({ g, idx, form, permission, root }) {
+function EditLink({ onClick }) {
+  return <button type="button" onClick={onClick} className="text-xs font-medium text-brand-700 hover:text-brand-800 underline underline-offset-2">Modifier</button>
+}
+
+function GreenhouseAnswers({ g, idx, form, permission, root, grouped = false, onEdit }) {
   const cardPermission = g.permission_level || permission
   const helperOnly = sideVentsOnly(cardPermission)
   const chief = cardPermission === 'chief_grower'
@@ -1261,7 +1506,7 @@ function GreenhouseAnswers({ g, idx, form, permission, root }) {
   const choice = (list, value) => value ? (form.opts(list).find(o => o.value === value)?.label || value) : null
   const feet = v => !filled(v) ? null : v === DONT_KNOW ? DONT_KNOW : `${v} pi`
   const rows = []
-  const row = (label, value) => { if (value != null && value !== '') rows.push([label, value]) }
+  const row = (label, value, section = 'sides') => { if (value != null && value !== '') rows.push([label, value, section]) }
 
   row('Longueur', g.length_range === 'up_to_200' ? '200 pi ou moins' : feet(g.length))
   row('Côtés ouvrants', g.has_side_vents === false ? 'Aucun' : filled(g.num_side_vent_motors) ? String(g.num_side_vent_motors) : yn(g.has_side_vents))
@@ -1270,36 +1515,57 @@ function GreenhouseAnswers({ g, idx, form, permission, root }) {
     if (g.has_existing_side_vent_motors) {
       row('Marque des moteurs', g.side_vent_motor_brand)
       row('Modèle des moteurs', g.side_vent_motor_model)
+      row('Inverseurs', g.side_has_inverters === false ? 'Aucun' : g.side_has_inverters === true
+        ? [g.side_inverter_model === 'other' ? [g.side_inverter_brand_other, g.side_inverter_model_other].filter(Boolean).join(' ') || 'Autre' : g.side_inverter_model,
+          { per_motor: 'un par moteur', per_two: 'un pour deux moteurs' }[g.side_inverter_ratio]].filter(Boolean).join(', ')
+        : null)
     }
     row('Hauteur des côtés', g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : feet(g.side_vent_height))
     row('Tuyau de côté', choice('greenhouse.side_pipe_type_options', g.side_pipe_type))
     row('Diamètre du tuyau', g.side_pipe_diameter?.replace(/^Autre:\s*/, ''))
-    row('Tuyaux guides', choice('greenhouse.guide_pipes_options', g.guide_pipes_state))
+    row('Tuyaux guides', { present: 'Déjà présents', needed: 'Fournis par Orisha' }[g.guide_pipes_state] || choice('greenhouse.guide_pipes_options', g.guide_pipes_state))
     row('Diamètre des guides', g.guide_pipe_diameter?.replace(/^Autre:\s*/, ''))
     if (g.wants_compatible_guide_pipes) row('Guides compatibles', 'À fournir')
   }
-  if (!helperOnly) {
-    row('Louvres', g.has_louvers === false ? 'Aucune' : g.louvers?.length || null)
-    row('Ventilateurs', g.num_fans)
-    if (Number(g.num_fans) === 2) {
-      const hpRange = fansHpRangeValue(g)
-      row('Puissance des ventilateurs', FANS_HP_RANGE_OPTIONS.find(o => o.value === hpRange)?.label || (filled(hpRange) ? hpRange : null))
-    }
-    if (root.form_options?.humidity_retention) {
-      row('Valve d’humidité', yn(g.humidity_valve))
-      row('Ventilateurs HAF', g.humidity_haf ? g.humidity_haf_count : yn(g.humidity_haf))
+  const limit = greenhouseLimits(root.form_options, idx, cardPermission)
+  if (limit.roofs) {
+    const roofTotal = g.has_roof_vents === true ? Number(g.num_roof_vents) || 0 : 0
+    row('Toit ouvrant', roofTotal ? 'Oui' : yn(g.has_roof_vents), 'roofs')
+    if (roofTotal) {
+      if (limit.roofs > 1) row('Nombre de toits ouvrants', roofTotal, 'roofs')
+      row('Tension du moteur', choice('roofs.voltage_options', g.roof_motor_voltage), 'roofs')
+      row('Inverseur déjà disponible', yn(g.has_roof_inverter), 'roofs')
+      if (g.has_roof_inverter) {
+        row('Inverseur', choice('roofs.inverter_options', g.roof_inverter_type), 'roofs')
+        if (g.roof_inverter_type === 'other') {
+          row('Marque', g.roof_inverter_brand, 'roofs')
+          row('Modèle', g.roof_inverter_model, 'roofs')
+        }
+      } else if (g.has_roof_inverter === false) {
+        if (g.roof_motor_voltage) row('Marque du moteur', g.roof_motor_voltage === '24_dc' ? '24 V DC' : g.roof_motor_voltage === '240' && g.roof_motor_ridder_rw240 === true ? 'Ridder RW240, 1 phase, 5 fils' : 'Autre', 'roofs')
+        if (roofInverterSupplyKey(g) === 'roofs.supply_customer') row('Fourniture de l’inverseur', form.t('roofs.supply_customer'), 'roofs')
+      }
     }
   }
-  if (chief) {
-    row('Fournaises', g.has_furnaces === false ? 'Aucune' : g.num_furnaces || null)
-    row('Zones d’irrigation', filled(g.irrigation_zones) ? g.irrigation_zones : null)
+  if (!helperOnly) {
+    row('Louvres', g.has_louvers === false ? 'Aucune' : g.louvers?.length || null, 'louvers')
+    row('Ventilateurs', g.num_fans, 'fans')
+    if (Number(g.num_fans) === 2) {
+      const hpRange = fansHpRangeValue(g)
+      row('Puissance des ventilateurs', FANS_HP_RANGE_OPTIONS.find(o => o.value === hpRange)?.label || (filled(hpRange) ? hpRange : null), 'fans')
+    }
+    if (root.form_options?.humidity_retention) {
+      row('Valve d’humidité', yn(g.humidity_valve), 'humidity')
+      row('Ventilateurs HAF à automatiser', yn(g.humidity_haf), 'humidity')
+    }
+  }
+  if (limit.furnaces) row('Fournaises', g.has_furnaces === false ? 'Aucune' : g.num_furnaces || null, 'heating')
+  if (limit.valves) {
+    row('Zones d’irrigation', filled(g.irrigation_zones) ? g.irrigation_zones : null, 'irrigation')
     if (Number(g.irrigation_zones) > 0) {
-      row('Valves fournies par Orisha', yn(g.needs_orisha_valves))
-      row('Filage des valves', feet(g.valve_control_wire_feet))
-      if (g.needs_orisha_valves === false) {
-        row('Marque des valves', g.valve_brand)
-        row('Modèle des valves', g.valve_model)
-      }
+      row('Valves', g.needs_orisha_valves === true ? `${g.orisha_valves_count || '—'} fournie(s) par Orisha` : g.needs_orisha_valves === false ? 'Déjà présentes' : null, 'irrigation')
+      if (g.needs_orisha_valves === false) row('Marque des valves', g.valve_brand === VALVE_BRANDS[2] ? [g.valve_brand_other, g.valve_model].filter(Boolean).join(' ') || g.valve_brand : g.valve_brand, 'irrigation')
+      row('Filage des valves', feet(g.valve_control_wire_feet), 'irrigation')
     }
   }
   const ctx = { record: g, custom: g.custom, root, rootCustom: root.custom_answers }
@@ -1307,33 +1573,67 @@ function GreenhouseAnswers({ g, idx, form, permission, root }) {
     for (const q of form.custom(section, ctx)) {
       const v = g.custom?.[q.id]
       if (v == null || v === '') continue
-      row(q.label, typeof v === 'boolean' ? (v ? 'Oui' : 'Non') : (q.options?.find(o => o.value === v)?.label ?? String(v)))
+      row(q.label, typeof v === 'boolean' ? (v ? 'Oui' : 'Non') : (q.options?.find(o => o.value === v)?.label ?? String(v)), 'custom')
     }
   }
 
   const louvers = !helperOnly && g.has_louvers ? (g.louvers || []) : []
   const furnaces = chief && g.has_furnaces ? (g.furnaces || []) : []
-  const sub = (title, items) => <div className="mt-2 border-t border-slate-200 pt-2">
-    <p className="font-medium text-slate-900">{title}</p>
-    <div className="mt-1 grid grid-cols-2 gap-1 text-xs">{items.map(([l, v], i) => <Fragment key={i}><span>{l}</span><span>{v}</span></Fragment>)}</div>
+  // Un louvre ou une fournaise se lit en retrait, rattaché à sa section.
+  const sub = (title, items) => <div key={title} className="mt-2 ml-3 border-l-2 border-slate-300 pl-3">
+    <p className="text-xs font-medium text-slate-900">{title}</p>
+    <div className="mt-1 grid grid-cols-2 gap-1 text-xs">{items.map(([l, v], i) => <Fragment key={i}><span className="min-w-0 break-words">{l}</span><span className="min-w-0 break-words">{v}</span></Fragment>)}</div>
   </div>
+  const louverDetails = louvers.map((l, i) => sub(`Louvre #${i + 1}`, [
+    ['Commande', choice('louvers.types', louverComboValue(l)) || louverSummary(l) || '—'],
+    ['Ventilateur associé', yn(l.has_fan) || '—'],
+  ]))
+  const furnaceDetails = furnaces.map((f, i) => sub(`Fournaise #${i + 1}`, [
+    ['Compatible', choice('furnace.dry_contact_options', f.dry_contact_24v) || '—'],
+    ...(f.brand ? [['Marque', (f.brand === 'Autre' ? f.brand_other : f.brand) || f.brand]] : []),
+    ...(f.model ? [['Modèle', f.model === 'Autre' ? f.model_other || f.model : f.model]] : []),
+    ['Filage', feet(f.control_wire_feet) || '—'],
+    ['Thermostat de secours', typeof f.backup_thermostat === 'boolean' ? (f.backup_thermostat ? 'Fourni par Orisha' : 'Déjà présent') : '—'],
+  ]))
+  const sections = [
+    ['sides', 'Côtés ouvrants'],
+    ['roofs', 'Toits ouvrants'],
+    ['louvers', 'Louvres', louverDetails],
+    ['fans', 'Ventilateurs'],
+    ['irrigation', 'Irrigation'],
+    ['humidity', 'Conservation de l’humidité'],
+    ['heating', 'Chauffage', furnaceDetails],
+    ['custom', 'Autres réponses'],
+  ]
 
   return (
     <div className="rounded-lg bg-slate-50 p-3">
-      <p className="font-medium text-slate-900">Serre #{idx + 1}</p>
-      <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
-        {rows.map(([label, value], i) => <Fragment key={i}><span>{label}</span><span>{value}</span></Fragment>)}
+      <div className="flex items-center justify-between gap-2">
+        <p className="font-medium text-slate-900"><GreenhouseTitle idx={idx} permission={cardPermission} /></p>
+        {onEdit && !grouped && <EditLink onClick={() => onEdit(idx, 'sides')} />}
       </div>
-      {louvers.map((l, i) => sub(`Louvre #${i + 1}`, [
-        ['Commande', choice('louvers.types', louverComboValue(l)) || louverSummary(l) || '—'],
-        ['Ventilateur associé', yn(l.has_fan) || '—'],
-      ]))}
-      {furnaces.map((f, i) => sub(`Fournaise #${i + 1}`, [
-        ['Marque', f.brand || '—'],
-        ['Modèle', (f.model === 'Autre' ? f.model_other : f.model) || '—'],
-        ['Filage', feet(f.control_wire_feet) || '—'],
-        ['Thermostat de secours', yn(f.backup_thermostat) || '—'],
-      ]))}
+      {grouped ? <div className="mt-3 space-y-3">
+        {sections.map(([id, title, details]) => {
+          const items = rows.filter(([, , section]) => section === id)
+          if (!items.length && !details?.length) return null
+          return <section key={id} aria-label={title} className="border-t border-slate-200 pt-3">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
+              {onEdit && <EditLink onClick={() => onEdit(idx, id)} />}
+            </div>
+            <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+              {items.map(([label, value], i) => <Fragment key={i}><dt className="min-w-0 break-words">{label}</dt><dd className="min-w-0 break-words">{value}</dd></Fragment>)}
+            </dl>
+            {details}
+          </section>
+        })}
+      </div> : <>
+        <div className="mt-1 grid grid-cols-2 gap-1 text-xs">
+          {rows.map(([label, value], i) => <Fragment key={i}><span>{label}</span><span>{value}</span></Fragment>)}
+        </div>
+        {louverDetails}
+        {furnaceDetails}
+      </>}
     </div>
   )
 }
@@ -1352,7 +1652,7 @@ function computeExtras(resp, permission) {
     for (const g of (resp.greenhouses || [])) {
       const z = Number(g.irrigation_zones) || 0
       if (z > 4) extraValveBlocks += Math.ceil((z - 4) / 4)
-      if (z > 0 && g.needs_orisha_valves) needsValves += z
+      if (z > 0 && g.needs_orisha_valves) needsValves += Number(g.orisha_valves_count) || z
     }
     if (extraValveBlocks > 0) {
       items.push({ role: 'valve_block_onetime', qty: extraValveBlocks, description: `${extraValveBlocks} bloc(s) de 4 valves d'irrigation supplémentaires`, unit_price: 0 })

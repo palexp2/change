@@ -1,3 +1,4 @@
+import { HR_TABLES, isHR } from '../services/dataAccess.js'
 // API de mutation générique (phase 1) — PATCH/DELETE /api/records/:table/:id
 //
 // Pilotée par db/recordRegistry.js : seules les tables explicitement enregistrées
@@ -20,6 +21,10 @@ import { getRecordSpec, listRecordTables } from '../db/recordRegistry.js'
 
 const router = Router()
 router.use(requireAuth)
+router.param('table', (req, res, next, table) => {
+  if (HR_TABLES.has(table) && !isHR(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+})
 
 // Mapping table SQL → entity_type (activity_log) pour l'historique par
 // enregistrement. Les clés sont hardcodées (sûres pour l'interpolation SQL) ;

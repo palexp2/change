@@ -20,6 +20,7 @@ import { housekeeping, archiveRules, restoreRules } from '../services/bankRules/
 import { verifyRule, overlappingRules, suggestRelaxation } from '../services/bankRules/verify.js'
 import { readQbRulesFile } from '../services/bankRules/importQb.js'
 import { stripBankNoise } from '../services/scrapers/vendorFromBankLabel.js'
+import { buildEntryDraft } from '../services/bankEntryDraft.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -87,11 +88,42 @@ router.get('/:id/verify', (req, res) => {
   res.json({ ...verifyRule(rule), overlaps: overlappingRules(rule, listRules()) })
 })
 
-// Une règle préremplie à partir d'une ligne du relevé.
+// Une règle préremplie à partir d'une ligne du relevé — motif ET façon de
+// comptabiliser. « Toujours faire ça pour ce libellé » ne veut rien dire si la
+// règle ne retient pas ce qu'on vient de faire : quand la ligne porte déjà son
+// achat, ce sont SES valeurs qui font foi ; sinon celles que le dossier a
+// préparées. Un champ sans source reste vide.
+function bookingFromTxn(txn) {
+  if (txn.matched_type === 'achat' && txn.matched_id) {
+    const a = db.prepare(`
+      SELECT vendor, expense_account_id, tax_code_id, qb_memo, type FROM achats_fournisseurs WHERE id=?
+    `).get(String(txn.matched_id))
+    if (a?.expense_account_id || a?.vendor) {
+      return {
+        vendor_name: a.vendor || null,
+        expense_account_id: a.expense_account_id || null,
+        tax_code_id: a.tax_code_id || null,
+        memo: a.qb_memo || null,
+        qb_type: ['purchase', 'bill', 'cc_credit'].includes(a.type) ? a.type : null,
+      }
+    }
+  }
+  const account = db.prepare('SELECT * FROM bank_accounts WHERE id=?').get(txn.account_id)
+  const f = buildEntryDraft(txn, account)?.fields || {}
+  const val = (k) => (f[k]?.source ? f[k].value || null : null)
+  return {
+    vendor_name: val('vendor'),
+    expense_account_id: val('expense_account_id'),
+    tax_code_id: val('tax_code_id'),
+    memo: val('memo'),
+    qb_type: val('qb_type'),
+  }
+}
+
 router.get('/draft-from-txn/:txnId', (req, res) => {
   const txn = db.prepare('SELECT * FROM bank_transactions WHERE id=? AND deleted_at IS NULL').get(req.params.txnId)
   if (!txn) return res.status(404).json({ error: 'Not found' })
-  const draft = ruleDraftFromTxn(txn, { stripBankNoise })
+  const draft = { ...ruleDraftFromTxn(txn, { stripBankNoise }), ...bookingFromTxn(txn) }
   res.json({ ...draft, preview: previewRule(draft) })
 })
 

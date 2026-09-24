@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fmtDate } from '../lib/formatDate.js'
 import { ChevronRight, CheckCircle, Download, RefreshCw, Stethoscope, Mail, FileText, Sparkles, Truck } from 'lucide-react'
@@ -9,6 +9,8 @@ import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, De
 import ErrorBanner from './ErrorBanner.jsx'
 import Spinner from './Spinner.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { parseAttachments, attachmentFileUrl } from '../lib/customFieldDisplay.jsx'
 
 const REASON_LABELS = {
   preferred: 'transporteur préféré',
@@ -63,6 +65,19 @@ export default function RetourActionsSection({ retour, onDone }) {
   const [memoUrl, setMemoUrl] = useState(retour.memo_pdf_path ? withToken(`/erp/api/retours/memos/${retour.memo_pdf_path.split('/').pop()}`) : null)
   const [memoMissing, setMemoMissing] = useState(false)
   const [composerOpen, setComposerOpen] = useState(false)
+
+  // Aide-mémoire venu d'Airtable : les retours nés là-bas portent déjà leur PDF
+  // dans le champ « Aide mémoire » (miroir local des pièces jointes), sans que
+  // rien n'ait été généré ici. Il se montre comme celui qu'on génère — en
+  // vignette cliquable, pas en lien nu.
+  const { fields: returnFields } = useCustomFields('returns')
+  const mirroredMemos = useMemo(() => {
+    const field = returnFields.find(f => f.column_name === 'aide_memoire')
+    if (!field) return []
+    return parseAttachments(retour.aide_memoire)
+      .map(f => ({ id: f.id, name: f.name, type: f.type, url: attachmentFileUrl(field.id, retour.id, f.id) }))
+      .filter(f => f.url)
+  }, [returnFields, retour.aide_memoire, retour.id])
 
   const loadContext = useCallback(() => {
     setLoadingContext(true)
@@ -407,16 +422,31 @@ export default function RetourActionsSection({ retour, onDone }) {
             l'aide-mémoire se voit sans quitter la fiche, un clic l'ouvre en
             grand. Si le fichier a disparu du serveur, on retombe sur le bouton
             de génération. */}
-        {memoUrl && !memoMissing ? (
-          <AttachmentPreview
-            url={memoUrl}
-            fileName={memoUrl.split('?')[0].split('/').pop()}
-            downloadName={`aide-memoire-${retour.id}.pdf`}
-            title="Aide-mémoire de retour"
-            kind="pdf"
-            testId="retour-memo-attachment"
-            onUnavailable={reason => { if (reason === 'missing') setMemoMissing(true) }}
-          />
+        {(memoUrl && !memoMissing) || mirroredMemos.length > 0 ? (
+          <div className="flex flex-wrap gap-3">
+            {memoUrl && !memoMissing && (
+              <AttachmentPreview
+                url={memoUrl}
+                fileName={memoUrl.split('?')[0].split('/').pop()}
+                downloadName={`aide-memoire-${retour.id}.pdf`}
+                title="Aide-mémoire de retour"
+                kind="pdf"
+                testId="retour-memo-attachment"
+                onUnavailable={reason => { if (reason === 'missing') setMemoMissing(true) }}
+              />
+            )}
+            {mirroredMemos.map(f => (
+              <AttachmentPreview
+                key={f.id}
+                url={f.url}
+                fileName={f.name}
+                contentType={f.type}
+                downloadName={f.name}
+                title="Aide-mémoire de retour"
+                testId="retour-memo-airtable"
+              />
+            ))}
+          </div>
         ) : (
           <button onClick={handleGenerateMemo} disabled={memoStatus === 'loading'} className="btn-secondary text-sm">
             {memoStatus === 'loading' ? 'Génération…' : 'Générer l\'aide-mémoire'}
@@ -433,16 +463,17 @@ export default function RetourActionsSection({ retour, onDone }) {
         {retour.instructions_sent_at ? (
           <p className="text-sm text-slate-500">Envoyées le {fmtDate(retour.instructions_sent_at)}.</p>
         ) : (
-          <button onClick={() => setComposerOpen(true)} className="btn-primary text-sm whitespace-nowrap">Envoyer</button>
+          <button onClick={() => setComposerOpen(true)} className="btn-primary text-sm whitespace-nowrap">Vérifier le courriel</button>
         )}
       </section>
 
-      {/* « Envoyer » ouvre la composition : le courriel s'y voit et s'y modifie
-          avant de partir (plus de bouton « Aperçu » séparé). */}
+      {/* Révision du courriel avant l'envoi, avec modification sur demande. */}
       <EmailComposerModal
         isOpen={composerOpen}
         onClose={() => setComposerOpen(false)}
-        title="Instructions de retour"
+        title="Aperçu du courriel"
+        reviewBeforeSend
+        sendLabel="Envoyer le courriel"
         load={() => api.retours.instructionsEmail(retour.id)}
         onSend={({ to, cc, subject, bodyHtml }) => api.retours.sendInstructions(retour.id, { to, cc, subject, body_html: bodyHtml })}
         onSent={onDone}

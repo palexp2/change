@@ -1,6 +1,6 @@
 import { WebSocketServer } from 'ws'
-import jwt from 'jsonwebtoken'
-import { JWT_SECRET } from '../config/secrets.js'
+import { verifySession } from './sessionSecurity.js'
+import { canReceiveChannel } from './dataAccess.js'
 
 // Map<ws, { userId: string|null, channels: Set<string> }>
 const clients = new Map()
@@ -11,7 +11,7 @@ export function createRealtimeServer(httpServer) {
     return
   }
 
-  const wss = new WebSocketServer({ server: httpServer, path: '/erp/ws' })
+  const wss = new WebSocketServer({ server: httpServer, path: '/erp/ws', maxPayload: 64 * 1024 })
 
   wss.on('connection', (ws) => {
     let authenticated = false
@@ -30,10 +30,10 @@ export function createRealtimeServer(httpServer) {
 
       if (data.type === 'auth') {
         try {
-          const decoded = jwt.verify(data.token, JWT_SECRET, { algorithms: ['HS256'] })
+          const user = verifySession(data.token)
           authenticated = true
           clearTimeout(authTimeout)
-          clients.set(ws, { userId: decoded.id || decoded.userId || null, channels: new Set() })
+          clients.set(ws, { userId: user.id, user, token: data.token, channels: new Set() })
           ws.send(JSON.stringify({ type: 'auth:success' }))
         } catch {
           ws.close(4002, 'Invalid token')
@@ -44,9 +44,10 @@ export function createRealtimeServer(httpServer) {
       if (!authenticated) return // ignore other messages until authed
 
       const state = clients.get(ws)
-      if (!state) return
+      if (!state || !currentUser(ws)) return
 
       if (data.type === 'subscribe' && typeof data.channel === 'string') {
+        if (state.channels.size >= 100 || !canReceiveChannel(state.user, data.channel)) return
         state.channels.add(data.channel)
         ws.send(JSON.stringify({ type: 'subscribed', channel: data.channel }))
         return
@@ -71,6 +72,7 @@ export function createRealtimeServer(httpServer) {
   // Heartbeat
   const heartbeat = setInterval(() => {
     wss.clients.forEach((ws) => {
+      if (clients.has(ws) && !currentUser(ws)) return
       if (!ws.isAlive) return ws.terminate()
       ws.isAlive = false
       ws.ping()
@@ -86,6 +88,19 @@ export function createRealtimeServer(httpServer) {
   return wss
 }
 
+function currentUser(ws) {
+  try {
+    const state = clients.get(ws)
+    if (!state) return null
+    state.user = verifySession(state.token)
+    return state.user
+  } catch {
+    clients.delete(ws)
+    ws.close(4002, 'Session revoked')
+    return null
+  }
+}
+
 /**
  * Send to every authenticated socket, regardless of channel subscriptions.
  * Used for legacy global events (sync:progress, agent:task:*).
@@ -93,6 +108,8 @@ export function createRealtimeServer(httpServer) {
 export function broadcastAll(message) {
   const json = JSON.stringify(message)
   for (const ws of clients.keys()) {
+    const user = currentUser(ws)
+    if (!user || !canReceiveChannel(user, message.type)) continue
     try {
       if (ws.readyState === 1) ws.send(json)
     } catch {}
@@ -106,7 +123,8 @@ export function broadcastAll(message) {
 export function broadcast(channel, message) {
   const wire = JSON.stringify({ ...message, channel })
   for (const [ws, state] of clients.entries()) {
-    if (!state.channels.has(channel)) continue
+    const user = currentUser(ws)
+    if (!user || !canReceiveChannel(user, channel) || !canReceiveChannel(user, message.type) || !state.channels.has(channel)) continue
     try {
       if (ws.readyState === 1) ws.send(wire)
     } catch {}
@@ -128,7 +146,9 @@ export function broadcast(channel, message) {
 export function emit(channels, message) {
   const list = Array.isArray(channels) ? channels : [channels]
   for (const [ws, state] of clients.entries()) {
-    const matched = list.filter(ch => state.channels.has(ch))
+    const user = currentUser(ws)
+    if (!user || !canReceiveChannel(user, message.type)) continue
+    const matched = list.filter(ch => state.channels.has(ch) && canReceiveChannel(user, ch))
     if (!matched.length) continue
     try {
       if (ws.readyState === 1) ws.send(JSON.stringify({ ...message, channel: matched[0], channels: matched }))

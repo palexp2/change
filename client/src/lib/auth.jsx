@@ -1,4 +1,5 @@
-import { useState, createContext, useContext } from 'react'
+import { rolesOf } from '../../../shared/roles.mjs'
+import { useState, useEffect, useRef, createContext, useContext } from 'react'
 import api from './api.js'
 
 const TOKEN_KEY = 'erp_token'
@@ -36,14 +37,42 @@ export const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(() => getUser())
-  const [isLoading, setIsLoading] = useState(false)
+  const [isLoading, setIsLoading] = useState(!!getToken())
+  const accessRef = useRef(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function refresh() {
+      if (!getToken()) return
+      try {
+        const account = await api.auth.me()
+        if (!cancelled && account) {
+          const access = JSON.stringify([account.id, rolesOf(account), account.employee_id])
+          // Remount pages and discard in-memory HR data when grants change.
+          if (accessRef.current && accessRef.current !== access) {
+            window.location.reload()
+            return
+          }
+          accessRef.current = access
+          setUser(account)
+        }
+      } catch (error) {
+        if (!cancelled && (error.status === 401 || error.status === 403)) setUser(null)
+      } finally { if (!cancelled) setIsLoading(false) }
+    }
+    refresh()
+    const onFocus = () => refresh()
+    window.addEventListener('focus', onFocus)
+    const timer = setInterval(refresh, 30000)
+    return () => { cancelled = true; window.removeEventListener('focus', onFocus); clearInterval(timer) }
+  }, [])
 
   async function login(email, password) {
     setIsLoading(true)
     try {
       const data = await api.auth.login(email, password)
       setToken(data.token)
-      setUser(getUser())
+      setUser(data.user)
       return data
     } finally {
       setIsLoading(false)

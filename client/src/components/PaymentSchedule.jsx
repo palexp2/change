@@ -144,7 +144,7 @@ function VendorParticularites({ item, onChanged }) {
 
 // Une facture de la cédule. Autosave partout : cocher, changer le compte à
 // débiter et écrire la raison d'un report sauvegardent immédiatement.
-function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onAccountChange }) {
+function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onPaid, onAccountChange }) {
   const { addToast } = useToast()
   const [busy, setBusy] = useState(false)
   // Paiement qui vient d'être créé, en attente de sa référence : le n° de
@@ -172,6 +172,7 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onAccount
     try {
       const payment = await api.treasury.schedule.pay(item.id, { account: item.account, method: item.method, payment_date: payDate })
       setPaid(payment)
+      onPaid?.()
     } catch (e) { addToast({ message: e.message, type: 'error' }); onChanged() }
     finally { setBusy(false) }
   }
@@ -195,7 +196,13 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onAccount
         action: {
           label: 'Annuler',
           onClick: () => api.treasury.schedule.unpay(item.id)
-            .then(() => { addToast({ message: `${item.vendor} — remis dans la cédule`, type: 'info' }); onChanged() })
+            .then((out) => {
+              // Retirer le paiement rouvre la facture dans QuickBooks ; quand
+              // QuickBooks refuse, il faut le savoir tout de suite.
+              if (out?.warning) addToast({ message: out.warning, type: 'error', duration: 12000 })
+              addToast({ message: `${item.vendor} — remis dans la cédule`, type: 'info' })
+              onChanged()
+            })
             .catch(e => addToast({ message: e.message, type: 'error' })),
         },
       })
@@ -316,7 +323,10 @@ function ScheduleItem({ item, accounts, cardAccount, today, onChanged, onAccount
             onClick={async () => {
               setPaid(null)
               setBusy(true)
-              try { await api.treasury.schedule.unpay(item.id) }
+              try {
+                const out = await api.treasury.schedule.unpay(item.id)
+                if (out?.warning) addToast({ message: out.warning, type: 'error', duration: 12000 })
+              }
               catch (e) { addToast({ message: e.message, type: 'error' }) }
               finally { setBusy(false); onChanged() }
             }}>
@@ -393,15 +403,14 @@ function DeferredItem({ item, onChanged }) {
 // automatique : le montant se saisit ici. Une ligne sans montant est normale —
 // c'est un rappel, pas une dette chiffrée — d'où l'absence de total et le
 // bouton désactivé tant que rien n'est saisi.
-function CardDueRow({ due, onChanged }) {
+function CardDueRow({ due, onChanged, onPaid }) {
   const { addToast } = useToast()
   const [busy, setBusy] = useState(false)
   // Paiement qui vient d'être créé, en attente de son n° de confirmation : la
   // banque ne le donne qu'APRÈS le paiement. La ligne reste donc affichée le
   // temps de le saisir — même comportement que pour une facture fournisseur.
   const [paid, setPaid] = useState(null)
-  // Échap = « pas de numéro » : le blur qui suit ne doit rien écrire.
-  const skipped = useRef(false)
+  const refInput = useRef(null)
   const [amount, setAmount] = useState(due.amount == null ? '' : String(due.amount))
   // Date proposée : le dernier jour de l'échéance, reculé au jour ouvrable
   // précédent si le 25 tombe un week-end ou un férié (même règle que le
@@ -442,8 +451,10 @@ function CardDueRow({ due, onChanged }) {
         return
       }
       // Un paiement a été émis : la ligne ne quitte la cédule qu'une fois le
-      // n° de confirmation saisi (ou explicitement passé).
-      setPaid(out)
+      // n° de confirmation saisi (ou explicitement passé). Le fil, lui, le
+      // montre tout de suite en vol.
+      setPaid(out?.payment || out)
+      onPaid?.()
     } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setBusy(false) }
   }
@@ -453,8 +464,7 @@ function CardDueRow({ due, onChanged }) {
   const finishReference = async (value_) => {
     const payment = paid
     if (!payment) return
-    const ref = skipped.current ? '' : String(value_ || '').trim()
-    skipped.current = false
+    const ref = String(value_ || '').trim()
     setPaid(null)
     setBusy(true)
     try {
@@ -473,6 +483,18 @@ function CardDueRow({ due, onChanged }) {
     } catch (e) { addToast({ message: e.message, type: 'error' }) }
     finally { setBusy(false); onChanged() }
   }
+
+  // Retour d'onglet : le curseur revient dans le champ du n°.
+  useEffect(() => {
+    if (!paid) return undefined
+    const refocus = () => { if (!document.hidden) refInput.current?.focus() }
+    window.addEventListener('focus', refocus)
+    document.addEventListener('visibilitychange', refocus)
+    return () => {
+      window.removeEventListener('focus', refocus)
+      document.removeEventListener('visibilitychange', refocus)
+    }
+  }, [paid])
 
   const dismiss = async () => {
     setBusy(true)
@@ -512,16 +534,26 @@ function CardDueRow({ due, onChanged }) {
 
       {paid ? (
         <span className="flex-1 min-w-48 flex items-center gap-2" data-testid={`card-due-reference-row-${due.id}`}>
-          <input autoFocus defaultValue="" className={`${inputXs} w-44 shrink-0`} title="N° de confirmation donné par la banque"
+          {/* Le n° se lit sur le site de la banque : quitter l'onglet ou
+              cliquer ailleurs sans rien avoir tapé ne ferme pas la ligne. */}
+          <input ref={refInput} autoFocus defaultValue="" className={`${inputXs} w-44 shrink-0`} title="N° de confirmation donné par la banque"
             data-testid={`card-due-reference-${due.id}`}
-            onBlur={e => finishReference(e.target.value)}
+            onBlur={e => {
+              if (document.hidden || !document.hasFocus()) return
+              if (!e.target.value.trim()) return
+              finishReference(e.target.value)
+            }}
             onKeyDown={e => {
-              if (e.key === 'Escape') { e.preventDefault(); skipped.current = true; e.target.blur() }
-              if (e.key === 'Enter') { e.preventDefault(); e.target.blur() }
+              if (e.key === 'Escape') { e.preventDefault(); finishReference('') }
+              if (e.key === 'Enter') { e.preventDefault(); finishReference(e.target.value) }
             }} />
-          <span className="text-[11px] leading-snug text-slate-500">
-            N° de confirmation de la banque — Entrée pour enregistrer, Échap pour passer
-          </span>
+          <span className="text-[11px] leading-snug text-slate-500">N° de confirmation — la ligne attend</span>
+          <button type="button" className="shrink-0 text-[11px] text-slate-400 hover:text-slate-700 hover:underline"
+            data-testid={`card-due-reference-skip-${due.id}`}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => finishReference('')}>
+            Sans n°
+          </button>
         </span>
       ) : (
       <input type="date" value={date} className={`${inputXs} w-36 shrink-0`}
@@ -571,7 +603,7 @@ function Section({ title, count, total, children, defaultOpen = true, testId, hi
   )
 }
 
-export default function PaymentSchedule() {
+export default function PaymentSchedule({ onChanged }) {
   const { addToast } = useToast()
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -589,6 +621,9 @@ export default function PaymentSchedule() {
       .finally(() => setLoading(false))
   }, [addToast])
   useEffect(() => { load() }, [load])
+  // Un paiement créé ou annulé ici doit apparaître tout de suite dans le fil
+  // de la page (« en vol »), pas au prochain rechargement.
+  const changed = useCallback(() => { load(); onChanged?.() }, [load, onChanged])
 
   useEffect(() => {
     api.bank.accounts()
@@ -629,7 +664,7 @@ export default function PaymentSchedule() {
               Le solde n'est pas récupéré automatiquement — le saisir depuis le compte de la carte.
             </span>
           </div>
-          {data.cards.map(c => <CardDueRow key={c.id} due={c} onChanged={load} />)}
+          {data.cards.map(c => <CardDueRow key={c.id} due={c} onChanged={changed} onPaid={onChanged} />)}
         </div>
       )}
 
@@ -648,11 +683,14 @@ export default function PaymentSchedule() {
           {/* La règle du cycle, écrite noir sur blanc : c'est elle qui décide ce
               qui est dans la liste et ce qui attend la séance suivante. */}
           <p className="mt-1 text-[11px] leading-snug text-slate-500" data-testid="schedule-window-explainer">
-            Séance de paiement du <strong className="font-medium text-slate-600">{fmtWeekday(week.pay_day)}</strong> :
-            {' '}tout ce qui échoit <strong className="font-medium text-slate-600">avant le {fmtWeekday(week.cutoff)}</strong>,
-            {' '}donc jusqu'au {fmtWeekday(week.end)} inclus — un paiement émis le mardi ne passe souvent à la banque que
-            le lendemain, une facture échéant au prochain mardi serait en retard si elle attendait la séance suivante.
-            {' '}Le reste est dans « Plus tard ».
+            {week.off_session ? (
+              <>Hors séance : seulement ce qui ne peut pas attendre le <strong className="font-medium text-slate-600">{fmtWeekday(week.pay_day)}</strong>
+              {' '}(échéance jusqu'au {fmtWeekday(week.end)} inclus).</>
+            ) : (
+              <>Séance du <strong className="font-medium text-slate-600">{fmtWeekday(week.pay_day)}</strong> :
+              {' '}échéances jusqu'au <strong className="font-medium text-slate-600">{fmtWeekday(week.end)}</strong> inclus
+              {' '}— payé ce soir, passé demain.</>
+            )}
           </p>
         </div>
         {vendors.map(g => (
@@ -667,7 +705,7 @@ export default function PaymentSchedule() {
             </div>
             {g.items.map(it => (
               <ScheduleItem key={it.id} item={it} accounts={accounts} cardAccount={cardAccount} today={today}
-                onChanged={load} onAccountChange={(id, v) => setAccountOverride(o => ({ ...o, [id]: v }))} />
+                onChanged={changed} onPaid={onChanged} onAccountChange={(id, v) => setAccountOverride(o => ({ ...o, [id]: v }))} />
             ))}
           </div>
         ))}

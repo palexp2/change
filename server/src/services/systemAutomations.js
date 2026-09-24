@@ -11,6 +11,10 @@ import { syncAndPushStripePayouts } from './quickbooks.js'
 // Each handler receives { dryRun } and returns a plain object that will be
 // serialized into the automation_logs `result` field verbatim.
 export const MANUAL_RUNNERS = {
+  sys_treasury_sheet_mirror: async ({ dryRun }) => {
+    const { syncTreasuryMirror } = await import('./treasurySheetMirror.js')
+    return syncTreasuryMirror({ dryRun: !!dryRun, trigger: 'manual' })
+  },
   sys_installation_followup: async ({ dryRun }) => {
     const out = await sendInstallationFollowups(db, { dryRun, fromAddress: getAutomationFrom('sys_installation_followup') })
     return {
@@ -54,6 +58,12 @@ export const MANUAL_RUNNERS = {
   sys_treasury_qb_clear: async ({ dryRun }) => {
     const { syncQbClear } = await import('./treasuryQbClear.js')
     return await syncQbClear({ trigger: 'manuel', apply: !dryRun })
+  },
+  // Factures réglées dans l'ERP dont l'écriture de paiement manque encore dans
+  // QuickBooks : dry-run = la liste, run-now = l'envoi (borné à 25).
+  sys_bill_payment_qb: async ({ dryRun }) => {
+    const { runPendingBillPayments } = await import('./billPaymentQb.js')
+    return await runPendingBillPayments({ apply: !dryRun })
   },
   // Sync du fichier TRX_Orisha (relevés des 11 comptes) : dry-run = lecture du
   // fichier + transactions qui seraient importées + audit d'anomalies, sans
@@ -125,9 +135,39 @@ export const MANUAL_RUNNERS = {
     return { summary: out.summary, retention_days: out.retention_days, tables: out.details, blocked: out.blocked_details }
   },
 
-  sys_bank_trx_sheet: async ({ dryRun }) => {
-    const { syncTrxSheet } = await import('./bankTrxSheet.js')
-    return await syncTrxSheet({ trigger: 'manuel', apply: !dryRun })
+  // Vérification QuickBooks du rapprochement — le moteur unique. Dry-run
+  // n'existe pas vraiment ici : la recherche ne touche que le lien QuickBooks
+  // et le statut, jamais un montant ni une écriture comptable. On lance donc le
+  // passage dans les deux cas ; « Simuler » sert juste à le voir tourner.
+  sys_bank_qb_verify: async () => {
+    const { scheduledQbVerify } = await import('./bankQbVerify.js')
+    const out = await scheduledQbVerify({ trigger: 'manuel', force: true })
+    return out || { summary: 'un passage est déjà en cours' }
+  },
+  // Avis QuickBooks : rien à exécuter (c'est Intuit qui appelle). « Simuler »
+  // rend l'état du jeton et les derniers avis reçus — c'est exactement ce qu'il
+  // faut voir quand la détection instantanée s'arrête sans rien dire.
+  sys_qb_change_poll: async () => {
+    const { pollQbChanges, changePollStatus } = await import('./qbChangePoll.js')
+    const res = await pollQbChanges({ trigger: 'manuel' })
+    return { ...res, ...changePollStatus() }
+  },
+
+  sys_qb_webhook: async () => {
+    const { qbWebhookStatus } = await import('../routes/quickbooks-webhook.js')
+    const st = qbWebhookStatus()
+    return {
+      ...st,
+      summary: st.token_set
+        ? `Jeton posé · dernier avis ${st.last_event ? `${st.last_event.entity} ${st.last_event.operation} le ${String(st.last_event.received_at).slice(0, 16).replace('T', ' ')}` : 'jamais reçu'}`
+        : 'Jeton des avis absent — coller le « Verifier token » d\'Intuit dans Connecteurs → QuickBooks',
+    }
+  },
+  // Miroir sortant : Boreal écrit le classeur, personne d'autre. Rien à
+  // simuler — le passage ne touche que le classeur, jamais la base.
+  sys_trx_sheet_mirror: async () => {
+    const { syncMirror } = await import('./trxSheetMirror.js')
+    return await syncMirror({ trigger: 'manuel', force: true })
   },
   // Rattachement des sorties connues au relevé : dry-run et run-now font la
   // même chose (le rattachement n'écrit qu'un lien, jamais une écriture
@@ -139,6 +179,12 @@ export const MANUAL_RUNNERS = {
   sys_bank_engine: async ({ dryRun }) => {
     const { runBankEngine } = await import('./bankProposals/engine.js')
     return await runBankEngine({ dryRun })
+  },
+  // Contrôles comptables : le passage de vérification. Simuler = calculer sans
+  // rien enregistrer. Un contrôle ne corrige jamais rien — il constate.
+  sys_audit_controles: async ({ dryRun }) => {
+    const { runAudit } = await import('./audit/index.js')
+    return await runAudit({ dryRun: !!dryRun, trigger: 'manuel' })
   },
   sys_bank_debit_link: async () => {
     const { linkKnownDebits, summarizeLinks } = await import('./bankDebitLink.js')
@@ -183,13 +229,23 @@ export const MANUAL_RUNNERS = {
     const results = await scheduledPlaidSync()
     return { results, summary: results.map((r) => r.error ? `${r.institution || r.item_id}: échec (${r.error})` : `${r.institution || r.item_id}: ${r.inserted} nouvelle(s)`).join(' · ') || 'aucune connexion Plaid' }
   },
-  // Revérification QuickBooks des comptes Plaid : dry-run n'existe pas vraiment
-  // ici (la recherche ne modifie que qb_txn_id/statut, jamais les montants) —
-  // on lance simplement le passage complet dans les deux cas.
-  sys_plaid_qb_audit: async () => {
-    const { scheduledPlaidQbAudit } = await import('./plaidQbAudit.js')
-    const results = await scheduledPlaidQbAudit()
-    return { summary: (results || []).map((r) => r.error ? `${r.account_name}: échec (${r.error})` : `${r.account_name}: ${r.linked} lié(s)/${r.scanned} vérifiée(s)`).join(' · ') || 'aucun compte Plaid mappé à QuickBooks', results }
+  // Lecture bancaire Venn : dry-run = état par compte relié, sans appeler Venn ;
+  // run-now = lecture immédiate de la fenêtre par défaut sur tous les comptes.
+  sys_venn_sync: async ({ dryRun }) => {
+    const { scheduledVennSync, vennSyncStatus, defaultWindow } = await import('./vennSync.js')
+    if (dryRun) {
+      const accounts = vennSyncStatus()
+      const win = defaultWindow()
+      return {
+        accounts, window: win,
+        summary: accounts.length
+          ? accounts.map((a) => `${a.account_name}: ${a.venn_count} trx${a.last_txn_date ? `, dernière ${a.last_txn_date}` : ''}`).join(' · ')
+            + ` — prochaine lecture du ${win.from} au ${win.to}`
+          : 'aucun compte relié à Venn (à faire dans Connecteurs → Venn)',
+      }
+    }
+    const results = await scheduledVennSync({ trigger: 'manuel' })
+    return { results, summary: results.map((r) => r.error ? `${r.account || 'Venn'}: échec (${r.error})` : `${r.account}: ${r.inserted} nouvelle(s)`).join(' · ') || 'aucun compte relié' }
   },
   // Rappel cartes : dry-run = prochaine date de rappel + aperçu du message ;
   // run-now = envoi immédiat du rappel Slack (ignore la date et l'idempotence).
@@ -298,6 +354,11 @@ export const MANUAL_RUNNERS = {
     if (dryRun) return previewManychatSync()
     return await runManychatSync({ force: true, trigger: 'manuel' })
   },
+  sys_instagram_segments: async ({ dryRun }) => {
+    const { previewSegmentation, runSegmentation } = await import('./instagramSegments.js')
+    if (dryRun) return previewSegmentation()
+    return await runSegmentation({ force: true, trigger: 'manuel' })
+  },
   sys_instagram_draft_write: async ({ dryRun }) => {
     const { previewDraftWriting, runDraftWriting } = await import('./instagramDrafts.js')
     if (dryRun) return previewDraftWriting()
@@ -337,6 +398,15 @@ export const MANUAL_RUNNERS = {
 // Add a new system automation here and instrument its code path with
 // `logSystemRun(key, { status, result, error, duration_ms })`.
 export const SYSTEM_AUTOMATIONS = [
+  {
+    id: 'sys_treasury_sheet_mirror',
+    name: 'Trésorerie BNC : Boréal met à jour le Sheet du solde disponible',
+    description: 'Toutes les 20 minutes, reporte la projection de Boréal dans le fichier « Maintien du solde disponible BNC », onglet « Compte chèque ». Conserve le modèle : mouvements et formules de solde, solde de départ avec sa date réelle, sorties récurrentes et paie. Les sorties sont positives, les entrées négatives. La projection utilise le scénario certain et le même horizon que Boréal. Les anciennes lignes projetées sont remplacées, sans créer de paiement dans Boréal. Une sauvegarde initiale et la version précédente sont conservées sur le serveur. Simuler présente les changements sans écrire dans le fichier.',
+    trigger_config: { kind: 'schedule', source: "cron '*/20 * * * *' (index.js) → treasurySheetMirror.js", summary: 'Boréal → Google Sheet, toutes les 20 minutes et au démarrage' },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
   // `sys_slack_hardware_escalade` is now seeded as a field_rule (see
   // SYSTEM_FIELD_RULES below), not a hardcoded system automation. Its logs
   // remain linked through the same id for continuity.
@@ -638,7 +708,7 @@ export const SYSTEM_AUTOMATIONS = [
       "Le bouton « Simuler » compte ce qui serait ajouté / mis à jour sans rien écrire ; « Exécuter » lance l'import immédiatement.",
     trigger_config: {
       kind: 'schedule',
-      source: 'setInterval 30 min (index.js) → services/pmtSuiviImport.js + POST /api/treasury/payments/import-sheet',
+      source: 'setInterval 10 min (index.js) → services/pmtSuiviImport.js + POST /api/treasury/payments/import-sheet',
       summary: 'Sync automatique toutes les 30 min + bouton « Synchroniser la feuille » de la page Paiements émis',
     },
     action_config: {
@@ -646,6 +716,31 @@ export const SYSTEM_AUTOMATIONS = [
       sheet_name: 'Pmt_Suivi',
       google_account_email: '',
       since_date: '2026-01-01',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bill_payment_qb',
+    name: 'Payer une facture dans Boréal la marque payée dans QuickBooks',
+    description:
+      "Quand une facture fournisseur est réglée depuis la page Paiements émis (bouton « J'ai payé » de la cédule, formulaire de paiement lié à une facture, ou facture passée à « Payée » dans Achats), l'écriture de paiement correspondante est créée dans QuickBooks : même fournisseur, même facture, la date d'émission du paiement, le compte bancaire réellement débité et le montant réellement sorti. La facture se ferme dans QuickBooks et redevient « Payée » dans l'ERP sans double saisie. " +
+      "Un paiement PARTIEL est envoyé tel quel : QuickBooks laisse la facture ouverte pour le reste. " +
+      "RIEN n'est envoyé si quoi que ce soit n'est pas certain — pas de facture liée, facture pas encore publiée dans QuickBooks, dépense déjà payée par construction, montant supérieur au solde dû, devise du paiement différente de celle de la facture (aucune conversion automatique), ou compte bancaire sans correspondance QuickBooks. Le paiement est alors créé quand même dans l'ERP, avec la raison écrite sur sa ligne et un bouton pour réessayer. " +
+      "Les paiements qui VIENNENT de QuickBooks (détection du passage à la banque) ou de la feuille Pmt_Suivi ne sont jamais renvoyés : ils existent déjà dans les livres. " +
+      "Supprimer le paiement dans l'ERP retire l'écriture de QuickBooks et rouvre la facture. QuickBooks refuse ce retrait quand l'écriture est déjà appariée à une opération bancaire téléchargée : l'ERP le dit, l'appariement se défait dans QuickBooks. " +
+      "QuickBooks n'a que deux types de paiement de facture : c'est le genre du compte débité qui tranche (carte de crédit ou compte bancaire) ; « Interac », « virement » ou « code de paiement » restent lisibles dans le mémo de l'écriture. " +
+      "since_date est la mise en service : AUCUN paiement émis avant cette date n'est envoyé, même à la main — les factures d'avant ont déjà été réglées directement dans QuickBooks et les repousser créerait un second paiement sur la même facture. " +
+      "enabled_sources limite les origines de paiement qui déclenchent l'envoi ; allow_card_accounts=0 coupe l'envoi pour les règlements par carte de crédit.",
+    trigger_config: {
+      kind: 'event',
+      source: 'services/treasuryPayments.js:createPayment → services/billPaymentQb.js:pushBillPayment',
+      summary: "À chaque paiement émis lié à une facture fournisseur publiée dans QuickBooks",
+    },
+    action_config: {
+      enabled_sources: 'manual,schedule,achat,card',
+      allow_card_accounts: '1',
+      since_date: '2026-09-16',
     },
     configurable: true,
     default_active: 1,
@@ -674,15 +769,8 @@ export const SYSTEM_AUTOMATIONS = [
   },
   {
     id: 'sys_treasury_solde_sheet',
-    name: 'Trésorerie BNC : sync du fichier « Maintien du solde disponible » (Google Sheet)',
-    description:
-      "Toutes les 60 minutes, à l'heure pile (et sur demande depuis la page Comptabilité), lit l'onglet « Compte chèque » du Google Sheet « Maintien du solde disponible BNC » — que l'utilisateur continue de tenir à la main — et le compare à la projection de trésorerie de l'ERP. LE FICHIER FAIT FOI : " +
-      "1) le solde disponible réel du fichier, s'il est plus récent ou différent de la dernière saisie ERP, devient une nouvelle saisie de solde (avec la même réconciliation prévu/réel et la même vérification d'alerte qu'une saisie manuelle) ; " +
-      "2) un paiement planifié du fichier que l'ERP ne projette pas déjà (ni facture fournisseur à son échéance, ni sortie récurrente, ni paiement émis) est ajouté comme paiement projeté — idempotent, une ligne retirée du fichier est retirée de la projection ; " +
-      "3) le bloc « Sorties récurrentes » ajuste les montants et jours des récurrentes mensuelles de l'ERP et crée celles qui manquent. " +
-      "Ce qui ne peut pas être ajusté sans risque de double compte (ligne déjà couverte, récurrente non mensuelle, montant « voir le relevé ») est rapporté dans le journal ci-dessous et sur la page Comptabilité — sans alerte Slack (slack_anomalies=0 ; mettre à 1 pour notifier les anomalies de lecture nouvelles). " +
-      "Le bouton « Simuler » liste les différences sans rien écrire ; « Exécuter » applique la sync immédiatement. " +
-      "Lecture par export Drive (xlsx) : le compte Google configuré doit avoir accès au fichier.",
+    name: 'Trésorerie BNC : ancien import du Sheet (remplacé par le miroir Boréal)',
+    description: 'Ancien import du Google Sheet vers Boréal. Remplacé par « Boréal met à jour le Sheet du solde disponible ». Cet import ne peut plus être exécuté dès que le miroir sortant est installé, même si le miroir est mis en pause, pour éviter de réimporter la projection comme de nouveaux paiements.',
     trigger_config: {
       kind: 'schedule',
       source: "cron '0 * * * *' (index.js) → services/treasurySoldeSheet.js + POST /api/treasury/solde-sheet/sync",
@@ -696,7 +784,7 @@ export const SYSTEM_AUTOMATIONS = [
       slack_anomalies: '0',
     },
     configurable: true,
-    default_active: 1,
+    default_active: 0,
   },
   {
     id: 'sys_carm_balance_alert',
@@ -803,37 +891,94 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
-    id: 'sys_bank_trx_sheet',
-    name: 'Rapprochement bancaire : sync du fichier TRX_Orisha (Drive)',
+    id: 'sys_bank_qb_verify',
+    name: 'Rapprochement bancaire : vérification QuickBooks',
     description:
-      "Toutes les 20 minutes (et sur demande depuis la page Rapprochement bancaire), lit le fichier TRX_Orisha.xlsx du Drive — un onglet par compte bancaire, où l'utilisateur colle les relevés de ses 11 comptes — et importe les transactions nouvelles dans le rapprochement de l'ERP (mêmes lignes que l'import par collage). " +
-      "Chaque compte passe ensuite au matching automatique (achats, reçus, payouts Stripe) et à la liaison QuickBooks (grand livre, montant + date). " +
-      "Puis un AUDIT croise le relevé et le grand livre QB sur la fenêtre audit_window_days : transaction au relevé sans écriture QB, écriture QB jamais passée au relevé, ligne « à traiter » plus vieille que anomaly_age_days — chaque anomalie est accompagnée d'une explication probable " +
-      "(décalage de date, écart de montant ≈ frais bancaires ou conversion, doublon possible dans QB, facture manquante). " +
-      "AUCUNE ALERTE SLACK n'est envoyée (slack_anomalies=0, demande de l'utilisateur) : les anomalies vivent uniquement sur la page Rapprochement bancaire et dans le journal ci-dessous. Mettre slack_anomalies à 1 pour retrouver l'alerte des anomalies nouvelles dans le canal slack_webhook_env. " +
-      "La déduplication est tolérante (date + montant signé) : recoller un relevé dans le fichier ou relancer la sync ne double jamais une transaction, et une transaction supprimée à la main dans l'ERP ne ressuscite pas. " +
-      "since_date est le plancher d'import (l'historique antérieur est déjà en base) ; overlap_days est la fenêtre re-scannée avant la dernière transaction connue de chaque compte. " +
-      "Le bouton « Simuler » liste ce qui serait importé et les anomalies sans rien écrire ni alerter.",
+      "LE moteur de vérification « est-ce comptabilisé ? » du rapprochement bancaire, pour TOUS les comptes mappés à QuickBooks (pas seulement ceux branchés à la banque). " +
+      "Pour chaque transaction pas encore rapprochée, il cherche l'écriture correspondante dans le grand livre QuickBooks avec la recherche approfondie : tolérance de montant (frais, conversion), fenêtre de ±30 jours, virements comptabilisés du côté de l'autre compte, dépôts groupés. " +
+      "Ce qui est certain se pose tout seul (auto_apply_methods) ; le reste devient une proposition à confirmer sur la page. AUCUNE écriture n'est publiée dans QuickBooks — la vérification lit, elle n'écrit jamais chez Intuit. " +
+      "Il remplace à lui seul deux passages qui reconstruisaient le MÊME rapport de grand livre à trente secondes d'intervalle (la sync du fichier TRX_Orisha, coupée, et l'audit des comptes Plaid) : de ~72 rapports par heure à 12. " +
+      "PASSAGE HORAIRE sur une fenêtre glissante de window_days (plancher de 30 jours : en deçà, l'orientation des signes ne peut plus être votée et les appariements s'inversent). " +
+      "PASSAGE PROFOND chaque jour à 6 h UTC depuis deep_since : c'est le seul qui efface les liens devenus introuvables — sur une fenêtre courte, une écriture simplement hors fenêtre ferait effacer un lien valide. " +
+      "La détection INSTANTANÉE, elle, ne vient pas d'ici mais des avis de QuickBooks (automation « avis QuickBooks » ci-dessous) : ce passage-ci est le filet.",
     trigger_config: {
       kind: 'schedule',
-      source: 'setInterval 20 min (index.js) → services/bankTrxSheet.js + POST /api/bank/trx-sheet/sync',
-      summary: 'Sync aux 20 minutes + bouton « Synchroniser » de la page Rapprochement bancaire',
+      source: "setInterval 60 min + cron 0 6 * * * (index.js) → services/bankQbVerify.js + bouton « Mettre à jour » de la page Rapprochement bancaire",
+      summary: 'Passage horaire (fenêtre glissante) + passage profond quotidien à 6 h UTC',
     },
     action_config: {
-      file_id: '1fRE0c1zv5zks70pwzgpojB7LZz-V5lHR',
-      google_account_email: 'michel@orisha.io',
-      since_date: '2026-07-01',
-      overlap_days: '7',
-      anomaly_age_days: '7',
-      audit_window_days: '45',
-      audit_grace_days: '4',
-      slack_anomalies: '0',
-      slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
-      // Appariements QuickBooks posés sans demander. Le reste devient une
-      // proposition à confirmer sur la page Rapprochement bancaire.
+      window_days: '90',
+      grace_days: '4',
       auto_apply_methods: 'exact,conversion',
+      deep_since: '2024-01-01',
     },
     configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_qb_change_poll',
+    name: 'Rapprochement bancaire : interroger QuickBooks toutes les 30 secondes',
+    description:
+      "Toutes les 30 secondes, demande à QuickBooks la liste des écritures créées, modifiées ou " +
+      "supprimées depuis le passage précédent, et traite chacune comme un avis reçu : la ligne du " +
+      "relevé qui correspond passe à « comptabilisé » et l'écran bouge tout seul, en moins d'une minute. " +
+      "C'est UN seul appel par passage, quel que soit le nombre de comptes — pas un rapport de grand livre. " +
+      "Existe parce que les avis instantanés d'Intuit (sys_qb_webhook) n'arrivent pas : leur réglage vit " +
+      "dans le portail développeur, sur une application qui n'a pas de clés de production, et seule leur " +
+      "notification de test a jamais atteint l'ERP. Les deux voies peuvent tourner ensemble sans risque : " +
+      "un même changement vu deux fois ne déclenche qu'une seule vérification. " +
+      "La vérification complète du rapprochement (sys_bank_qb_verify) reste le filet horaire.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "setInterval 30 s (index.js) → services/qbChangePoll.js",
+      summary: 'Interrogation toutes les 30 secondes',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_qb_webhook',
+    name: 'Rapprochement bancaire : avis instantanés de QuickBooks',
+    description:
+      "QuickBooks nous prévient dès qu'une écriture bouge, au lieu qu'on aille le demander. Une dépense saisie dans QuickBooks fait passer la ligne du relevé au jaune en quelques secondes sur la page Rapprochement bancaire, sans aucun clic ; une écriture supprimée dans QuickBooks fait redevenir la ligne « à traiter ». " +
+      "Entités suivies : dépense, dépôt, virement, écriture de journal, paiement de facture, paiement reçu, reçu de vente, remboursement, facture fournisseur. " +
+      "À la réception, l'ERP lit UNE écriture (un appel léger, pas un rapport), en déduit le compte bancaire touché et relance la vérification sur ce compte-là seulement. Les avis sont regroupés : une saisie en lot dans QuickBooks ne déclenche qu'un passage par compte, au plus une fois par minute. " +
+      "CE QU'IL FAUT POUR QUE ÇA MARCHE : chez Intuit (developer.intuit.com → l'app ERP → Settings → Webhooks, environnement Production), l'endpoint https://customer.orisha.io/erp/api/quickbooks/webhook, les entités ci-dessus cochées en Create / Update / Delete / Void / Merge, puis « Show token » et le Verifier token collé dans Connecteurs → QuickBooks → Jeton des avis. " +
+      "Sans jeton, l'endpoint refuse tout (503) et la détection retombe sur le passage horaire. UN JETON RÉGÉNÉRÉ CHEZ INTUIT FERAIT TOMBER LES AVIS EN SILENCE : le bouton « Simuler » ci-dessous montre l'état du jeton et le dernier avis reçu — c'est là qu'on le voit.",
+    trigger_config: {
+      kind: 'event',
+      source: 'POST /api/quickbooks/webhook (routes/quickbooks-webhook.js)',
+      summary: "À chaque avis envoyé par QuickBooks (aucune cédule : c'est Intuit qui appelle)",
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_trx_sheet_mirror',
+    name: 'Rapprochement bancaire : miroir du relevé dans un Google Sheet',
+    description:
+      "Recopie le rapprochement bancaire de l'ERP dans un classeur Google — un onglet par compte, les lignes récentes en haut, et chaque ligne PEINTE selon son statut : vert rapprochée, jaune comptabilisée, bleu facture retracée, rouge à traiter, gris ignorée. Le code couleur est celui de l'ancien fichier TRX_Orisha, pour qu'il n'y ait rien à réapprendre. " +
+      "LE SENS A ÉTÉ INVERSÉ LE 15 SEPTEMBRE 2026. Avant, les relevés étaient collés à la main dans TRX_Orisha.xlsx et coloriés à la main, et l'ERP lisait ce fichier. Maintenant les relevés entrent directement dans l'ERP (bouton « Déposer » de la page Rapprochement bancaire) et c'est BOREAL QUI A LE DERNIER MOT : il écrit les lignes et repeint les couleurs. " +
+      "PERSONNE D'AUTRE NE DOIT ÉCRIRE DANS CE CLASSEUR : une ligne ajoutée ou une couleur posée à la main y sera effacée au passage suivant. " +
+      "Le classeur est créé automatiquement au premier passage (son identifiant s'inscrit dans spreadsheet_id ci-dessous) et partagé au domaine orisha.io. C'est un classeur NEUF : l'ancien TRX_Orisha.xlsx du Drive n'est pas touché. " +
+      "since_date borne ce qui est recopié — le classeur sert au suivi courant, l'historique complet reste dans l'ERP. Un onglet dont rien n'a changé depuis le dernier passage n'est pas réécrit.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'setInterval 20 min (index.js) → services/trxSheetMirror.js + POST /api/bank/trx-sheet/mirror',
+      summary: 'Miroir aux 20 minutes + bouton « Miroir » de la page Rapprochement bancaire',
+    },
+    action_config: {
+      spreadsheet_id: '',
+      google_account_email: 'michel@orisha.io',
+      title: 'TRX Orisha — miroir Boreal',
+      since_date: '2026-01-01',
+    },
+    configurable: true,
+    // Allumée le 2026-09-15 : le classeur existe, quelqu'un le consulte encore,
+    // et c'est maintenant le SEUL sens qui reste (la lecture du fichier est
+    // coupée). Il se réécrit seul aux 20 minutes.
     default_active: 1,
   },
   {
@@ -853,6 +998,35 @@ export const SYSTEM_AUTOMATIONS = [
       summary: "À chaque arrivée de transactions bancaires, quelle qu'en soit la source",
     },
     action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_audit_controles',
+    name: 'Contrôles comptables : vérification quotidienne',
+    description:
+      "Passe en revue ce qui peut clocher dans la comptabilité et le garde en mémoire, sans rien corriger. "
+      + "Aujourd'hui : deux lignes de relevé rattachées à la même écriture QuickBooks (le mouvement serait comptabilisé deux fois), une ligne du relevé importée en double, un lien vers une écriture qui n'existe plus, un type d'écriture que nous ne savons pas lire (ces écritures-là passaient pour manquantes), et un solde de compte qui ne tombe pas sur celui de QuickBooks. "
+      + "Chaque constatation se voit sur le tableau de bord comptabilité ; « Ce n'en est pas un » l'écarte définitivement, et une constatation qui disparaît se règle toute seule. "
+      + "Silencieux : aucun message, aucun courriel — la liste s'attend.",
+    trigger_config: {
+      kind: 'schedule',
+      cron: '0 14 * * *',
+      timezone: 'UTC',
+      summary: 'Une fois par jour, à 10 h (Montréal)',
+    },
+    action_config: {
+      // Mettre « off » sur un identifiant de contrôle pour l'éteindre.
+      bank_lien_partage: 'on',
+      bank_doublon_releve: 'on',
+      bank_lien_introuvable: 'on',
+      qb_type_inconnu: 'on',
+      bank_ecart_solde: 'on',
+      bank_rapprochement: 'on',
+      bank_chaine_solde: 'on',
+      // Écart de solde toléré avant de constater, en dollars.
+      ecart_solde_seuil: '1',
+    },
     configurable: true,
     default_active: 1,
   },
@@ -911,7 +1085,7 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_plaid_sync',
     name: 'Connexion bancaire : lecture du solde (Plaid)',
     description:
-      "Toutes les 30 minutes, relit auprès de Plaid le solde disponible du compte BNC CAD utilisé par la projection de trésorerie. " +
+      "Toutes les 10 minutes, relit auprès de Plaid le solde disponible du compte BNC CAD utilisé par la projection de trésorerie. " +
       "LA LECTURE DES TRANSACTIONS EST COUPÉE depuis le 12 septembre 2026 : sur les dix comptes mappés, un seul recevait vraiment ses mouvements de la banque, et plus rien depuis le 31 août — c'est le fichier TRX_Orisha qui alimente le rapprochement bancaire, pour tous les comptes. Remettre « import_transactions » à 1 rallume la lecture des transactions (rien n'est perdu entre-temps : le curseur de la banque ne bouge pas). " +
       "Quand elle est rallumée : relit les nouvelles transactions de chaque institution connectée (BNC, Desjardins) et les verse dans le rapprochement bancaire. " +
       "Plaid prévient normalement l'ERP tout de suite (webhook) — ce passage est le FILET : un webhook perdu, une signature refusée ou une coupure réseau et les transactions cessaient d'arriver sans que rien ne le signale (c'est ce qui s'est produit début septembre 2026). " +
@@ -920,12 +1094,35 @@ export const SYSTEM_AUTOMATIONS = [
     trigger_config: {
       kind: 'schedule',
       source: 'setInterval 30 min (index.js) → services/plaidSync.js + POST /api/plaid/sync/:itemId',
-      summary: 'Lecture aux 30 minutes, en plus des avis instantanés de la banque (webhook)',
+      summary: 'Lecture aux 10 minutes, en plus des avis instantanés de la banque (webhook)',
     },
     action_config: {
       // '0' = Plaid ne touche plus à bank_transactions (décision du
       // 2026-09-12 : la banque ne livrait pas). Seul le solde est lu.
       import_transactions: '0',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_venn_sync',
+    name: 'Connexion bancaire : lecture des comptes Venn',
+    description:
+      "Une fois par jour, relit auprès de Venn les transactions des comptes Venn CAD et Venn USD et les verse dans le rapprochement bancaire, avec les soldes disponible et courant de chaque compte. " +
+      "POURQUOI : Venn n'existait nulle part dans l'ERP. Les soldes se tenaient à la main dans le fichier « Maintien du solde disponible » et les deux comptes se rapprochaient à l'œil deux fois par semaine — pendant que la BNC, elle, arrivait toute seule. " +
+      "LECTURE SEULE, sans exception : aucun paiement ni virement n'est jamais émis vers Venn, et aucune écriture QuickBooks n'est publiée automatiquement — publier reste un geste humain. " +
+      "Aucune conversion de devise : les montants du compte USD restent en USD, la conversion trimestrielle ne bouge pas. " +
+      "Relancer la lecture ne crée jamais de doublon : chaque transaction est reconnue par son identifiant chez Venn. C'est pour ça que la fenêtre relue est large (30 jours par défaut) — une transaction qui se pose en retard est rattrapée. " +
+      "« Simuler » n'appelle pas Venn, il montre l'état de chaque compte relié ; « Exécuter » lit immédiatement.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '0 5 * * *' UTC (index.js) → services/vennSync.js",
+      cron: '0 5 * * * UTC (1 h à Montréal)',
+      summary: 'Une lecture par jour, la nuit',
+    },
+    action_config: {
+      // Rien à régler ici : la fenêtre relue et les adresses d'API vivent sur
+      // le connecteur (Connecteurs → Venn), avec la clé.
     },
     configurable: true,
     default_active: 1,
@@ -944,22 +1141,6 @@ export const SYSTEM_AUTOMATIONS = [
       kind: 'event',
       source: 'services/plaidSync.js:importPlaidTransactions + services/saleReceiptExtraction.js:runExtractionAndUpdate',
       summary: "À chaque lot de transactions Plaid posées, et à la fin de chaque extraction de facture",
-    },
-    action_config: {},
-    configurable: true,
-    default_active: 1,
-  },
-  {
-    id: 'sys_plaid_qb_audit',
-    name: 'Rapprochement bancaire : vérification QuickBooks des comptes Plaid',
-    description:
-      "Toutes les 20 minutes (et sur demande depuis la page Rapprochement bancaire, bouton « Revérifier avec QuickBooks »), pour chaque compte branché à Plaid (BNC) et mappé à QuickBooks : cherche dans le grand livre QB, avec le moteur de recherche approfondie (tolérance de montant, ±30 jours, virements internes, devises — services/bankQbSearch.js), une écriture correspondant à chaque transaction bancaire non encore rapprochée. " +
-      "Remplace, pour ces comptes, l'audit qui vivait dans la sync du fichier TRX_Orisha.xlsx (désormais désactivée pour eux — voir services/bankTrxSheet.js) : le statut « Comptabilisé »/« Rapproché » de ces comptes ne dépend plus que d'une preuve QuickBooks réelle, jamais d'une couleur peinte à la main dans un fichier Excel. " +
-      "Le passage automatique couvre une fenêtre glissante de 90 jours ; le bouton manuel couvre tout l'historique non reconcilié (utile pour rattraper les transactions 2024-2025 jamais vérifiées par l'ancien audit, plafonné à 45 jours).",
-    trigger_config: {
-      kind: 'schedule',
-      source: 'setInterval 20 min (index.js) → services/plaidQbAudit.js + POST /api/bank/accounts/:id/qb-audit',
-      summary: 'Vérification aux 20 minutes + bouton « Revérifier avec QuickBooks » de la page Rapprochement bancaire',
     },
     action_config: {},
     configurable: true,
@@ -1058,7 +1239,7 @@ export const SYSTEM_AUTOMATIONS = [
       "pour qu'il ne repropose pas Stripe ou QuickBooks. Les deux natures se filtrent par le sélecteur « Chantiers / Intégrations » de l'onglet. " +
       "Le signal principal est la liste des travaux encore faits À LA MAIN (onglet « Travaux récurrents ») : chaque ligne cochée semaine après semaine est un candidat à l'automatisation. " +
       "S'y ajoutent les commits récents (chantiers ouverts à refermer), les prompts récents de l'utilisateur (sa direction actuelle) et les erreurs de synchronisation des 14 derniers jours. " +
-      "Le modèle n'explore pas le code : tout son contexte est assemblé par le serveur, donc le passage tourne sans risque en parallèle d'une exécution en cours. " +
+      "Une revue statique quotidienne analyse jusqu’à sept extraits tournants du code et propose au maximum trois correctifs avec une preuve, une solution et un test à effectuer. Le modèle reçoit les extraits sans exécuter de scripts ; aucun correctif ne démarre avant validation. " +
       "Les doublons sont écartés par empreinte de titre, y compris les suggestions déjà rejetées — une même idée n'est jamais reproposée. " +
       "Le bouton « Simuler » montre le volume de contexte qui serait soumis, sans appeler le modèle ; « Exécuter » lance un passage immédiat.",
     trigger_config: {
@@ -1257,6 +1438,43 @@ export const SYSTEM_AUTOMATIONS = [
       summary: 'Tous les matins, avant la liste hebdomadaire',
     },
     action_config: { max_threads: '60' },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_instagram_segments',
+    name: 'Instagram : trier par type de demande et \u00e9carter les robots',
+    description:
+      "Range chaque personne dans la pile qui lui correspond \u2014 elle a demand\u00e9 le coaching, elle fait pousser des fleurs, elle nous suit sans rien demander, ou autre chose \u2014 parce que ces trois-l\u00e0 n'appellent pas le m\u00eame message. " +
+      "Les messages \u00e9crits d'avance partent de ces consignes : \u00ab msg_coach \u00bb, \u00ab msg_fleurs \u00bb, \u00ab msg_question \u00bb, \u00ab msg_commentaire \u00bb, \u00ab msg_abonne \u00bb, \u00e9ditables ici. " +
+      "ROBOTS : chaque indice (vendeur d'abonn\u00e9s, arnaque de r\u00e9cup\u00e9ration de compte, lien de redirection, nom fabriqu\u00e9\u2026) vaut un poids ; au-del\u00e0 de \u00ab bot_threshold \u00bb la fiche est supprim\u00e9e et le nom d'usager ne peut plus revenir. Le mod\u00e8le tranche les cas moins nets. " +
+      "SORTENT AUSSI DE LA LISTE : celles qui n'ont fait que r\u00e9pondre \u00e0 une story, et celles \u00e0 qui quelqu'un a d\u00e9j\u00e0 \u00e9crit de sa main depuis Instagram \u2014 elles reviennent d'elles-m\u00eames si elles r\u00e9\u00e9crivent. " +
+      "PROFILS : avant le tri, lit le profil public de \u00ab profiles_per_run \u00bb personnes (bio, 12 derni\u00e8res publications et leurs images), relu au plus tous les \u00ab profile_refresh_days \u00bb jours ; \u00ab profile_model \u00bb en tire la phrase \u00ab Qui c'est \u00bb et l'activit\u00e9 principale. La pile \u00ab fleurs \u00bb exige que le profil le prouve. " +
+      "Un type choisi \u00e0 la main dans la page Instagram n'est jamais r\u00e9\u00e9crit par ce passage.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 30 9,10 * * * UTC (index.js) \u2192 services/instagramSegments.js',
+      cron: '30 9,10 * * * UTC (5 h 30 \u00e0 Montr\u00e9al)',
+      summary: 'Tous les matins, avant l\u2019\u00e9criture des messages',
+    },
+    action_config: {
+      model: 'gpt-4o-mini',
+      max_per_run: '120',
+      bot_threshold: '4',
+      profiles_per_run: '25',
+      profile_refresh_days: '30',
+      profile_model: 'gpt-4o-mini',
+      msg_coach:
+        "Elle a demand\u00e9 le coaching. Confirme-lui qu'elle est au bon endroit, dis en une phrase ce qu'elle y trouve, et demande-lui o\u00f9 elle en est dans sa saison.",
+      msg_fleurs:
+        "Elle fait pousser des fleurs. Parle fleurs, pas l\u00e9gumes : parle-lui de ce que le contr\u00f4le du climat change pour une culture de fleurs, et demande-lui ce qu'elle cultive.",
+      msg_abonne:
+        "Elle nous suit sans rien avoir demand\u00e9. Aborde-la simplement, sans rien vendre, et demande-lui ce qu'elle cultive.",
+      msg_question:
+        "Elle pose une vraie question technique. Ne l'invente pas : propose une r\u00e9ponse prudente en une phrase, dis qu'un de nos gens va lui confirmer, et laisse la porte ouverte. Philippe relira.",
+      msg_commentaire:
+        "Elle a simplement r\u00e9agi \u00e0 une publication. Une phrase chaleureuse qui reprend ce qu'elle a dit, puis UNE question ouverte sur ce qu'elle cultive. Pas de lien, pas d'offre.",
+    },
     configurable: true,
     default_active: 1,
   },
@@ -1657,8 +1875,13 @@ function mergeMissingKeys(storedJson, defaults) {
 // `purchases.unit_cost` aux autres achats du même `product_id`, deux colonnes
 // droppées sur demande (migration 035). Sans prix ni pièce, il n'y a plus rien
 // à vérifier.
+// `sys_bank_trx_sheet` et `sys_plaid_qb_audit` retirées le 2026-09-15 : la
+// lecture du fichier TRX_Orisha est coupée (les relevés entrent par le dépôt de
+// fichiers, et c'est Boréal qui écrit le classeur — voir sys_trx_sheet_mirror),
+// et les deux audits QuickBooks n'en font plus qu'un, `sys_bank_qb_verify`.
 const RETIRED_SYSTEM_AUTOMATION_IDS = [
   'sys_ctb_abonnements', 'sys_req_import', 'sys_weekly_review_slack', 'sys_purchase_price_check',
+  'sys_bank_trx_sheet', 'sys_plaid_qb_audit',
   // Rappel « échange immédiat » : son éligibilité reposait entièrement sur
   // `returns.billed_at` et sur le contact du retour, deux colonnes détruites
   // par la migration 037. L'automatisation n'a jamais été activée.

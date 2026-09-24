@@ -5,7 +5,6 @@ import {
   Copy, Check, Trash2, ScanBarcode, Boxes,
   Clock, ChevronDown, ChevronRight, AlertCircle, RefreshCw,
   SkipForward, Cpu, Terminal, Recycle, Sparkles, Maximize2, Minimize2,
-  CornerDownLeft
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
@@ -22,7 +21,7 @@ import { useAutosave } from '../lib/useAutosave.js'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { RecordOps } from '../lib/recordOps.js'
-import { ImageValue, parseSelectChoices } from '../lib/customFieldDisplay.jsx'
+import { ImageValue, parseLinkedKeys, parseSelectChoices } from '../lib/customFieldDisplay.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -30,6 +29,8 @@ import { useCustomFields } from '../lib/useCustomFields.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { InlineTextarea } from '../components/InlineFields.jsx'
+import { useBarcodeScanner } from '../lib/useBarcodeScanner.js'
+import ManualScanInput from '../components/ManualScanInput.jsx'
 import { trackingUrl } from '../lib/trackingUrl.js'
 import { shipmentTitle } from '../lib/shipmentLabel.js'
 import { invalidate } from '../lib/prefetch.js'
@@ -38,6 +39,22 @@ import { invalidate } from '../lib/prefetch.js'
 
 const ITEM_TYPES = ['Facturable', 'Remplacement', 'Non facturable']
 const ITEM_TYPE_COLORS = { 'Facturable': 'green', 'Remplacement': 'yellow', 'Non facturable': 'gray' }
+// L'entreprise est déjà affichée par le champ de liaison company_id.
+// `responsable_de_la_commande` : miroir Airtable (ids `rec…` d'une table non
+// miroitée) — la fiche le remplace par le choix d'un utilisateur (`assigned_to`).
+const ORDER_TAKEN_FIELDS = ['company_name', 'responsable_de_la_commande']
+
+// Les deux adresses occupent chacune une ligne, même si la disposition
+// enregistrée séparait auparavant le champ natif et le champ personnalisé.
+function arrangeOrderAddresses(fields) {
+  const farm = fields.find(f => f.key === 'farm_address_id')
+  if (!farm || !fields.some(f => f.key === 'adresse_de_livraison')) return fields
+  return fields.filter(f => f !== farm).flatMap(f => (
+    f.key === 'adresse_de_livraison'
+      ? [{ ...f, span2: true }, { ...farm, span2: true }]
+      : [f]
+  ))
+}
 
 const FULFILLMENT_STATUS = {
   'À prélever':   { color: 'slate',   label: 'À prélever' },
@@ -45,95 +62,6 @@ const FULFILLMENT_STATUS = {
   'Dans l\'envoi': { color: 'indigo', label: 'Dans l\'envoi' },
   'Envoyé':       { color: 'green',   label: 'Envoyé' },
   'En attente':   { color: 'amber',   label: 'En attente' },
-}
-
-// ── Barcode scanner hook ───────────────────────────────────────────────────────
-
-// `maxDelay` = intervalle MAX toléré entre deux frappes d'un même code.
-// Un pistolet émet ses caractères en rafale puis un Enter terminateur ; on
-// repart à zéro seulement après une vraie pause (frappe orpheline restée en
-// buffer). 50 ms était trop serré : un scanner Bluetooth ou avec gigue USB/OS
-// envoie souvent à 60–100 ms/caractère, avec des pointes occasionnelles bien
-// plus hautes. Dès qu'UN seul intervalle dépassait 50 ms, le buffer était vidé
-// et il ne restait qu'un caractère → onScan jamais appelé. 500 ms absorbe la
-// gigue d'un scanner lent ; l'Enter vide le buffer de toute façon, donc deux
-// scans successifs ne fusionnent pas.
-function useBarcodeScanner(onScan, { minLength = 3, maxDelay = 500 } = {}) {
-  const bufferRef = useRef('')
-  const lastTimeRef = useRef(0)
-
-  useEffect(() => {
-    // Signale qu'un scanner est actif sur cette page. `Layout` s'en sert pour
-    // désactiver ses raccourcis clavier à lettre unique (d/t/b/p/c) : sinon le
-    // 1er caractère d'un code (ex. « T » de TH5267 → raccourci /feuille-de-temps)
-    // déclenche une navigation avant que le code complet ne soit lu. Compteur
-    // (et non booléen) pour rester correct si plusieurs scanners coexistent.
-    window.__barcodeScannerActive = (window.__barcodeScannerActive || 0) + 1
-    function handleKeyDown(e) {
-      const tag = document.activeElement?.tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return
-      if (e.ctrlKey || e.metaKey || e.altKey) return
-
-      const now = Date.now()
-      if (now - lastTimeRef.current > maxDelay && bufferRef.current.length > 0) {
-        bufferRef.current = ''
-      }
-      lastTimeRef.current = now
-
-      if (e.key === 'Enter') {
-        if (bufferRef.current.length >= minLength) onScan(bufferRef.current)
-        bufferRef.current = ''
-        return
-      }
-      if (e.key.length === 1) bufferRef.current += e.key
-    }
-    window.addEventListener('keydown', handleKeyDown)
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-      window.__barcodeScannerActive = Math.max(0, (window.__barcodeScannerActive || 1) - 1)
-    }
-  }, [onScan, minLength, maxDelay])
-}
-
-// ── Saisie manuelle d'un numéro de série ──────────────────────────────────────
-//
-// Même chemin que le pistolet (`handleScan`) : étiquette illisible, série lue à
-// l'œil ou pas de scanner sous la main, l'opérateur tape le numéro et Entrée.
-// Le hook scanner ignore les frappes faites dans un INPUT — pas de double
-// déclenchement, et un vrai scan tapé dans le champ finit par son Enter.
-function ManualScanInput({ onSubmit, className = '' }) {
-  const [value, setValue] = useState('')
-  const [busy, setBusy] = useState(false)
-  const code = value.trim()
-
-  async function submit(e) {
-    e.preventDefault()
-    if (!code || busy) return
-    setBusy(true)
-    try { await onSubmit(code) } finally { setBusy(false); setValue('') }
-  }
-
-  return (
-    <form onSubmit={submit} className={`flex items-center gap-1.5 ${className}`} data-testid="manual-scan-form">
-      <ScanBarcode size={13} className="text-slate-400 flex-shrink-0" />
-      <input
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        aria-label="Numéro de série ou code"
-        title="Scanner, ou saisir le numéro de série à la main puis Entrée"
-        className="input py-1 text-xs font-mono w-36"
-        data-testid="manual-scan-input"
-      />
-      <button
-        type="submit"
-        disabled={!code || busy}
-        title="Valider"
-        className="p-1.5 rounded-lg bg-slate-100 text-slate-600 hover:bg-slate-200 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-      >
-        <CornerDownLeft size={13} />
-      </button>
-    </form>
-  )
 }
 
 // ── Scan toast ─────────────────────────────────────────────────────────────────
@@ -152,63 +80,6 @@ function ScanToast({ toast, onClose }) {
       <ScanBarcode size={16} />
       <span>{toast.message}</span>
       <button onClick={onClose} className="ml-1 opacity-70 hover:opacity-100"><X size={13} /></button>
-    </div>
-  )
-}
-
-// ── Code scanné inconnu — l'associer à un article de la commande ──────────────
-//
-// Beaucoup d'articles n'ont pas d'étiquette Orisha : le seul code scannable est
-// celui du fournisseur (UPC/EAN/ASIN). Au premier scan, on demande de quelle
-// pièce il s'agit ; le code est retenu sur la fiche pièce et reconnu ensuite
-// comme son SKU (fiche pièce → « Codes-barres »).
-function UnknownScanCodeModal({ code, items, onAssign, onClose }) {
-  const [busy, setBusy] = useState(null)
-  const [error, setError] = useState(null)
-
-  const choices = []
-  const seen = new Set()
-  for (const i of items) {
-    if (!i.product_id || seen.has(i.product_id)) continue
-    seen.add(i.product_id)
-    choices.push(i)
-  }
-
-  async function pick(item) {
-    setBusy(item.product_id)
-    setError(null)
-    try {
-      await onAssign(item)
-    } catch (e) {
-      setError(e.message || 'Échec')
-      setBusy(null)
-    }
-  }
-
-  return (
-    <div className="space-y-3">
-      <div className="font-mono text-sm bg-slate-100 rounded-lg px-3 py-2 text-slate-800">{code}</div>
-      {choices.length === 0 ? (
-        <div className="text-sm text-slate-500">Aucun article à associer.</div>
-      ) : (
-        <div className="divide-y divide-slate-100 max-h-80 overflow-y-auto">
-          {choices.map(item => (
-            <button
-              key={item.product_id}
-              onClick={() => pick(item)}
-              disabled={!!busy}
-              className="w-full flex items-center gap-3 px-2 py-2.5 text-left hover:bg-slate-50 disabled:opacity-50"
-            >
-              <span className="flex-1 min-w-0 truncate font-medium text-slate-900">{item.product_name || 'Produit inconnu'}</span>
-              {item.sku && <span className="text-xs font-mono text-slate-400">{item.sku}</span>}
-            </button>
-          ))}
-        </div>
-      )}
-      {error && <div className="text-xs text-red-600">{error}</div>}
-      <div className="flex justify-end">
-        <button onClick={onClose} className="btn-secondary">Annuler</button>
-      </div>
     </div>
   )
 }
@@ -333,14 +204,71 @@ const SHELF_TONES = {
   new:    'bg-sky-100 text-sky-800 border-sky-200',
 }
 
-function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipment, isSubscription, hero }) {
+function PickAdjustment({ item, onReturn }) {
+  const [quantity, setQuantity] = useState('1')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+  const busyRef = useRef(false)
+  const serialized = item.product_serial_count > 0 || item.serials?.length > 0
+  const amount = Number(quantity)
+  const valid = Number.isInteger(amount) && amount > 0 && amount <= item.fulfilled_qty
+
+  async function remove(payload) {
+    if (busyRef.current) return
+    busyRef.current = true
+    setSaving(true)
+    setError(null)
+    try {
+      await onReturn(item, payload)
+      setQuantity('1')
+    } catch (e) {
+      setError(e.message || 'Retrait impossible. Réessayez.')
+    } finally {
+      busyRef.current = false
+      setSaving(false)
+    }
+  }
+
+  return (
+    <details className="mt-3 text-sm font-normal" onClick={e => e.stopPropagation()} data-testid={`pick-adjustment-${item.id}`}>
+      <summary className="cursor-pointer text-slate-600 underline underline-offset-2 py-2">Remettre en stock</summary>
+      <div className="mt-2 space-y-2">
+        {serialized ? (
+          <div className="flex flex-wrap gap-2">
+            {item.serials?.map(s => (
+              <button key={s.id} type="button" disabled={saving} onClick={() => remove({ serial_id: s.id })}
+                aria-label={`Retirer ${s.serial}`} title="Remettre cette série en stock"
+                className="inline-flex items-center gap-2 min-h-11 px-3 border border-slate-300 rounded-lg bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-50">
+                <span className="font-mono">{s.serial}</span><X size={16} />
+              </button>
+            ))}
+            {!item.serials?.length && <span className="text-slate-600">Aucune série liée.</span>}
+          </div>
+        ) : (
+          <form className="flex flex-wrap items-end gap-2" onSubmit={e => { e.preventDefault(); if (valid) remove({ quantity: amount }) }}>
+            <label className="text-slate-600">
+              Quantité à remettre <span className="text-slate-400">({item.fulfilled_qty} prélevés)</span>
+              <input type="number" min="1" max={item.fulfilled_qty} step="1" required value={quantity}
+                disabled={saving} onChange={e => setQuantity(e.target.value)}
+                className="input mt-1 block w-28 min-h-11" />
+            </label>
+            <button type="submit" disabled={saving || !valid} className="btn-secondary min-h-11">{saving ? 'Retrait…' : 'Retirer'}</button>
+          </form>
+        )}
+        {error && <p role="alert" className="text-red-600">{error}</p>}
+      </div>
+    </details>
+  )
+}
+
+function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipment, onReturn, isSubscription, hero }) {
   const status = item.fulfillment_status || 'À prélever'
   const isPicked = status === 'Prélevé'
   const isOnHold = status === 'En attente'
   const isLocked = status === "Dans l'envoi" || status === 'Envoyé'
   const isFlashing = flashId === item.id
 
-  const fulfilledQty = item.fulfilled_qty || 0
+  const fulfilledQty = item.product_serial_count > 0 ? (item.serials?.length || 0) : item.fulfilled_qty || 0
   const isPartial = !isPicked && !isLocked && !isOnHold && fulfilledQty > 0
   // Indication d'étagère : utile tant que l'article reste à prendre.
   const shelf = !isPicked && !isLocked ? shelfHint(item, isSubscription) : null
@@ -419,6 +347,7 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
                 ))}
               </div>
             )}
+            {!isLocked && fulfilledQty > 0 && onReturn && <PickAdjustment item={item} onReturn={onReturn} />}
           </div>
           {!isPicked && (
             <button
@@ -485,6 +414,7 @@ function PickItemRow({ item, onToggle, onHold, flashId, onUnship, onAddToShipmen
             {shelf.label}
           </div>
         )}
+        {!isLocked && fulfilledQty > 0 && onReturn && <PickAdjustment item={item} onReturn={onReturn} />}
       </div>
 
       {/* Qty counter */}
@@ -703,17 +633,8 @@ function AddToShipmentModal({ item, shipments, onConfirm, onClose }) {
   )
 }
 
-// ── Expedition mode — Full view ────────────────────────────────────────────────
-
-function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, scanToast, setScanToast, flashItemId, onManualScan }) {
-  const [showCreateShipment, setShowCreateShipment] = useState(false)
-  const [showDoneSection, setShowDoneSection] = useState(false)
-  const [skipped, setSkipped] = useState([])                // ids passés, dans l'ordre du skip
-  const [unshipItem, setUnshipItem] = useState(null)        // item from "Déjà expédié" awaiting confirmation
-  const [addToShipItem, setAddToShipItem] = useState(null)  // picked item awaiting target shipment selection
-  const [novoxConfigured, setNovoxConfigured] = useState(false)
-  const [labelEnvoi, setLabelEnvoi] = useState(null)        // full envoi (fetched on demand) for Novoxpress modal
-  const [openingLabelId, setOpeningLabelId] = useState(null) // shipment id currently being fetched
+// Documents accessibles avant et après l'expédition, dans les deux vues.
+function InstallationDocsAction({ order, orderId }) {
   const [generatingDocs, setGeneratingDocs] = useState(false)
   const [docsError, setDocsError] = useState(null)
   // Langue des documents d'installation : proposée par le serveur (contact de
@@ -725,6 +646,75 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
     : order.docs_lang?.contact_name
       ? `Langue de ${order.docs_lang.contact_name} (contact de l'adresse de livraison)`
       : 'Langue par défaut — aucun contact sur l\'adresse de livraison'
+
+  async function handleGenerateInstallationDocs() {
+    // Réserver l'onglet pendant le clic pour éviter le blocage des popups.
+    const preview = window.open('', '_blank')
+    if (!preview) {
+      setDocsError("Autorisez les fenêtres surgissantes pour ouvrir les documents.")
+      return
+    }
+    preview.opener = null
+    setGeneratingDocs(true)
+    setDocsError(null)
+    try {
+      const { blob } = await api.orders.generateInstallationDocsBlob(orderId, docsLang)
+      const url = URL.createObjectURL(blob)
+      preview.location.href = url
+      // Note: ne pas révoquer immédiatement — le nouvel onglet en a besoin
+      setTimeout(() => URL.revokeObjectURL(url), 60000)
+    } catch (e) {
+      preview.close()
+      setDocsError(e.message || 'Erreur lors de la génération des documents')
+    } finally {
+      setGeneratingDocs(false)
+    }
+  }
+
+  return (
+    <div className="space-y-2" data-testid="installation-docs">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={handleGenerateInstallationDocs}
+          disabled={generatingDocs}
+          className="btn-secondary btn-sm flex items-center gap-1.5"
+          title="Ouvrir les documents d'installation et de remplacement de la commande pour les imprimer"
+        >
+          <Printer size={14} />
+          {generatingDocs ? 'Génération…' : "Documents d'installation"}
+        </button>
+        <div className="flex rounded-lg border border-slate-200 bg-white overflow-hidden" title={docsLangHint} role="group" aria-label="Langue des documents">
+          {['fr', 'en'].map(l => (
+            <button
+              key={l}
+              onClick={() => setDocsLangOverride(l)}
+              disabled={generatingDocs}
+              aria-pressed={docsLang === l}
+              className={`px-3 py-1.5 text-sm font-semibold transition-colors ${
+                docsLang === l ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-50'
+              }`}
+            >
+              {l.toUpperCase()}
+            </button>
+          ))}
+        </div>
+      </div>
+      {docsError && <div role="alert" className="text-xs text-red-600">{docsError}</div>}
+    </div>
+  )
+}
+
+// ── Expedition mode — Full view ────────────────────────────────────────────────
+
+function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, scanToast, setScanToast, flashItemId, onManualScan }) {
+  const [showCreateShipment, setShowCreateShipment] = useState(false)
+  const [showDoneSection, setShowDoneSection] = useState(false)
+  const [skipped, setSkipped] = useState([])                // ids passés, dans l'ordre du skip
+  const [unshipItem, setUnshipItem] = useState(null)        // item from "Déjà expédié" awaiting confirmation
+  const [addToShipItem, setAddToShipItem] = useState(null)  // picked item awaiting target shipment selection
+  const [novoxConfigured, setNovoxConfigured] = useState(false)
+  const [labelEnvoi, setLabelEnvoi] = useState(null)        // full envoi (fetched on demand) for Novoxpress modal
+  const [openingLabelId, setOpeningLabelId] = useState(null) // shipment id currently being fetched
   const [fullscreen, setFullscreen] = useState(false)
   const rootRef = useRef(null)
   const navigate = useNavigate()
@@ -763,23 +753,11 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
     }
   }
 
-  async function handleGenerateInstallationDocs() {
-    setGeneratingDocs(true)
-    setDocsError(null)
-    try {
-      const { blob } = await api.orders.generateInstallationDocsBlob(orderId, docsLang)
-      const url = URL.createObjectURL(blob)
-      window.open(url, '_blank', 'noopener')
-      // Note: ne pas révoquer immédiatement — le nouvel onglet en a besoin
-      setTimeout(() => URL.revokeObjectURL(url), 60000)
-    } catch (e) {
-      setDocsError(e.message || 'Erreur lors de la génération des documents')
-    } finally {
-      setGeneratingDocs(false)
-    }
-  }
-
-  const items = order.items || []
+  const items = (order.items || []).map(item => {
+    if (item.fulfillment_status === 'Prélevé' && (item.product_serial_count > 0 || item.serials?.length > 0)
+      && (item.serials?.length || 0) < item.qty) return { ...item, fulfillment_status: 'À prélever' }
+    return item
+  })
   const toPick   = items.filter(i => (i.fulfillment_status || 'À prélever') === 'À prélever')
   // Prélèvement un à un : un seul article affiché à la fois. « Passer » le
   // renvoie en fin de file (il revient une fois les autres traités) — les
@@ -816,8 +794,20 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
   const totalItems = items.length
   const doneCount  = picked.length + done.length
 
+  async function handleReturn(item, payload) {
+    const updated = await api.orders.unpickItem(orderId, item.id, {
+      ...payload, expected_fulfilled_qty: item.fulfilled_qty || 0,
+    })
+    onPatchItem(item.id, updated)
+    setScanToast({ message: 'Prélèvement mis à jour', status: 'ok' })
+  }
+
   function handleToggle(item) {
     const isPicked = (item.fulfillment_status || 'À prélever') === 'Prélevé'
+    if (!isPicked && (item.product_serial_count > 0 || item.serials?.length > 0)) {
+      setScanToast({ message: 'Scannez un numéro de série distinct par exemplaire.', status: 'warn' })
+      return
+    }
     const nextStatus = isPicked ? 'À prélever' : 'Prélevé'
     const nextQty   = isPicked ? 0 : item.qty
     // Décochage : on détache aussi les serials côté UI (le serveur fait pareil
@@ -826,8 +816,9 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
     if (isPicked) optimistic.serials = []
     const prevSerials = item.serials || []
     onPatchItem(item.id, optimistic)
-    api.orders.updateItem(orderId, item.id, { fulfillment_status: nextStatus, fulfilled_qty: nextQty }).catch(() => {
+    api.orders.updateItem(orderId, item.id, { fulfillment_status: nextStatus, fulfilled_qty: nextQty }).catch(e => {
       onPatchItem(item.id, { fulfillment_status: item.fulfillment_status, fulfilled_qty: item.fulfilled_qty || 0, serials: prevSerials })
+      setScanToast({ message: e.message || 'Prélèvement impossible', status: 'error' })
     })
   }
 
@@ -955,7 +946,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
             </div>
             {current ? (
               <>
-                <PickItemRow item={current} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
+                <PickItemRow key={current.id} item={current} onToggle={handleToggle} onHold={handleHold} onReturn={handleReturn} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
                 <div className="px-5 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between">
                   <span className="text-xs text-slate-400 tabular-nums">
                     {queue.length - 1} après{toPickJwt.length > 0 ? ` + ${toPickJwt.length} JWT` : ''}
@@ -995,7 +986,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
             </div>
             <div className="divide-y divide-slate-100">
               {toPickJwt.map(item => (
-                <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
+                <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} onReturn={handleReturn} flashId={flashItemId} isSubscription={!!order.is_subscription} hero />
               ))}
             </div>
           </div>
@@ -1012,13 +1003,13 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               </h2>
             </div>
             {onHold.map(item => (
-              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} flashId={flashItemId} isSubscription={!!order.is_subscription} />
+              <PickItemRow key={item.id} item={item} onToggle={handleToggle} onHold={handleHold} onReturn={handleReturn} flashId={flashItemId} isSubscription={!!order.is_subscription} />
             ))}
           </div>
         )}
 
-        {/* Sur la table (prélevés) — seulement quand il n'y a plus rien à prélever */}
-        {!picking && picked.length > 0 && (
+        {/* Les prélèvements restent accessibles pendant la préparation. */}
+        {picked.length > 0 && (
           <div className="bg-white rounded-xl shadow-sm overflow-hidden border-l-4 border-emerald-400">
             <div className="px-5 py-3 border-b border-emerald-100 bg-emerald-50">
               <h2 className="font-semibold text-emerald-800 flex items-center gap-2">
@@ -1033,40 +1024,13 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                 item={item}
                 onToggle={handleToggle}
                 onHold={handleHold}
+                onReturn={handleReturn}
                 flashId={flashItemId}
                 onAddToShipment={shipments.length > 0 ? setAddToShipItem : undefined}
               />
             ))}
-            <div className="p-4 bg-emerald-50 border-t border-emerald-100 space-y-2">
-              <div className="flex gap-2">
-                <button
-                  onClick={handleGenerateInstallationDocs}
-                  disabled={generatingDocs}
-                  className="flex-1 flex items-center justify-center gap-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 font-medium text-sm py-2.5 rounded-xl transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                  title="Fusionne les PDFs d'installation/remplacement (copies locales) pour les articles prêts"
-                >
-                  <FileText size={16} />
-                  {generatingDocs ? 'Génération…' : 'Générer les documents'}
-                </button>
-                {/* Langue des documents : proposée d'après le contact de
-                    l'adresse de livraison, l'opérateur peut la forcer. */}
-                <div className="flex rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden" title={docsLangHint}>
-                  {['fr', 'en'].map(l => (
-                    <button
-                      key={l}
-                      onClick={() => setDocsLangOverride(l)}
-                      className={`px-3 text-sm font-semibold transition-colors ${
-                        docsLang === l ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-50'
-                      }`}
-                    >
-                      {l.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              {docsError && (
-                <div className="text-xs text-red-600 px-2">{docsError}</div>
-              )}
+            {!picking && <div className="p-4 bg-emerald-50 border-t border-emerald-100 space-y-2">
+              <InstallationDocsAction order={order} orderId={orderId} />
               <button
                 onClick={() => setShowCreateShipment(true)}
                 className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-base py-3.5 rounded-xl transition-colors shadow-sm"
@@ -1074,8 +1038,12 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                 <Truck size={18} />
                 Créer un envoi avec {picked.length} article{picked.length > 1 ? 's' : ''}
               </button>
-            </div>
+            </div>}
           </div>
+        )}
+
+        {done.length > 0 && (picking || picked.length === 0) && (
+          <InstallationDocsAction order={order} orderId={orderId} />
         )}
 
         {/* Expédiés / dans l'envoi */}
@@ -1238,6 +1206,23 @@ export default function OrderDetail({ recordId, onClose }) {
   // Commercial mode state
   const [showAddItem, setShowAddItem] = useState(false)
   const confirmDialog = useConfirm()
+  const [deleting, setDeleting] = useState(false)
+  async function deleteOrder() {
+    const n = order.items?.length || 0
+    if (!await confirmDialog({
+      title: `Supprimer la commande #${order.order_number} ?`,
+      message: `La commande${n ? ` et ses ${n} article${n > 1 ? 's' : ''}` : ''} seront supprimés dans Boréal et dans Airtable.`,
+      confirmLabel: 'Supprimer',
+    })) return
+    setDeleting(true)
+    try {
+      await api.orders.delete(id)
+      leaveRecord()
+    } catch (err) {
+      addToast({ message: err.message || 'Suppression impossible', type: 'error' })
+      load()
+    } finally { setDeleting(false) }
+  }
   // Catalogue actif — sert au sélecteur de produit de la cellule « Produit »
   // du tableau des articles (édition en ligne). Même requête que le formulaire
   // d'ajout. `limit: 'all'` : le tri alphabétique du serveur coupait la liste
@@ -1251,7 +1236,6 @@ export default function OrderDetail({ recordId, onClose }) {
   // Shared
   const [scanToast, setScanToast] = useState(null)
   const [flashItemId, setFlashItemId] = useState(null)
-  const [unknownScan, setUnknownScan] = useState(null)   // code scanné non reconnu, à associer
   // Rappel d'accessoire après le scan d'une série reconnue (voir
   // SERIAL_REMINDERS) ; le ref sert au scanner (window keydown, hors React) pour
   // ignorer les codes tant que le rappel n'est pas coché.
@@ -1362,12 +1346,14 @@ export default function OrderDetail({ recordId, onClose }) {
   // Une facture se lie par SON order_id (PATCH facture), pas par la commande.
   const linkSave = useSaveStatus()
   const [companies, setCompanies] = useState([])
+  const [users, setUsers] = useState([])
   const [projects, setProjects] = useState([])
   const [companyFactures, setCompanyFactures] = useState([])
   useEffect(() => {
     api.companies.lookup()
       .then(d => setCompanies(Array.isArray(d) ? d : (d?.data || [])))
       .catch(() => setCompanies([]))
+    api.auth.users().then(setUsers).catch(() => {})
   }, [])
   const companyId = order?.company_id || null
   useEffect(() => {
@@ -1519,6 +1505,20 @@ export default function OrderDetail({ recordId, onClose }) {
   // Édition « tableur » du DataTable Articles : PATCH du champ touché, puis
   // merge de la réponse serveur (qui inclut serials + champs produit joints).
   async function handleItemCellEdit(row, col, value) {
+    if (col.field === 'de_serie') {
+      try {
+        const updated = await api.orders.updateItem(id, row.id, { de_serie: value })
+        const remaining = new Set(parseLinkedKeys(updated.de_serie))
+        handlePatchItem(row.id, {
+          ...updated,
+          de_serie_serials: (row.de_serie_serials || []).filter(s => remaining.has(s.airtable_id)),
+        })
+      } catch (e) {
+        addToast({ message: e.message || 'Impossible de dissocier le numéro de série', type: 'error' })
+        throw e
+      }
+      return
+    }
     let v = value
     if (col.field === 'qty') {
       // Le serveur exige un entier positif ; '' (vidage) retombe sur 1.
@@ -1545,9 +1545,7 @@ export default function OrderDetail({ recordId, onClose }) {
     try {
       const result = await api.orders.scan(id, value, mode, confirm)
       if (result.type === 'not_found') {
-        // Ni numéro de série, ni SKU, ni code-barre connu : on propose de
-        // l'associer à un article de la commande (il sera retenu sur la pièce).
-        setUnknownScan(value)
+        setScanToast({ message: `Code inconnu : ${value}`, status: 'warn' })
         return
       }
 
@@ -1575,6 +1573,7 @@ export default function OrderDetail({ recordId, onClose }) {
             handlePatchItem(result.item.id, {
               fulfilled_qty: result.item.fulfilled_qty,
               fulfillment_status: result.item.fulfillment_status,
+              serials: result.item.serials || [],
             })
             setFlashItemId(result.item.id)
             setTimeout(() => setFlashItemId(null), 1500)
@@ -1609,20 +1608,11 @@ export default function OrderDetail({ recordId, onClose }) {
         const reminder = serialReminderMessage(result.serial?.serial)
         if (reminder) openScanReminder(result.serial.serial, reminder)
       }
-    } catch {
-      setScanToast({ message: `Erreur lors du scan`, status: 'error' })
+    } catch (e) {
+      setScanToast({ message: e.message || 'Erreur lors du scan', status: 'error' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, expeditionMode])
-
-  // Association d'un code inconnu : le code part sur la fiche pièce, puis on
-  // rejoue le scan — qui prélève (ou ajoute) l'article comme un SKU connu.
-  async function assignScanCode(item) {
-    const code = unknownScan
-    await api.products.addScanCode(item.product_id, code)
-    setUnknownScan(null)
-    await handleScan(code)
-  }
 
   useBarcodeScanner(handleScan)
 
@@ -1640,21 +1630,6 @@ export default function OrderDetail({ recordId, onClose }) {
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: order, notFound: 'Commande introuvable.' })
   if (pending) return pending
-
-  // Code scanné inconnu : même modale dans les deux modes (prélèvement et
-  // commerciale) — le scanner est actif dans les deux.
-  const unknownScanModal = (
-    <Modal isOpen={!!unknownScan} onClose={() => setUnknownScan(null)} title="Associer ce code à un article">
-      {unknownScan && (
-        <UnknownScanCodeModal
-          code={unknownScan}
-          items={order.items || []}
-          onAssign={assignScanCode}
-          onClose={() => setUnknownScan(null)}
-        />
-      )}
-    </Modal>
-  )
 
   function cancelScanConfirm() {
     scanConfirmRef.current = null
@@ -1709,7 +1684,6 @@ export default function OrderDetail({ recordId, onClose }) {
           flashItemId={flashItemId}
           onManualScan={handleScan}
         />
-        {unknownScanModal}
         {scanReminderModal}
         {scanConfirmModal}
       </DetailShell>
@@ -1846,6 +1820,18 @@ export default function OrderDetail({ recordId, onClose }) {
     filterable: false,
     groupable: false,
     editable: false,
+    // Réutilise la variante de liens du tableau : sélection au premier clic,
+    // fiche au suivant. Seule la dissociation est proposée sur cette page.
+    linkChips: true,
+    linkMulti: true,
+    linkAllowAdd: false,
+    linkChipsScrollable: true,
+    linkTarget: 'serial_numbers',
+    linkChipLabel: (item, key) => item.de_serie_serials?.find(s => s.airtable_id === key)?.serial,
+    linkChipHref: (item, key) => {
+      const serial = item.de_serie_serials?.find(s => s.airtable_id === key)
+      return serial ? `/serials/${serial.id}` : null
+    },
     render: ITEM_RENDERS.de_serie,
   })
 
@@ -1929,13 +1915,27 @@ export default function OrderDetail({ recordId, onClose }) {
           </span>
         ),
         actions: (
-          <button
-            onClick={() => setExpeditionMode(true)}
-            className="btn-secondary btn-sm flex items-center gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
-          >
-            <Truck size={14} />
-            Mode expédition
-          </button>
+          <div className="flex flex-wrap items-start gap-2">
+            {order.items?.length > 0 && <InstallationDocsAction order={order} orderId={id} />}
+            <button
+              onClick={() => setExpeditionMode(true)}
+              className="btn-secondary btn-sm flex items-center gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
+            >
+              <Truck size={14} />
+              Mode expédition
+            </button>
+            {/* Une commande envoyée ne se supprime pas : délier d'abord ses
+                envois (champ « Commande » de la fiche Envoi). */}
+            <button
+              onClick={deleteOrder}
+              disabled={deleting || order.shipments?.length > 0}
+              title={order.shipments?.length > 0 ? 'Commande envoyée : déliez d’abord ses envois' : 'Supprimer la commande'}
+              className="btn-secondary btn-sm flex items-center gap-1.5 text-red-600 hover:bg-red-50 disabled:opacity-40"
+              data-testid="order-delete-button"
+            >
+              <Trash2 size={14} />
+            </button>
+          </div>
         ),
       }}
     >
@@ -1948,12 +1948,14 @@ export default function OrderDetail({ recordId, onClose }) {
         <DetailFieldGrid
           entityType="orders"
           record={order}
+          taken={ORDER_TAKEN_FIELDS}
           onSaveCustom={saveField}
           savingKeys={fieldSaving}
           className="card p-5 mb-4"
           testId="order-fields"
           onDeleted={onClose}
           customFieldLinkFilters={orderFieldLinkFilters}
+          arrangeFields={arrangeOrderAddresses}
         >
           <DetailField id="status" label="Statut">
             <div><Badge color={orderStatusColor(order.status)}>{order.status}</Badge></div>
@@ -1985,6 +1987,16 @@ export default function OrderDetail({ recordId, onClose }) {
               onChange={v => saveLink('company_id', v)}
             />
           </DetailField>
+          <DetailField id="assigned_to" label="Responsable de la commande" saving={linkSaving}>
+            <LinkedRecordField
+              name="assigned_to"
+              value={order.assigned_to}
+              options={users}
+              labelFn={u => u.name}
+              saving={linkSaving}
+              onChange={v => saveLink('assigned_to', v)}
+            />
+          </DetailField>
           <DetailField id="farm_address_id" label="Adresse de la ferme" saving={linkSaving}>
             <LinkedRecordField
               name="farm_address_id"
@@ -1997,6 +2009,23 @@ export default function OrderDetail({ recordId, onClose }) {
               onChange={v => saveLink('farm_address_id', v)}
             />
           </DetailField>
+          {order.discovery_forms?.length > 0 && (
+            <DetailField id="discovery_forms" label="System builder">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                {order.discovery_forms.map(f => (
+                  <LinkedRecordField
+                    key={f.id}
+                    name={`discovery_form_${f.id}`}
+                    value={f.id}
+                    options={[{ id: f.id, name: fmtDate(f.submitted_at || f.created_at) || 'System builder' }]}
+                    getHref={x => `/discovery-forms/${x.id}`}
+                    disabled
+                    allowClear={false}
+                  />
+                ))}
+              </div>
+            </DetailField>
+          )}
           <DetailField id="project_id" label="Projet" saving={linkSaving}>
             <LinkedRecordField
               name="project_id"
@@ -2263,7 +2292,6 @@ export default function OrderDetail({ recordId, onClose }) {
         <AddItemModal orderId={id} onSave={load} onClose={() => setShowAddItem(false)} />
       </Modal>
 
-      {unknownScanModal}
       {scanReminderModal}
       {scanConfirmModal}
     </DetailShell>

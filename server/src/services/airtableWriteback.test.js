@@ -81,6 +81,7 @@ const {
   airtableFieldValue, WRITEBACK_MODULES, buildColumnMap, pushableLinkColumn, airtableLinkIds,
   pushOnlyColumns, isAirtableComputedKey, isDirectionConfigurable,
   coreDirectionLockReason, resetComputedKeyCache,
+  stockMovementSignedChange, stockMovementLabel,
 } = await import('./airtableWriteback.js')
 const { rememberAirtableFieldTypes } = await import('./airtableFieldTypes.js')
 
@@ -155,7 +156,7 @@ test('setFieldDirection accepte une clé dyn: sur un module write-back et persis
 })
 
 test('setFieldDirection refuse une clé dyn: sur un module sans write-back', () => {
-  assert.throws(() => setFieldDirection('pieces', 'dyn:cf_x', 'both'), /ne supporte pas/)
+  assert.throws(() => setFieldDirection('assemblages', 'dyn:cf_x', 'both'), /ne supporte pas/)
 })
 
 test('setFieldDirection refuse toujours une clé cœur non configurable (skipKeys)', () => {
@@ -168,7 +169,8 @@ test('setFieldDirection refuse toujours une clé cœur non configurable (skipKey
 test('writebackModuleForTable : table ERP → clé module write-back', () => {
   assert.equal(writebackModuleForTable('purchases'), 'achats')
   assert.equal(writebackModuleForTable('shipments'), 'envois')
-  assert.equal(writebackModuleForTable('products'), null)
+  assert.equal(writebackModuleForTable('products'), 'pieces')
+  assert.equal(writebackModuleForTable('bom_items'), null)
 })
 
 // ── Lignes de commande : le sens du produit est CHOISISSABLE, pas actif d'office ──
@@ -582,4 +584,18 @@ test('billets : case à cocher et multi-sélection converties avant l’envoi', 
   assert.deepEqual(airtableFieldValue(cfg, 'mots_cles', '["app","toit"]'), ['app', 'toit'])
   assert.deepEqual(airtableFieldValue(cfg, 'mots_cles', 'app, toit'), ['app', 'toit'])
   assert.equal(airtableFieldValue(cfg, 'mots_cles', null), null)
+})
+
+test('mouvements d’inventaire : variation signée et libellé Airtable', () => {
+  assert.equal(stockMovementSignedChange({ type: 'in', qty: 5 }), 5)
+  assert.equal(stockMovementSignedChange({ type: 'out', qty: 5 }), -5)
+  assert.equal(stockMovementSignedChange({ type: 'adjustment', qty: 3, reason: 'Ajustement (diminution)' }), -3)
+  // Ajustement saisi dans Boréal : `qty` est le niveau cible, la variation vient de l'appelant.
+  assert.equal(stockMovementSignedChange({ type: 'adjustment', qty: 40, signed_change: -2 }), -2)
+  assert.equal(stockMovementLabel({ type: 'out', qty: 1, reason: 'Commande envoyée' }), 'Commande envoyée')
+  assert.equal(stockMovementLabel({ type: 'adjustment', qty: 40, signed_change: -2, reason: 'Inventaire' }), 'Ajustement (diminution)')
+  assert.equal(stockMovementLabel({ type: 'adjustment', qty: 40, signed_change: 2 }), 'Ajustement (augmentation)')
+  // Sens par défaut : rien n'est poussé tant que personne n'a choisi.
+  assert.equal(fieldMapDirection('stock_movements', 'qty_change'), 'pull')
+  assert.equal(isDirectionConfigurable('stock_movements', 'qty_change'), true)
 })

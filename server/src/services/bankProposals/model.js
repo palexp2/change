@@ -16,6 +16,16 @@ export const KINDS = [
   'payment_clear', 'paie_debit', 'aga_repartition', 'debt_payment',
 ]
 
+// Les natures dont l'acceptation ÉCRIT dans QuickBooks. Elles ne partent
+// jamais en lot : un clic humain par écriture publiée, c'est l'invariant du
+// moteur. Ici (module pur) parce que la route, le store et l'applicateur en ont
+// tous besoin, et qu'une liste recopiée finit toujours par diverger.
+export const PUBLISHES_TO_QB = new Set(['aga_repartition', 'vendor_expense'])
+
+// Ce qu'une confirmation en lot a le droit de toucher : tout sauf ce qui
+// publierait dans QuickBooks.
+export function isBatchAcceptable(kind) { return !PUBLISHES_TO_QB.has(kind) }
+
 // Ordre d'examen : la preuve la plus forte d'abord. Une ligne réclamée par un
 // producteur n'est plus offerte aux suivants (voir dedupeClaims).
 export const KIND_ORDER = [

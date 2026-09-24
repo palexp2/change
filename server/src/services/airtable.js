@@ -19,6 +19,7 @@ import {
 import { reconcileFacturesForOrder } from './quickbooks.js'
 import { logSystemRun } from './systemAutomations.js'
 import { uploadsPath } from '../config/uploads.js'
+import { periodStartFromFields } from './paiePeriod.js'
 
 // Cache live SQLite columns per table — read once at module level, refreshed
 // only when an UPDATE/INSERT references an unknown column (rare, indicates a
@@ -2188,11 +2189,13 @@ export async function syncPaies(changes = null) {
         const totalExcl = empNum(rec.fields, totalExclField)
         const reimbTotal = empNum(rec.fields, reimbTotalField)
         const totalFallback = totalExcl != null ? Math.round((totalExcl + (reimbTotal || 0)) * 100) / 100 : null
-        // `csv` et `period_start` ne sont plus importées (migration 051) : la
-        // colonne `csv` a été droppée, `period_start` reste alimentée en
-        // interne par `paieTimesheetImport`, indépendamment du sync Airtable.
+        // `csv` n'est plus importée (migration 051, colonne droppée).
+        // `period_start` l'est de nouveau, depuis « Période de paie » : c'est
+        // Airtable qui dit le début de période (COALESCE plus bas — un champ
+        // vide ne doit pas effacer la valeur interne).
         const row = {
           number: empNum(rec.fields, fm?.number),
+          period_start: periodStartFromFields(rec.fields),
           period_end: getVal(rec.fields, fm?.period_end),
           status: getVal(rec.fields, fm?.status),
           nb_holiday_days: empNum(rec.fields, fm?.nb_holiday_days),
@@ -2211,7 +2214,7 @@ export async function syncPaies(changes = null) {
         const existing = db.prepare('SELECT id FROM paies WHERE airtable_id=?').get(rec.id)
         if (existing) {
           db.prepare(`UPDATE paies SET
-            number=@number,
+            number=@number, period_start=COALESCE(@period_start, period_start),
             period_end=@period_end, status=@status,
             nb_holiday_days=@nb_holiday_days, total_with_charges_and_reimb=@total_with_charges_and_reimb,
             timesheets_deadline=@timesheets_deadline, includes_hourly=@includes_hourly,
@@ -2222,12 +2225,12 @@ export async function syncPaies(changes = null) {
           updated++
         } else {
           db.prepare(`INSERT INTO paies (
-            id, airtable_id, number, period_end, status, nb_holiday_days,
+            id, airtable_id, number, period_start, period_end, status, nb_holiday_days,
             total_with_charges_and_reimb, timesheets_deadline, includes_hourly, includes_mileage,
             includes_expense_reimb, includes_paid_leave, includes_holiday_hours,
             includes_sales_commissions, timesheets_sent
           ) VALUES (
-            @id, @airtable_id, @number, @period_end, @status, @nb_holiday_days,
+            @id, @airtable_id, @number, @period_start, @period_end, @status, @nb_holiday_days,
             @total_with_charges_and_reimb, @timesheets_deadline, @includes_hourly, @includes_mileage,
             @includes_expense_reimb, @includes_paid_leave, @includes_holiday_hours,
             @includes_sales_commissions, @timesheets_sent

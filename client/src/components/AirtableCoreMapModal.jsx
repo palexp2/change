@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { RefreshCw, AlertCircle, CheckCircle2, Sparkles, ArrowLeft, ArrowRight, ArrowLeftRight } from 'lucide-react'
 import api from '../lib/api.js'
+import { invalidate } from '../lib/prefetch.js'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { readStale, writeStale, pruneStale } from '../lib/swr.js'
 import { RefreshFieldsButton, refreshAirtableSchema, useRefreshFields } from './AirtableRefreshFields.jsx'
 import { Modal } from './Modal.jsx'
@@ -16,7 +18,7 @@ import Spinner from './Spinner.jsx'
 //
 // `modules` : [{ module: 'serial_changes', title: "Changements d'état" }, …]
 // — un onglet par module quand il y en a plusieurs.
-export function AirtableCoreMapModal({ isOpen, onClose, modules, title = 'Mapping des champs Airtable', onSaved }) {
+export function AirtableCoreMapModal({ isOpen, onClose, modules, title = 'Correspondance des champs Airtable', onSaved }) {
   const [tab, setTab] = useState(modules[0]?.module)
 
   // Ré-ouvre toujours sur le premier onglet
@@ -186,6 +188,10 @@ export function useCoreMap(module, onSaved) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [savedMsg, setSavedMsg] = useState('')
+  // Clé → valeur enregistrée ailleurs pendant qu'un brouillon local la couvre.
+  const [conflicts, setConflicts] = useState({})
+  const draftRef = useRef(draft)
+  useEffect(() => { draftRef.current = draft }, [draft])
 
   // `moduleRef` : garde contre la réponse d'un module qu'on a quitté entre-temps
   // (l'ancien effet le faisait avec un drapeau `alive` ; `load` est maintenant
@@ -207,6 +213,46 @@ export function useCoreMap(module, onSaved) {
       .catch(e => { if (moduleRef.current === module) setLoadError(e.message) })
   }, [module])
 
+  // Modification venue d'une autre session ou de l'API : on relit le mapping
+  // sans écraser les brouillons. Une clé dont le brouillon diffère du dernier
+  // état serveur connu reste telle quelle ; si le serveur a changé cette même
+  // clé entre-temps, elle est signalée en conflit.
+  const dataRef = useRef(data)
+  useEffect(() => { dataRef.current = data }, [data])
+  const pendingDirs = useRef(new Set())
+  const mergeRemote = useCallback(() => {
+    if (!module) return
+    invalidate(`/connectors/airtable/module-fields/${module}/core-map`)
+    api.airtable.moduleCoreMap(module)
+      .then(d => {
+        if (moduleRef.current !== module) return
+        const base = dataRef.current?.field_map || {}
+        const local = draftRef.current
+        const next = { ...d.field_map }
+        const clash = {}
+        for (const k of new Set([...Object.keys(local), ...Object.keys(base)])) {
+          const mine = local[k] || ''
+          if (mine === (base[k] || '')) continue
+          next[k] = mine
+          const theirs = d.field_map[k] || ''
+          if (theirs !== (base[k] || '') && theirs !== mine) clash[k] = theirs
+        }
+        setLoadError('')
+        setData(d)
+        setDraft(next); draftRef.current = next
+        setDirs(prev => Object.fromEntries(d.fields.map(f => [
+          f.key, pendingDirs.current.has(f.key) ? prev[f.key] : f.direction,
+        ])))
+        setConflicts(c => {
+          const kept = Object.fromEntries(Object.entries(c).filter(([k]) => (next[k] || '') !== (d.field_map[k] || '')))
+          return { ...kept, ...clash }
+        })
+        writeStale(coreMapCacheKey(module), d)
+      })
+      .catch(() => {})
+  }, [module])
+  useRealtimeChannel(module ? `airtable_core_map:${module}` : null, mergeRemote)
+
   // Changement de module : on repart de SON dernier état connu (sinon les
   // cellules afficheraient un instant le mapping du module précédent).
   useEffect(() => {
@@ -214,6 +260,7 @@ export function useCoreMap(module, onSaved) {
     setData(known)
     setDraft({ ...(known?.field_map || {}) })
     setDirs(Object.fromEntries((known?.fields || []).map(f => [f.key, f.direction])))
+    setConflicts({})
     load()
   }, [module, load])
 
@@ -231,12 +278,15 @@ export function useCoreMap(module, onSaved) {
     const prev = dirs[fieldKey]
     setDirs(d => ({ ...d, [fieldKey]: direction }))
     setSaveError(''); setSavedMsg('')
+    pendingDirs.current.add(fieldKey)
     try {
       await api.airtable.setModuleFieldDirection(module, fieldKey, direction)
       setSavedMsg('Sens de synchronisation mis à jour.')
     } catch (e) {
       setDirs(d => ({ ...d, [fieldKey]: prev }))
       setSaveError(e.message)
+    } finally {
+      pendingDirs.current.delete(fieldKey)
     }
   }
 
@@ -248,8 +298,6 @@ export function useCoreMap(module, onSaved) {
   // La resynchronisation n'est PAS déclenchée ici : le bouton « Synchroniser »
   // de l'en-tête Source Airtable la lance, comme pour un mapping dynamique.
   // Lève en cas d'échec — l'appelant affiche l'erreur dans la cellule.
-  const draftRef = useRef(draft)
-  useEffect(() => { draftRef.current = draft }, [draft])
   async function saveField(fieldKey, name) {
     const prev = draftRef.current
     const next = { ...prev, [fieldKey]: name || '' }
@@ -268,6 +316,10 @@ export function useCoreMap(module, onSaved) {
       setSaving(false)
     }
   }
+
+  // Un conflit n'a plus lieu d'être dès que le brouillon rejoint le serveur.
+  const openConflicts = useMemo(() => Object.fromEntries(Object.entries(conflicts)
+    .filter(([k]) => (draft[k] || '') !== (data?.field_map?.[k] || ''))), [conflicts, draft, data])
 
   const dirty = useMemo(() => {
     if (!data) return false
@@ -291,11 +343,12 @@ export function useCoreMap(module, onSaved) {
       const r = await api.airtable.saveModuleCoreMap(module, draft)
       setData(d => ({ ...d, field_map: r.field_map }))
       setDraft({ ...r.field_map })
+      setConflicts({})
       if (resyncAfter) {
         api.airtable.sync(data.sync_key)
-        setSavedMsg('Mapping enregistré — resynchronisation lancée en arrière-plan.')
+        setSavedMsg('Correspondance enregistrée — resynchronisation lancée en arrière-plan.')
       } else {
-        setSavedMsg('Mapping enregistré.')
+        setSavedMsg('Correspondance enregistrée.')
       }
       onSaved?.()
     } catch (e) {
@@ -306,7 +359,7 @@ export function useCoreMap(module, onSaved) {
   }
 
   return {
-    data, loadError, draft, setDraft, dirs, changeDirection, dirty, options,
+    data, loadError, draft, setDraft, dirs, conflicts: openConflicts, changeDirection, dirty, options,
     save, saveField, saving, saveError, savedMsg, setSavedMsg, resyncAfter, setResyncAfter,
     reload: load, refreshFields,
   }
@@ -392,7 +445,7 @@ export function CoreMapSaveBar({ module, core }) {
           data-testid={`coremap-${module}-save`}
         >
           {saving ? <RefreshCw size={13} className="animate-spin" /> : null}
-          {saving ? 'Enregistrement…' : 'Enregistrer le mapping'}
+          {saving ? 'Enregistrement…' : 'Enregistrer la correspondance'}
         </button>
       </div>
     </>
@@ -404,7 +457,7 @@ export function CoreMapSaveBar({ module, core }) {
 // Airtable au-dessus du tableau des champs).
 export function CoreMapPane({ module, onSaved, showSync = true }) {
   const core = useCoreMap(module, onSaved)
-  const { data, loadError, draft, setDraft, dirs, changeDirection, options, setSavedMsg, refreshFields } = core
+  const { data, loadError, draft, setDraft, dirs, conflicts, changeDirection, options, setSavedMsg, refreshFields } = core
 
   // Détails de sync de la table ERP alimentée par ce module — affichés en
   // tête du panneau, y compris pendant le chargement et en cas d'erreur.
@@ -496,6 +549,18 @@ export function CoreMapPane({ module, onSaved, showSync = true }) {
                   suggestion={data.suggested[f.key]}
                   onRefresh={refreshFields}
                 />
+                {f.key in conflicts && (
+                  <button
+                    type="button"
+                    onClick={() => { setDraft(d => ({ ...d, [f.key]: conflicts[f.key] })); setSavedMsg('') }}
+                    className="max-w-full text-[11px] text-amber-700 hover:text-amber-900 mt-0.5 inline-flex items-center gap-1"
+                    title="Enregistré ailleurs pendant votre modification — cliquer pour reprendre cette valeur"
+                    data-testid={`coremap-${module}-${f.key}-conflict`}
+                  >
+                    <AlertCircle size={11} className="flex-shrink-0" />
+                    <span className="truncate">Modifié ailleurs : {conflicts[f.key] || '— Non mappé —'}</span>
+                  </button>
+                )}
               </div>
             </div>
           )

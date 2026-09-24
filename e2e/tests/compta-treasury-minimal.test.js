@@ -1,4 +1,4 @@
-// Dashboard comptabilité → « Projection du solde BNC » réduite à l'essentiel.
+// Comptabilité → « Projection du solde BNC » réduite à l'essentiel.
 //
 // La projection portait une pile d'annexes (contrôle prévu/réel, passé réel du
 // relevé, rentrées estimées, bandeaux d'écart et de paiements émis). Tout ça vit

@@ -2,6 +2,7 @@ import db from '../../db/database.js'
 import { newRecordId } from '../../utils/recordId.js'
 import { resolveVendorFromBankLabel } from './vendorFromBankLabel.js'
 import { nowIso } from '../../utils/datetime.js'
+import { getTrxSheetConfig } from '../bankTrxSheet.js'
 
 // « Quelles transactions bancaires attendent leur facture ? »
 //
@@ -143,10 +144,19 @@ export function refreshInvoiceNeeds({ lookbackDays = 120 } = {}) {
 
   let withCollector = 0
   let without = 0
+  let unknownVendor = 0
   const run = db.transaction((rows) => {
     for (const t of rows) {
       const hit = resolveVendorFromBankLabel(t.label)
-      if (!hit) continue // fournisseur inconnu : rien à proposer, on ne crée pas de bruit
+      // Fournisseur non reconnu dans le libellé : il n'y a rien à collecter,
+      // mais l'argent est bel et bien sorti sans pièce. On l'inscrit quand même
+      // — c'est la liste « Factures manquantes », pas la liste de collecte.
+      if (!hit) {
+        upsert.run(newRecordId(), t.id, null, null, t.amount, t.currency, t.txn_date,
+          'sans_fournisseur', nowIso())
+        unknownVendor++
+        continue
+      }
       const accountId = byProfile.get(hit.profile.id) || null
       upsert.run(newRecordId(), t.id, accountId, hit.profile.id, t.amount, t.currency, t.txn_date,
         accountId ? 'en_attente' : 'sans_collecteur', nowIso())
@@ -164,12 +174,12 @@ export function refreshInvoiceNeeds({ lookbackDays = 120 } = {}) {
       AND bank_txn_id IN (SELECT id FROM bank_transactions WHERE matched_id IS NOT NULL)
   `).run(nowIso())
 
-  return { withCollector, without }
+  return { withCollector, without, unknownVendor }
 }
 
 // Un besoin est-il à retenter ? Les délais s'allongent, puis on s'arrête.
 export function isDue(need, at = Date.now()) {
-  if (need.status === 'trouvee' || need.status === 'sans_collecteur') return false
+  if (['trouvee', 'sans_collecteur', 'sans_fournisseur'].includes(need.status)) return false
   if (!need.last_attempt_at) return true
   const attempts = need.attempts || 0
   if (attempts >= RETRY_DELAYS_DAYS.length) return false
@@ -189,6 +199,14 @@ export function dueNeedsForAccount(accountId) {
     ORDER BY n.txn_date DESC
   `).all(accountId)
   return rows.filter(n => isDue(n))
+}
+
+// Âge à partir duquel une sortie sans pièce devient criante. Le seuil est déjà
+// déclaré côté rapprochement (`anomaly_age_days`, réglable sur l'automation du
+// relevé) : on le lit plutôt que d'en inventer un second.
+export function missingInvoiceAgeDays() {
+  const raw = Number(getTrxSheetConfig().anomaly_age_days)
+  return Number.isFinite(raw) && raw > 0 ? raw : 7
 }
 
 export function markNeed(needId, fields) {

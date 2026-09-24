@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useEffect, useState } from 'react'
 import { Link, Navigate, useNavigate, useParams } from 'react-router-dom'
 import { Check, Search, MapPin, RefreshCw, Settings2 } from 'lucide-react'
@@ -22,7 +23,9 @@ import { CorbeilleContent } from './Corbeille.jsx'
 import { ConnectorsContent } from './Connectors.jsx'
 import { ArchitectureContent } from './Architecture.jsx'
 import { ActivityContent } from './ActivityFeed.jsx'
+import { ChangelogContent } from './Changelog.jsx'
 import Spinner from '../components/Spinner.jsx'
+import { KeyboardShortcutsList } from '../components/KeyboardShortcutsModal.jsx'
 
 // Checkbox « visible » : cochée = item affiché dans la sidebar.
 // Le `relative` du label n'est pas décoratif : la vraie case est un input
@@ -60,7 +63,7 @@ function VisibilityCheckbox({ checked, disabled, label, Icon, onChange, indent, 
 function MenuSection() {
   const { user } = useAuth()
   const { isHidden, toggle, order } = useNavPrefs()
-  const isHR = ['admin', 'rh'].includes(user?.role)
+  const isHR = hasRole(user, 'rh')
   const [query, setQuery] = useState('')
 
   const q = query.trim().toLowerCase()
@@ -74,6 +77,7 @@ function MenuSection() {
   const sections = applyNavOrder(defaultNavItems, order)
     .map((item) => {
       if (!item.group) {
+        if (item.menuHidden) return null
         if (q && !matches(item.label)) return null
         return item
       }
@@ -352,6 +356,24 @@ function QuickBooksSection() {
   )
 }
 
+function RaccourcisSection() {
+  return (
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900 mb-4">Raccourcis clavier</h2>
+      <KeyboardShortcutsList />
+    </div>
+  )
+}
+
+function NouveautesSection() {
+  return (
+    <div>
+      <h2 className="text-lg font-semibold text-slate-900 mb-4">Nouveautés</h2>
+      <ChangelogContent />
+    </div>
+  )
+}
+
 // Anciennes URL /admin/<onglet> : elles pointent vers la même section, sous son
 // nouveau toit. Deux onglets avaient déjà quitté l'admin pour une page à eux.
 const LEGACY_ADMIN_TABS = { automations: '/automations', agent: '/travaux' }
@@ -367,6 +389,8 @@ const CONTENT = {
   adresses: AddressCheckSection,
   gmail: GmailSection,
   quickbooks: QuickBooksSection,
+  raccourcis: RaccourcisSection,
+  nouveautes: NouveautesSection,
   systeme: SystemeContent,
   connecteurs: ConnectorsContent,
   activite: ActivityContent,
@@ -378,7 +402,7 @@ export default function Parametres() {
   const { user } = useAuth()
   const navigate = useNavigate()
   const { section: routeSection } = useParams()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = hasRole(user, 'admin')
   const sections = settingsSectionsFor(isAdmin)
 
   // Une section inconnue — ou réservée aux admins pour un non-admin — retombe

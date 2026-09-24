@@ -137,6 +137,12 @@ export function parseFedexRows(rows) {
   return out
 }
 
+async function needsSignIn(page) {
+  return LOGIN_HOST.test(page.url()) || !!(await page.locator(
+    '#username:visible, input[autocomplete="username"]:visible, #userId:visible, input[type="password"]:visible'
+  ).count())
+}
+
 async function signIn(ctx) {
   const { page, log, credentials } = ctx
   log('connexion à FedEx Billing Online…')
@@ -149,7 +155,11 @@ async function signIn(ctx) {
     await page.waitForTimeout(500)
   }
 
-  const user = page.locator('#userId, input[name="userId"], input[name*="user" i]:visible, input[type="email"]:visible').first()
+  // Le formulaire est rendu par un composant Angular : l'identifiant s'appelle
+  // `#username` (autocomplete="username"), plus `#userId` qui a disparu en 2026.
+  const user = page.locator(
+    '#username:visible, input[autocomplete="username"]:visible, #userId:visible, input[name="userId"]:visible, input[name*="user" i]:visible, input[type="email"]:visible'
+  ).first()
   await user.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {})
   if (!(await user.count())) {
     await ctx.snapshot('fedex-login-inattendu')
@@ -158,11 +168,11 @@ async function signIn(ctx) {
   await user.fill(credentials.username)
 
   // Gabarit en une page (identifiant + mot de passe ensemble) ou en deux temps.
-  let pwd = page.locator('#password, input[type="password"]:visible').first()
+  let pwd = page.locator('#password:visible, input[autocomplete="current-password"]:visible, input[type="password"]:visible').first()
   if (!(await pwd.count())) {
     await page.locator('button[type="submit"]:visible, button:has-text("Continue"), button:has-text("Continuer")').first()
       .click({ timeout: 10_000 }).catch(() => {})
-    pwd = page.locator('#password, input[type="password"]:visible').first()
+    pwd = page.locator('#password:visible, input[autocomplete="current-password"]:visible, input[type="password"]:visible').first()
     await pwd.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {})
   }
   if (!(await pwd.count())) {
@@ -170,7 +180,7 @@ async function signIn(ctx) {
     throw new Error("FedEx n'a pas présenté de champ mot de passe — identifiant refusé ou écran inattendu, voir la capture")
   }
   await pwd.fill(credentials.password)
-  await page.locator('button[type="submit"]:visible, #login, button:has-text("Se connecter"), button:has-text("Log in")').first()
+  await page.locator('#login_button:visible, button[type="submit"]:visible, #login, button:has-text("Se connecter"), button:has-text("Log in")').first()
     .click({ timeout: 10_000 }).catch(() => pwd.press('Enter').catch(() => {}))
   await page.waitForLoadState('networkidle').catch(() => {})
 
@@ -198,10 +208,20 @@ async function signIn(ctx) {
 // « Account summary » / « Sommaire du compte ». L'URL directe est tentée
 // d'abord (elle est stable), l'entrée de menu sert de repli si le portail a
 // bougé son chemin.
-async function openInvoiceList(ctx) {
+async function openInvoiceList(ctx, connectOnce) {
   const { page, log } = ctx
   await page.goto(SUMMARY_URL, { waitUntil: 'domcontentloaded' }).catch(() => {})
   await page.waitForLoadState('networkidle').catch(() => {})
+  // Le portail peut ne demander la connexion qu'à l'ouverture du sommaire.
+  // Essayer une seule fois sur toute la tournée, pour éviter une boucle de login.
+  if (await needsSignIn(page) && await connectOnce()) {
+    await page.goto(SUMMARY_URL, { waitUntil: 'domcontentloaded' })
+    await page.waitForLoadState('networkidle').catch(() => {})
+  }
+  if (await needsSignIn(page)) {
+    await ctx.snapshot('fedex-session-refusee')
+    throw new Error('Session FedEx non authentifiée — se connecter à FedEx Billing Online dans votre navigateur, puis envoyer la session depuis le module de navigateur')
+  }
   if (/accountsummary/i.test(page.url())) return true
 
   const entry = page.locator(
@@ -219,7 +239,7 @@ async function openInvoiceList(ctx) {
   return true
 }
 
-export default {
+export const legacyFedex = {
   label: 'FedEx',
   fields: { username: 'Identifiant fedex.com', password: 'Mot de passe', totp: 'Secret 2FA (optionnel)' },
 
@@ -246,13 +266,16 @@ export default {
 
     await page.goto(FBO_URL, { waitUntil: 'domcontentloaded' })
     await page.waitForLoadState('networkidle').catch(() => {})
-    if (LOGIN_HOST.test(page.url()) || await page.locator('input[type="password"]').count()) {
+    let signInAttempted = false
+    const connectOnce = async () => {
+      if (signInAttempted) return false
+      signInAttempted = true
       await signIn(ctx)
-    } else {
-      log('session déjà valide')
+      return true
     }
+    if (await needsSignIn(page)) await connectOnce()
 
-    await openInvoiceList(ctx)
+    await openInvoiceList(ctx, connectOnce)
     await ctx.snapshot('fedex-factures')
 
     // Deux gabarits possibles : des liens (href direct vers le PDF) et des
@@ -338,5 +361,16 @@ export default {
         throw new Error("le clic sur la ligne n'a produit aucun PDF")
       },
     }))
+  },
+}
+
+// Pilote activé pour FedEx seulement. Retour au parcours historique possible
+// sans changer les comptes ni leurs sessions.
+export default {
+  ...legacyFedex,
+  async list(ctx) {
+    if (process.env.FEDEX_BROWSER_AGENT === '0') return legacyFedex.list(ctx)
+    const { listFedexWithAgent } = await import('./fedexAgent.js')
+    return listFedexWithAgent(ctx)
   },
 }

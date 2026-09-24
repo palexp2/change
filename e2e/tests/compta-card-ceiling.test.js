@@ -32,7 +32,7 @@ const num = txt => {
   return Number.isFinite(v) ? v : null
 }
 
-describe('Dashboard comptabilité — plafond des cartes', () => {
+describe('Comptabilité — plafond des cartes', () => {
   let browser, ctx, page, db
   const testCardId = `__test_ceiling_${Date.now()}`
   const testCardName = `__test_carte_plafond_${Date.now()}`

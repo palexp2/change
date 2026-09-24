@@ -2,14 +2,14 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-09-15T14:18:22.249Z",
+  "generatedAt": "2026-09-24T01:01:47.497Z",
   "stats": {
-    "routes": 88,
-    "pages": 76,
+    "routes": 94,
+    "pages": 81,
     "groups": 6,
-    "api": 104,
-    "tables": 164,
-    "connectors": 9
+    "api": 113,
+    "tables": 171,
+    "connectors": 11
   },
   "groups": [
     {
@@ -256,7 +256,7 @@ export const architectureManifest = {
           "label": "Employés",
           "component": "Employees",
           "adminOnly": false,
-          "hrOnly": true,
+          "hrOnly": false,
           "api": "/api/employees"
         },
         {
@@ -300,7 +300,7 @@ export const architectureManifest = {
           "to": "/automations",
           "label": "Automatisations",
           "component": "Automations",
-          "adminOnly": false,
+          "adminOnly": true,
           "hrOnly": false,
           "api": "/api/automations"
         },
@@ -327,6 +327,14 @@ export const architectureManifest = {
           "adminOnly": false,
           "hrOnly": false,
           "api": null
+        },
+        {
+          "to": "/fournitures",
+          "label": "Fournitures",
+          "component": "Fournitures",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": "/api/fournitures"
         }
       ]
     }
@@ -352,6 +360,22 @@ export const architectureManifest = {
       "to": "/login",
       "label": "Login",
       "component": "Login",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/forgot-password",
+      "label": "ForgotPassword",
+      "component": "ForgotPassword",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/reset-password",
+      "label": "ResetPassword",
+      "component": "ResetPassword",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -453,6 +477,14 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/cartes-paiement",
+      "label": "CartesPaiement",
+      "component": "CartesPaiement",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/fournisseurs/achats",
       "label": "AchatsFournisseurs",
       "component": "AchatsFournisseurs",
@@ -493,6 +525,14 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/tests-antoine/carte",
+      "label": "ClientMap",
+      "component": "ClientMap",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/fin-de-mois",
       "label": "FinDeMois",
       "component": "FinDeMois",
@@ -512,7 +552,7 @@ export const architectureManifest = {
       "to": "/travaux",
       "label": "Travaux",
       "component": "Travaux",
-      "adminOnly": false,
+      "adminOnly": true,
       "hrOnly": false,
       "api": "/api/travaux"
     },
@@ -648,7 +688,7 @@ export const architectureManifest = {
       "to": "/automations/:id",
       "label": "AutomationDetail",
       "component": "AutomationDetail",
-      "adminOnly": false,
+      "adminOnly": true,
       "hrOnly": false,
       "api": "/api/automations"
     },
@@ -667,18 +707,23 @@ export const architectureManifest = {
     "/api/activity-codes",
     "/api/admin",
     "/api/agent",
+    "/api/ai-usage",
     "/api/anomalies",
     "/api/attachments",
+    "/api/attachments/airtable",
+    "/api/audit",
     "/api/auth",
     "/api/automations",
     "/api/bank",
     "/api/bank/rules",
+    "/api/bank/statements",
     "/api/bons-livraison",
     "/api/bootstrap",
     "/api/calls",
     "/api/carm",
     "/api/catalog",
     "/api/changelog",
+    "/api/client-map",
     "/api/comments",
     "/api/companies",
     "/api/connectors",
@@ -698,6 +743,7 @@ export const architectureManifest = {
     "/api/employees",
     "/api/field-visibility-rules",
     "/api/form-configs",
+    "/api/fournitures",
     "/api/fx",
     "/api/hooks",
     "/api/hooks/telnyx",
@@ -718,6 +764,7 @@ export const architectureManifest = {
     "/api/ops-issues",
     "/api/orders",
     "/api/paies",
+    "/api/payment-cards",
     "/api/payments",
     "/api/places",
     "/api/plaid",
@@ -733,6 +780,7 @@ export const architectureManifest = {
     "/api/public/ticket-survey",
     "/api/purchases",
     "/api/qualification-calls",
+    "/api/quickbooks/webhook",
     "/api/receipt-files",
     "/api/record-links",
     "/api/recordings",
@@ -764,6 +812,7 @@ export const architectureManifest = {
     "/api/vacations",
     "/api/vendor-profiles",
     "/api/vendor-subscriptions",
+    "/api/venn",
     "/api/views",
     "/api/weather"
   ],
@@ -787,6 +836,7 @@ export const architectureManifest = {
     "airtable_writeback_guard",
     "assemblages",
     "attachments",
+    "audit_findings",
     "automation_deferred_candidates",
     "automation_logs",
     "automation_rule_fires",
@@ -797,6 +847,7 @@ export const architectureManifest = {
     "bank_import_batches",
     "bank_proposals",
     "bank_rules",
+    "bank_statement_uploads",
     "bank_transactions",
     "base_connector_configs",
     "base_interaction_attachments",
@@ -820,6 +871,7 @@ export const architectureManifest = {
     "custom_fields",
     "customer_onboarding_responses",
     "customer_tech_info_responses",
+    "deferred_deposit_corrections",
     "detail_field_configs",
     "digikey_orders",
     "discovery_form_schema",
@@ -838,6 +890,7 @@ export const architectureManifest = {
     "fiscal_anomalies",
     "fx_rates",
     "gmail_sync_state",
+    "greenhouse_leads",
     "hubspot_push_failures",
     "instagram_dm_threads",
     "instagram_prospect_events",
@@ -858,6 +911,8 @@ export const architectureManifest = {
     "orders",
     "paie_items",
     "paies",
+    "password_resets",
+    "payment_cards",
     "payment_schedule_deferrals",
     "payments",
     "pending_invoices",
@@ -872,6 +927,7 @@ export const architectureManifest = {
     "purchase_order_numbers",
     "purchases",
     "qb_attachments",
+    "qb_journal_sequences",
     "qualification_calls",
     "rachat_detect_failures",
     "rd_month_hours",
@@ -942,6 +998,8 @@ export const architectureManifest = {
     "hubspot",
     "plaid",
     "quickbooks",
-    "ups"
+    "quickbooksJournalNumber.test",
+    "ups",
+    "venn"
   ]
 }

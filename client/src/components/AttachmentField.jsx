@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef, useState } from 'react'
-import { Paperclip, Plus, X } from 'lucide-react'
+import { Plus, X } from 'lucide-react'
 import api from '../lib/api.js'
+import AttachmentPreview, { attachmentKind } from './AttachmentPreview.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import {
   parseAttachments, attachmentFileUrl, isImageAttachment, formatFileSize,
@@ -23,23 +24,32 @@ export function AttachmentField({ field, recordId, value, onChange, readOnly = f
   const [dragging, setDragging] = useState(false)
   // La liste vient de la valeur de la cellule ; l'état local ne sert qu'entre
   // deux réponses serveur (la fiche n'a pas toujours de quoi se re-rendre).
+  // Il est mémorisé avec le contexte (champ + fiche) et la valeur qu'il
+  // recouvre : dès que l'un des deux change, la valeur reçue reprend la main.
+  const ctx = `${field?.id ?? ''}:${recordId ?? ''}`
+  const latest = useRef({ ctx, value })
+  latest.current = { ctx, value }
   const [local, setLocal] = useState(null)
   const fromValue = useMemo(() => parseAttachments(value), [value])
-  const files = local ?? fromValue
+  const files = local && local.ctx === ctx && local.base === value ? local.files : fromValue
   const disabled = readOnly || !field?.id || !recordId
 
-  const publish = useCallback((next) => {
-    setLocal(next)
+  // Une réponse arrivée après un changement de fiche/champ est ignorée : elle
+  // décrirait les fichiers d'un autre enregistrement.
+  const publish = useCallback((reqCtx, next) => {
+    if (latest.current.ctx !== reqCtx) return
+    setLocal({ ctx: reqCtx, base: latest.current.value, files: next })
     onChange?.(next.length ? JSON.stringify(next) : null)
   }, [onChange])
 
   async function addFiles(fileList) {
     const picked = Array.from(fileList || [])
     if (!picked.length || disabled) return
+    const reqCtx = ctx
     setBusy(true)
     try {
       const r = await api.customFields.files.upload(field.id, recordId, picked)
-      publish(r.data || [])
+      publish(reqCtx, r.data || [])
     } catch (e) {
       addToast({ message: e.message || 'Échec du dépôt', type: 'error' })
     } finally {
@@ -49,10 +59,11 @@ export function AttachmentField({ field, recordId, value, onChange, readOnly = f
 
   async function removeFile(fileId) {
     if (disabled) return
+    const reqCtx = ctx
     setBusy(true)
     try {
       const r = await api.customFields.files.remove(field.id, recordId, fileId)
-      publish(r.data || [])
+      publish(reqCtx, r.data || [])
     } catch (e) {
       addToast({ message: e.message || 'Échec de la suppression', type: 'error' })
     } finally {
@@ -74,28 +85,23 @@ export function AttachmentField({ field, recordId, value, onChange, readOnly = f
         const href = attachmentFileUrl(field.id, recordId, f.id)
         const title = [f.name, formatFileSize(f.size)].filter(Boolean).join(' · ')
         return (
-          <span key={f.id} className="group relative inline-flex shrink-0">
-            {isImageAttachment(f) ? (
-              <a href={href} target="_blank" rel="noopener noreferrer" title={title} className="inline-block">
-                <img src={href} alt={f.name || ''} loading="lazy"
-                  className="h-12 w-12 rounded border border-slate-200 object-cover bg-white" />
-              </a>
-            ) : (
-              <a
-                href={href} target="_blank" rel="noopener noreferrer" title={title}
-                className="inline-flex max-w-[11rem] items-center gap-1 rounded border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600 hover:border-brand-300 hover:text-brand-700"
-              >
-                <Paperclip size={12} className="shrink-0 opacity-70" />
-                <span className="truncate">{f.name || 'fichier'}</span>
-              </a>
-            )}
+          <span key={f.id} className="group relative inline-flex shrink-0" title={title}>
+            {/* Vignette (image ou 1re page du PDF) ; un clic ouvre la modale. */}
+            <AttachmentPreview
+              url={href}
+              fileName={f.name || 'fichier'}
+              kind={isImageAttachment(f) ? 'image' : attachmentKind({ fileName: f.name, contentType: f.type })}
+              size="compact"
+              showFileName={false}
+              testId="cf-attachment-preview"
+            />
             {!disabled && (
               <button
                 type="button"
-                onClick={() => removeFile(f.id)}
+                onClick={e => { e.stopPropagation(); removeFile(f.id) }}
                 title="Retirer"
                 data-testid="cf-attachment-remove"
-                className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 shadow-sm hover:text-red-600 group-hover:flex"
+                className="absolute -right-1.5 -top-1.5 z-10 hidden h-4 w-4 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 shadow-sm hover:text-red-600 group-hover:flex"
               >
                 <X size={10} />
               </button>

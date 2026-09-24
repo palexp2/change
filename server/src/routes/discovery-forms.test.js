@@ -9,6 +9,9 @@ const app = buildTestApp({ '/api/discovery-forms': formsRouter, '/api/customer/p
 const { base, server } = await listen(app)
 after(() => closeServer(server))
 const { token } = createTestUser()
+// Colonnes dynamiques de la prod, lues par le calcul du coût expédié et la reprise Airtable.
+try { db.exec('ALTER TABLE products ADD COLUMN cout_unitaire TEXT') } catch {}
+try { db.exec('ALTER TABLE orders ADD COLUMN deleted_at TIMESTAMP') } catch {}
 async function api(method, path, body, publicRequest = false) {
   const result = await fetch(base + '/api' + path, { method, headers: { ...(!publicRequest ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
   return { status: result.status, body: await result.json() }
@@ -236,8 +239,9 @@ test('JWT : association typée, persistance, aperçu mixte et programmation dans
   const created = await api('POST', '/discovery-forms', { company_id: 'jwt-company', chief_count: 2, helper_count: 1 })
   const form = created.body
   const save = await api('POST', `/customer/post-payment/by-token/${form.public_token}/save`, {
-    is_new_site: 'new', greenhouses: [
-      { permission_level: 'chief_grower', num_fans: 2, has_roof_vents: true },
+    // Internet mobile : pas de contrôleur central à associer dans ce test.
+    is_new_site: 'new', network_access: 'mobile_controller', greenhouses: [
+      { permission_level: 'chief_grower', num_fans: 2, has_roof_vents: true, num_roof_vents: 1, roof_motor_voltage: '110', has_roof_inverter: true },
       { permission_level: 'chief_grower' },
       { permission_level: 'helper', num_fans: 2, has_roof_vents: true },
     ],
@@ -254,4 +258,40 @@ test('JWT : association typée, persistance, aperçu mixte et programmation dans
   const invalidated = await api('GET', `/discovery-forms/${form.id}/equipment-preview`)
   assert(invalidated.body.unconfigured.includes('jwt_disease_prevention'))
   assert(!invalidated.body.orderItems.some(i => i.product_id === 'jwt-prevention'))
+})
+
+
+test('équipements supplémentaires : quantités par serre, fixées par Orisha', async () => {
+  db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('additional-company', 'Additional fixture')
+  const additional = [
+    { furnaces: 1, valves: 4, rollups: 0, roofs: 0 },
+    { furnaces: 0, valves: 0, rollups: 0, roofs: 2 },
+    { furnaces: 0, valves: 0, rollups: 2, roofs: 0 },
+  ]
+  const created = await api('POST', '/discovery-forms', { company_id: 'additional-company', chief_count: 2, helper_count: 1, form_options: { additional_equipment: additional } })
+  assert.equal(created.status, 201)
+  assert.deepEqual(created.body.form_options.additional_equipment, additional)
+  const path = `/customer/post-payment/by-token/${created.body.public_token}`
+  assert.deepEqual((await api('GET', path, undefined, true)).body.response.form_options.additional_equipment, additional)
+  const greenhouses = [
+    { permission_level: 'chief_grower', has_louvers: false, has_furnaces: true, num_furnaces: 3, furnaces: Array.from({ length: 3 }, () => ({ control_wire_feet: 25 })), irrigation_zones: 8, needs_orisha_valves: true },
+    { permission_level: 'chief_grower', has_louvers: false, num_furnaces: 0, furnaces: [], irrigation_zones: 0, has_roof_vents: true, num_roof_vents: 2 },
+    { permission_level: 'helper', has_side_vents: true, num_side_vent_motors: 4 },
+  ]
+  const saved = await api('POST', path + '/save', { is_new_site: 'add_to_existing', within_central_controller_range: true, greenhouses, form_options: { additional_equipment: [] } }, true)
+  assert.deepEqual(saved.body.response.form_options.additional_equipment, additional, 'le lien public ne peut pas changer les quantités')
+  const detail = (await api('GET', `/discovery-forms/${created.body.id}`)).body
+  assert.deepEqual(detail.greenhouses, greenhouses)
+  const preview = (await api('GET', `/discovery-forms/${created.body.id}/equipment-preview`)).body
+  assert.equal(preview.greenhouses[0].slots, 11)
+  assert.equal(preview.greenhouses[0].items.find(i => i.role === 'valve').qty, 8)
+  assert.equal(preview.greenhouses[0].items.find(i => i.role === 'furnace_wire_25').qty, 1)
+  assert.equal(preview.greenhouses[2].items.find(i => i.role === 'side_vent_module').qty, 2)
+  // Les permissions ne fournissent rien : seuls les 2 toits déclarés comptent.
+  assert.ok(preview.warnings.some(w => w.code === 'roof_review' && w.greenhouse === 2 && w.message.startsWith('2 ')))
+  assert.equal((await api('POST', `/discovery-forms/${created.body.id}/create-order`)).status, 422)
+  const defaults = await api('POST', '/discovery-forms', { company_id: 'additional-company', helper_count: 1, form_options: { additional_equipment: [{ furnaces: 'x', valves: -1, rollups: 1.5, roofs: '2' }] } })
+  assert.deepEqual(defaults.body.form_options.additional_equipment, [{ furnaces: 0, valves: 0, rollups: 0, roofs: 2 }])
+  const legacy = await api('POST', '/discovery-forms', { company_id: 'additional-company', helper_count: 1, form_options: { additional_equipment: { furnaces: true } } })
+  assert.deepEqual(legacy.body.form_options.additional_equipment, [])
 })

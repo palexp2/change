@@ -1,3 +1,4 @@
+import { HR_TABLES, isHR } from '../services/dataAccess.js'
 // Fichiers d'un champ personnalisé de type « Attachement ».
 //
 // Un champ perso `type='attachment'` stocke, dans sa colonne cf_* (TEXT), un
@@ -28,6 +29,12 @@ import { uploadsPath } from '../config/uploads.js'
 
 const router = Router()
 router.use(requireAuth)
+for (const param of ['fieldId']) router.param(param, (req, res, next, id) => {
+  const field = db.prepare('SELECT erp_table FROM custom_fields WHERE id=?').get(id)
+  if (field && HR_TABLES.has(field.erp_table) && !isHR(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+})
+
 
 const UPLOADS_ROOT = uploadsPath()
 const FIELD_FILES_DIR = path.join(UPLOADS_ROOT, 'attachments', 'fields')

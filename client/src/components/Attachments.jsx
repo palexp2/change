@@ -1,15 +1,86 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Upload, FileText, Image as ImageIcon, Download, Trash2, Loader2, Paperclip } from 'lucide-react'
+import { Upload, FileText, Download, Trash2, Loader2, Paperclip } from 'lucide-react'
 import { api } from '../lib/api'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 
 import { formatBytes } from '../utils/formatters.js'
 import Spinner from './Spinner.jsx'
+import AttachmentPreview, { AttachmentPreviewModal, attachmentKind } from './AttachmentPreview.jsx'
 
-function isImage(ct, name) {
-  if (ct && ct.startsWith('image/')) return true
-  return /\.(jpe?g|png|gif|webp|heic)$/i.test(name || '')
+// URL de service du fichier. `usePrivateFile` (dans AttachmentPreview) sait
+// récupérer les chemins `/erp/api/…` avec le jeton et en faire une blob: URL —
+// on n'a donc pas à porter le token dans l'URL.
+function fileUrl(entityType, entityId, attId) {
+  return `/erp/api/attachments/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/${encodeURIComponent(attId)}/download`
+}
+
+// Une ligne de la liste : vignette du contenu (image ou 1re page du PDF) et
+// nom cliquable qui ouvre le document en modale — jamais un téléchargement
+// déguisé. Le téléchargement reste une action à part (bouton ↓).
+//
+// Les formats qu'on ne sait pas dessiner (doc, zip…) gardent l'icône
+// générique et téléchargent au clic : rien à montrer en modale, et on évite de
+// rapatrier un gros fichier juste pour afficher « aperçu indisponible ».
+function AttachmentRow({ att, entityType, entityId, onDownload, onDelete }) {
+  const [open, setOpen] = useState(false)
+  const url = fileUrl(entityType, entityId, att.id)
+  const kind = attachmentKind({ fileName: att.file_name, contentType: att.content_type })
+  const previewable = kind === 'image' || kind === 'pdf' || kind === 'sheet'
+
+  return (
+    <li className="flex items-center gap-3 py-2.5" data-testid="attachment-item">
+      {previewable ? (
+        // Boîte à taille fixe : la vignette n'apparaît qu'une fois le fichier
+        // rapatrié, la ligne ne doit pas sauter entre-temps.
+        <span className="flex-shrink-0 w-14 h-14">
+          <AttachmentPreview
+            url={url}
+            fileName={att.file_name}
+            contentType={att.content_type}
+            kind={kind}
+            size="compact"
+            showFileName={false}
+            testId="attachment-thumb"
+          />
+        </span>
+      ) : (
+        <span className="flex-shrink-0 text-slate-400">
+          <FileText size={16} />
+        </span>
+      )}
+      <div className="min-w-0 flex-1">
+        <button
+          onClick={() => (previewable ? setOpen(true) : onDownload())}
+          className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
+          title={att.file_name}
+          data-testid="attachment-name"
+        >
+          {att.file_name}
+        </button>
+        <div className="text-xs text-slate-400 mt-0.5">
+          {formatBytes(att.file_size)}
+          {att.uploaded_by_name ? ` · ${att.uploaded_by_name}` : ''}
+        </div>
+      </div>
+      <div className="flex gap-1 flex-shrink-0">
+        <button onClick={onDownload} className="text-slate-400 hover:text-brand-600 p-1" title="Télécharger">
+          <Download size={14} />
+        </button>
+        <button onClick={onDelete} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer">
+          <Trash2 size={14} />
+        </button>
+      </div>
+      {open && (
+        <AttachmentPreviewModal
+          url={url}
+          fileName={att.file_name}
+          kind={kind}
+          onClose={() => setOpen(false)}
+        />
+      )}
+    </li>
+  )
 }
 
 /**
@@ -134,32 +205,14 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
     ) : (
       <ul className="divide-y divide-slate-100" data-testid="attachment-list">
         {items.map(att => (
-          <li key={att.id} className="flex items-center gap-3 py-2.5" data-testid="attachment-item">
-            <span className="flex-shrink-0 text-slate-400">
-              {isImage(att.content_type, att.file_name) ? <ImageIcon size={16} /> : <FileText size={16} />}
-            </span>
-            <div className="min-w-0 flex-1">
-              <button
-                onClick={() => handleDownload(att)}
-                className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
-                title={att.file_name}
-              >
-                {att.file_name}
-              </button>
-              <div className="text-xs text-slate-400 mt-0.5">
-                {formatBytes(att.file_size)}
-                {att.uploaded_by_name ? ` · ${att.uploaded_by_name}` : ''}
-              </div>
-            </div>
-            <div className="flex gap-1 flex-shrink-0">
-              <button onClick={() => handleDownload(att)} className="text-slate-400 hover:text-brand-600 p-1" title="Télécharger">
-                <Download size={14} />
-              </button>
-              <button onClick={() => handleDelete(att)} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer">
-                <Trash2 size={14} />
-              </button>
-            </div>
-          </li>
+          <AttachmentRow
+            key={att.id}
+            att={att}
+            entityType={entityType}
+            entityId={entityId}
+            onDownload={() => handleDownload(att)}
+            onDelete={() => handleDelete(att)}
+          />
         ))}
       </ul>
     )

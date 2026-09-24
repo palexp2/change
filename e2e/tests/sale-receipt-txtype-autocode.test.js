@@ -1,7 +1,9 @@
-const { test, before, after } = require('node:test')
+const { test, before, after, describe } = require('node:test')
 const assert = require('node:assert/strict')
 const { chromium } = require('playwright')
-
+// Enveloppé dans describe : sous Node 18, un after() de premier niveau n'est joué
+// qu'une fois la boucle vide — un navigateur ouvert l'en empêche, le test pend.
+describe('sale-receipt-txtype-autocode', () => {
 const URL = process.env.ERP_URL || 'http://localhost:3004/erp'
 const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
@@ -73,4 +75,5 @@ test('choisir le type de transaction applique le code de taxe recommandé', asyn
     page.getByTestId('qb-fiscal-ok').waitFor({ timeout: 8000 }),
     'le bandeau « Conforme » n\'est pas apparu',
   )
+})
 })

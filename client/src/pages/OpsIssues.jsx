@@ -89,6 +89,7 @@ export default function OpsIssues() {
       {({ openCreate }) => (
         <DataTable
           table="ops_issues"
+          formulaUseColumnLabels
           manageViews
           columns={COLUMNS}
           data={issues}

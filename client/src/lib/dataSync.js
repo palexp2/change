@@ -66,7 +66,8 @@ async function doBootstrap() {
   console.log(`[dataSync] bootstrap loaded ${Object.keys(data.tables || {}).length} tables in ${ms}ms`)
   // Persiste en arrière-plan — la promesse n'est pas attendue pour ne pas
   // bloquer l'UI. Une erreur d'IDB est loggée mais n'empêche pas le fonctionnement.
-  persistSnapshot(data).catch((err) => console.warn('[dataSync] persist failed:', err.message))
+  const persist = data.tables?.employees ? clearSnapshot() : persistSnapshot(data)
+  persist.catch((err) => console.warn('[dataSync] persist failed:', err.message))
   return data
 }
 
@@ -75,6 +76,11 @@ async function hydrateFromCache() {
   try {
     const cached = await loadSnapshot()
     if (!cached) return false
+    const current = await fetchJson(`/bootstrap/delta?since=${encodeURIComponent(cached.snapshot_ts)}`)
+    if (current.columns_signature !== cached.columns_signature) {
+      await clearSnapshot()
+      return false
+    }
     resetStore()
     for (const [tableName, payload] of Object.entries(cached.tables)) {
       hydrateTable(tableName, payload, { replace: true })

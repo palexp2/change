@@ -277,7 +277,11 @@ export function AchatModal({ achat, initialType, onClose, onSaved }) {
         <textarea value={form.notes || ''} onChange={f('notes')} onBlur={isEdit ? fBlur('notes') : undefined} className="input" rows={2} />
       </div>
 
-      <LineItemsTable lines={form.lines} />
+      <LineItemsTable
+        lines={form.lines}
+        date={form.date_achat || null}
+        txnKey={achat?.id ? `qb:${achat.type}:${achat.quickbooks_id || achat.id}` : null}
+      />
 
       {achat?.id && (
         <AchatAccountingSection achat={achat} form={form} setForm={setForm} onSaved={onSaved} />
@@ -665,7 +669,7 @@ export default function AchatsFournisseurs() {
         '• Factures fournisseurs (bills) — création des nouvelles, mise à jour de celles déjà importées\n' +
         '• Dépenses — création des nouvelles, mise à jour de celles déjà importées\n\n' +
         'Les enregistrements importés depuis QuickBooks seront alignés sur les données de QuickBooks. Continuer ?',
-      confirmLabel: 'Importer depuis QB',
+      confirmLabel: 'Importer depuis QuickBooks',
       danger: false,
     })
     if (!ok) return
@@ -711,7 +715,7 @@ export default function AchatsFournisseurs() {
             <span className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">{syncResult.error}</span>
           )}
           <button onClick={handleQBImport} disabled={syncing} className="btn-secondary" data-testid="qb-import-btn">
-            {syncing ? 'Importation…' : 'Importer depuis QB'}
+            {syncing ? 'Importation…' : 'Importer depuis QuickBooks'}
           </button>
         </>
       )}

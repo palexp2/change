@@ -39,3 +39,10 @@ server/src/scripts/tmp-qb-check.js
 # Empreintes des sources du dernier déploiement — deploy.sh s'en sert pour ne
 # rebuilder/redémarrer que ce qui a changé.
 .deploy-fingerprints
+
+# Copies de build de mise au point, données de récupération, scripts jetables
+client/.dist-*/
+client/dist.before-*/
+e2e/.tmp-verify/
+server/tmp/
+server/*-tmp.mjs

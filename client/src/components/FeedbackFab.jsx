@@ -1,3 +1,5 @@
+import { hasRole } from '../../../shared/roles.mjs'
+import { useAuth } from '../lib/auth.jsx'
 import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, Globe, File, Component } from 'lucide-react'
@@ -13,14 +15,17 @@ import { useElementPicker, buildPageContext, PickerBanner } from '../lib/pageCon
 // tâche. Le placement dans la file (« au début / à la fin ») a été retiré d'ici :
 // une demande déposée à la main part à la fin, comme tout le reste.
 import { StartToggle, eveningStart } from '../lib/travauxQueue.jsx'
+import { pickDefaultModel } from '../lib/modelSwitch.js'
+import { useAutocorrect } from '../lib/useAutocorrect.js'
 
 // Modèle qui traitera la demande, choisi ici même : deux choix seulement, Opus
-// (défaut) ou Astra. Les petits modèles (Sonnet, Haiku) ne sont plus proposés —
+// ou Astra. Le défaut est décidé à l'ouverture selon la marge de quota de chaque
+// abonnement (lib/modelSwitch.js) — Astra si les quotas sont illisibles. Les petits modèles (Sonnet, Haiku) ne sont plus proposés —
 // personne ne les choisissait pour une demande écrite à la main. Le repli quota
 // s'applique ensuite comme d'habitude côté serveur.
 const MODELS = ['opus', 'codex']
 const MODEL_NAMES = { opus: 'Opus', codex: 'Astra' }
-const DEFAULT_MODEL = 'opus'
+const DEFAULT_MODEL = 'codex'
 
 // FAB discret « Modifier le système », monté dans Layout donc visible sur
 // toutes les pages. Une seule destination : la demande est déposée comme prompt
@@ -54,7 +59,11 @@ function readPersisted() {
 // de la demande. Utile sur les pages publiques montées hors Layout (formulaire
 // de découverte : /d/:token), dont la route seule — un jeton opaque — ne dit pas
 // à l'agent de quelle page il s'agit.
+const fmtSlack = v => (v == null ? '?' : `×${v.toFixed(1)}`)
+const autoTitle = p => `Auto — marge Opus ${fmtSlack(p.opus)} · Astra ${fmtSlack(p.codex)}`
+
 export function FeedbackFab({ contextRecord = '' }) {
+  const { user } = useAuth()
   const location = useLocation()
   const { addToast } = useToast()
   const [open, setOpen] = useState(() => !!readPersisted().open)
@@ -75,11 +84,15 @@ export function FeedbackFab({ contextRecord = '' }) {
   // Quand la tâche démarre : 'now' (défaut, dès qu'un poste est libre) ou 'evening'
   // — elle entre dans la file tout de suite, mais ne partira qu'à 19 h.
   const [start, setStart] = useState(() => readPersisted().start === 'evening' ? 'evening' : 'now')
-  // Modèle qui traitera la demande — Opus par défaut.
+  // Modèle qui traitera la demande — choisi automatiquement tant que
+  // l'utilisateur n'a pas cliqué lui-même sur la bascule (`modelManual`).
   const [model, setModel] = useState(() => {
     const m = readPersisted().model
     return MODELS.includes(m) ? m : DEFAULT_MODEL
   })
+  const [modelManual, setModelManual] = useState(() => !!readPersisted().modelManual)
+  // Marges qui ont fait le choix automatique (infobulle de la bascule).
+  const [autoPick, setAutoPick] = useState(null)
   // Mode « picking » : transitoire (non persisté), bandeau + surbrillance actifs.
   const [picking, setPicking] = useState(false)
   // Le picking a-t-il été (re)lancé depuis le formulaire ? → Échap y retourne.
@@ -89,13 +102,31 @@ export function FeedbackFab({ contextRecord = '' }) {
   // « Entrée » dans le même rendu).
   const sendingRef = useRef(false)
   const isQuestion = mode === 'question'
+  const textareaRef = useRef(null)
+  const autocorrect = useAutocorrect({
+    text, setText, ref: textareaRef, enabled: open,
+    fix: t => api.travaux.spellfix(t).then(r => r?.text),
+  })
 
   useEffect(() => {
     try {
-      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain, scope, model, start }))
+      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain, scope, model, modelManual, start }))
       else sessionStorage.removeItem(STORAGE_KEY)
     } catch { /* stockage indisponible (mode privé strict) — dégradation silencieuse */ }
-  }, [open, text, mode, element, chain, scope, model, start])
+  }, [open, text, mode, element, chain, scope, model, modelManual, start])
+
+  // À l'ouverture : modèle par défaut selon les quotas restants des deux abonnements.
+  useEffect(() => {
+    if (!open || modelManual) return
+    let alive = true
+    api.agent.getUsage().then(usage => {
+      if (!alive) return
+      const pick = pickDefaultModel(usage)
+      setAutoPick(pick)
+      setModel(pick.model)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [open, modelManual])
 
   // Étape « picking » — surbrillance, neutralisation des clics de la page et
   // description de l'élément choisi : lib/pageContext.jsx.
@@ -104,6 +135,26 @@ export function FeedbackFab({ contextRecord = '' }) {
     onCancel: () => { setPicking(false); if (fromFormRef.current) setOpen(true) },
   })
 
+  // Touche « M » : ouvre la fenêtre. Mêmes garde-fous que les raccourcis de
+  // navigation (Layout) : pas pendant une saisie, un scan ou avec modificateur.
+  // Décidé après la distribution de l'événement : si un autre écouteur l'a déjà
+  // consommé (frappe en mode tableur d'un DataTable), on s'abstient.
+  const isAdmin = hasRole(user, 'admin')
+  useEffect(() => {
+    if (!isAdmin || open || picking) return
+    function onKey(e) {
+      if (e.key !== 'm' && e.key !== 'M') return
+      if (e.metaKey || e.ctrlKey || e.altKey || e.repeat) return
+      const ae = document.activeElement
+      const tag = ae?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || ae?.isContentEditable) return
+      if (window.__barcodeScannerActive) return
+      setTimeout(() => { if (!e.defaultPrevented) setOpen(true) }, 0)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isAdmin, open, picking])
+
   function reset() {
     setText('')
     setMode('implement')
@@ -111,6 +162,8 @@ export function FeedbackFab({ contextRecord = '' }) {
     setChain([])
     setScope('page')
     setModel(DEFAULT_MODEL)
+    setModelManual(false)
+    setAutoPick(null)
     setStart('now')
   }
 
@@ -169,7 +222,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     // « Envoi… » une demi-seconde ou plus quand le serveur est occupé. Le
     // brouillon est mis de côté : si l'envoi échoue, la fenêtre revient telle
     // qu'elle était, rien n'est perdu.
-    const draft = { text, mode, element, chain, scope, model, start }
+    const draft = { text, mode, element, chain, scope, model, modelManual, start }
     setOpen(false)
     reset()
     try {
@@ -207,6 +260,7 @@ export function FeedbackFab({ contextRecord = '' }) {
       setChain(draft.chain)
       setScope(draft.scope)
       setModel(draft.model)
+      setModelManual(draft.modelManual)
       setStart(draft.start)
       setOpen(true)
       addToast({ message: 'Échec de l\'envoi de la suggestion', type: 'error' })
@@ -214,6 +268,8 @@ export function FeedbackFab({ contextRecord = '' }) {
       sendingRef.current = false
     }
   }
+
+  if (!isAdmin) return null
 
   return (
     <>
@@ -227,7 +283,7 @@ export function FeedbackFab({ contextRecord = '' }) {
         data-testid="feedback-fab"
         data-feedback-picker
         onClick={openForm}
-        title="Modifier le système"
+        title="Modifier le système (M)"
         aria-label="Modifier le système"
         className={`fixed bottom-5 right-5 z-[9989] w-11 h-11 rounded-full bg-brand-600 text-white shadow-lg
           items-center justify-center hover:bg-brand-700 hover:scale-105 active:scale-95
@@ -322,18 +378,37 @@ export function FeedbackFab({ contextRecord = '' }) {
                 : 'Décrivez le problème ou l\'amélioration souhaitée. L\'agent implémentera le correctif.')}
           </p>
           <textarea
+            ref={textareaRef}
             data-testid="feedback-fab-text"
             value={text}
             onChange={e => setText(e.target.value)}
+            // Entrée envoie, Maj+Entrée va à la ligne. isComposing : ne pas
+            // envoyer pendant une saisie IME (accents composés, etc.).
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) submit(e)
+            }}
             rows={5}
             autoFocus
+            spellCheck
+            lang="fr"
             className="input w-full resize-y"
           />
           {/* Sous le champ, deux réglages discrets : le modèle qui traitera la
-              demande (bascule Opus / Astra, Opus par défaut) et le moment du
+              demande (bascule Opus / Astra, défaut selon les quotas) et le moment du
               départ (tout de suite, ou programmé à 19 h — même contrôle que
               /travaux). */}
           <div className="flex justify-end items-center gap-2 -mt-2 flex-wrap">
+            {autocorrect.corrected && (
+              <button
+                type="button"
+                data-testid="feedback-autocorrect-undo"
+                onClick={autocorrect.revert}
+                title="Annuler la correction"
+                className="mr-auto text-xs text-slate-400 hover:text-slate-600"
+              >
+                Corrigé · annuler
+              </button>
+            )}
             <div
               className="inline-flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg"
               role="radiogroup"
@@ -346,7 +421,8 @@ export function FeedbackFab({ contextRecord = '' }) {
                   data-testid={`feedback-model-${m}`}
                   role="radio"
                   aria-checked={model === m}
-                  onClick={() => setModel(m)}
+                  onClick={() => { setModel(m); setModelManual(true) }}
+                  title={!modelManual && autoPick?.model === m ? autoTitle(autoPick) : undefined}
                   className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${model === m ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
                 >
                   {MODEL_NAMES[m]}

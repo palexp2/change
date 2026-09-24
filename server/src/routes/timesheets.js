@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
-import { requireAuth, isHROrAdmin } from '../middleware/auth.js'
+import { requireAuth, isHR } from '../middleware/auth.js'
 import { parseDurationToMinutes } from '../services/duration.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 
@@ -18,13 +18,13 @@ const PREF_MODES = new Set(['simple', 'detailed', 'week'])
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const MAX_WEEK_MINUTES = 7 * 24 * 60
 
-// Lundi (ISO) de la semaine contenant `dateStr`. Calcul en UTC : la chaîne
+// Dimanche de la semaine contenant `dateStr`. Calcul en UTC : la chaîne
 // n'a pas de fuseau, on ne veut pas que le serveur en invente un.
 function weekStartOf(dateStr) {
   if (!DATE_RE.test(String(dateStr || ''))) return null
   const d = new Date(dateStr + 'T00:00:00Z')
   if (Number.isNaN(d.getTime())) return null
-  d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7))
+  d.setUTCDate(d.getUTCDate() - d.getUTCDay())
   return d.toISOString().slice(0, 10)
 }
 function addDays(dateStr, n) {
@@ -37,7 +37,7 @@ function addDays(dateStr, n) {
 function resolveTargetUserId(req, requested) {
   const me = req.user
   if (!requested || requested === me.id) return me.id
-  if (isHROrAdmin(me)) return requested
+  if (isHR(me)) return requested
   return null // not allowed
 }
 
@@ -49,7 +49,7 @@ function editLockError(day, user) {
   if (day.status === 'approved') {
     return 'Feuille approuvée et verrouillée. Demandez à un gestionnaire de la rouvrir avant de la modifier.'
   }
-  if (day.status === 'submitted' && !isHROrAdmin(user)) {
+  if (day.status === 'submitted' && !isHR(user)) {
     return 'Feuille soumise et verrouillée. Annulez la soumission pour la modifier.'
   }
   return null
@@ -152,7 +152,7 @@ router.patch('/preferences', (req, res) => {
 })
 
 // ── Mode « semaine » : un seul chiffre pour la semaine complète ──────────────
-// Une ligne par (employé, lundi ISO) dans timesheet_weeks. Aucune journée n'est
+// Une ligne par (employé, dimanche) dans timesheet_weeks. Aucune journée n'est
 // créée : c'est ce qui rend le total non ambigu à la paie.
 
 function loadWeek(userId, weekStart) {
@@ -197,7 +197,7 @@ router.get('/week', (req, res) => {
   res.json(loadWeek(target, weekStart))
 })
 
-// GET /api/timesheets/weeks?user_id=X&from=&to= — bornes sur le lundi de la semaine
+// GET /api/timesheets/weeks?user_id=X&from=&to= — bornes sur le dimanche de la semaine
 router.get('/weeks', (req, res) => {
   const target = resolveTargetUserId(req, req.query.user_id)
   if (!target) return res.status(403).json({ error: 'Accès refusé' })
@@ -364,7 +364,7 @@ router.patch('/day/:id/status', (req, res) => {
     return res.status(409).json({ error: `Transition ${from} → ${status} non autorisée` })
   }
 
-  const hr = isHROrAdmin(req.user)
+  const hr = isHR(req.user)
   // Séparation des tâches : seul un gestionnaire RH approuve, rejette, ou rouvre une feuille approuvée.
   if (status === 'approved' || status === 'rejected') {
     if (!hr) return res.status(403).json({ error: 'Seul un gestionnaire RH peut approuver ou rejeter une feuille' })

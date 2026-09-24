@@ -378,7 +378,7 @@ export default function AirtableConfig({ syncConfigs = {}, syncStatus, onRefresh
               className="btn-secondary btn-sm py-1"
             >
               <RefreshCw size={12} className={isRunning ? 'animate-spin' : ''} />
-              {isRunning ? 'En cours…' : 'Sync tout'}
+              {isRunning ? 'En cours…' : 'Tout synchroniser'}
             </button>
           </div>
         )

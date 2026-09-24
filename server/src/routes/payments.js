@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -12,6 +13,7 @@ import { buildPartialUpdate } from '../utils/partialUpdate.js'
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { parsePage } from '../utils/pagination.js'
 import { usdCadRateLookup } from '../services/fx.js'
+import { depositCreditAccount } from '../services/paymentDepositLink.js'
 
 // Relation de lecture des paiements : la VUE `payments_v` si elle existe (elle
 // expose en plus les champs custom virtuels — formule/lookup/rollup), sinon la
@@ -310,7 +312,11 @@ router.get('/facture/:factureId', (req, res) => {
            amount_cad, exchange_rate, stripe_balance_tx_id, stripe_charge_id,
            stripe_refund_id, qb_payment_id, qb_journal_entry_id, qb_deposit_id,
            qb_skipped, qb_skip_reason, qb_credit_account_id, qb_credit_account_name, notes,
-           created_by, created_at, updated_at
+           created_by, created_at, updated_at,
+           COALESCE(
+             (SELECT NULLIF(TRIM(u.name), '') FROM users u WHERE u.id = payments.created_by),
+             CASE WHEN created_by IS NULL AND method = 'stripe' THEN 'Intégration Stripe' END
+           ) AS created_by_name
     FROM payments
     WHERE facture_id = ?
     ORDER BY received_at, created_at
@@ -433,6 +439,7 @@ router.get('/facture/:factureId', (req, res) => {
         notes: 'Paiement Stripe — JE en QB posée au payout',
         synthetic: true,
         created_by: null,
+        created_by_name: 'Intégration Stripe',
         created_at: f.paid_at,
         updated_at: f.paid_at,
       })
@@ -601,6 +608,46 @@ router.post('/:id/retry-qb', async (req, res) => {
   } catch (err) {
     res.status(502).json({ error: err.message })
   }
+})
+
+// Change uniquement le rattachement ERP ; aucune écriture QuickBooks n'est modifiée.
+router.patch('/:id/deposit-link', async (req, res) => {
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
+  const p = db.prepare('SELECT * FROM payments WHERE id = ?').get(req.params.id)
+  if (!p) return res.status(404).json({ error: 'Paiement introuvable' })
+  if (p.method === 'stripe' || p.direction !== 'in' || p.qb_journal_entry_id || p.qb_payment_id) {
+    return res.status(409).json({ error: 'Ce lien comptable ne peut pas être modifié comme un dépôt individuel.' })
+  }
+  const id = req.body.qb_deposit_id
+  if (id !== null && (typeof id !== 'string' || !/^\d+$/.test(id))) {
+    return res.status(400).json({ error: 'Identifiant de dépôt QuickBooks invalide' })
+  }
+  if (req.body.previous_deposit_id !== (p.qb_deposit_id || null)) {
+    return res.status(409).json({ error: 'Le lien a changé. Rechargez la fiche avant de réessayer.' })
+  }
+  let account = null
+  if (id !== null) {
+    try {
+      const { Deposit: deposit } = await qbGet(`/deposit/${encodeURIComponent(id)}`)
+      if (!deposit || String(deposit.Id) !== id) return res.status(404).json({ error: 'Dépôt QuickBooks introuvable' })
+      if (deposit.CurrencyRef?.value && deposit.CurrencyRef.value !== p.currency) {
+        return res.status(400).json({ error: 'La devise du dépôt ne correspond pas au paiement.' })
+      }
+      const company = db.prepare(`SELECT c.quickbooks_customer_id, c.quickbooks_customer_id_usd
+        FROM factures f JOIN companies c ON c.id = f.company_id WHERE f.id = ?`).get(p.facture_id)
+      const customerIds = [company?.quickbooks_customer_id, company?.quickbooks_customer_id_usd].filter(Boolean).map(String)
+      account = depositCreditAccount(deposit, customerIds)
+    } catch (err) {
+      return res.status(err.status === 400 ? 400 : 502).json({ error: err.message })
+    }
+  }
+  const result = db.prepare(`UPDATE payments SET qb_deposit_id = ?, qb_credit_account_id = ?,
+    qb_credit_account_name = ?, qb_skipped = 1, qb_skip_reason = 'saisi_manuellement_qb'
+    WHERE id = ? AND qb_deposit_id IS ?`).run(id, account?.value || null, account?.name || null, p.id, p.qb_deposit_id || null)
+  if (!result.changes) return res.status(409).json({ error: 'Le lien a changé. Rechargez la fiche avant de réessayer.' })
+  logSync('quickbooks', 'manual', { status: 'success', modified: 1 })
+  emitFacturePaymentsChanged(p.facture_id, req.user.id)
+  res.json({ ok: true })
 })
 
 // GET /api/payments/:id/qb-link-suggestions — propose les opérations QB
@@ -802,7 +849,7 @@ router.get('/:id/qb-credit-account', async (req, res) => {
 // DELETE /api/payments/:id — supprime une ligne payments (admin only, à utiliser
 // avec prudence : ne supprime PAS l'écriture QB associée, à annuler manuellement).
 router.delete('/:id', (req, res) => {
-  if (req.user?.role !== 'admin') return res.status(403).json({ error: 'Admin requis' })
+  if (!hasRole(req.user, 'admin')) return res.status(403).json({ error: 'Admin requis' })
   const p = db.prepare(
     'SELECT id, facture_id, qb_deposit_id, qb_journal_entry_id, qb_payment_id FROM payments WHERE id = ?'
   ).get(req.params.id)

@@ -5,6 +5,7 @@ import api from '../lib/api.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
 import RetourActionsSection from '../components/RetourActionsSection.jsx'
+import RetourReceptionSection from '../components/RetourReceptionSection.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -191,21 +192,24 @@ export default function RetourDetail({ recordId: id }) {
     }
   )
 
+  // Patch ciblé d'un article déjà affiché (réception au pistolet, édition en
+  // ligne) : la ligne porte des colonnes jointes que les réponses ne
+  // connaissent pas — fusionner en bloc les effacerait.
+  const patchItem = useCallback((patch) => {
+    setRetour(r => (r
+      ? { ...r, items: (r.items || []).map(it => (it.id === patch.id ? { ...it, ...patch } : it)) }
+      : r))
+  }, [setRetour])
+
   // Édition en ligne d'un article (mode tableur du tableau ci-dessous).
   const saveItemField = useCallback(async (row, col, value) => {
     try {
       const updated = await api.retours.updateItem(row.id, { [col.field]: value })
-      // Patch ciblé : la ligne affichée porte des colonnes jointes (n° de série,
-      // nom du produit…) que la réponse ne connaît pas — les fusionner en bloc
-      // les effacerait.
-      const patched = { [col.field]: updated?.[col.field] ?? value }
-      setRetour(r => (r
-        ? { ...r, items: (r.items || []).map(it => (it.id === row.id ? { ...it, ...patched } : it)) }
-        : r))
+      patchItem({ id: row.id, [col.field]: updated?.[col.field] ?? value })
     } catch (e) {
       addToast({ message: e.message, type: 'error' })
     }
-  }, [addToast, setRetour])
+  }, [addToast, patchItem])
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: retour, notFound: 'Retour introuvable.' })
   if (pending) return pending
@@ -238,6 +242,10 @@ export default function RetourDetail({ recordId: id }) {
         <div className="card p-5 mb-4">
           <RetourActionsSection retour={retour} onDone={load} />
         </div>
+
+        {/* Réception : qui reçoit, quand, et le pistolet. Juste au-dessus des
+            articles — c'est sur eux que le scan pose la date et la personne. */}
+        <RetourReceptionSection retour={retour} onItemReceived={patchItem} />
 
         {/* Articles — DataTable (vues, tri, filtres, groupement, side-peek sur
             la fiche de l'article). Les articles NAISSENT du miroir Airtable

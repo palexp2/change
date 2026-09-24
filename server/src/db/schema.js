@@ -3,6 +3,14 @@ import db from './database.js';
 import { newRecordId } from '../utils/recordId.js';
 
 export function initSchema() {
+  // Compteur partagé par toutes les connexions à une même entreprise QB.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS qb_journal_sequences (
+      realm_id TEXT PRIMARY KEY,
+      last_number INTEGER NOT NULL CHECK (last_number BETWEEN 1 AND 99999999999999)
+    );
+  `)
+
   // Les numéros réservés restent enregistrés, même si le brouillon est fermé.
   db.exec(`
     CREATE TABLE IF NOT EXISTS purchase_order_numbers (
@@ -121,7 +129,6 @@ export function initSchema() {
       type TEXT NOT NULL CHECK(type IN ('in','out','adjustment')),
       qty INTEGER NOT NULL,
       reason TEXT,
-      reference_id TEXT,
       user_id TEXT REFERENCES users(id),
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
@@ -754,6 +761,18 @@ export function initSchema() {
     -- Distinct de change_log (rétention 48h, sans utilisateur, dédié au cache
     -- client) : persistant et axé sur l'attribution utilisateur, à l'image du
     -- patron éprouvé sale_receipt_events mais transverse à toutes les entités.
+    -- Réinitialisation de mot de passe : jeton à usage unique envoyé par
+    -- courriel. Seul le hachage du jeton est stocké (le lien en clair ne vit
+    -- que dans le courriel), et une demande neuve invalide les précédentes.
+    CREATE TABLE IF NOT EXISTS password_resets (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      token_hash TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      used_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+
     CREATE TABLE IF NOT EXISTS activity_log (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       user_id TEXT REFERENCES users(id),
@@ -768,6 +787,8 @@ export function initSchema() {
   // Create indexes for performance
   const indexes = [
     'CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)',
+    'CREATE INDEX IF NOT EXISTS idx_password_resets_token ON password_resets(token_hash)',
+    'CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets(user_id)',
     'CREATE INDEX IF NOT EXISTS idx_sale_receipt_events_receipt ON sale_receipt_events(receipt_id, created_at)',
     'CREATE INDEX IF NOT EXISTS idx_activity_log_created_at ON activity_log(created_at DESC)',
     'CREATE INDEX IF NOT EXISTS idx_activity_log_entity ON activity_log(entity_type, entity_id)',
@@ -946,6 +967,7 @@ export function initSchema() {
     // passées" + bouton "Utiliser comme modèle"). Ids QuickBooks.
     'ALTER TABLE sale_receipts ADD COLUMN expense_account_id TEXT',
     'ALTER TABLE sale_receipts ADD COLUMN payment_account_id TEXT',
+    'ALTER TABLE sale_receipts ADD COLUMN card_last4 TEXT',
     'ALTER TABLE sale_receipts ADD COLUMN tax_code_id TEXT',
     'ALTER TABLE sale_receipts ADD COLUMN vendor_id TEXT',
     // Connecteur Amazon Business : ID de facture Amazon (Reconciliation/Document API).
@@ -1990,11 +2012,7 @@ export function initSchema() {
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_installation_en_local TEXT') } catch {}
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_fr_local TEXT') } catch {}
   try { db.exec('ALTER TABLE products ADD COLUMN lien_pdf_remplacement_en_local TEXT') } catch {}
-  // Codes-barres additionnels d'une pièce (UPC/EAN/ASIN du fournisseur,
-  // étiquette du fabricant…), séparés par des virgules. Le scan d'une commande
-  // les accepte au même titre que le SKU : beaucoup d'articles n'ont que
-  // l'étiquette du fournisseur collée dessus. Cf. utils/scanCodes.js.
-  try { db.exec('ALTER TABLE products ADD COLUMN scan_codes TEXT') } catch {}
+  // « Codes-barres » (scan_codes) : droppée par la migration 085 — ne pas la recréer ici.
   // Étape 5 « Priorité d'assemblage » — champs produits finis synchronisés depuis Airtable (one-way Airtable → ERP)
   try { db.exec('ALTER TABLE products ADD COLUMN assembly_status REAL') } catch {}            // « Status d'assemblage » (%)
   try { db.exec('ALTER TABLE products ADD COLUMN finished_min_stock INTEGER') } catch {}      // « Seuil min. produits fini »
@@ -2241,6 +2259,13 @@ export function initSchema() {
     db.exec('PRAGMA foreign_keys = ON')
     console.log('✅ Users: CHECK constraint on role removed (rh now accepted)')
   }
+
+  // Preserve existing access once; subsequent grants are independent.
+  try { db.exec('ALTER TABLE users ADD COLUMN roles TEXT') } catch {}
+  db.exec(`UPDATE users SET roles = CASE role
+    WHEN 'admin' THEN '["user","admin","rh"]'
+    WHEN 'rh' THEN '["user","rh"]' ELSE '["user"]' END
+    WHERE roles IS NULL`)
 
   // Installation follow-up email — 21 days after first shipment. Set once per company
   // when the email is sent successfully; used as the idempotency guard.
@@ -3581,6 +3606,32 @@ export function initSchema() {
     console.error('❌ Migration vendor_directory → vendor_profiles:', e.message)
   }
 
+  // Cartes de paiement connues — cartes de l'entreprise ET cartes personnelles des
+  // employés qui avancent parfois une dépense. Les 4 derniers chiffres imprimés sur
+  // une facture suffisent à savoir QUEL compte QuickBooks a réellement payé : une
+  // carte d'entreprise pointe sur son compte de carte, une carte personnelle sur le
+  // compte « <Nom> (rembourser à) ». C'est ce qui évite de comptabiliser sur la
+  // Mastercard de la compagnie une dépense qu'un employé doit se faire rembourser.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS payment_cards (
+      id TEXT PRIMARY KEY,
+      holder TEXT NOT NULL,
+      card_type TEXT,
+      last4 TEXT NOT NULL,
+      ownership TEXT NOT NULL DEFAULT 'personal',
+      qb_account_id TEXT,
+      qb_account_name TEXT,
+      currency TEXT,
+      active INTEGER DEFAULT 1,
+      notes TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_cards_last4 ON payment_cards(last4);
+  `)
+  seedPaymentCards()
+
   // Anomalies fiscales relevées par le mentor comptable dans l'onglet
   // « Fournisseurs_TPS_TVQ_Anomalies » du Google Sheet « Sommaire_Statut fiscal des
   // taxes » (voir services/fiscalAnomaliesSheet.js). Miroir local de l'onglet : une
@@ -3706,6 +3757,11 @@ export function initSchema() {
   // Provenance de la saisie : NULL = manuelle (page Trésorerie), 'solde_sheet' =
   // importée du Google Sheet « Maintien du solde disponible BNC » (sync auto).
   try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN source TEXT`) } catch {}
+  // Dernière fois que la banque a CONFIRMÉ ce montant. Un solde inchangé n'est
+  // pas ré-enregistré (sinon l'historique des saisies se noie sous les lectures
+  // automatiques) : sans cette colonne, la page affichait l'âge de la saisie —
+  // « il y a 6 h » — alors que le compte venait d'être relu.
+  try { db.exec(`ALTER TABLE treasury_balances ADD COLUMN confirmed_at TEXT`) } catch {}
 
   // treasury_snapshots : photo de la projection à chaque exécution (cron
   // quotidien + saisie de solde). Sans elle, impossible de savoir après coup ce
@@ -3820,6 +3876,14 @@ export function initSchema() {
   // l'id + le type pour offrir le lien vers la transaction dans QB.
   try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_txn_id TEXT`) } catch {}
   try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_txn_type TEXT`) } catch {}
+  // Écriture de PAIEMENT créée PAR l'ERP dans QuickBooks quand la facture est
+  // réglée depuis /paiements-emis (BillPayment). À ne pas confondre avec
+  // qb_txn_id ci-dessus, qui est l'écriture TROUVÉE dans QuickBooks pour
+  // prouver le passage à la banque : ici c'est nous qui écrivons.
+  // `pushed_at` sert de jeton : posé AVANT l'appel, libéré si QuickBooks refuse.
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_billpayment_id TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_billpayment_pushed_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE treasury_payments ADD COLUMN qb_billpayment_error TEXT`) } catch {}
   db.exec(`CREATE INDEX IF NOT EXISTS idx_treasury_pmt_date ON treasury_payments(payment_date)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_treasury_pmt_achat ON treasury_payments(achat_id)`)
   // Clé naturelle d'import (onglet Pmt_Suivi) : ré-importer ne duplique pas.
@@ -3943,6 +4007,10 @@ export function initSchema() {
   // (évite un JOIN sur le JSON metadata à chaque appel). NULL = pas branché.
   try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN plaid_account_id TEXT`) } catch {}
   try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN plaid_item_id TEXT`) } catch {}
+  // Pont Venn : identifiant du compte chez Venn, posé depuis /connecteurs.
+  // NULL = compte non branché. Venn est une source distincte de TRX_Orisha —
+  // elle n'alimente QUE ses propres comptes (Venn CAD, Venn USD).
+  try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN venn_account_id TEXT`) } catch {}
   // « Autres détails » du relevé BNC : nature réelle de la transaction (le
   // bénéficiaire, p. ex. « NOVO EXPRESS ») alors que description reste
   // générique (« PMTS ENTREPRISES »). Affiché en premier côté UI.
@@ -3980,6 +4048,9 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN check_number TEXT`) } catch {}
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN orig_currency TEXT`) } catch {}
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN orig_amount REAL`) } catch {}
+  // Dernier commentaire sur lequel Boréal et TRX_Orisha étaient d'accord : c'est
+  // lui qui dit lequel des deux a changé depuis (synchro dans les deux sens).
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN comment_sheet_base TEXT`) } catch {}
 
   // ── Règles bancaires ──────────────────────────────────────────────────────
   // Ce que Charles tient déjà dans QuickBooks (Banque → Règles), rapatrié :
@@ -4024,6 +4095,19 @@ export function initSchema() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_rules_live ON bank_rules(active, priority) WHERE deleted_at IS NULL`)
   // Quelle règle a rempli la ligne : on le voit, et on peut le défaire.
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN applied_rule_id TEXT REFERENCES bank_rules(id)`) } catch {}
+  // « X » : la ligne attend la relecture de Michel. Le classeur TRX_Orisha a
+  // déjà cette colonne sur chaque onglet (légende « Trx non révisée (Mike) ») ;
+  // la marque se pose maintenant dans Boréal et se recopie au fichier.
+  // `review_flag_at` dit que Boréal a pris la main : tant qu'il est vide, un X
+  // déjà écrit dans le fichier est repris ici.
+  // Intérêts portés par une ligne de marge de crédit : ils ne bougent pas le
+  // solde utilisé, ils sortent du compte courant avec le capital.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN interest_cad REAL`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN review_flag INTEGER DEFAULT 0`) } catch {}
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN review_flag_at TEXT`) } catch {}
+  // Signet de relecture : la ligne où Michel s'est arrêté, une par compte
+  // (le ruban orange du classeur).
+  try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN bookmark_txn_id TEXT`) } catch {}
   // Une vraie règle QuickBooks porte PLUSIEURS conditions reliées par ET ou par
   // OU (« FRAIS FORFAIT » OU « PACKAGE FEE » OU « TRANS. EXCEDENT. »…), et des
   // seuils de montant SIGNÉS (« moins de −1 000 » = un débit de plus de 1 000).
@@ -4051,6 +4135,74 @@ export function initSchema() {
       created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     )
   `)
+
+  // ── Dépôt de relevés (PDF, export, capture d'écran) ────────────────────────
+  // Un fichier déposé = une ligne, qui porte tout ce que la lecture a produit
+  // AVANT toute écriture dans bank_transactions : le compte deviné (toujours
+  // modifiable), la période, les soldes imprimés et les lignes extraites. Rien
+  // n'entre en base tant qu'un humain n'a pas confirmé l'aperçu.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bank_statement_uploads (
+      id TEXT PRIMARY KEY,
+      file_path TEXT NOT NULL,
+      original_name TEXT,
+      mime TEXT,
+      page_count INTEGER,
+      source TEXT,                     -- pdf_texte | pdf_image | image | tableur
+      account_id TEXT REFERENCES bank_accounts(id),
+      detect_confidence REAL,
+      detect_evidence TEXT,            -- JSON [{ label, detail }]
+      institution TEXT,
+      account_number_masked TEXT,
+      currency TEXT,
+      period_start TEXT,
+      period_end TEXT,
+      opening_balance REAL,
+      closing_balance REAL,
+      balance_check REAL,              -- écart ouverture + Σ mouvements - fermeture
+      balance_method TEXT,             -- soldes | chaine | aucun
+      balance_ok INTEGER,              -- 1 équilibré, 0 non, NULL non vérifiable
+      rows_json TEXT,                  -- lignes normalisées (amount signé + amount_raw)
+      invertible INTEGER DEFAULT 0,    -- 1 = colonne « Montant » unique : le signe dépend du compte
+      status TEXT NOT NULL DEFAULT 'en_analyse'
+        CHECK(status IN ('en_analyse','pret','importe','erreur')),
+      error TEXT,
+      import_batch_id TEXT,
+      inserted_count INTEGER,
+      duplicate_count INTEGER,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_bank_stmt_upload_status ON bank_statement_uploads(status, created_at)')
+  // Colonnes arrivées après la première création de la table (un CREATE IF NOT
+  // EXISTS ne rattrape rien) : le contrôle d'équilibre et sa méthode.
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN balance_method TEXT') } catch {}
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN balance_ok INTEGER') } catch {}
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN invertible INTEGER DEFAULT 0') } catch {}
+  // Jetons de reconnaissance d'un compte sur un relevé (numéro masqué, intitulé
+  // imprimé) : appris quand l'humain corrige le compte deviné.
+  try { db.exec('ALTER TABLE bank_accounts ADD COLUMN statement_hints TEXT') } catch {}
+
+  // Corrections envoyées depuis « Revenus perçus d'avance » : une libération du
+  // passif 23900 passée deux fois, ou jamais passée. La trace vit ici, l'écriture
+  // dans QuickBooks.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS deferred_deposit_corrections (
+      id         TEXT PRIMARY KEY,
+      group_key  TEXT NOT NULL,
+      amount_cad REAL NOT NULL DEFAULT 0,
+      memo       TEXT,
+      txn_date   TEXT,
+      lines      TEXT NOT NULL DEFAULT '[]',
+      qb_je_id   TEXT,
+      pushed_at  TEXT,
+      created_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_defdep_corr_group ON deferred_deposit_corrections(group_key)')
 
   // ── Comptes prépayés ───────────────────────────────────────────────────────
   // Volet 1 — soldes fournisseurs prépayés (remplace le fichier Twilio_Suivi) :
@@ -4534,6 +4686,40 @@ export function initSchema() {
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_anomalies_fp ON transaction_anomalies(fingerprint)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_anomalies_entity ON transaction_anomalies(entity_type, entity_id, status)`) } catch {}
 
+  // ── Contrôles comptables (page /comptabilite, carte « Contrôles ») ─────────
+  //
+  // Les vérifications du rapprochement bancaire se recalculaient à chaque
+  // passage et disparaissaient : pas d'empreinte, pas de « ce n'en est pas un »,
+  // pas d'historique. Cette table leur donne la mémoire que les anomalies de
+  // reçus ont déjà (même modèle : upsert par empreinte, une écartée n'est
+  // jamais recréée, une qui n'est plus détectée passe à « resolved »).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS audit_findings (
+      id TEXT PRIMARY KEY,
+      check_id TEXT NOT NULL,
+      domain TEXT NOT NULL DEFAULT 'banque',
+      severity TEXT NOT NULL CHECK(severity IN ('high','medium','low')),
+      entity_type TEXT,
+      entity_id TEXT,
+      fingerprint TEXT NOT NULL,
+      title TEXT NOT NULL,
+      explanation TEXT,
+      data TEXT,
+      status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','dismissed','resolved')),
+      dismissed_by TEXT REFERENCES users(id),
+      dismissed_reason TEXT,
+      dismissed_at TEXT,
+      resolved_at TEXT,
+      first_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      last_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_findings_fp ON audit_findings(fingerprint)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_findings_status ON audit_findings(status, severity)`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_findings_check ON audit_findings(check_id, status)`) } catch {}
+
   // ── Travaux (page /travaux) ────────────────────────────────────────────────
   // Quatre listes distinctes, volontairement séparées :
   //   work_prompts      — la file de prompts de l'utilisateur, exécutée une à la
@@ -4670,6 +4856,12 @@ export function initSchema() {
     )
   `)
   try { db.exec(`ALTER TABLE work_suggestions ADD COLUMN kind TEXT NOT NULL DEFAULT 'chantier'`) } catch {}
+  try { db.exec(`ALTER TABLE work_suggestions ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy'`) } catch {}
+  // Reconnaître les propositions de la première version de la revue, avant
+  // l'ajout de la provenance explicite (ses deux marqueurs sont déterministes).
+  db.exec(`UPDATE work_suggestions SET source='app_review'
+    WHERE source='legacy' AND rationale LIKE 'Revue statique · %'
+    AND prompt LIKE 'Problème signalé par une revue statique (à confirmer avant modification) : %'`)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_work_suggestions_fp ON work_suggestions(fingerprint)`) } catch {}
 
   // Fil de discussion d'une suggestion : avant de la mettre dans sa file (ou de la
@@ -5136,6 +5328,14 @@ export function initSchema() {
     }
   } catch {}
 
+  // Pièces : l'ajustement manuel d'inventaire se saisit dans la fiche et part
+  // vers Airtable (qui recalcule « Quantité en inventaire »). INSERT OR IGNORE :
+  // un réglage fait dans /champs/products reste prioritaire.
+  try {
+    const dir = db.prepare(`INSERT OR IGNORE INTO airtable_field_directions (module, field_key, direction) VALUES ('pieces', ?, 'both')`)
+    for (const col of ['ajustement_manuel', 'raison_de_l_ajustement_manuel']) dir.run(`dyn:${col}`)
+  } catch {}
+
 
   // ── Collecte automatique des factures sur les portails fournisseurs ────────
   // Certains fournisseurs (Amazon, Wix) n'envoient aucune facture par courriel
@@ -5242,6 +5442,11 @@ export function initSchema() {
   // droppée depuis (migration 035), le signal n'existe plus côté achats. La date
   // reste extraite et affichée sur le reçu.
   try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN order_date TEXT`) } catch {}
+  // Date LUE SUR LE DOCUMENT. La date du reçu (`receipt_date`) est celle qui
+  // compte en comptabilité : dès qu'une ligne de relevé est appariée, c'est la
+  // date du passage à la banque qui s'y installe (règle du 2026-09-15). On garde
+  // ici celle que le document imprime, pour ne rien perdre.
+  try { db.exec(`ALTER TABLE sale_receipts ADD COLUMN document_date TEXT`) } catch {}
 
   // Une ligne = « cette transaction bancaire attend sa facture ». Sert à trois
   // choses : ne pas re-balayer chaque nuit les mêmes centaines de lignes, rendre
@@ -5577,4 +5782,77 @@ export function seedSellableProducts() {
   })
   run()
   console.log(`✅ Sellable products seeded`)
+}
+
+
+// Cartes connues au 2026-09-19 (liste fournie par Charles). Amorçage idempotent :
+// la clé est le numéro à 4 chiffres, une carte déjà présente n'est jamais réécrite —
+// les corrections faites dans /cartes survivent à un redémarrage.
+const PAYMENT_CARD_SEED = [
+  // Cartes de l'entreprise — le compte QB est le compte de la carte elle-même.
+  { last4: '4891', holder: 'Orisha', card_type: 'Visa',       ownership: 'company',  currency: 'USD', qb_account_id: '239',        qb_account_name: 'VISA Desjardins USD' },
+  { last4: '5004', holder: 'Orisha', card_type: 'Visa',       ownership: 'company',  currency: 'CAD', qb_account_id: '242',        qb_account_name: 'VISA Desjardins CAD' },
+  { last4: '5012', holder: 'Orisha', card_type: 'Visa',       ownership: 'company',  currency: 'CAD', qb_account_id: '242',        qb_account_name: 'VISA Desjardins CAD' },
+  { last4: '1427', holder: 'Orisha (Venn)', card_type: 'Mastercard', ownership: 'company', currency: 'USD', qb_account_id: '256',  qb_account_name: 'Venn USD' },
+  { last4: '4815', holder: 'Pierre-Alexandre Papillon', card_type: 'Mastercard', ownership: 'company', currency: 'CAD', qb_account_id: '66', qb_account_name: 'Mastercard Banque Nationale' },
+  { last4: '4823', holder: 'Guillaume Lambert',         card_type: 'Mastercard', ownership: 'company', currency: 'CAD', qb_account_id: '66', qb_account_name: 'Mastercard Banque Nationale' },
+  // Cartes personnelles — le compte QB est le compte « rembourser à » du porteur.
+  { last4: '6015', holder: 'Charles Joachim', card_type: 'Visa', qb_account_id: '164', qb_account_name: 'Charles Joachim (rembourser à)' },
+  { last4: '0339', holder: 'Charles Joachim', card_type: 'Visa', qb_account_id: '164', qb_account_name: 'Charles Joachim (rembourser à)' },
+  { last4: '4053', holder: 'Philippe Chabot', card_type: 'Visa', qb_account_id: '192', qb_account_name: 'Philippe Chabot (rembourser à)' },
+  { last4: '5173', holder: 'Philippe Chabot', card_type: 'Interac', qb_account_id: '192', qb_account_name: 'Philippe Chabot (rembourser à)' },
+  { last4: '8012', holder: 'Pierre-Alexandre Papillon', card_type: 'Mastercard', qb_account_id: '119', qb_account_name: 'Pierre-Alexandre Papillon (rembourser à)' },
+  { last4: '9989', holder: 'Pierre-Alexandre Papillon', card_type: 'Mastercard', qb_account_id: '119', qb_account_name: 'Pierre-Alexandre Papillon (rembourser à)' },
+  { last4: '3016', holder: 'Guillaume Lambert', card_type: 'Mastercard', qb_account_id: '120', qb_account_name: 'Guillaume Lambert (rembourser à)' },
+  { last4: '7885', holder: 'Guillaume Lambert', card_type: 'Mastercard', qb_account_id: '120', qb_account_name: 'Guillaume Lambert (rembourser à)' },
+  { last4: '1130', holder: 'Marc-Antoine Plante', card_type: 'Débit', qb_account_id: '1150040003', qb_account_name: 'Marc-Antoine Plante (rembourser à)' },
+  { last4: '5064', holder: 'Marc-Antoine Plante', card_type: 'Visa', qb_account_id: '1150040003', qb_account_name: 'Marc-Antoine Plante (rembourser à)' },
+  { last4: '5072', holder: 'Marc-Antoine Plante', card_type: 'Visa', qb_account_id: '1150040003', qb_account_name: 'Marc-Antoine Plante (rembourser à)' },
+  { last4: '8017', holder: 'Martin Audesse', card_type: 'Visa', qb_account_id: '140', qb_account_name: 'Martin Audesse (rembourser à)' },
+  { last4: '4653', holder: 'Martin Audesse', card_type: 'Visa', qb_account_id: '140', qb_account_name: 'Martin Audesse (rembourser à)' },
+]
+
+// ── Serres à conquérir (couche « potentiel » de la carte des clients) ───────
+// Fermes en serre repérées dans des annuaires publics (aujourd'hui celui des
+// Producteurs en serre du Québec) et qui ne sont PAS déjà des entreprises de
+// l'ERP. Une ligne appariée à une fiche maison garde le lien dans
+// `matched_company_id` : elle reste en base pour ne pas la reproposer, mais
+// disparaît de la carte, les clients ayant déjà leur point.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS greenhouse_leads (
+    id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    external_id TEXT,
+    name TEXT NOT NULL,
+    address TEXT,
+    city TEXT,
+    province TEXT,
+    postal_code TEXT,
+    country TEXT,
+    phone TEXT,
+    email TEXT,
+    website TEXT,
+    production TEXT,
+    latitude REAL,
+    longitude REAL,
+    matched_company_id TEXT,
+    match_reason TEXT,
+    first_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    refreshed_at TEXT
+  )
+`)
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_greenhouse_leads_src ON greenhouse_leads(source, external_id)`) } catch {}
+
+export function seedPaymentCards() {
+  const insert = db.prepare(`
+    INSERT OR IGNORE INTO payment_cards (id, holder, card_type, last4, ownership, qb_account_id, qb_account_name, currency)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const run = db.transaction(() => {
+    for (const c of PAYMENT_CARD_SEED) {
+      insert.run(`card-${c.last4}`, c.holder, c.card_type || null, c.last4,
+        c.ownership || 'personal', c.qb_account_id || null, c.qb_account_name || null, c.currency || null)
+    }
+  })
+  run()
 }

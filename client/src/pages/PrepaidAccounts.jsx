@@ -87,7 +87,7 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
           </select>
         </div>
         {field('qb_vendor_name', 'Fournisseur QuickBooks (DisplayName)')}
-        {field('qb_asset_acctnum', "No de compte d'actif prépayé QB")}
+        {field('qb_asset_acctnum', "No de compte d'actif prépayé QuickBooks")}
         <div>
           <label className={labelCls}>Solde réel via API</label>
           <select className={inputCls} value={form.balance_provider ?? ''} onChange={e => { const v = e.target.value || null; set('balance_provider', v); save('balance_provider', v) }}>
@@ -95,7 +95,7 @@ function AccountModal({ account, onClose, onSaved, onDeleted }) {
             <option value="twilio">Twilio</option>
           </select>
         </div>
-        {field('sync_start_date', 'Détecter les transactions QB depuis le', { type: 'date' })}
+        {field('sync_start_date', 'Détecter les transactions QuickBooks depuis le', { type: 'date' })}
         {!isNew && (
           <div>
             <label className={labelCls}>Statut</label>
@@ -236,7 +236,7 @@ function LedgerTab() {
       addToast({ message: `${out.imported} transaction(s) QB importée(s) (depuis le ${fmtDate(out.since)})`, type: 'success' })
       await Promise.all([loadLedger(), loadAccounts()])
     } catch (e) {
-      addToast({ message: `Détection QB échouée : ${e.message}`, type: 'error' })
+      addToast({ message: `Détection QuickBooks échouée : ${e.message}`, type: 'error' })
     } finally {
       setSyncing(false)
     }
@@ -307,13 +307,13 @@ function LedgerTab() {
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
               title="Recomparer tout le ledger aux transactions QuickBooks réelles (manquantes, modifiées, supprimées)">
               <ShieldCheck size={14} className={auditing ? 'animate-pulse' : ''} />
-              {auditing ? 'Vérification…' : 'Vérifier vs QB'}
+              {auditing ? 'Vérification…' : 'Comparer avec QuickBooks'}
             </button>
             <button onClick={handleSync} disabled={syncing}
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
               title="Détecter les transactions QuickBooks du fournisseur">
               <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
-              {syncing ? 'Détection…' : 'Détecter les transactions QB'}
+              {syncing ? 'Détection…' : 'Détecter les transactions QuickBooks'}
             </button>
             <button onClick={() => setAddingEntry(true)} data-testid="prepaid-new-entry"
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg">
@@ -420,14 +420,14 @@ function LedgerTab() {
                     ))}
                     {audit.mismatched.map(m => (
                       <li key={`d-${m.entry.id}`}>
-                        <span className="font-medium">Modifiée dans QB :</span> {m.entry.description} — {m.amount_differs
+                        <span className="font-medium">Modifiée dans QuickBooks :</span> {m.entry.description} — {m.amount_differs
                           ? `montant ERP ${fmtMoney(Math.abs(m.entry.amount), account.currency)} ≠ QB ${fmtMoney(Math.abs(m.qb.amount), account.currency)}`
                           : `date ERP ${fmtDate(m.entry.entry_date)} ≠ QB ${fmtDate(m.qb.entry_date)}`}
                       </li>
                     ))}
                     {audit.orphaned.map(e => (
                       <li key={`o-${e.id}`}>
-                        <span className="font-medium">Supprimée de QB :</span> {fmtDate(e.entry_date)} — {e.description} ({fmtMoney(Math.abs(e.amount), account.currency)})
+                        <span className="font-medium">Supprimée de QuickBooks :</span> {fmtDate(e.entry_date)} — {e.description} ({fmtMoney(Math.abs(e.amount), account.currency)})
                       </li>
                     ))}
                   </ul>
@@ -635,8 +635,8 @@ function ExpenseModal({ expense, onClose, onChanged }) {
         {/* Comptes choisis dans le plan comptable QB, pas tapés de mémoire : le compte
             de débit est le compte de DÉPENSE (ex. « 60000 · Assurances »), jamais un
             compte au nom du fournisseur. */}
-        {acctField('expense_acctnum', 'Compte de dépense QB (Dr)')}
-        {acctField('fpa_acctnum', 'Compte FPA QB (Cr)')}
+        {acctField('expense_acctnum', 'Compte de dépense QuickBooks (Dr)')}
+        {acctField('fpa_acctnum', 'Compte FPA QuickBooks (Cr)')}
         <div className="col-span-2">
           <label className={labelCls}>Description</label>
           <textarea className={inputCls} rows={2} value={form.description ?? ''} onChange={e => set('description', e.target.value)}
@@ -745,7 +745,7 @@ function FpaTab() {
             <button onClick={handlePublish} disabled={publishing || monthData.missing_accounts.length > 0}
               data-testid="fpa-publish"
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-              {publishing ? 'Publication…' : `Publier dans QB — ${fmtMoney(monthData.publishable_total)}`}
+              {publishing ? 'Publication…' : `Publier dans QuickBooks — ${fmtMoney(monthData.publishable_total)}`}
             </button>
           )}
         </div>

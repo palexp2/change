@@ -192,3 +192,36 @@ Toucher à un autre process que `erp-server` → demander confirmation.
 - **Ne jamais éditer `agent-tasks.json` à la main** — le système d'agent s'en sert, écriture atomique.
 - **Ne pas push sur `main`** sans confirmation explicite — `main` = prod (déployé via `deploy.sh`).
 - **Ne pas lancer `npm run dev` du client** — conflit avec nginx, le workflow est toujours build.
+
+## Règle impérative — tout brief envoyé dans la file de travaux doit être autoportant
+
+Une tâche déposée dans `/travaux` (ou `/agent/travaux`) est exécutée dans une
+**session neuve** : la conversation qui l'a fait naître n'existe pas pour le
+modèle qui l'implémente. Un brief qui dit « applique le plan dont on a parlé »,
+« comme discuté », « corrige ça » est un brief perdu.
+
+Avant d'envoyer une tâche dans la file, le brief doit contenir, en clair :
+
+1. **Le problème vécu par l'utilisateur** — ce qui marche mal aujourd'hui, où,
+   et à quoi on verra que c'est réglé.
+2. **Les décisions déjà prises** et par qui, y compris celles qui ferment des
+   options (« la lecture du fichier X est coupée, c'est voulu »). Sans elles
+   l'exécutant refait le débat ou choisit l'inverse.
+3. **Le plan complet recopié dans le brief**, pas seulement un chemin vers un
+   fichier de plan : chemins de fichiers, fonctions existantes à réutiliser,
+   ordre des tranches, garde-fous à ne pas casser.
+4. **Ce qui est hors périmètre** et les pièges connus (leçons déjà payées).
+5. **Comment vérifier** le résultat, et les gestes humains restants (clés à
+   saisir, configuration externe).
+6. Le rappel des obligations du dépôt qui s'appliquent : entrée dans
+   `client/src/data/changelog.json`, rebuild du client, `pm2 restart erp-server`.
+
+Règle de relecture : **si un collègue qui n'a pas assisté à la conversation ne
+peut pas exécuter le brief seul, il n'est pas prêt à partir.** Trop long n'est
+jamais le problème ; trop allusif l'est toujours.
+
+**Et une tâche = une étape livrable.** Un travail qui demanderait une heure de
+file se découpe en tâches successives qui donnent un résultat visible toutes les
+10-15 minutes (demande de Charles, 2026-09-15 : « c'est trop long »). Chaque
+tranche du plan part dans sa propre tâche, dans l'ordre, chacune avec son brief
+autoportant — jamais un seul brief qui enchaîne quatre tranches.

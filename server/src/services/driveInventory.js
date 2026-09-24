@@ -108,7 +108,7 @@ export function knownSyncedRegistry() {
     'CTB - Suivi : programmation des factures à payer + import Pmt_Suivi')
   add(files, automationConfig('sys_treasury_solde_sheet').spreadsheet_id || '1ETlbHIcwClZTiskwQh8PWYuDxZGwqJBKU-0p2iWoxgo',
     'Trésorerie : sync « Maintien du solde disponible BNC »')
-  add(files, automationConfig('sys_bank_trx_sheet').file_id || '1fRE0c1zv5zks70pwzgpojB7LZz-V5lHR',
+  add(files, automationConfig('sys_bank_trx_sheet').file_id || '1zztgXO-Z6b0I4bGmP5TcyCXMbT-X3cjBjGG2z4ccUug',
     'Rapprochement bancaire : sync TRX_Orisha')
   add(folders, automationConfig('sys_pieces_disbursements').drive_folder_id || '1q0e-rHE2xxeapcDt8yyHh2xwJt1mChJc',
     'Déboursés de pièces : fichiers déposés par l\'ERP')
@@ -139,7 +139,7 @@ export function knownSyncedRegistry() {
 export function knownSyncedTabs() {
   const ctb = automationConfig('sys_ctb_programmation_paiement').spreadsheet_id || '13rd8x_xy5AQJemDwE6yWp8ffvkj3bEo7kq3cuogRGyQ'
   const solde = automationConfig('sys_treasury_solde_sheet').spreadsheet_id || '1ETlbHIcwClZTiskwQh8PWYuDxZGwqJBKU-0p2iWoxgo'
-  const trx = automationConfig('sys_bank_trx_sheet').file_id || '1fRE0c1zv5zks70pwzgpojB7LZz-V5lHR'
+  const trx = automationConfig('sys_bank_trx_sheet').file_id || '1zztgXO-Z6b0I4bGmP5TcyCXMbT-X3cjBjGG2z4ccUug'
   const soldeTab = automationConfig('sys_treasury_solde_sheet').sheet_name || 'Compte chèque'
   const ctbTab = automationConfig('sys_ctb_programmation_paiement').sheet_name || 'Sommaire'
   return [
@@ -148,7 +148,7 @@ export function knownSyncedTabs() {
       label: "L'ERP n'écrit que les sections « Programmation des factures à payer » et « Factures payées cette semaine ». La section « Factures manquantes » de cet onglet n'est PAS reprise.",
     },
     { file: ctb, tab: 'Pmt_Suivi', label: 'Paiements émis : import de l\'onglet vers /paiements-emis (dont le vert « passé à la banque »)' },
-    { file: solde, tab: soldeTab, label: 'Trésorerie : solde disponible, paiements planifiés et sorties récurrentes' },
+    { file: solde, tab: soldeTab, label: 'Boréal → Sheet : projection du solde disponible, mouvements, sorties récurrentes et paie' },
     { file: trx, tab: '*', label: 'Rapprochement bancaire : un onglet par compte, importé en transactions' },
   ]
 }

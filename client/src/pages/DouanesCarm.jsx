@@ -244,7 +244,7 @@ function LinkModal({ txn, receipts, onClose, onLinked }) {
               <span className="text-slate-800">{fmtDate(r.receipt_date)} · {fmtMoney(r.total, r.currency)}</span>
               <span className="block text-xs text-slate-400 truncate">{r.original_name || r.company}</span>
             </span>
-            {r.quickbooks_id ? <Badge color="green">Dans QB</Badge> : <Badge color="amber">À pousser</Badge>}
+            {r.quickbooks_id ? <Badge color="green">Dans QuickBooks</Badge> : <Badge color="amber">À publier</Badge>}
           </button>
         ))}
       </div>

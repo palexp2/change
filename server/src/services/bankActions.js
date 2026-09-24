@@ -21,7 +21,9 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { buildEntryDraft, vendorHistory, vendorFromPastPurchases } from './bankEntryDraft.js'
 import { stampRule } from './bankRules/store.js'
+import { marginRepaymentSplit } from './marginRepayment.js'
 import { deriveStatus } from './bankReconciliation.js'
+import { touchBankTxns } from './realtimeEmitters.js'
 import { qbPost } from '../connectors/quickbooks.js'
 
 export { vendorHistory, vendorFromPastPurchases }
@@ -88,7 +90,31 @@ export function suggestAddDefaults(txn, account) {
     due_date: f.due_date.value,
     history: draft.history,
     draft,
+    // Un remboursement de marge de crédit paie du capital ET des intérêts dans
+    // le même débit : la coupe arrive toute faite.
+    split: marginRepaymentSplit(txn, account),
   }
+}
+
+// Les parts d'une écriture coupée : { account_id, amount, tax_code_id?,
+// description? }. `null` quand il n'y en a pas — une seule part ne coupe rien.
+export function parseSplit(lines) {
+  if (!Array.isArray(lines)) return null
+  const out = []
+  for (const l of lines) {
+    const account = String(l?.expense_account_id || l?.account_id || '').trim()
+    const amount = round2(l?.amount)
+    if (!account) continue
+    if (!(amount > 0)) throw new BankActionError('Chaque part doit porter un montant', { field: 'lines' })
+    out.push({
+      account_id: account,
+      amount,
+      tax_code_id: cleanTaxCode(l?.tax_code_id) || null,
+      description: String(l?.description || '').trim() || null,
+    })
+  }
+  if (out.length < 2) return null
+  return out
 }
 
 // ── Ajouter : l'écriture ─────────────────────────────────────────────────────
@@ -109,17 +135,29 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
 
   const vendor = String(body.vendor || '').trim()
   if (!vendor) throw new BankActionError('Fournisseur requis', { field: 'vendor' })
-  const expenseAccountId = String(body.expense_account_id || '').trim()
+  const splitAccounts = Array.isArray(body.lines) ? body.lines.map((l) => String(l?.expense_account_id || '').trim()).filter(Boolean) : []
+  const expenseAccountId = String(body.expense_account_id || '').trim() || splitAccounts[0] || ''
   if (!expenseAccountId) throw new BankActionError('Compte de dépense requis', { field: 'expense_account_id' })
 
   const total = round2(Math.abs(txn.amount))
   const taxCodeId = cleanTaxCode(body.tax_code_id)
+  // Écriture coupée en plusieurs comptes (demande de Charles, 2026-09-19) :
+  // chaque part porte son compte et son montant HORS taxes, et la somme des
+  // parts doit faire le montant du relevé moins la taxe — sinon l'écriture ne
+  // balancerait pas dans QuickBooks.
+  const split = parseSplit(body.lines)
   // Le relevé donne le montant TTC : la taxe vient du dossier de préparation —
   // le montant réellement facturé quand un document existe, sinon le calcul au
   // taux du code fait à l'écran. Sans elle, l'écriture est simplement sans taxe.
   const taxCad = taxCodeId ? round2(body.tax_cad) : 0
   if (taxCad < 0 || taxCad >= total) throw new BankActionError('Montant de taxe incohérent avec le montant du relevé', { field: 'tax_cad' })
   const amountCad = round2(total - taxCad)
+  if (split) {
+    const sum = round2(split.reduce((n, l) => n + l.amount, 0))
+    if (Math.abs(sum - amountCad) > 0.02) {
+      throw new BankActionError(`Les parts font ${sum.toFixed(2)} $ — il faut répartir ${amountCad.toFixed(2)} $`, { field: 'lines' })
+    }
+  }
 
   const memo = String(body.memo || '').trim() || txnLabel(txn) || vendor
   const achatId = newRecordId()
@@ -145,15 +183,15 @@ export function addExpenseFromTxn(txn, account, body = {}, userId = null) {
         (id, type, date_achat, due_date, vendor, description, qb_memo, reference,
          vendor_invoice_number, payment_method,
          amount_cad, tax_cad, total_cad, currency, status,
-         expense_account_id, payment_account_id, tax_code_id, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Approuvé', ?, ?, ?, ?)
+         expense_account_id, payment_account_id, tax_code_id, lines, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Approuvé', ?, ?, ?, ?, ?)
     `).run(
       achatId, type, txn.txn_date, dueDate, vendor, memo, memo, txn.reference || null,
       docNumber, paymentMethod,
       amountCad, taxCad, total, account.currency || 'CAD',
       expenseAccountId,
       String(body.payment_account_id || '').trim() || mainQbAccount(account),
-      taxCodeId, userId,
+      taxCodeId, split ? JSON.stringify(split) : null, userId,
     )
 
     // La garde `matched_id IS NULL` rejoue la validation au moment de l'écriture :
@@ -353,6 +391,7 @@ export async function pushTransferToQB(txn, other, { post = null } = {}) {
         status='comptabilise', updated_at=${NOW}
     WHERE id IN (?, ?)
   `).run(String(qbId), txn.id, other.id)
+  touchBankTxns([txn.id, other.id])
 
   return { quickbooks_id: String(qbId), fx_note: fxNote }
 }

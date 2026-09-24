@@ -552,7 +552,7 @@ export default function SerialAccountingRules() {
             loading={loading}
             searchFields={['previous_status', 'new_status', 'debit_account_name', 'credit_account_name']}
             height="calc(100vh - 460px)"
-            emptyState={{ icon: AlertCircle, title: 'Aucune règle définie', description: 'Crée une règle de mapping pour générer les écritures comptables.' }}
+            emptyState={{ icon: AlertCircle, title: 'Aucune règle définie', description: 'Crée une règle de correspondance pour générer les écritures comptables.' }}
           />
         </div>
       </div>
@@ -560,7 +560,7 @@ export default function SerialAccountingRules() {
       <Modal
         isOpen={!!modal}
         onClose={() => setModal(null)}
-        title={modal?.rule ? 'Modifier la règle' : 'Nouvelle règle de mapping'}
+        title={modal?.rule ? 'Modifier la règle' : 'Nouvelle règle de correspondance'}
         size="md"
       >
         {modal && (

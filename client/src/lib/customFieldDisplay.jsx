@@ -1,6 +1,9 @@
-import { useState, useMemo } from 'react'
+import { usePrivateFile } from './usePrivateFile.js'
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, Check, Zap, Phone, ImageOff, Paperclip } from 'lucide-react'
+import { ExternalLink, Check, Zap, Phone, ImageOff, Paperclip, FileText } from 'lucide-react'
+import { PdfThumb, attachmentKind, AttachmentPreviewModal } from '../components/AttachmentPreview.jsx'
+import { SheetThumb } from '../components/SheetPreview.jsx'
 import { useRecordLinks } from './useRecordLinks.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDateWithFormat, normalizeDateFormat } from './formatDate.js'
@@ -155,9 +158,11 @@ function ImageUnavailable({ href }) {
 // vignettes SVG (toute la gamme JWT) sortaient en carrés de 2 px. Hauteur figée,
 // la largeur se déduit du ratio, pour le vectoriel comme pour le matriciel.
 function ImageThumb({ href }) {
+  href = usePrivateFile(href)
   // Mémorise la source EN ÉCHEC (pas un simple booléen) pour que le placeholder
   // se réinitialise tout seul quand la valeur de la cellule change.
   const [failedSrc, setFailedSrc] = useState(null)
+  if (!href) return <span className="inline-block h-7 w-7 bg-slate-100 rounded" />
   if (failedSrc === href) return <ImageUnavailable href={href} />
   return (
     <a
@@ -591,6 +596,15 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
 // Les octets ne transitent jamais par la valeur : ils se servent par URL, d'où
 // attachmentFileUrl() ci-dessous.
 
+// Champ qui PORTE des pièces jointes, ou LOOKUP qui en rapatrie : le second a
+// le type stocké 'text' (la colonne de la vue est du texte), c'est
+// `result_type` qui dit « ce sont des fichiers » — même règle que les dates et
+// les nombres calculés. Sans ce second cas, la cellule affichait les
+// descripteurs JSON au lieu des vignettes.
+export function isAttachmentField(f) {
+  return f?.type === 'attachment' || f?.result_type === 'attachment'
+}
+
 export function parseAttachments(value) {
   if (Array.isArray(value)) return value.filter(f => f && typeof f.id === 'string')
   if (value == null || value === '') return []
@@ -627,63 +641,186 @@ export function formatFileSize(bytes) {
   return `${fmtNumber(n / (1024 * 1024), { maximumFractionDigits: 1 })} Mo`
 }
 
-// Une pièce jointe : vignette pour une image, pastille « trombone + nom » sinon.
-// Le clic ouvre le fichier dans un nouvel onglet (jamais la fiche de la ligne).
-export function AttachmentChip({ href, file, compact = false }) {
-  const [failed, setFailed] = useState(false)
+// Une pièce jointe : image, première page du PDF ou premières cellules du
+// tableur ; icône pour les autres fichiers.
+// Le clic ouvre le document en modale, sans quitter la page (jamais la fiche de
+// la ligne) ; un clic-milieu / Ctrl+clic l'ouvre dans un nouvel onglet.
+// `onOpen` (optionnel) remplace la visionneuse propre à la vignette : la galerie
+// s'en sert pour changer de document sans empiler les modales.
+export function AttachmentChip({ href, file, compact = false, onOpen, active = false }) {
+  const [failedSrc, setFailedSrc] = useState(null)
+  const [preview, setPreview] = useState(false)
   const title = [file.name, formatFileSize(file.size)].filter(Boolean).join(' · ')
-  if (isImageAttachment(file) && !failed) {
+  const kind = attachmentKind({ url: href, fileName: file.name, contentType: file.type })
+  const width = compact ? 40 : 80
+  const height = compact ? 28 : 56
+  // Le lien reste un vrai lien (ouverture dans un onglet au Ctrl/⌘+clic), mais
+  // le clic simple préfère la visionneuse — la même que les pièces jointes des
+  // fiches (étiquette d'expédition, PDF de facture).
+  function openPreview(e) {
+    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) { e.stopPropagation(); return }
+    e.preventDefault()
+    e.stopPropagation()
+    if (onOpen) onOpen()
+    else setPreview(true)
+  }
+  const ring = active ? ' ring-2 ring-brand-500' : ''
+  const modal = preview
+    ? <AttachmentPreviewModal url={href} fileName={file.name} kind={kind} onClose={() => setPreview(false)} />
+    : null
+  if (isImageAttachment(file) && failedSrc !== href) {
     // Hauteur définie plutôt que plafonnée, même raison que ImageThumb : sinon
     // une pièce jointe SVG (sans dimensions en pixels) se réduit à quelques px.
     return (
-      <a href={href} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()} title={title} className="inline-block shrink-0">
-        <img
-          src={href}
-          alt={file.name || ''}
-          loading="lazy"
-          data-testid="cf-attachment-thumb"
-          onError={() => setFailed(true)}
-          className={`${compact ? 'h-7' : 'h-14'} max-w-[7rem] w-auto rounded border border-slate-200 object-contain bg-white`}
-        />
-      </a>
+      <>
+        <a href={href} target="_blank" rel="noopener noreferrer" onClick={openPreview} title={title} className="inline-block shrink-0">
+          <img
+            src={href}
+            alt={file.name || ''}
+            loading="lazy"
+            data-testid="cf-attachment-thumb"
+            onError={() => setFailedSrc(href)}
+            className={`${compact ? 'h-7' : 'h-14'} max-w-[7rem] w-auto rounded border border-slate-200 object-contain bg-white${ring}`}
+          />
+        </a>
+        {modal}
+      </>
     )
   }
   return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      onClick={e => e.stopPropagation()}
-      title={title}
-      data-testid="cf-attachment-chip"
-      className="inline-flex shrink-0 items-center gap-1 max-w-[12rem] rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[11px] text-slate-600 hover:border-brand-300 hover:text-brand-700"
-    >
-      <Paperclip size={11} className="shrink-0 opacity-70" />
-      <span className="truncate">{file.name || 'fichier'}</span>
-    </a>
+    <>
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={openPreview}
+        title={title}
+        aria-label={`Ouvrir ${file.name || 'le fichier'}`}
+        data-testid="cf-attachment-chip"
+        className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded border border-slate-200 bg-fixed-white text-slate-500 hover:border-brand-300 hover:text-brand-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-400${ring}`}
+        style={{ width, height }}
+      >
+        {kind === 'pdf' ? (
+          <PdfThumb key={href} url={href} width={width - 2} height={height - 2} label={`Aperçu ${file.name || 'PDF'}`} lazy compact />
+        ) : kind === 'sheet' ? (
+          <SheetThumb key={href} url={href} label={`Aperçu ${file.name || 'tableur'}`} lazy compact />
+        ) : (
+          <span className="flex flex-col items-center leading-none" aria-hidden="true">
+            {kind === 'image' ? <ImageOff size={16} /> : <FileText size={compact ? 13 : 20} />}
+            {kind !== 'image' && <span className="max-w-full truncate text-[8px] font-medium uppercase">{String(file.name || '').match(/\.([a-z0-9]{1,5})$/i)?.[1] || 'Fichier'}</span>}
+          </span>
+        )}
+      </a>
+      {modal}
+    </>
   )
 }
 
 // Rendu lecture seule d'un champ Attachement (cellule de tableau, fiche).
-// `field` doit porter son `id` et `row` son `id` : sans eux on ne sait pas
-// construire l'URL du fichier, on retombe alors sur un simple décompte.
+// Les octets se servent par (champ, enregistrement, fichier). Deux cas :
+//  - champ Attachement direct : ce sont le champ et la ligne affichés ;
+//  - LOOKUP vers un champ Attachement : les fichiers appartiennent à une AUTRE
+//    ligne, et chaque descripteur porte alors ses `field_id` / `record_id`
+//    d'origine (posés par la vue SQL, cf. services/customFieldsView.js).
+// Sans identifiant utilisable on retombe sur un simple décompte.
 export function AttachmentsValue({ field, value, row, compact = true }) {
   const files = parseAttachments(value)
   if (!files.length) return <span className="text-slate-400">—</span>
-  const recordId = row?.id
-  if (!field?.id || !recordId) {
+  const links = files.map(f => ({ file: f, href: attachmentFileUrl(f.field_id || field?.id, f.record_id || row?.id, f.id) }))
+  const openable = links.filter(l => l.href)
+  if (!openable.length) {
     return (
       <span className="inline-flex items-center gap-1 text-[11px] text-slate-500">
         <Paperclip size={11} className="opacity-70" />{files.length}
       </span>
     )
   }
+  return <AttachmentsStrip links={openable} compact={compact} />
+}
+
+// Vignettes d'une cellule : celles qui ne tiennent pas dans la largeur sont
+// masquées (jamais coupées à moitié) et comptées dans un bouton « +N » qui ouvre
+// la galerie. Le compte suit la largeur de la colonne (ResizeObserver).
+function AttachmentsStrip({ links, compact }) {
+  const wrapRef = useRef(null)
+  const [fit, setFit] = useState(links.length)
+  const [gallery, setGallery] = useState(null)
+  const signature = links.map(l => l.href).join('|')
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current
+    if (!wrap) return
+    const measure = () => {
+      const limit = wrap.getBoundingClientRect().right
+      let n = 0
+      for (const child of wrap.children) {
+        if (child.getBoundingClientRect().right > limit + 0.5) break
+        n++
+      }
+      setFit(n)
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(wrap)
+    for (const child of wrap.children) ro.observe(child)
+    return () => ro.disconnect()
+  }, [signature])
+
+  const hidden = links.length - fit
   return (
-    <div className="flex items-center gap-1 overflow-hidden" data-testid="cf-attachments">
-      {files.map(f => (
-        <AttachmentChip key={f.id} file={f} compact={compact} href={attachmentFileUrl(field.id, recordId, f.id)} />
-      ))}
+    <div className="flex min-w-0 items-center gap-1" data-testid="cf-attachments">
+      <div ref={wrapRef} className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+        {links.map((l, i) => (
+          <span key={l.file.id ?? i} className="inline-flex shrink-0" style={i >= fit ? { visibility: 'hidden' } : undefined}>
+            <AttachmentChip file={l.file} compact={compact} href={l.href} />
+          </span>
+        ))}
+      </div>
+      {hidden > 0 && (
+        <button
+          type="button"
+          onMouseDown={e => e.stopPropagation()}
+          onClick={e => { e.preventDefault(); e.stopPropagation(); setGallery(fit) }}
+          title={`${hidden} de plus`}
+          data-testid="cf-attachments-more"
+          className="shrink-0 rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[11px] font-medium text-slate-600 hover:border-brand-300 hover:text-brand-700"
+        >
+          +{hidden}
+        </button>
+      )}
+      {gallery != null && <AttachmentGallery links={links} index={gallery} onSelect={setGallery} onClose={() => setGallery(null)} />}
     </div>
+  )
+}
+
+// Visionneuse à plusieurs documents : le document choisi + une bande de vignettes
+// pour passer à un autre (flèches ← → aussi).
+function AttachmentGallery({ links, index, onSelect, onClose }) {
+  const cur = links[index] || links[0]
+  useEffect(() => {
+    const onKey = e => {
+      if (e.key === 'ArrowRight') onSelect(i => (i + 1) % links.length)
+      else if (e.key === 'ArrowLeft') onSelect(i => (i - 1 + links.length) % links.length)
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [links.length, onSelect])
+  return (
+    <AttachmentPreviewModal
+      key={cur.href}
+      url={cur.href}
+      fileName={cur.file.name}
+      title={`${index + 1} / ${links.length}`}
+      kind={attachmentKind({ url: cur.href, fileName: cur.file.name, contentType: cur.file.type })}
+      onClose={onClose}
+    >
+      <div className="flex flex-shrink-0 gap-2 overflow-x-auto border-t border-slate-200 bg-slate-50 p-2" data-testid="cf-attachments-gallery">
+        {links.map((l, i) => (
+          <AttachmentChip key={l.file.id ?? i} file={l.file} href={l.href} active={i === index} onOpen={() => onSelect(i)} />
+        ))}
+      </div>
+    </AttachmentPreviewModal>
   )
 }
 
@@ -787,6 +924,8 @@ export const CUSTOM_FIELD_TABLES = new Set([
   // Mouvements d'inventaire — miroir Airtable : un champ y sert de colonne
   // d'accueil pour un champ Airtable de plus (cf. ALLOWED_TABLES serveur).
   'stock_movements',
+  // Fournitures et leurs achats — miroirs Airtable (cf. ALLOWED_TABLES serveur).
+  'fournitures', 'achats_fournitures',
   // Problèmes d'opérations (/problemes-operations) : champs perso acceptés par
   // la route CRUD, donc saisissables sur la fiche comme dans le tableau.
   'ops_issues',
@@ -846,6 +985,7 @@ const VIEW_KEY_TO_FIELD_KEY = {
   company_achats:      'achats_fournisseurs',
   company_retours:     'retours',
   company_serials:     'serial_numbers',
+  company_tickets:     'tickets',
   // Fiche projet
   project_factures:    'factures',
   project_soumissions: 'soumissions',
@@ -867,6 +1007,8 @@ const VIEW_KEY_TO_FIELD_KEY = {
   // Achats d'une fiche pièce : ce sont des `purchases`, avec des colonnes
   // réduites. Leurs CHAMPS sont ceux de la table mère (/champs/purchases).
   product_purchases:   'purchases',
+  // Historique d'achats d'une fiche fourniture (/champs/achats_fournitures).
+  fourniture_achats:   'achats_fournitures',
 }
 export function fieldKeyForView(viewKey) {
   return VIEW_KEY_TO_FIELD_KEY[viewKey] || viewKey
@@ -922,9 +1064,9 @@ export function customFieldToColumn(f) {
     // ni filtrable, ni éditable.
     // Bouton : action sur la ligne. Attachement : une liste de fichiers, dont
     // ni le tri ni le regroupement ni le filtre texte ne veulent rien dire.
-    groupable: f.type !== 'button' && f.type !== 'attachment',
-    sortable: f.type !== 'button' && f.type !== 'attachment',
-    filterable: f.type !== 'button' && f.type !== 'attachment',
+    groupable: f.type !== 'button' && !isAttachmentField(f),
+    sortable: f.type !== 'button' && !isAttachmentField(f),
+    filterable: f.type !== 'button' && !isAttachmentField(f),
     // Seuls les champs kind='data' ÉDITABLES sont éditables (mode tableur de
     // DataTable, actif uniquement si la page fournit onCellEdit). Les champs
     // virtuels (formula/lookup/auto/button) sont calculés à la lecture →
@@ -933,7 +1075,7 @@ export function customFieldToColumn(f) {
     // est en lecture seule — l'écriture serait écrasée au prochain sync.
     // Attachement : la valeur ne se tape pas — les fichiers se déposent depuis
     // la fiche (panneau latéral), qui écrit la cellule par sa route dédiée.
-    editable: f.type !== 'button' && f.type !== 'attachment' && (!f.kind || f.kind === 'data') && f.writable !== false,
+    editable: f.type !== 'button' && !isAttachmentField(f) && (!f.kind || f.kind === 'data') && f.writable !== false,
     // Flag pour l'UI (toast explicatif au double-clic) : la cellule est en
     // lecture seule PARCE QUE le champ est importé d'Airtable en sens 'pull'.
     ...(f.writable === false ? { airtablePullReadonly: true } : {}),
@@ -950,7 +1092,7 @@ export function customFieldColumnType(f) {
   if (f.type === 'button') return 'button'
   // Attachement : type dédié, ni triable ni filtrable — la cellule liste des
   // fichiers, pas une valeur comparable.
-  if (f.type === 'attachment') return 'attachment'
+  if (isAttachmentField(f)) return 'attachment'
   // Date : le champ DATA (`type`) autant que la formule/lookup/rollup qui rend une
   // date (`result_type`). Sans le premier cas, une colonne de date tombait en
   // 'text' — le configurateur de filtre proposait « Contient »/« Commence par »
@@ -967,7 +1109,7 @@ export function customFieldColumnType(f) {
   // Pourcentage = un nombre du point de vue du tri, du filtre et des totaux :
   // seul son rendu diffère (« 45 % » ou barre de progression).
   if (f.result_type === 'number' || f.type === 'number' || f.type === 'currency'
-      || f.type === 'percent' || f.result_type === 'percent') return 'number'
+      || f.result_type === 'currency' || f.type === 'percent' || f.result_type === 'percent') return 'number'
   if (f.type === 'single_select') return 'single_select'
   if (f.type === 'multi_select') return 'multi_select'
   return 'text'
@@ -1044,7 +1186,7 @@ export function ButtonFieldCell({ field, row }) {
 // `row`   = la ligne complète (nécessaire pour les boutons : action sur le record).
 // `detail` = rendu pour une FICHE (et non une cellule de tableau) : les champs
 // lien y prennent la pastille pleine taille commune à toutes les fiches.
-export function renderCustomFieldValue(field, value, row, { detail = false } = {}) {
+export function renderCustomFieldValue(field, value, row, { detail = false, linkifyTextUrls = false } = {}) {
   // Bouton : action sur la ligne, pas une valeur — rendu en premier (pas de
   // notion de valeur vide). Nécessite `row.id` pour cibler le record.
   if (field.type === 'button') return <ButtonFieldCell field={field} row={row} />
@@ -1053,7 +1195,7 @@ export function renderCustomFieldValue(field, value, row, { detail = false } = {
   if (field?.view_error) return <CustomFieldError detail={field.view_error} />
   // Attachement : vignettes / pastilles de fichiers, cliquables. Rendu avant le
   // test « valeur vide » pour garder un « — » cohérent (AttachmentsValue s'en charge).
-  if (field.type === 'attachment') return <AttachmentsValue field={field} value={value} row={row} />
+  if (isAttachmentField(field)) return <AttachmentsValue field={field} value={value} row={row} />
   // checkbox : case stylée lecture seule (cochée = ✓ sur fond brand, décochée =
   // case vide). Rendu AVANT le test « valeur vide » : NULL/0 = décoché légitime,
   // pas un « — ».
@@ -1114,7 +1256,7 @@ export function renderCustomFieldValue(field, value, row, { detail = false } = {
   if (field.type === 'date' || field.result_type === 'date') {
     return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(field))}</span>
   }
-  if (field.type === 'currency') {
+  if (field.type === 'currency' || field.result_type === 'currency') {
     const formatted = formatCurrency(value, field.decimals ?? 2, currencySymbolOf(field))
     return <span className="tabular-nums text-slate-700">{formatted != null ? formatted : value}</span>
   }
@@ -1150,5 +1292,8 @@ export function renderCustomFieldValue(field, value, row, { detail = false } = {
   // texte simple sinon (UrlValue s'en charge).
   if (field.type === 'url' || field.result_type === 'url') return <UrlValue value={value} />
   if (field.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodeOf(field)} />
+  if (linkifyTextUrls && typeof value === 'string' && /^https?:\/\/\S+$/i.test(value.trim()) && normalizeUrl(value)) {
+    return <UrlValue value={value} />
+  }
   return <span className="text-slate-700">{value}</span>
 }

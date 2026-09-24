@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { Eye, EyeOff, Pencil, Check, Search, Lock } from 'lucide-react'
 import api from '../lib/api.js'
@@ -323,7 +324,7 @@ export function RecordForm({
   includeAllFields = false,
 }) {
   const { user } = useAuth()
-  const canConfigure = user?.role === 'admin'
+  const canConfigure = hasRole(user, 'admin')
   const { config, setConfig, loaded: cfgLoaded } = useFormConfig(table)
   // Champs du registre en plus de ceux déclarés par la page — la route de
   // création de la table doit savoir les persister (cf. formFieldCatalog.js).

@@ -95,7 +95,7 @@ function EditModal({ profile, qb, onClose, onSaved, onDeleted }) {
         </div>
         {pick('qb_vendor_id_cad', 'Vendor QuickBooks — CAD', qb.vendorOptionsCad)}
         {pick('qb_vendor_id_usd', 'Vendor QuickBooks — USD', qb.vendorOptionsUsd,
-          { hint: 'Un vendor QB ne porte qu\'une devise : un fournisseur bi-devise a deux vendors.' })}
+          { hint: 'Un fournisseur QuickBooks ne porte qu\'une devise : un fournisseur bi-devise a deux vendors.' })}
         {pick('default_qb_type', 'Type d\'entité par défaut', Object.entries(QB_TYPE_LABELS).map(([value, label]) => ({ value, label })))}
         {pick('default_expense_account_id', 'Compte de dépense par défaut', qb.expenseOptions)}
         {pick('default_payment_account_id_cad', 'Compte de paiement — CAD', qb.paymentOptionsCad)}
@@ -182,7 +182,7 @@ function CreateModal({ onClose, onCreated }) {
       <label className={labelCls}>Nom canonique du fournisseur *</label>
       <input className={inputCls} value={name} onChange={e => setName(e.target.value)} autoFocus
         onKeyDown={e => { if (e.key === 'Enter') create() }} />
-      <p className="text-xs text-slate-400 mt-2">Les défauts comptables s'ouvrent en édition après création — ou s'apprendront automatiquement à la première publication QB.</p>
+      <p className="text-xs text-slate-400 mt-2">Les défauts comptables s'ouvrent en édition après création — ou s'apprendront automatiquement à la première publication dans QuickBooks.</p>
       {/* Bouton requis : création d'un nouvel enregistrement (pas encore d'id → autosave impossible) */}
       <div className="flex justify-end gap-2 mt-4">
         <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>

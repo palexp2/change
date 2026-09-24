@@ -1,3 +1,4 @@
+import { decryptCredentials } from '../utils/encryption.js'
 import db from '../db/database.js'
 
 const BASE = 'https://api.hubapi.com'
@@ -7,7 +8,7 @@ export function getAccessToken() {
     "SELECT value FROM connector_config WHERE connector='hubspot' AND key='access_token'"
   ).get()
   if (!row || !row.value) throw new Error('HubSpot non configuré — saisis le token Private App dans Connecteurs')
-  return row.value
+  return decryptCredentials(row.value)
 }
 
 export function isHubSpotConfigured() {

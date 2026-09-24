@@ -6,6 +6,7 @@
 
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import '../test-helpers/testEnv.js'
 
 const { deriveHtFromTtc } = await import('./quickbooks.js')
 
@@ -34,4 +35,15 @@ test('pas d\'invoice Stripe — repli sur les totaux de la facture ERP', () => {
 test('ni invoice ni facture exploitable — le TTC reçu passe tel quel', () => {
   const ht = deriveHtFromTtc(500, null, null)
   assert.equal(ht, 500)
+})
+
+test('Black Creek : dépôt complet et partiel après rabais de 10 %', () => {
+  const invoice = { subtotal: 2320000, total: 2359440, total_excluding_tax: 2088000, total_discount_amounts: [{ amount: 232000 }] }
+  assert.equal(deriveHtFromTtc(23594.40, invoice, null), 20880)
+  assert.equal(deriveHtFromTtc(11797.20, invoice, null), 10440)
+})
+
+test('prix taxes incluses : le montant déposé exclut les taxes après rabais', () => {
+  const invoice = { subtotal: 11300, total: 10170, total_discount_amounts: [{ amount: 1130 }], total_taxes: [{ amount: 1170 }] }
+  assert.equal(deriveHtFromTtc(101.70, invoice, null), 90)
 })

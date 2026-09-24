@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import api from '../lib/api.js'
 import { Modal } from './Modal.jsx'
 import Spinner from './Spinner.jsx'
@@ -71,7 +71,19 @@ export function AdresseModalContent({
   }))
   const [confirming, setConfirming] = useState(false)
 
+  // Dernière ligne connue du serveur, et ses valeurs de formulaire : un champ
+  // dont la saisie diffère de cette base est en cours d'édition — une
+  // modification distante ne l'écrase pas.
+  const serverRef = useRef(editingAdresse || null)
+  const baseRef = useRef(adresseToForm(editingAdresse))
+  useEffect(() => {
+    serverRef.current = editingAdresse || null
+    baseRef.current = adresseToForm(editingAdresse)
+  }, [editingAdresse])
+
   const applySaved = (updated) => {
+    serverRef.current = { ...serverRef.current, ...updated }
+    baseRef.current = adresseToForm(serverRef.current)
     onSaved?.(updated)
     setCheck({ status: updated.check_status || null, issues: parseCheckIssues(updated.check_issues) })
     setConfirm({
@@ -102,7 +114,26 @@ export function AdresseModalContent({
   // tâche de fond après l'écriture, la réponse du PUT est déjà partie.
   useRealtimeChannel(editingAdresse?.id ? `adresse:${editingAdresse.id}` : null, (msg) => {
     if (msg.type !== 'adresse:updated') return
-    if (msg.payload?.check_status !== undefined) {
+    const p = msg.payload || {}
+    const remoteKeys = Object.keys(EMPTY_ADRESSE_FORM).filter(k => p[k] !== undefined)
+    if (remoteKeys.length) {
+      const merged = { ...serverRef.current, ...p }
+      const remote = adresseToForm(merged)
+      const base = baseRef.current
+      const patch = {}
+      let conflict = false
+      for (const k of remoteKeys) {
+        if (remote[k] === base[k] || remote[k] === adresseForm[k]) continue
+        if (adresseForm[k] !== base[k]) conflict = true
+        else patch[k] = remote[k]
+      }
+      serverRef.current = merged
+      baseRef.current = remote
+      if (Object.keys(patch).length) setAdresseForm(f => ({ ...f, ...patch }))
+      if (conflict) addToast({ message: 'Adresse modifiée ailleurs — votre saisie est conservée', type: 'warning' })
+      onSaved?.(merged)
+    }
+    if (p.check_status !== undefined) {
       setCheck({ status: msg.payload.check_status || null, issues: parseCheckIssues(msg.payload.check_issues) })
     }
     if (msg.payload?.confirm_status !== undefined) {

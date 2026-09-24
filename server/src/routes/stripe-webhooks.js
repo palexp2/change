@@ -1,3 +1,4 @@
+import { decryptCredentials } from '../utils/encryption.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
@@ -26,7 +27,7 @@ function getWebhookSecret() {
   const row = db.prepare(
     "SELECT value FROM connector_config WHERE connector='stripe' AND key='webhook_secret'"
   ).get()
-  return row?.value || null
+  return decryptCredentials(row?.value) || null
 }
 
 // Map Stripe subscription status → ERP enum (cf. mapStatus dans services/stripe.js)

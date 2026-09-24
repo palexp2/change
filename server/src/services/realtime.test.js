@@ -1,3 +1,5 @@
+import '../test-helpers/testEnv.js'
+import { createTestUser, initTestDb } from '../test-helpers/testApp.js'
 // Le protocole de fil du canal temps réel — sur un VRAI serveur WebSocket, avec
 // de VRAIS clients, sans toucher à la base.
 //
@@ -13,10 +15,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { once } from 'node:events'
-import jwt from 'jsonwebtoken'
 import { WebSocket } from 'ws'
-import { JWT_SECRET } from '../config/secrets.js'
 
+initTestDb()
 process.env.REALTIME_ENABLED = 'true'
 const { createRealtimeServer, emit } = await import('./realtime.js')
 
@@ -26,7 +27,7 @@ async function client(port, channels) {
   const received = []
   await new Promise((resolve, reject) => {
     ws.on('error', reject)
-    ws.on('open', () => ws.send(JSON.stringify({ type: 'auth', token: jwt.sign({ id: 'u-test' }, JWT_SECRET, { algorithm: 'HS256' }) })))
+    ws.on('open', () => ws.send(JSON.stringify({ type: 'auth', token: createTestUser().token })))
     ws.on('message', (raw) => {
       const msg = JSON.parse(raw.toString())
       if (msg.type === 'auth:success') return resolve()

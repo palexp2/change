@@ -90,14 +90,14 @@ const GENERIC_CONFIG_FIELDS = {
     ],
   },
   sys_stripe_weekly_payout_push: {
-    title: 'Comptabilisation QB des Stripe payouts',
-    intro: 'Les payouts CAD sont déposés dans « Compte chèques Banque Nationale », les USD dans « Venn USD ». Vider un champ revient au défaut.',
+    title: 'Comptabilisation QuickBooks des versements Stripe',
+    intro: 'Les versements CAD sont déposés dans « Compte chèques Banque Nationale », les USD dans « Venn USD ». Vider un champ revient au défaut.',
     fields: [
-      { key: 'push_since', label: 'Ne pousser que les payouts arrivés depuis (AAAA-MM-JJ)', def: '2026-04-21', hint: 'Borne de périmètre : tout payout antérieur est de l\'historique déjà comptabilisé autrement — il ne sera jamais poussé vers QuickBooks. Ne reculer cette date que si on sait exactement ce qu\'on fait.' },
-      { key: 'max_batch', label: 'Payouts maximum par passage', def: '8', hint: 'Cap de sécurité : une semaine normale compte 2 payouts (1 CAD + 1 USD). L\'excédent est reporté au passage suivant et signalé sur Slack.' },
-      { key: 'stale_alert_days', label: 'Alerte « en souffrance » après (jours)', def: '3', hint: 'Un payout réglé depuis plus de N jours toujours sans Deposit QB (bloqué par la garde, transactions non synchronisées…) est relancé sur Slack à chaque passage jusqu\'à résolution.' },
-      { key: 'slack_on_success', label: 'Résumé Slack des passages réussis (0 / 1)', def: '0', hint: '0 = Slack ne parle que quand quelque chose coince (bloqué, erreur, payout en souffrance) ; un passage qui n\'a fait que pousser des dépôts reste dans le journal. 1 = résumé de chaque passage.' },
-      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Canal du résumé (payouts bloqués, en erreur, en souffrance). Même canal que l\'alerte trésorerie par défaut.' },
+      { key: 'push_since', label: 'Ne publier que les versements arrivés depuis (AAAA-MM-JJ)', def: '2026-04-21', hint: 'Borne de périmètre : tout versement antérieur est de l\'historique déjà comptabilisé autrement — il ne sera jamais publié dans QuickBooks. Ne reculer cette date que si on sait exactement ce qu\'on fait.' },
+      { key: 'max_batch', label: 'Versements maximum par passage', def: '8', hint: 'Cap de sécurité : une semaine normale compte 2 versements (1 CAD + 1 USD). L\'excédent est reporté au passage suivant et signalé sur Slack.' },
+      { key: 'stale_alert_days', label: 'Alerte « en souffrance » après (jours)', def: '3', hint: 'Un versement réglé depuis plus de N jours toujours sans Deposit QuickBooks (bloqué par la garde, transactions non synchronisées…) est relancé sur Slack à chaque passage jusqu\'à résolution.' },
+      { key: 'slack_on_success', label: 'Résumé Slack des passages réussis (0 / 1)', def: '0', hint: '0 = Slack ne parle que quand quelque chose coince (bloqué, erreur, versement en souffrance) ; un passage qui n\'a fait que publier des dépôts reste dans le journal. 1 = résumé de chaque passage.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_TREASURY', hint: 'Canal du résumé (versements bloqués, en erreur, en souffrance). Même canal que l\'alerte trésorerie par défaut.' },
     ],
   },
   sys_ticket_survey_slack: {
@@ -121,9 +121,9 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'phone_amount', label: 'Montant téléphone par paie ($, taxes incluses)', def: '25' },
       { key: 'meals_acctnum', label: 'Compte allocation repas', def: '75930' },
       { key: 'reimb_acctnum', label: 'Compte remb. dépenses (23XXX)', def: '', hint: 'Vide = les remboursements restent dans le compte source (avertissement dans l\'aperçu).' },
-      { key: 'aga_splits', label: 'Prorata AGA (poids par compte)', def: '62100:890.86, 62200:311.78, 62201:260.11, 62300:1275.20', hint: 'Pas de compte d\'assurance : la prime est ventilée dans les comptes de salaires. Poids = montants réels des dépenses QB d\'avril à juillet 2026 (32,5375 / 11,3874 / 9,5002 / 46,575 %).' },
+      { key: 'aga_splits', label: 'Prorata AGA (poids par compte)', def: '62100:890.86, 62200:311.78, 62201:260.11, 62300:1275.20', hint: 'Pas de compte d\'assurance : la prime est ventilée dans les comptes de salaires. Poids = montants réels des dépenses QuickBooks d\'avril à juillet 2026 (32,5375 / 11,3874 / 9,5002 / 46,575 %).' },
       { key: 'aga_source_acctnum', label: 'Compte bancaire AGA (débité)', def: '10000', hint: 'Compte d\'où sort le prélèvement — porté sur la dépense elle-même (10000 · BNC).' },
-      { key: 'aga_vendor_name', label: 'Fournisseur QB de l\'AGA', def: 'Groupe Financier AGA' },
+      { key: 'aga_vendor_name', label: 'Fournisseur QuickBooks de l\'AGA', def: 'Groupe Financier AGA' },
       { key: 'aga_taxcode', label: 'Code de taxe AGA', def: 'Exonéré', hint: 'Doit être un code à 0 % — la prime d\'assurance est exonérée. Un code taxable est refusé à la publication.' },
       { key: 'aga_memo', label: 'Mémo de la dépense AGA', def: 'AGA ASS. COLL. (répartition au prorata entre les départements)' },
     ],
@@ -523,7 +523,7 @@ export default function AutomationDetail() {
 
   async function handleManualRun(dryRun) {
     const liveMessage = id === 'sys_stripe_weekly_payout_push'
-      ? 'Lancer maintenant ? Les payouts Stripe en attente seront comptabilisés pour vrai dans QuickBooks (création de Deposits).'
+      ? 'Lancer maintenant ? Les versements Stripe en attente seront comptabilisés pour vrai dans QuickBooks (création de Deposits).'
       : 'Lancer maintenant ? Cela peut envoyer de vrais emails aux clients ciblés.'
     if (!dryRun && !(await confirm({ title: 'Lancer en mode live', message: liveMessage, confirmLabel: 'Lancer', danger: true }))) return
     setManualRunning(dryRun ? 'dryRun' : 'live')

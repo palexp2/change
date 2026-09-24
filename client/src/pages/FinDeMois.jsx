@@ -386,7 +386,7 @@ function ProvisionCard({ month, provision, onChanged }) {
   }
 
   // Le calcul a bougé après la publication (heures réimportées, paie corrigée) :
-  // corrige l'écriture existante dans QB plutôt que d'en créer une seconde.
+  // corrige l'écriture existante dans QuickBooks plutôt que d'en créer une seconde.
   async function handleCorrect() {
     setCorrecting(true)
     try {
@@ -552,7 +552,7 @@ function FpaCard({ month, fpa, onChanged }) {
         </>
       }
     >
-      <Warnings items={fpa.missing_accounts?.length ? [`Compte de dépense QB manquant sur : ${fpa.missing_accounts.join(', ')} — à renseigner dans Comptes prépayés.`] : []} />
+      <Warnings items={fpa.missing_accounts?.length ? [`Compte de dépense QuickBooks manquant sur : ${fpa.missing_accounts.join(', ')} — à renseigner dans Comptes prépayés.`] : []} />
       {fpa.lines?.length ? (
         <table className="w-full text-sm">
           <tbody>

@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList } from 'lucide-react'
+import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList, LifeBuoy } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
@@ -11,6 +11,7 @@ import { Badge, phaseBadgeColor, orderStatusColor, FACTURE_STATUS_COLORS } from 
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
+import SatelliteView from '../components/SatelliteView.jsx'
 import { CrmDetailLayout, CrmCard, CrmRow, CrmAdd, CrmCenterTabs, scrollCrmToTop } from '../components/CrmDetailLayout.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import ContactDetail from './ContactDetail.jsx'
@@ -18,6 +19,7 @@ import ProjectDetail from './ProjectDetail.jsx'
 import OrderDetail from './OrderDetail.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import RetourDetail from './RetourDetail.jsx'
+import TicketDetail from './TicketDetail.jsx'
 import SerialDetail from './SerialDetail.jsx'
 import FactureDetail from './FactureDetail.jsx'
 import { AchatModal } from './AchatsFournisseurs.jsx'
@@ -645,6 +647,7 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [achatsTotal, setAchatsTotal] = useState(0)
   const [selectedAchat, setSelectedAchat] = useState(null)
   const [retours, setRetours] = useState([])
+  const [tickets, setTickets] = useState([])
   const [adresses, setAdresses] = useState([])
   const [showAdresseModal, setShowAdresseModal] = useState(false)
   const [editingAdresse, setEditingAdresse] = useState(null)
@@ -740,8 +743,9 @@ export default function CompanyDetail({ recordId, onClose }) {
     return TABLE_COLUMN_META.company_orders.map(m => ({ ...m, render: RENDERS[m.id] }))
   }, [])
 
-  // L'onglet « Billets » a disparu avec `tickets.company_id` (migration 040) :
-  // un billet ne cite plus aucune entreprise.
+  // Billets : rattachés par leur champ lien « Entreprise » (tickets.company_id
+  // droppée, migration 040). Colonnes = champs des billets, rendus par DataTable.
+  const ticketColumns = TABLE_COLUMN_META.company_tickets
 
   const factureColumns = useMemo(() => {
     const RENDERS = {
@@ -886,6 +890,7 @@ export default function CompanyDetail({ recordId, onClose }) {
     api.auth.users().then(setUsers).catch(() => {})
     api.shipments.list({ company_id: id, limit: 'all' }).then(r => { setEnvois(r.data || []); setEnvoisTotal(r.total || r.data?.length || 0) }).catch(() => {})
     api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
+    api.companies.tickets(id).then(r => setTickets(r.data || [])).catch(() => {})
   }, [id, reloadAbonnements])
 
   // Achats fournisseurs : seulement si l'entreprise est aussi un fournisseur QB.
@@ -1172,6 +1177,32 @@ export default function CompanyDetail({ recordId, onClose }) {
       ),
     },
     {
+      key: 'billets', label: 'Billets', rows: tickets,
+      row: r => ({
+        to: `/tickets/${r.id}`,
+        primary: r.cf_billet || 'Billet',
+        secondary: r.titre || null,
+        meta: fmtDate(r.cf_date),
+      }),
+      table: () => (
+        <DataTable
+          table="company_tickets"
+          columns={ticketColumns}
+          data={tickets}
+          searchFields={['cf_billet', 'titre', 'cf_statut']}
+          peek={{
+            title: row => row.cf_billet || 'Billet',
+            subtitle: () => company.name,
+            to: row => `/tickets/${row.id}`,
+            width: 720,
+            render: (row, { close }) => <TicketDetail recordId={row.id} embedded onClose={close} />,
+          }}
+          height={stackedTableHeight(tickets.length)}
+          emptyState={{ icon: LifeBuoy, title: 'Aucun billet' }}
+        />
+      ),
+    },
+    {
       key: 'serials', label: 'N° de série', rows: company.serials || [],
       row: r => ({
         to: `/serials/${r.id}`,
@@ -1402,6 +1433,14 @@ export default function CompanyDetail({ recordId, onClose }) {
                 </DetailField>
               ))}
             </DetailFieldGrid>
+
+            {/* Le site vu du ciel : la taille des serres se juge là, pas dans
+                une adresse. Affiché seulement quand la fiche est située. */}
+            {Number.isFinite(Number(company.latitude)) && Number.isFinite(Number(company.longitude)) && (
+              <CrmCard title="Vu du ciel" testId="crm-card-satellite" defaultOpen>
+                <SatelliteView lat={Number(company.latitude)} lng={Number(company.longitude)} />
+              </CrmCard>
+            )}
 
             <CrmCard
               title="Adresses"

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { isCheckboxTruthy } from '../lib/customFieldDisplay.jsx'
+import { toDateTimeLocalInput, fromDateTimeLocalInput } from '../lib/formatDate.js'
 
 // Éditeurs « inline » pour les champs d'une fiche détail : la valeur s'édite sur
 // place et part toute seule au blur (règle de design CLAUDE.md — autosave
@@ -140,13 +141,34 @@ export function InlineNumber({
 }
 
 // Date : commit au changement (le sélecteur natif n'a pas de « blur » utile).
-export function InlineDate({ value, saving, onSave, className = 'input text-sm w-full', testId }) {
+// `withTime` : date + heure, commit au blur (chaque segment tapé déclencherait
+// sinon un enregistrement).
+export function InlineDate({ value, saving, onSave, withTime = false, className = 'input text-sm w-full', testId }) {
+  if (withTime) return <InlineDateTime value={value} saving={saving} onSave={onSave} className={className} testId={testId} />
   const current = value == null ? '' : String(value).slice(0, 10)
   return (
     <input
       type="date"
       value={current}
       onChange={e => { if (e.target.value !== current) onSave(e.target.value) }}
+      className={className}
+      disabled={saving}
+      data-testid={testId}
+    />
+  )
+}
+
+function InlineDateTime({ value, saving, onSave, className, testId }) {
+  const current = toDateTimeLocalInput(value)
+  const [local, setLocal] = useState(current)
+  useEffect(() => { setLocal(current) }, [current])
+  return (
+    <input
+      type="datetime-local"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => { if (e.target.value !== current) onSave(fromDateTimeLocalInput(e.target.value)) }}
+      onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
       className={className}
       disabled={saving}
       data-testid={testId}

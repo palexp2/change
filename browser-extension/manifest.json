@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Orisha — Pont de session",
+  "version": "1.2.2",
+  "description": "Envoie à l'ERP Orisha les sessions ouvertes des portails fournisseurs, puis lance la collecte des factures. Fonctionne dans Edge comme dans Chrome.",
+  "permissions": [
+    "cookies",
+    "storage",
+    "alarms",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://customer.orisha.io/*",
+    "https://*.amazon.ca/*",
+    "https://*.amazon.com/*",
+    "https://*.wix.com/*",
+    "https://*.bell.ca/*",
+    "https://*.digikey.ca/*",
+    "https://*.simplexwireless.com/*",
+    "https://*.fedex.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Orisha — Tout récolter"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "optional_host_permissions": [
+    "https://*/*"
+  ]
+}

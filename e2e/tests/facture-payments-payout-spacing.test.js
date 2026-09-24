@@ -13,7 +13,7 @@ const DB_PATH = process.env.ERP_DB_PATH || '/home/ec2-user/erp/server/data/erp.d
 // section « Paiements et remboursements » du détail facture. Le `<th>` et le
 // `<td>` Payout doivent avoir un padding-left > 0 (Tailwind `pl-4` = 16px).
 // Lecture-seule sur la DB — sélectionne une facture existante avec paiements.
-describe('FacturePayments — colonne Payout décollée de Montant', () => {
+describe('FacturePayments — colonne Versement décollée de Montant', () => {
   let browser, ctx, page, db, factureId
 
   before(async () => {
@@ -41,19 +41,19 @@ describe('FacturePayments — colonne Payout décollée de Montant', () => {
     await browser?.close()
   })
 
-  test('le <th>Payout</th> a un padding-left > 0', async () => {
+  test('le <th>Versement</th> a un padding-left > 0', async () => {
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
-    const th = page.locator('th', { hasText: /^Payout$/ }).first()
+    const th = page.locator('th', { hasText: /^Versement$/ }).first()
     await th.waitFor({ timeout: 5000 })
     const padLeft = await th.evaluate(el => parseFloat(getComputedStyle(el).paddingLeft))
-    assert.ok(padLeft > 0, `padding-left du <th>Payout</th> doit être > 0 (reçu: ${padLeft}px)`)
+    assert.ok(padLeft > 0, `padding-left du <th>Versement</th> doit être > 0 (reçu: ${padLeft}px)`)
   })
 
   test('la première <td> Payout a un padding-left > 0', async () => {
     await page.goto(`${URL}/factures/${factureId}`, { waitUntil: 'networkidle' })
-    const th = page.locator('th', { hasText: /^Payout$/ }).first()
+    const th = page.locator('th', { hasText: /^Versement$/ }).first()
     await th.waitFor({ timeout: 5000 })
-    // Trouve l'index de la colonne Payout dans son thead.
+    // Trouve l'index de la colonne Versement dans son thead.
     const colIndex = await th.evaluate(el => {
       const ths = Array.from(el.parentElement.children)
       return ths.indexOf(el)

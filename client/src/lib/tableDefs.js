@@ -51,11 +51,14 @@ export const TABLE_LABELS = {
   paies:          'Paies',
   paie_items:     'Items de paie',
   stock_movements: "Mouvements d'inventaire",
+  achats_fournitures: 'Achats de fournitures',
+  fournitures:    'Fournitures',
+  fourniture_achats: 'Achats (fourniture)',
   product_movements: "Mouvements de stock (produit)",
   product_purchases: 'Achats (pièce)',
   sync_log: 'Journal de synchronisation',
   journal_entries: 'Écritures de journal',
-  stripe_payouts: 'Stripe Payouts',
+  stripe_payouts: 'Versements Stripe',
   stripe_invoice_items: 'Items vendus',
   automations:    'Automations',
   soumissions:    'Soumissions',
@@ -122,6 +125,29 @@ export const LINKED_RECORD_TYPE_LABELS = {
   project_name: 'Lien vers Projet',
 }
 
+// Choix du champ « Type » de la table Airtable des mouvements d'inventaire,
+// dans l'ordre de la base.
+export const STOCK_MOVEMENT_TYPES = [
+  'Fabrication', 'Utilisation pour le reconditionnement', 'Prélèvement pour R&D', 'Restitution R&D',
+  'Ajustement (diminution)', 'Ajustement (augmentation)', 'Utilisation de pièces usagés',
+]
+
+// Couleurs de ces choix dans Airtable.
+export const STOCK_MOVEMENT_TYPE_COLORS = {
+  'Fabrication': 'blue',
+  'Utilisation pour le reconditionnement': 'indigo',
+  'Prélèvement pour R&D': 'orange',
+  'Restitution R&D': 'orange',
+  'Ajustement (diminution)': 'yellow',
+  'Ajustement (augmentation)': 'yellow',
+  'Utilisation de pièces usagés': 'teal',
+}
+
+// Quantité signée, comme « Changement » dans Airtable : le sens (colonne `type`)
+// n'est plus affiché ailleurs.
+export const stockMovementSignedQty = row =>
+  (row.type === 'out' || (row.type === 'adjustment' && /diminution/i.test(row.reason || ''))) ? -row.qty : row.qty
+
 export const TABLE_COLUMN_META = {
   // Feed des opérations — journal d'activité (qui / quoi / quand). Lecture seule.
   // Les options single_select reflètent les valeurs brutes émises par
@@ -154,17 +180,18 @@ export const TABLE_COLUMN_META = {
   // Revenus perçus d'avance (/revenus-reportes) — lignes calculées par le
   // serveur pour le mois choisi, pas une table de la base. Les montants sont en
   // CAD, convertis au taux de l'encaissement.
+  // Dépôts du compte 23900 : un dossier par client ou par facture. Le solde est
+  // la colonne qui compte — le reste explique d'où il vient.
   revenus_reportes: [
-    { id: 'company_name',          label: 'Client',         field: 'company_name', width: 180 },
-    { id: 'document_number',       label: 'Facture',        field: 'document_number', width: 150 },
-    { id: 'source',                label: 'Source',         field: 'source', type: 'single_select', options: ['Stripe', 'Facture ERP'], width: 100 },
-    { id: 'periode',               label: 'Période',        field: 'periode', width: 195 },
-    { id: 'total_ht_cad',          label: 'Total HT',       field: 'total_ht_cad', type: 'number' },
-    { id: 'recognized_before_cad', label: 'Déjà constaté',  field: 'recognized_before_cad', type: 'number' },
-    { id: 'to_recognize_cad',      label: 'À constater',    field: 'to_recognize_cad', type: 'number' },
-    { id: 'remaining_cad',         label: 'Report restant', field: 'remaining_cad', type: 'number' },
-    { id: 'deferral_acctnum',      label: 'Compte report',  field: 'deferral_acctnum' },
-    { id: 'etat',                  label: 'État',           field: 'etat', type: 'single_select', options: ['Constaté', 'À constater', 'Reporté'] },
+    { id: 'company_name',    label: 'Client',        field: 'company_name', width: 240 },
+    { id: 'last_date',       label: 'Dernier mouvement', field: 'last_date', type: 'date', width: 150 },
+    { id: 'encaisse',        label: 'Encaissé',      field: 'encaisse', type: 'number' },
+    { id: 'libere',          label: 'Libéré',        field: 'libere', type: 'number' },
+    { id: 'solde',           label: 'Solde',         field: 'solde', type: 'number' },
+    { id: 'etat',            label: 'État',          field: 'etat', type: 'single_select', options: ['À constater', 'Anomalie', 'Réglé'] },
+    { id: 'document_number', label: 'Facture',       field: 'document_number', width: 150, defaultVisible: false },
+    { id: 'versements',      label: 'Versements',    field: 'versements', type: 'number', defaultVisible: false },
+    { id: 'first_date',      label: 'Premier mouvement', field: 'first_date', type: 'date', defaultVisible: false },
   ],
 
   // Codes d'activité — page de gestion (feuilles de temps). Édition inline via
@@ -298,9 +325,6 @@ export const TABLE_COLUMN_META = {
     { id: 'name_fr',   label: 'Nom',                    field: 'name_fr' },
     { id: 'name_en',   label: 'Nom (EN)',               field: 'name_en',   defaultVisible: false },
     { id: 'sku',       label: 'SKU',                    field: 'sku' },
-    // Codes-barres du fournisseur acceptés par le scan d'une commande (fiche
-    // pièce → « Codes-barres »). Masquée par défaut : sert surtout à chercher.
-    { id: 'scan_codes', label: 'Codes-barres',          field: 'scan_codes', defaultVisible: false },
     { id: 'type',      label: 'Type',                   field: 'type' },
     { id: 'unit_cost', label: 'Coût unitaire',          field: 'unit_cost', type: 'currency', defaultVisible: false },
     { id: 'price_cad', label: 'Prix (CAD)',             field: 'price_cad', type: 'currency', defaultVisible: false },
@@ -739,7 +763,7 @@ export const TABLE_COLUMN_META = {
   bank_transactions: [
     { id: 'txn_date',     label: 'Date',        field: 'txn_date',    type: 'date', width: 104 },
     { id: 'description',  label: 'Libellé',     field: 'label' },
-    { id: 'bank_description', label: 'Description banque', field: 'description', defaultVisible: false },
+    { id: 'bank_description', label: 'Description', field: 'description', width: 200 },
     { id: 'reference',    label: 'Référence',   field: 'reference',   defaultVisible: false },
     // Relevé bancaire : sortie et entrée dans deux colonnes séparées, comme sur
     // le papier de la banque et dans l'ancien TRX_Orisha.xlsx. `amount` (signé)
@@ -752,37 +776,63 @@ export const TABLE_COLUMN_META = {
     // Fournisseur : le document apparié quand il existe, sinon le fournisseur
     // reconnu derrière le libellé du relevé (résolu côté serveur).
     { id: 'vendor',       label: 'Fournisseur', field: 'vendor_name', width: 180 },
-    { id: 'matched_label', label: 'Document',   field: 'matched_label', width: 200 },
+    // État à la banque, rempli pour toute transaction quelle que soit la source
+    // (fichier de suivi, relevé, Plaid) : autorisée, en attente, ou passée.
+    { id: 'bank_state',   label: 'État',        field: 'bank_state', type: 'single_select', width: 110, options: ['complete', 'en_attente', 'autorise'] },
     { id: 'match_confidence', label: 'Confiance', field: 'match_confidence', type: 'number', defaultVisible: false },
     // Rarement rempli, et il poussait les boutons d'action hors de l'écran.
     { id: 'comment',      label: 'Commentaire', field: 'comment', defaultVisible: false },
     { id: 'reconciled_by_name', label: 'Rapproché par', field: 'reconciled_by_name', type: 'user', defaultVisible: false },
   ],
 
+  // Fournitures (bureau, entretien, emballage) — miroir Airtable ; leurs achats
+  // se voient dans la fiche.
+  fournitures: [
+    { id: 'name',              label: 'Fourniture',    field: 'name',              width: 420 },
+    { id: 'supplier',          label: 'Fournisseur',   field: 'supplier' },
+    { id: 'unit',              label: 'Unité',         field: 'unit' },
+    { id: 'reference_price',   label: 'Prix de réf.',  field: 'reference_price',   type: 'number' },
+    { id: 'last_purchased_at', label: 'Dernier achat', field: 'last_purchased_at', type: 'date' },
+    { id: 'achats_count',      label: 'Achats',        field: 'achats_count',      type: 'number' },
+    { id: 'total_spent',       label: 'Total av. tx.', field: 'total_spent',       type: 'number' },
+  ],
+
+  // Achats de fournitures (bureau, entretien, emballage) — miroir Airtable.
+  achats_fournitures: [
+    { id: 'purchased_at',    label: 'Date',          field: 'purchased_at',    type: 'date' },
+    { id: 'fourniture_name', label: 'Fourniture',    field: 'fourniture_name', width: 420 },
+    { id: 'supplier',        label: 'Fournisseur',   field: 'supplier' },
+    { id: 'qty',             label: 'Quantité',      field: 'qty',             type: 'number' },
+    { id: 'unit',            label: 'Unité',         field: 'unit' },
+    { id: 'unit_price',      label: 'Prix unitaire', field: 'unit_price',      type: 'number' },
+    { id: 'total',           label: 'Total av. tx.', field: 'total',           type: 'number' },
+    { id: 'reference_price', label: 'Prix de réf.',  field: 'reference_price', type: 'number', defaultVisible: false },
+  ],
+
   stock_movements: [
     { id: 'created_at',     label: 'Date',           field: 'created_at',     type: 'date' },
     { id: 'product_sku',    label: 'SKU',            field: 'product_sku' },
     { id: 'product_name',   label: 'Produit',        field: 'product_name'  },
-    { id: 'type',           label: 'Type',           field: 'type',           type: 'single_select', options: ['in', 'out', 'adjustment'] },
+    // « Type » = le champ Type d'Airtable, repris tel quel dans `reason` — mêmes
+    // choix, même ordre. La colonne SQL `type` (in/out/adjustment) n'est qu'un
+    // sens dérivé au sync : il se lit dans le signe de la quantité.
+    { id: 'type',           label: 'Type',           field: 'reason',         type: 'single_select', options: STOCK_MOVEMENT_TYPES },
     { id: 'qty',            label: 'Quantité',       field: 'qty',            type: 'number' },
-    { id: 'reason',         label: 'Raison',         field: 'reason',         type: 'single_select', options: ['Fabrication', 'Utilisation pour le reconditionnement', 'Ajustement (augmentation)', 'Ajustement (diminution)', 'Utilisation de pièces usagés', 'Prélèvement pour R&D'] },
     { id: 'unit_cost',      label: 'Coût unitaire',  field: 'unit_cost',      type: 'number' },
     { id: 'movement_value', label: 'Valeur',         field: 'movement_value', type: 'number' },
     { id: 'user_name',      label: 'Utilisateur',    field: 'user_name',      type: 'user', defaultVisible: false },
-    { id: 'reference_id',   label: 'Référence',      field: 'reference_id',   defaultVisible: false },
   ],
 
   // Historique des mouvements de stock affiché sur la fiche produit (un seul produit) :
   // pas de colonnes produit (SKU/nom) puisque la fiche concerne déjà un produit unique.
   product_movements: [
     { id: 'created_at',     label: 'Date',          field: 'created_at',     type: 'date' },
-    { id: 'type',           label: 'Type',          field: 'type',           type: 'single_select', options: ['in', 'out', 'adjustment'] },
+    // Même « Type » que la page des mouvements : le champ Type d'Airtable.
+    { id: 'type',           label: 'Type',          field: 'reason',         type: 'single_select', options: STOCK_MOVEMENT_TYPES },
     { id: 'qty',            label: 'Qté',           field: 'qty',            type: 'number' },
-    { id: 'reason',         label: 'Raison',        field: 'reason',         type: 'single_select', options: ['Fabrication', 'Utilisation pour le reconditionnement', 'Ajustement (augmentation)', 'Ajustement (diminution)', 'Utilisation de pièces usagés', 'Prélèvement pour R&D'] },
     { id: 'user_name',      label: 'Utilisateur',   field: 'user_name',      type: 'user' },
     { id: 'unit_cost',      label: 'Coût unitaire', field: 'unit_cost',      type: 'number', defaultVisible: false },
     { id: 'movement_value', label: 'Valeur',        field: 'movement_value', type: 'number', defaultVisible: false },
-    { id: 'reference_id',   label: 'Référence',     field: 'reference_id',                  defaultVisible: false },
   ],
 
   // Journal de synchronisation (Connectors) — entièrement read-only.
@@ -852,7 +902,7 @@ export const TABLE_COLUMN_META = {
   users: [
     { id: 'name',   label: 'Utilisateur', field: 'name' },
     { id: 'email',  label: 'Courriel',    field: 'email' },
-    { id: 'role',   label: 'Rôle',        field: 'role',   type: 'single_select', options: ['admin', 'rh', 'sales', 'support', 'ops'] },
+    { id: 'role',   label: 'Accès',       field: 'roles',  type: 'multi_select', options: ['user', 'admin', 'rh'] },
     { id: 'active', label: 'Statut',      field: 'active', type: 'boolean' },
     // Owner HubSpot : colonne masquée tant que le connecteur HubSpot n'est pas
     // configuré (filtrée dans Admin.jsx). `hubspot_owner_name` est calculé côté
@@ -952,9 +1002,17 @@ export const TABLE_COLUMN_META = {
     { id: 'created_at',   label: 'Date',       field: 'created_at', type: 'date' },
   ],
 
-  // `company_tickets` (l'onglet « Support » d'une fiche entreprise) a disparu
-  // avec `tickets.company_id` : un billet ne cite plus aucune entreprise, il n'y
-  // a plus de billets « de cette entreprise » à lister (migration 040).
+  // Billets d'une fiche entreprise. `tickets.company_id` étant droppée
+  // (migration 040), le rattachement passe par le champ lien « Entreprise »
+  // (côté serveur : GET /companies/:id/tickets). Les colonnes sont des champs
+  // personnalisés des billets : le portier des champs retire celle dont le
+  // champ serait supprimé, et le libellé suit celui du champ.
+  company_tickets: [
+    { id: 'cf_billet', label: 'Billet', field: 'cf_billet' },
+    { id: 'titre',     label: 'Titre',  field: 'titre' },
+    { id: 'cf_statut', label: 'Statut', field: 'cf_statut', type: 'single_select' },
+    { id: 'cf_date',   label: 'Date',   field: 'cf_date', type: 'date' },
+  ],
 
   company_factures: [
     { id: 'document_number',       label: 'N° document', field: 'document_number' },
@@ -1075,6 +1133,7 @@ export const TABLE_COLUMN_META = {
   ],
 
   discovery_forms: [
+    { id: 'form_number',          label: '#',                field: 'sys_number' },
     { id: 'company_name',         label: 'Entreprise',       field: 'company_name'  },
     { id: 'status',               label: 'Statut',           field: 'status', type: 'single_select', options: ['in_progress', 'submitted'] },
     { id: 'num_greenhouses',      label: 'Nb serres',        field: 'num_greenhouses', type: 'number' },
@@ -1082,7 +1141,8 @@ export const TABLE_COLUMN_META = {
     { id: 'helper_count',         label: 'Helper',           field: 'helper_count', type: 'number' },
     { id: 'submitted_at',         label: 'Soumis le',        field: 'submitted_at', type: 'date' },
     { id: 'created_at',           label: 'Créé le',          field: 'created_at', type: 'date' },
-    { id: 'public_link',          label: 'Lien public',      field: 'public_token', sortable: false, filterable: false, groupable: false },
+    // L'URL complète, pas le jeton : retypée « URL », la colonne doit rester cliquable.
+    { id: 'public_link',          label: 'Lien public',      field: 'public_url', sortable: false, filterable: false, groupable: false },
   ],
 
   public_files: [

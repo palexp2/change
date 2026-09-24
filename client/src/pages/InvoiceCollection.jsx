@@ -169,6 +169,9 @@ function NeedsPanel({ needs, accounts }) {
               {list.map(n => <NeedRow key={n.id} need={n} />)}
             </div>
           ))}
+          <div className="px-3 py-2 border-t border-slate-100">
+            <Link to="/rapprochement" className="text-xs link-record">Toutes les sorties sans facture</Link>
+          </div>
           {uncovered.length > 0 && (
             <div className="border-t border-slate-100 bg-slate-50/60">
               <div className="px-3 pt-2 pb-1 text-[11px] font-medium text-slate-500">
@@ -426,6 +429,11 @@ function AccountCard({ account, onChanged }) {
           <div className="flex items-center gap-2">
             <span className="font-medium text-sm text-slate-800 truncate">{account.label}</span>
             {account.running ? <Badge status="running" /> : account.last_status && <Badge status={account.last_status} />}
+            {account.session_required && !account.has_session && (
+              <span className="px-1.5 py-0.5 text-[11px] font-medium rounded border bg-amber-50 text-amber-800 border-amber-300">
+                Session à envoyer
+              </span>
+            )}
             {!account.enabled && <span className="text-[11px] text-slate-400">désactivé</span>}
           </div>
           <div className="text-xs text-slate-500 mt-0.5 truncate">
@@ -545,6 +553,13 @@ export function InvoiceCollectionPanel() {
           <button onClick={load} className="p-2 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg">
             <RefreshCw size={15} />
           </button>
+          <a href={api.scrapers.bridgeModuleUrl()} download
+            className="px-2.5 py-2 text-xs text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
+            Module de navigateur
+          </a>
+          <CopyButton text={() => localStorage.getItem('erp_token') || ''} label="Jeton"
+            title="À coller dans les réglages du module de navigateur" testId="bridge-token"
+            className="px-2.5 py-2 text-xs" />
           <button onClick={() => api.scrapers.runAll().then(() => addToast({ message: 'Tournée lancée sur tous les comptes actifs', type: 'success' })).then(load)}
             className="px-3 py-2 text-sm text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-lg">
             Tout collecter

@@ -1,11 +1,15 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
 import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { ListPage } from '../components/ListPage.jsx'
+import { ListPage, FilterBanner } from '../components/ListPage.jsx'
+import { useBarcodeScanner } from '../lib/useBarcodeScanner.js'
+import { topOverlayZ } from '../lib/overlayLayers.js'
+import { findScannedProducts } from '../lib/productScan.js'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
@@ -82,6 +86,18 @@ export default function Products() {
   const [stockProduct, setStockProduct] = useState(null)
   const undoableDelete = useUndoableDelete()
   const { addToast } = useToast()
+  const [searchParams, setSearchParams] = useSearchParams()
+  const viewId = searchParams.get('vue')
+  const [scan, setScan] = useState(null)
+  const scanVersion = useRef(0)
+  const clearScan = useCallback(() => {
+    scanVersion.current += 1
+    setScan(null)
+  }, [])
+  useEffect(() => {
+    clearScan()
+    return () => { scanVersion.current += 1 }
+  }, [viewId, clearScan])
 
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
@@ -90,6 +106,42 @@ export default function Products() {
   // côté client (l'ancien endpoint le faisait via ?active=true).
   const { rows: allProducts, loading, reload } = useListData({ table: 'products' })
   const products = useMemo(() => allProducts.filter(p => p.active !== 0), [allProducts])
+
+  const handleScan = useCallback(async value => {
+    // La liste reste montée derrière une fiche ou une modale : ne pas capter
+    // les scans destinés au panneau au premier plan.
+    if (topOverlayZ() || document.activeElement?.isContentEditable) return
+    const code = value.trim()
+    if (!code) return
+    const version = ++scanVersion.current
+    setScan({ code, version, rows: [], loading: true })
+    try {
+      const rows = await findScannedProducts(code, allProducts, api)
+      if (version === scanVersion.current) setScan({ code, version, rows, loading: false })
+    } catch {
+      if (version === scanVersion.current) {
+        setScan({ code, version, rows: [], loading: false, error: true })
+      }
+    }
+  }, [allProducts])
+  useBarcodeScanner(handleScan)
+
+  // Entrée dans la recherche du tableau : un n° de série ou un code exact bascule
+  // en résultat de scan ; sinon la recherche texte reste telle quelle.
+  const handleSearchSubmit = useCallback(async value => {
+    const code = value.trim()
+    if (!code) return
+    const version = ++scanVersion.current
+    const rows = await findScannedProducts(code, allProducts, api).catch(() => [])
+    if (rows.length && version === scanVersion.current) setScan({ code, version, rows, loading: false })
+  }, [allProducts])
+
+  // Choisir une vue pendant un scan : retour à la liste complète de cette vue.
+  const handleViewSelect = useCallback(id => {
+    if (!scan) return
+    clearScan()
+    if (id) setSearchParams(prev => { const p = new URLSearchParams(prev); p.set('vue', id); return p }, { replace: true })
+  }, [scan, clearScan, setSearchParams])
 
   // Vignette pour la colonne Image — les colonnes hardcodées ne passent pas
   // par DynamicCell, le rendu custom vit ici (même pattern que Purchases).
@@ -113,6 +165,11 @@ export default function Products() {
   return (
     <ListPage
       title="Inventaire"
+      banner={scan && (
+        <FilterBanner onClear={clearScan} clearLabel="Revenir à la liste" testId="product-scan-filter">
+          <span role="status">{scan.loading ? 'Recherche…' : scan.error ? 'Recherche impossible. Réessayez.' : `Scan : ${scan.code}`}</span>
+        </FilterBanner>
+      )}
       create={{
         label: 'Nouveau produit', table: 'products', fields: PRODUCT_FORM_FIELDS, columns: 2, size: 'lg',
         onSubmit: handleCreate,
@@ -121,11 +178,13 @@ export default function Products() {
       {({ openCreate }) => (
         <>
           <DataTable
+            key={scan ? `scan-${scan.version}` : 'products'}
             table="products"
+            forceAllView={!!scan}
             manageViews
             columns={COLUMNS}
-            data={products}
-            loading={loading}
+            data={scan ? scan.rows : products}
+            loading={scan ? scan.loading : loading}
             peek={{
               title: row => row.name_fr || row.name_en || 'Produit',
               subtitle: row => [row.sku, row.type].filter(Boolean).join(' · '),
@@ -135,6 +194,9 @@ export default function Products() {
               onOpenConsumed: consumePeekOpen,
               render: (row, { close }) => <ProductDetail recordId={row.id} embedded onClose={close} /> }}
             searchFields={['name_fr', 'name_en', 'sku', 'supplier']}
+            searchAcrossViews={!scan}
+            onSearchSubmit={handleSearchSubmit}
+            onViewSelect={handleViewSelect}
             onBulkDelete={async (ids) => {
               // Le serveur refuse (409) toute pièce citée par un BOM, un envoi ou
               // un achat : on supprime ce qui peut l'être et on signale le reste,
@@ -159,7 +221,9 @@ export default function Products() {
                 })
               }
             }}
-            emptyState={{ icon: Package, title: 'Aucun produit', description: "Aucun produit n'est encore au catalogue. Ajoute un produit pour le vendre et l'assembler.", cta: { label: 'Nouveau produit', icon: Plus, onClick: openCreate } }}
+            emptyState={scan
+              ? { icon: Package, title: scan.error ? 'Recherche impossible' : 'Code inconnu', description: scan.error ? 'Scannez à nouveau pour réessayer.' : `Aucune pièce trouvée pour « ${scan.code} ».` }
+              : { icon: Package, title: 'Aucun produit', description: "Aucun produit n'est encore au catalogue. Ajoute un produit pour le vendre et l'assembler.", cta: { label: 'Nouveau produit', icon: Plus, onClick: openCreate } }}
           />
 
           <Modal isOpen={!!stockProduct} onClose={() => setStockProduct(null)} title="Ajustement de stock" size="sm">

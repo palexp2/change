@@ -1,3 +1,4 @@
+import { encryptCredentials, decryptCredentials } from '../utils/encryption.js'
 import db from '../db/database.js'
 import { APP_URL } from '../config/appUrl.js'
 
@@ -82,7 +83,7 @@ export async function getAccessToken() {
 
   // Token valide → retour immédiat (buffer 60 s)
   if (!row.expiry_date || Date.now() <= row.expiry_date - 60_000) {
-    return row.access_token
+    return decryptCredentials(row.access_token)
   }
 
   // Un refresh est déjà en cours → attendre sa résolution
@@ -96,7 +97,7 @@ export async function getAccessToken() {
         ORDER BY updated_at DESC LIMIT 1
       `).get()
       if (fresh && (!fresh.expiry_date || Date.now() <= fresh.expiry_date - 60_000)) {
-        return fresh.access_token
+        return decryptCredentials(fresh.access_token)
       }
 
       const { clientId, clientSecret } = getCredentials()
@@ -105,7 +106,7 @@ export async function getAccessToken() {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
         body: new URLSearchParams({
           grant_type: 'refresh_token',
-          refresh_token: fresh.refresh_token,
+          refresh_token: decryptCredentials(fresh.refresh_token),
           client_id: clientId,
           client_secret: clientSecret,
         }),
@@ -119,7 +120,7 @@ export async function getAccessToken() {
         UPDATE connector_oauth
         SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
-      `).run(t.access_token, t.refresh_token || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
+      `).run(encryptCredentials(t.access_token), encryptCredentials(t.refresh_token) || null, t.expires_in ? Date.now() + t.expires_in * 1000 : null, fresh.id)
       return t.access_token
     } finally {
       refreshLock = null

@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'crypto'
 import { readFileSync, writeFileSync, renameSync } from 'fs'
 import { resolve } from 'path'
 import { fileURLToPath } from 'url'
-import { requireAuth, requireAdmin } from '../middleware/auth.js'
+import { requireAdmin } from '../middleware/auth.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import { getClaudeUsage } from '../services/claudeUsage.js'
 import { getCodexUsage } from '../services/codexUsage.js'
@@ -72,7 +72,7 @@ router.post('/tasks/internal', (req, res) => {
 })
 
 // All routes below require authentication
-router.use(requireAuth)
+router.use(requireAdmin)
 
 // ─── Global on/off toggle + prompts éditables ─────────────────────────────────
 // `defaults` accompagne les valeurs courantes pour que le front puisse proposer un

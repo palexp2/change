@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useMemo } from 'react'
 import {
   CheckCircle2, AlertCircle, AlertTriangle, ExternalLink, RefreshCw,
@@ -88,7 +89,7 @@ const TONE_COLORS = {
 
 export default function FactureAccountingSection({ facture, onChanged }) {
   const { user } = useAuth()
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = hasRole(user, 'admin')
   const [payments, setPayments] = useState([])
   const [payouts, setPayouts] = useState({})
   const [verifying, setVerifying] = useState(false)
@@ -232,7 +233,7 @@ export default function FactureAccountingSection({ facture, onChanged }) {
             <button
               onClick={() => { setLinkError(null); setLinkKind('recognized') }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-200"
-              title="Lier une Journal Entry QB déjà existante (sans rien créer dans QuickBooks)."
+              title="Lier une écriture déjà existante (sans rien créer dans QuickBooks)."
               data-testid="accounting-link-recognized-btn"
             >
               <Link2 size={12} /> Lier JE existante
@@ -242,7 +243,7 @@ export default function FactureAccountingSection({ facture, onChanged }) {
             <button
               onClick={() => { setLinkError(null); setLinkKind('deferred') }}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg border border-slate-200"
-              title="Lier un Deposit/SR/JE QB déjà existant qui pose le passif 23900 (sans rien créer dans QuickBooks)."
+              title="Lier un Deposit, reçu de vente ou écriture déjà existant qui pose le passif 23900 (sans rien créer dans QuickBooks)."
               data-testid="accounting-link-deferred-btn"
             >
               <Link2 size={12} /> Lier revenu différé
@@ -256,7 +257,7 @@ export default function FactureAccountingSection({ facture, onChanged }) {
               data-testid="verify-qb-btn"
             >
               <RefreshCw size={12} className={verifying ? 'animate-spin' : ''} />
-              {verifying ? 'Vérification…' : 'Vérifier dans QB'}
+              {verifying ? 'Vérification…' : 'Vérifier dans QuickBooks'}
             </button>
           )}
         </div>
@@ -422,7 +423,7 @@ function LinkQbModal({ kind, facture, linking, error, onCancel, onSubmit }) {
   if (!kind || !facture) return null
   const isRecognized = kind === 'recognized'
   const title = isRecognized
-    ? 'Lier une Journal Entry QB existante'
+    ? 'Lier une écriture QuickBooks existante'
     : 'Lier un passif Revenus perçus d\'avance existant'
   const handleSubmit = () => {
     const trimmed = qbId.trim()
@@ -658,9 +659,9 @@ function buildEvents(facture, payments, payouts, checkByKind) {
       : 0
     const recognizedNative = (Number(facture.total_amount) || 0) - taxesTotal
     const recognizedNativeCurrency = facture.currency || 'CAD'
-    let label = 'Payout Stripe vers banque'
-    if (withDeferred) label = 'Payout Stripe + revenu perçu d\'avance'
-    else if (withRecognition) label = 'Payout Stripe + vente constatée'
+    let label = 'Versement Stripe vers banque'
+    if (withDeferred) label = 'Versement Stripe + revenu perçu d\'avance'
+    else if (withRecognition) label = 'Versement Stripe + vente constatée'
     events.push({
       id: `payout-${po.payout.stripe_id}`,
       date: po.payout.arrival_date || po.payout.created_date,
@@ -681,7 +682,7 @@ function buildEvents(facture, payments, payouts, checkByKind) {
   }
 
   // Revenu perçu d'avance posté indépendamment d'un encaissement (cas legacy
-  // ou si la JE de passif n'a pas été agrégée sur le même dépôt QB qu'un
+  // ou si la JE de passif n'a pas été agrégée sur le même dépôt QuickBooks qu'un
   // encaissement manuel ou un payout Stripe).
   if (facture.deferred_revenue_at && !deferredAbsorbed) {
     events.push(makeDeferredEvent(facture, checkByKind))
@@ -895,7 +896,7 @@ function EventRow({ event, onAnomalyClick, canEdit, onEditClick }) {
             <ExternalLink size={10} /> {event.qbLink.label}
           </a>
         ) : (
-          <span className="inline-flex items-center gap-0.5 text-slate-400 font-mono" title="Lien QB indisponible">
+          <span className="inline-flex items-center gap-0.5 text-slate-400 font-mono" title="Lien QuickBooks indisponible">
             {event.qbLink.label}
           </span>
         )
@@ -1027,7 +1028,7 @@ function ClearConfirmModal({ confirm, clearing, facture, onCancel, onConfirm }) 
         </ul>
         {qbRef && (
           <p className="text-xs text-slate-500">
-            Référence QB pointée par cette facture : <code>{qbRef}</code>. Cette transaction restera intacte dans QuickBooks.
+            Référence QuickBooks pointée par cette facture : <code>{qbRef}</code>. Cette transaction restera intacte dans QuickBooks.
           </p>
         )}
         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded p-2">

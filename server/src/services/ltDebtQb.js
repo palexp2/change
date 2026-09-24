@@ -65,11 +65,19 @@ export async function publishDebtPaymentExpense(debt, payment) {
 
   const entityRef = (await resolvePreviousEntityRef(debt.id))
     || { value: await findOrCreateVendor(debt.lender || debt.label), type: 'Vendor' }
+  // DATE : celle du DÉBIT AU COMPTE, pas celle de la cédule. Le prêteur prélève
+  // quand il veut (cédule au 11, débit le 14) ; c'est le relevé qui fait foi,
+  // sinon l'écriture ne tombe pas dans le même mois que l'argent. Sans ligne au
+  // relevé (versement publié d'avance), la cédule reste la seule date connue.
+  const bankDate = payment.bank_txn_id
+    ? db.prepare('SELECT txn_date FROM bank_transactions WHERE id=? AND deleted_at IS NULL').get(payment.bank_txn_id)?.txn_date
+    : null
+
   const purchase = {
     PaymentType: 'Cash',
     AccountRef: { value: bankId },
     EntityRef: entityRef,
-    TxnDate: payment.payment_date,
+    TxnDate: bankDate || payment.payment_date,
     PrivateNote: fee > 0 && debt.annual_fee_acctnum
       ? `Versement — ${ref} + ${feeLabel} (${fee} $)`
       : `Versement — ${ref}`,

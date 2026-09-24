@@ -6,7 +6,7 @@ import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 
-export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onClose, onDone }) {
+export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, individualBoxes = false, onClose, onDone }) {
   const [step, setStep] = useState('package') // 'package' | 'rates' | 'confirm' | 'done'
   const [preset, setPreset] = useState('moyenne')
   const [qty, setQty] = useState(1)
@@ -14,6 +14,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
     orderItemsTotalWeight > 0 ? orderItemsTotalWeight.toFixed(2) : '1'
   )
   const [custom, setCustom] = useState({ length: '', width: '', depth: '' })
+  const [extraBoxes, setExtraBoxes] = useState([])
   const [declaredValue, _setDeclaredValue] = useState('1')
   const [rates, setRates] = useState([])
   const [requestId, setRequestId] = useState(null)
@@ -44,22 +45,42 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   const isEnvelope = BOX_PRESETS[preset]?.packagingType === 'envelope'
   const effectiveQty = isEnvelope ? 1 : qty
   const effectiveWeight = isEnvelope ? '1' : totalWeight  // Novoxpress exige un poids ≥ 1 même pour enveloppe
+  const boxes = individualBoxes && !isEnvelope
+    ? [{ preset, custom }, ...extraBoxes]
+    : [{ preset, custom }]
+
+  function changeQuantity(value) {
+    const nextQty = Math.max(1, parseInt(value) || 1)
+    setQty(nextQty)
+    if (individualBoxes) {
+      setExtraBoxes(previous => Array.from({ length: nextQty - 1 }, (_, index) =>
+        previous[index] || { preset, custom: { ...custom } }
+      ))
+    }
+  }
+
+  function updateBox(index, update) {
+    setExtraBoxes(previous => previous.map((box, i) => i === index ? { ...box, ...update } : box))
+  }
+
+  function dimensions(box) {
+    return box.preset === 'custom' ? box.custom : BOX_PRESETS[box.preset]
+  }
 
   function buildPackages() {
-    const p = BOX_PRESETS[preset]
-    const length = preset === 'custom' ? custom.length : p.length
-    const width  = preset === 'custom' ? custom.width  : p.width
-    const depth  = preset === 'custom' ? custom.depth  : p.depth
     const perBox = effectiveQty > 0
       ? String(Math.max(1, Math.ceil(parseFloat(effectiveWeight) / effectiveQty)))
       : String(Math.max(1, Math.ceil(parseFloat(effectiveWeight))))
-    return [{
-      quantity: String(effectiveQty),
-      weight: String(perBox),
-      length: String(length),
-      width: String(width),
-      depth: String(depth),
-    }]
+    return boxes.map(box => {
+      const { length, width, depth } = dimensions(box)
+      return {
+        quantity: individualBoxes ? '1' : String(effectiveQty),
+        weight: String(perBox),
+        length: String(length),
+        width: String(width),
+        depth: String(depth),
+      }
+    })
   }
 
   function packagingType() {
@@ -67,15 +88,21 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   }
 
   async function handleGetRates() {
-    if (!isEnvelope && (!totalWeight || parseFloat(totalWeight) <= 0)) {
+    if (!isEnvelope && (!Number.isFinite(Number(totalWeight)) || Number(totalWeight) <= 0)) {
       setError('Entrez un poids total valide'); return
     }
-    if (preset === 'custom' && (!custom.length || !custom.width || !custom.depth)) {
-      setError('Entrez toutes les dimensions de la boîte'); return
+    const invalidBox = boxes.findIndex(box => {
+      const size = dimensions(box)
+      return ['length', 'width', 'depth'].some(key => !Number.isFinite(Number(size[key])) || Number(size[key]) <= 0)
+    })
+    if (invalidBox !== -1) {
+      setError(`Boîte ${invalidBox + 1} : entrez trois dimensions supérieures à zéro.`); return
     }
     setError('')
     setErrorDetails(null)
     setDiagnostic(null)
+    setUps(null)
+    setUpsError('')
     setLoading(true)
     setStep('rates')
     const sentPayload = {
@@ -247,7 +274,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
   if (step === 'package') return (
     <div className="space-y-4">
       <div>
-        <label className="label">Type de colis</label>
+        <label className="label">{individualBoxes && !isEnvelope && qty > 1 ? 'Boîte 1 — format' : 'Type de colis'}</label>
         <div className="space-y-2">
           {Object.entries(BOX_PRESETS).map(([key, box]) => (
             <label key={key} className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${preset === key ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:border-slate-300'}`}>
@@ -262,9 +289,9 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
         <div>
           <label className="label">Dimensions (pouces) — L × l × H</label>
           <div className="grid grid-cols-3 gap-2">
-            <input type="number" min="1" className="input text-center" value={custom.length} onChange={e => setCustom(c => ({ ...c, length: e.target.value }))} />
-            <input type="number" min="1" className="input text-center" value={custom.width}  onChange={e => setCustom(c => ({ ...c, width: e.target.value }))} />
-            <input type="number" min="1" className="input text-center" value={custom.depth}  onChange={e => setCustom(c => ({ ...c, depth: e.target.value }))} />
+            <input aria-label="Boîte 1 — longueur (po)" type="number" min="0.1" step="any" className="input text-center" value={custom.length} onChange={e => setCustom(c => ({ ...c, length: e.target.value }))} />
+            <input aria-label="Boîte 1 — largeur (po)" type="number" min="0.1" step="any" className="input text-center" value={custom.width} onChange={e => setCustom(c => ({ ...c, width: e.target.value }))} />
+            <input aria-label="Boîte 1 — hauteur (po)" type="number" min="0.1" step="any" className="input text-center" value={custom.depth} onChange={e => setCustom(c => ({ ...c, depth: e.target.value }))} />
           </div>
         </div>
       )}
@@ -272,8 +299,9 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
       {!isEnvelope && (
         <>
           <div>
-            <label className="label">Poids total (lbs)</label>
+            <label className="label" htmlFor="label-total-weight">Poids total (lbs)</label>
             <input
+              id="label-total-weight"
               type="number" min="0.1" step="0.1"
               className="input"
               value={totalWeight}
@@ -284,16 +312,49 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
                 Calculé depuis les articles : {orderItemsTotalWeight.toFixed(2)} lbs
               </p>
             )}
+            {individualBoxes && qty > 1 && <p className="text-xs text-slate-400 mt-1">Réparti également entre les {qty} boîtes.</p>}
           </div>
           <div>
-            <label className="label">Nombre de colis</label>
+            <label className="label" htmlFor="label-package-count">Nombre de colis</label>
             <input
+              id="label-package-count"
               type="number" min="1" step="1"
               className="input"
               value={qty}
-              onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+              onChange={e => changeQuantity(e.target.value)}
             />
           </div>
+          {individualBoxes && extraBoxes.map((box, index) => (
+            <fieldset key={index} className="border-t border-slate-200 pt-3 space-y-2">
+              <legend className="text-sm font-medium text-slate-700">Boîte {index + 2}</legend>
+              <label className="label" htmlFor={`label-box-${index + 2}`}>Format</label>
+              <select
+                id={`label-box-${index + 2}`}
+                className="input"
+                value={box.preset}
+                onChange={e => updateBox(index, { preset: e.target.value })}
+              >
+                {Object.entries(BOX_PRESETS).filter(([, option]) => option.packagingType !== 'envelope').map(([key, option]) => (
+                  <option key={key} value={key}>{option.label}</option>
+                ))}
+              </select>
+              {box.preset === 'custom' && (
+                <div className="grid grid-cols-3 gap-2">
+                  {[['length', 'Longueur'], ['width', 'Largeur'], ['depth', 'Hauteur']].map(([key, label]) => (
+                    <label key={key} className="text-xs text-slate-500">
+                      {label} (po)
+                      <input
+                        aria-label={`Boîte ${index + 2} — ${label.toLowerCase()} (po)`}
+                        type="number" min="0.1" step="any" className="input text-center mt-1"
+                        value={box.custom[key]}
+                        onChange={e => updateBox(index, { custom: { ...box.custom, [key]: e.target.value } })}
+                      />
+                    </label>
+                  ))}
+                </div>
+              )}
+            </fieldset>
+          ))}
         </>
       )}
 
@@ -385,7 +446,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
           <span className="text-slate-400">Tarif</span>
           <span className="font-semibold text-brand-700">{fmtPrice(selectedRate)}</span>
           <span className="text-slate-400">{isEnvelope ? 'Type' : 'Boîte'}</span>
-          <span>{BOX_PRESETS[preset]?.label || 'Personnalisée'}{isEnvelope ? '' : ` × ${qty}`}</span>
+          <span>{individualBoxes && !isEnvelope ? `${qty} boîte${qty > 1 ? 's' : ''}` : <>{BOX_PRESETS[preset]?.label || 'Personnalisée'}{isEnvelope ? '' : ` × ${qty}`}</>}</span>
           {!isEnvelope && <>
             <span className="text-slate-400">Poids total</span>
             <span>{totalWeight} lbs</span>
@@ -393,6 +454,14 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, onC
           <span className="text-slate-400">Destinataire</span>
           <span>{[recipientName, envoi.company_name].filter(Boolean).join(' · ') || '—'}</span>
         </div>
+        {individualBoxes && !isEnvelope && (
+          <ul className="border-t border-slate-200 pt-2 space-y-1 text-slate-600">
+            {boxes.map((box, index) => {
+              const { length, width, depth } = dimensions(box)
+              return <li key={index}>Boîte {index + 1} · {length} × {width} × {depth} po</li>
+            })}
+          </ul>
+        )}
       </div>
       {(() => {
         const isIntl = envoi.address_country && envoi.address_country !== 'CA'

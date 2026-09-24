@@ -1,3 +1,4 @@
+import { rolesOf } from '../../../shared/roles.mjs'
 // Sections réservées aux admins de la page Paramètres (/parametres) : santé du
 // serveur et gestion des utilisateurs. Les autres sections d'administration
 // (connecteurs, activité, architecture, corbeille) sont des pages à part
@@ -222,9 +223,9 @@ export function SystemeContent() {
   )
 }
 
-const ROLES = ['admin', 'rh', 'sales', 'support', 'ops']
-const roleLabels = { admin: 'Admin', rh: 'RH', sales: 'Ventes', support: 'Support', ops: 'Opérations' }
-const roleColors = { admin: 'indigo', rh: 'purple', sales: 'blue', support: 'green', ops: 'orange' }
+const ROLES = ['user', 'admin', 'rh']
+const roleLabels = { user: 'Utilisateur', admin: 'Admin', rh: 'RH' }
+const roleColors = { user: 'blue', admin: 'indigo', rh: 'purple' }
 
 function EmployeePicker({ value, onChange, disabled }) {
   const [employees, setEmployees] = useState([])
@@ -233,7 +234,7 @@ function EmployeePicker({ value, onChange, disabled }) {
   const rootRef = useRef(null)
 
   useEffect(() => {
-    api.employees.list({ limit: 'all' })
+    api.admin.employeeOptions()
       .then(r => setEmployees(r.data || r))
       .catch(() => setEmployees([]))
   }, [])
@@ -323,7 +324,7 @@ function EmployeePicker({ value, onChange, disabled }) {
 
 function UserForm({ initial = {}, onSave, onClose, isNew, isSelf }) {
   const [form, setForm] = useState({
-    name: '', email: '', password: '', role: 'sales', active: true, employee_id: null, ...initial
+    name: '', email: '', password: '', active: true, employee_id: null, ...initial, roles: rolesOf(initial)
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -360,10 +361,14 @@ function UserForm({ initial = {}, onSave, onClose, isNew, isSelf }) {
         <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} className="input" required={isNew} placeholder={isNew ? undefined : 'Laisser vide pour ne pas changer'} />
       </div>
       <div>
-        <label className="label">Rôle *</label>
-        <select value={form.role} onChange={e => setForm(f => ({ ...f, role: e.target.value }))} className="select">
-          {ROLES.map(r => <option key={r} value={r}>{roleLabels[r]}</option>)}
-        </select>
+        <span className="label">Accès</span>
+        <div className="flex flex-wrap gap-4">
+          {ROLES.map(role => <label key={role} className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={form.roles.includes(role)} disabled={role === 'user'}
+              onChange={e => setForm(f => ({ ...f, roles: e.target.checked ? [...f.roles, role] : f.roles.filter(r => r !== role) }))} />
+            {roleLabels[role]}
+          </label>)}
+        </div>
       </div>
       {!isNew && (
         <div>
@@ -461,7 +466,7 @@ export function UtilisateursContent({ currentUser }) {
     const payload = {
       name: form.name,
       email: form.email,
-      role: form.role,
+      roles: form.roles,
       active: form.active,
       employee_id: form.employee_id || null,
     }
@@ -516,7 +521,7 @@ export function UtilisateursContent({ currentUser }) {
         </div>
       ),
       email: u => <span className="text-slate-500">{u.email}</span>,
-      role: u => <Badge color={roleColors[u.role]}>{roleLabels[u.role]}</Badge>,
+      role: u => <span className="flex gap-1">{rolesOf(u).map(role => <Badge key={role} color={roleColors[role]}>{roleLabels[role]}</Badge>)}</span>,
       active: u => <Badge color={u.active ? 'green' : 'red'}>{u.active ? 'Actif' : 'Inactif'}</Badge>,
       hubspot_owner: u => {
         const auto = u.hubspot_auto_owner_id

@@ -69,6 +69,9 @@ export const MIRROR_SEED = [
   { id: 'employees', erpTable: 'employees', sync: 'full', module: 'employees' },
   { id: 'paies', erpTable: 'paies', sync: 'full', module: 'paies', dependsOn: ['employees'] },
   { id: 'paie_items', erpTable: 'paie_items', sync: 'full', module: 'paie_items', dependsOn: ['paies'] },
+  // Fournitures de bureau/entretien et leurs achats (page /fournitures).
+  { id: 'fournitures', erpTable: 'fournitures', sync: 'full', module: 'fournitures' },
+  { id: 'achats_fournitures', erpTable: 'achats_fournitures', sync: 'full', module: 'achats_fournitures', dependsOn: ['fournitures'] },
   // Débranchés du sync Airtable au profit de Stripe/QuickBooks : la divergence
   // y est attendue, pas accidentelle. 'paused' le dit, au lieu de le taire.
   { id: 'factures', erpTable: 'factures', sync: 'links-only', module: 'factures' },

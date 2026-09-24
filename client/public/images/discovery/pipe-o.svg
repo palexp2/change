@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <rect width="640" height="300" fill="#fff"/>
+
+  <!-- Corps du tuyau, couché, vu de trois quarts -->
+  <path d="M170 68H540A56 82 0 0 1 540 232H170Z" fill="#eef8f9" stroke="#7ecdd0" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M210 190H560" fill="none" stroke="#b9e2e4" stroke-width="3" stroke-linecap="round"/>
+  <!-- Bout avant : tuyau rond, creux -->
+  <ellipse cx="170" cy="150" rx="56" ry="82" fill="#fff" stroke="#7ecdd0" stroke-width="18"/>
+  <ellipse cx="176" cy="156" rx="30" ry="54" fill="#f1f5f9"/>
+
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

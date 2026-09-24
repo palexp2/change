@@ -1,4 +1,5 @@
-import DiscoveryFormOptions from '../components/DiscoveryFormOptions.jsx'
+import DiscoveryFormOptions, { CountStepper } from '../components/DiscoveryFormOptions.jsx'
+import DiscoveryExtrasTable, { additionalEquipment } from '../components/DiscoveryExtrasTable.jsx'
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, ExternalLink, Copy, Check, Pencil } from 'lucide-react'
@@ -51,6 +52,7 @@ function CopyLinkButton({ url }) {
 }
 
 const RENDERS = {
+  form_number: (row) => row.sys_number ? <span className="tabular-nums">{row.sys_number}</span> : <span className="text-slate-400">—</span>,
   company_name: (row) => row.company_id
     ? <Link to={`/companies/${row.company_id}`} onClick={e => e.stopPropagation()} className="link-record text-sm">{row.company_name || row.company_id}</Link>
     : <span className="text-slate-400">—</span>,
@@ -73,7 +75,7 @@ export default function DiscoveryForms() {
 
   // La route renvoie `{ rows }` et non `{ data }`.
   const { rows: forms, loading, reload: load } = useListData({
-    fetch: async (page, limit) => ({ data: (await api.discoveryForms.list({ limit, page })).rows || [] }),
+    fetch: async (page, limit) => ({ data: ((await api.discoveryForms.list({ limit, page })).rows || []).map(r => ({ ...r, sys_number: r.form_number ? `SYS-${r.form_number}` : '' })) }),
   })
 
   useEffect(() => {
@@ -104,8 +106,8 @@ export default function DiscoveryForms() {
       }
       actions={
         <>
-          <Link to="/discovery-form-editor" className="btn-ghost" title="Éditeur du formulaire">
-            <Pencil size={16} /> Formulaire
+          <Link to="/discovery-form-editor" className="btn-ghost" title="Produits associés">
+            <Pencil size={16} /> Produits associés
           </Link>
           <button onClick={() => setShowModal(true)} className="btn-primary">
             <Plus size={16} /> Nouveau formulaire
@@ -120,12 +122,12 @@ export default function DiscoveryForms() {
         data={forms}
         loading={loading}
         peek={{
-          title: row => row.company_name || 'System builder',
+          title: row => [row.form_number && `SYS-${row.form_number}`, row.company_name].filter(Boolean).join(' · ') || 'System builder',
           subtitle: row => (row.status === 'submitted' ? 'Soumis' : 'En cours'),
           to: row => `/discovery-forms/${row.id}`,
           render: (row, { close }) => <DiscoveryFormDetail recordId={row.id} embedded onClose={close} onDeleted={load} />,
         }}
-        searchFields={['company_name', 'status']}
+        searchFields={['sys_number', 'company_name', 'status']}
         onBulkDelete={async (ids) => {
           // Suppression définitive (la table n'est pas soft-delete) : pas de toast « Annuler ».
           await Promise.all(ids.map(id => api.discoveryForms.delete(id)))
@@ -147,9 +149,14 @@ function CreateForm({ companies, onSave, onClose }) {
   const [options, setOptions] = useState({ sensors: {} })
   const [helperCount, setHelperCount] = useState(0)
   const [chiefCount, setChiefCount] = useState(0)
+  // Quantités supplémentaires par serre, clé stable par type (c0, h0…) pour
+  // survivre à un changement du nombre de serres de l'autre type.
+  const [extras, setExtras] = useState({})
   const [saving, setSaving] = useState(false)
 
-  const total = (Number(helperCount) || 0) + (Number(chiefCount) || 0)
+  const chiefs = Math.max(0, Number(chiefCount) || 0)
+  const total = (Number(helperCount) || 0) + chiefs
+  const cards = Array.from({ length: Math.max(0, total) }, (_, i) => (i < chiefs ? { key: `c${i}`, helper: false } : { key: `h${i - chiefs}`, helper: true }))
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -157,7 +164,8 @@ function CreateForm({ companies, onSave, onClose }) {
     if (total <= 0) { addToast({ message: 'Au moins une serre (Helper ou Chef de culture) requise', type: 'error' }); return }
     setSaving(true)
     try {
-      await onSave({ company_id: companyId, helper_count: helperCount, chief_count: chiefCount, form_options: options })
+      const additional_equipment = additionalEquipment(extras, cards)
+      await onSave({ company_id: companyId, helper_count: helperCount, chief_count: chiefCount, form_options: { ...options, additional_equipment } })
     } catch (err) {
       addToast({ message: err.message || 'Erreur lors de la création', type: 'error' })
     } finally {
@@ -181,30 +189,15 @@ function CreateForm({ companies, onSave, onClose }) {
       <div className="grid grid-cols-2 gap-4">
         <div>
           <label htmlFor="system-chief-count" className="label">Nombre de Chef de culture</label>
-          <input
-            id="system-chief-count" type="number" min={0} max={50} step={1}
-            value={chiefCount}
-            onChange={e => setChiefCount(e.target.value)}
-            className="input"
-          />
-          <p className="text-xs text-slate-500 mt-1">1 carte serre par Chef de culture.</p>
+          <CountStepper id="system-chief-count" label="Chef de culture" max={50} value={chiefCount} onChange={setChiefCount} />
         </div>
         <div>
           <label htmlFor="system-helper-count" className="label">Nombre de Helper</label>
-          <input
-            id="system-helper-count" type="number" min={0} max={50} step={1}
-            value={helperCount}
-            onChange={e => setHelperCount(e.target.value)}
-            className="input"
-          />
-          <p className="text-xs text-slate-500 mt-1">1 carte serre par Helper.</p>
+          <CountStepper id="system-helper-count" label="Helper" max={50} value={helperCount} onChange={setHelperCount} />
         </div>
       </div>
+      <DiscoveryExtrasTable cards={cards} values={extras} onChange={setExtras} disabled={saving} title="Permissions supplémentaires" stepper />
       <DiscoveryFormOptions value={options} onChange={setOptions} disabled={saving} />
-      <div className="text-sm text-slate-600 bg-slate-50 rounded-lg p-3">
-        <strong>{total}</strong> carte{total !== 1 ? 's' : ''} de serre. Un lien public court sera
-        généré et s'ouvrira dans un nouvel onglet.
-      </div>
       <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
         <button type="button" onClick={onClose} className="btn-ghost">Annuler</button>
         <button type="submit" disabled={saving || !companyId || total <= 0} className="btn-primary">

@@ -8,15 +8,15 @@ import { discoveryAnswerErrors } from './discoveryAnswerValidation.js'
 const outputs = { louver_spring_loaded: 1, louver_open_close: 2, louver_with_fan: 1, humidity_valve: 1, humidity_haf: 1 }
 const calc = (greenhouses, options = {}, rules = {}) => calculateDiscoveryEquipment({ greenhouses, form_options: options }, { outputs, ...rules })
 
-test('distance : un seul contrôleur par site éloigné, aucune incidence sur un nouveau site', () => {
+test('distance : un seul contrôleur par site éloigné ; un nouveau site a toujours le sien', () => {
   for (const is_new_site of ['new', 'add_to_existing']) {
     for (const within_central_controller_range of [true, false, null, undefined, 'false']) {
       const response = { is_new_site, within_central_controller_range, greenhouses: [] }
       const result = calculateDiscoveryEquipment(response, { products: { central_controller: 'CENTRAL' } })
-      const required = is_new_site === 'add_to_existing' && within_central_controller_range === false
+      const required = is_new_site === 'new' || within_central_controller_range === false
       const missing = is_new_site === 'add_to_existing' && typeof within_central_controller_range !== 'boolean'
       assert.deepEqual(result.orderItems.map(i => [i.product_id, i.qty]), required ? [['CENTRAL', 1]] : [])
-      assert.equal(result.orderNotes.length, required ? 1 : 0)
+      assert.equal(result.orderNotes.length, is_new_site === 'add_to_existing' && within_central_controller_range === false ? 1 : 0)
       assert.equal(result.calculationComplete, !missing)
       assert.equal(discoveryAnswerErrors(response).length > 0, missing)
     }
@@ -144,6 +144,14 @@ test('louvres : chaque combinaison offerte utilise son produit', () => {
   assert.equal(r.greenhouses[0].activation_modules, 2)
 })
 
+test('module d’activation : le détail des sorties se recompte', () => {
+  const louver = { voltage: '110', control_type: 'spring_loaded', has_fan: false }
+  const g = calc([{ has_louvers: true, louvers: [louver, louver], furnaces: [{}], irrigation_zones: 2 }]).greenhouses[0]
+  assert.equal(g.slot_sources.reduce((n, s) => n + s.slots, 0), g.slots)
+  assert.deepEqual(g.slot_sources.find(s => s.label === 'Zone d’irrigation'), { label: 'Zone d’irrigation', qty: 2, slots: 2 })
+  assert.equal(g.slot_sources.find(s => s.label.startsWith('Louvre seule spring loaded')).qty, 2)
+})
+
 test('open/close avec ventilateur : aucun contrôle séparé ni total V2, même avec une ancienne configuration', () => {
   assert(!EQUIPMENT_ROLES.includes('louver_fan_control'))
   assert(!OUTPUT_ROLES.includes('louver_fan_control'))
@@ -216,8 +224,9 @@ test('humidité : option obligatoire, valve et HAF comptés indépendamment', ()
   assert(!calc([g]).items.some(i => i.role.startsWith('humidity_')))
   const r = calc([g], { humidity_retention: true })
   assert.equal(r.items.find(i => i.role === 'humidity_valve').qty, 1)
-  assert.equal(r.items.find(i => i.role === 'humidity_haf').qty, 2)
-  assert.equal(r.greenhouses[0].slots, 3)
+  // Un seul relais 110 V pour les HAF, peu importe leur nombre.
+  assert.equal(r.items.find(i => i.role === 'humidity_haf').qty, 1)
+  assert.equal(r.greenhouses[0].slots, 2)
 })
 
 test('les capteurs sont comptés une fois au site, sans sorties V2 par serre', () => {
@@ -345,4 +354,58 @@ test('commande inconnue : réponse acceptée, appel ciblé et aucun équipement 
       assert.deepEqual(calc(greenhouses).warnings, [])
     }
   }
+})
+
+test('moteurs du client avec inverseurs : 2 sorties par inverseur, pas de module de côtés', () => {
+  const base = { greenhouses: [{ permission_level: 'helper', has_side_vents: true, num_side_vent_motors: 2, length: 150, has_existing_side_vent_motors: true, side_has_inverters: true }] }
+  const perMotor = calculateDiscoveryEquipment({ ...base, greenhouses: [{ ...base.greenhouses[0], side_inverter_ratio: 'per_motor' }] })
+  assert.ok(!perMotor.items.some(i => i.role === 'side_vent_module'))
+  assert.equal(perMotor.items.find(i => i.role === 'activation_v2')?.note, '4 sorties')
+  const perTwo = calculateDiscoveryEquipment({ ...base, greenhouses: [{ ...base.greenhouses[0], side_inverter_ratio: 'per_two' }] })
+  assert.equal(perTwo.items.find(i => i.role === 'activation_v2')?.note, '2 sorties')
+})
+
+test('moteurs du client sans inverseur : module de côtés pour 2 moteurs, contrôleur 24 V par moteur au-delà de 200 pi', () => {
+  const g = { permission_level: 'helper', has_side_vents: true, num_side_vent_motors: 2, has_existing_side_vent_motors: true, side_has_inverters: false }
+  const short = calculateDiscoveryEquipment({ greenhouses: [{ ...g, length: 150 }] })
+  assert.equal(short.items.find(i => i.role === 'side_vent_module')?.qty, 1)
+  const long = calculateDiscoveryEquipment({ greenhouses: [{ ...g, length: 250 }] })
+  assert.equal(long.items.find(i => i.role === 'side_vent_controller_24v')?.qty, 2)
+  assert.ok(!long.items.some(i => i.role === 'side_vent_module'))
+})
+
+test('toits ouvrants : équipement selon le moteur et l’inverseur', () => {
+  const roof = extra => calculateDiscoveryEquipment({ greenhouses: [{ permission_level: 'chief_grower', has_roof_vents: true, num_roof_vents: 1, ...extra }] })
+  const roles = r => r.items.map(i => i.role)
+  const withInverter = roof({ roof_motor_voltage: '110', has_roof_inverter: true })
+  assert(roles(withInverter).includes('roof_inverter_wire'))
+  assert.equal(withInverter.greenhouses[0].slots, 2)
+  const customerSupplies = roof({ roof_motor_voltage: '240', roof_motor_ridder_rw240: false, has_roof_inverter: false })
+  assert(roles(customerSupplies).includes('roof_inverter_wire'))
+  assert(!customerSupplies.warnings.some(w => w.code === 'roof_review'))
+  const dc = roof({ roof_motor_voltage: '24_dc', has_roof_inverter: false })
+  assert(roles(dc).includes('side_vent_controller_24v') && !roles(dc).includes('roof_inverter_wire'))
+  const ridder = roof({ roof_motor_voltage: '240', roof_motor_ridder_rw240: true, has_roof_inverter: false })
+  assert(roles(ridder).includes('roof_inverter_ridder') && roles(ridder).includes('roof_inverter_wire'))
+  assert(roof({}).warnings.some(w => w.code === 'roof_review'))
+})
+
+test('nouveau site : contrôleur central sauf Internet mobile, coaxial pour le Wi-Fi à 350 pi', () => {
+  const roles = r => r.siteItems.map(i => i.role)
+  assert(roles(calculateDiscoveryEquipment({ is_new_site: 'new', network_access: 'wifi_250', greenhouses: [] })).includes('central_controller'))
+  const coax = roles(calculateDiscoveryEquipment({ is_new_site: 'new', network_access: 'wifi_350_coax', greenhouses: [] }))
+  assert(coax.includes('central_controller') && coax.includes('coax_antenna_kit'))
+  const mobile = roles(calculateDiscoveryEquipment({ is_new_site: 'new', network_access: 'mobile_controller', greenhouses: [] }))
+  assert(!mobile.includes('central_controller'))
+  const optionMobile = roles(calculateDiscoveryEquipment({ is_new_site: 'new', network_access: 'ethernet', form_options: { mobile_controller: true }, greenhouses: [] }))
+  assert(!optionMobile.includes('central_controller'))
+})
+
+test('moteurs et tuyaux guides fournis par Orisha : un de chaque par côté', () => {
+  const roles = g => calculateDiscoveryEquipment({ greenhouses: [{ has_side_vents: true, length: 100, num_side_vent_motors: 2, ...g }] }).items
+    .filter(i => ['side_vent_motor_left', 'side_vent_motor_right', 'guide_pipe', 'guide_pipe_hanging_kit'].includes(i.role)).map(i => `${i.role}:${i.qty}`).sort()
+  assert.deepEqual(roles({ has_existing_side_vent_motors: false, guide_pipes_state: 'needed' }), ['guide_pipe:2', 'guide_pipe_hanging_kit:2', 'side_vent_motor_left:1', 'side_vent_motor_right:1'])
+  assert.deepEqual(roles({ num_side_vent_motors: 1, has_existing_side_vent_motors: false, guide_pipes_state: 'present' }), ['side_vent_motor_left:1'])
+  assert.deepEqual(roles({ has_existing_side_vent_motors: true, guide_pipes_state: 'present' }), [])
+  assert.deepEqual(roles({ has_existing_side_vent_motors: true, guide_pipes_state: 'needed' }), ['guide_pipe:2', 'guide_pipe_hanging_kit:2'])
 })

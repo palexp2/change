@@ -1,9 +1,14 @@
+import { usePrivateFile } from '../lib/usePrivateFile'
+import { nextModalZ, registerOverlay } from '../lib/overlayLayers.js'
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Download, X, FileText, Image as ImageIcon, Maximize2, ExternalLink } from 'lucide-react'
-import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// Vite émet un nouveau worker .js : bon type MIME et nouvelle URL, même si
+// l'ancien .mjs a été conservé en cache comme application/octet-stream.
+import pdfWorkerSrc from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker&url'
+import { SheetThumb, SheetViewer } from './SheetPreview.jsx'
 
-// Champ « pièce jointe » réutilisable : une vignette du fichier (PDF ou image)
+// Champ « pièce jointe » réutilisable : une vignette du fichier (PDF, image ou tableur)
 // qu'on clique pour l'ouvrir en grand dans une modale, avec téléchargement.
 //
 // Sert partout où une fiche porte un document : étiquette d'expédition, PDF de
@@ -20,6 +25,8 @@ import pdfWorkerSrc from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 const IMAGE_RE = /\.(png|jpe?g|gif|webp|avif|bmp|svg|heic|heif)(?:$|[?#])/i
 const PDF_RE = /\.pdf(?:$|[?#])/i
+const SHEET_RE = /\.(xlsx|xlsm|xlsb|xls|ods|csv|tsv)(?:$|[?#])/i
+const SHEET_MIME_RE = /^(application\/vnd\.(ms-excel|openxmlformats-officedocument\.spreadsheetml|oasis\.opendocument\.spreadsheet)|text\/(csv|tab-separated-values))/
 
 // Type de rendu déduit du nom de fichier / de l'URL, avec le type MIME en
 // priorité quand on le connaît. Les blob: URLs n'ont pas d'extension : c'est
@@ -28,36 +35,56 @@ export function attachmentKind({ url, fileName, contentType }) {
   if (contentType) {
     if (contentType.startsWith('image/')) return 'image'
     if (contentType === 'application/pdf') return 'pdf'
+    if (SHEET_MIME_RE.test(contentType)) return 'sheet'
   }
   for (const candidate of [fileName, url]) {
     if (!candidate) continue
     if (IMAGE_RE.test(candidate)) return 'image'
     if (PDF_RE.test(candidate)) return 'pdf'
+    if (SHEET_RE.test(candidate)) return 'sheet'
   }
   return 'file'
 }
 
 // Visionneuse plein écran. Utilisable seule (quand la vignette n'a pas de sens,
 // ex. un bouton « Aperçu ») ou via <AttachmentPreview>, qui la pilote.
-export function AttachmentPreviewModal({ url, fileName, title, kind, downloadName, onClose }) {
+// `children` (optionnel) : bandeau posé sous le document — la galerie d'un champ
+// à plusieurs pièces jointes y met ses vignettes.
+// `overModal` : ouverte depuis une <Modal> (ex. brouillon de courriel). Elle se
+// place au-dessus de la couche la plus haute, et Échap ne ferme qu'elle — la
+// modale dessous (et ce qu'on y a saisi) reste ouverte.
+export function AttachmentPreviewModal({ url, fileName, title, kind, downloadName, onClose, children, overModal = false }) {
   const resolved = kind || attachmentKind({ url, fileName })
+  url = usePrivateFile(url)
+  const zRef = useRef(null)
+  if (overModal && zRef.current == null) zRef.current = nextModalZ()
 
   useEffect(() => {
-    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); onClose?.() } }
-    document.addEventListener('keydown', onKey)
+    const onKey = e => {
+      if (e.key !== 'Escape') return
+      // La <Modal> écoute aussi `document` : on intercepte avant elle.
+      if (overModal) e.stopImmediatePropagation()
+      e.stopPropagation()
+      onClose?.()
+    }
+    const target = overModal ? window : document
+    target.addEventListener('keydown', onKey, overModal)
+    const unregister = overModal ? registerOverlay(zRef.current) : null
     const prev = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
-      document.removeEventListener('keydown', onKey)
+      target.removeEventListener('keydown', onKey, overModal)
+      unregister?.()
       document.body.style.overflow = prev
     }
-  }, [onClose])
+  }, [onClose, overModal])
 
   if (!url) return null
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
+      className={`fixed inset-0 ${overModal ? '' : 'z-[60]'} flex items-center justify-center p-4`}
+      style={overModal ? { zIndex: zRef.current } : undefined}
       role="dialog"
       aria-modal="true"
       aria-label={title || fileName || 'Pièce jointe'}
@@ -104,12 +131,15 @@ export function AttachmentPreviewModal({ url, fileName, title, kind, downloadNam
           </div>
         ) : resolved === 'pdf' ? (
           <iframe src={url} className="flex-1 w-full" title={title || fileName || 'Document'} />
+        ) : resolved === 'sheet' ? (
+          <SheetViewer url={url} />
         ) : (
           <div className="flex-1 flex flex-col items-center justify-center gap-3 text-slate-500">
             <FileText size={32} className="text-slate-300" />
             <p className="text-sm">Aperçu indisponible pour ce type de fichier.</p>
           </div>
         )}
+        {children}
       </div>
     </div>,
     document.body,
@@ -129,22 +159,40 @@ const SIZES = {
 // visible pour une étiquette en paysage dans une vignette en portrait, où la
 // page ne couvre que la moitié de la hauteur. On rend donc la 1re page sur un
 // canvas rempli de blanc : la vignette est blanche, sans barre d'outils.
-function PdfThumb({ url, width, height, label, onFail }) {
+export function PdfThumb({ url, width, height, label, onFail, lazy = false, compact = false }) {
   const canvasRef = useRef(null)
   const [failed, setFailed] = useState(null)
+  const [visible, setVisible] = useState(!lazy)
   const failRef = useRef(onFail)
   failRef.current = onFail
 
   useEffect(() => {
+    if (!lazy || visible) return
+    if (typeof IntersectionObserver === 'undefined') { setVisible(true); return }
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        setVisible(true)
+        observer.disconnect()
+      }
+    }, { rootMargin: '100px' })
+    if (canvasRef.current) observer.observe(canvasRef.current)
+    return () => observer.disconnect()
+  }, [lazy, visible])
+
+  useEffect(() => {
+    if (lazy && !visible) return
     let cancelled = false
     let doc = null
     let task = null
+    let loadingTask = null
     setFailed(null)
     ;(async () => {
       try {
-        const pdfjs = await import('pdfjs-dist')
+        const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+        if (cancelled) return
         pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerSrc
-        doc = await pdfjs.getDocument({ url }).promise
+        loadingTask = pdfjs.getDocument({ url })
+        doc = await loadingTask.promise
         if (cancelled) return
         const page = await doc.getPage(1)
         if (cancelled) return
@@ -176,15 +224,15 @@ function PdfThumb({ url, width, height, label, onFail }) {
     return () => {
       cancelled = true
       try { task?.cancel() } catch { /* rendu déjà terminé */ }
-      doc?.destroy?.()
+      loadingTask?.destroy()?.catch(() => {})
     }
-  }, [url, width, height])
+  }, [url, width, height, lazy, visible])
 
   if (failed) {
     return (
       <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-slate-400 px-1 text-center">
-        <FileText size={20} />
-        <span className="text-[11px]">{failed === 'missing' ? 'Fichier introuvable' : 'Aperçu indisponible'}</span>
+        <FileText size={compact ? 16 : 20} />
+        {!compact && <span className="text-[11px]">{failed === 'missing' ? 'Fichier introuvable' : 'Aperçu indisponible'}</span>}
       </span>
     )
   }
@@ -210,10 +258,16 @@ export default function AttachmentPreview({
   className = '',
   testId = 'attachment-preview',
   onUnavailable,
+  overModal = false,
 }) {
   const [open, setOpen] = useState(false)
-  const [imgFailed, setImgFailed] = useState(false)
+  // L'échec est attaché à l'URL qui a échoué, pas à l'instance : si la vignette
+  // reçoit ensuite un autre document, il s'affiche (et une erreur tardive de
+  // l'ancien ne masque pas le nouveau).
+  const [failedUrl, setFailedUrl] = useState(null)
   const resolved = kind || attachmentKind({ url, fileName, contentType })
+  url = usePrivateFile(url)
+  const imgFailed = !!url && failedUrl === url
   const dims = SIZES[size] || SIZES.sm
   const notifyRef = useRef(onUnavailable)
   notifyRef.current = onUnavailable
@@ -239,12 +293,19 @@ export default function AttachmentPreview({
             label={`Aperçu ${fileName || title || 'document'}`}
             onFail={reason => notifyRef.current?.(reason)}
           />
+        ) : resolved === 'sheet' ? (
+          <SheetThumb
+            url={url}
+            label={`Aperçu ${fileName || title || 'tableur'}`}
+            compact={size === 'compact'}
+            onFail={reason => notifyRef.current?.(reason)}
+          />
         ) : resolved === 'image' && !imgFailed ? (
           <img
             src={url}
             alt={fileName || 'Pièce jointe'}
             className="absolute inset-0 w-full h-full object-contain"
-            onError={() => { setImgFailed(true); notifyRef.current?.('missing') }}
+            onError={() => { setFailedUrl(url); notifyRef.current?.('missing') }}
           />
         ) : (
           <span className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-slate-400 px-1 text-center">
@@ -277,6 +338,7 @@ export default function AttachmentPreview({
           title={title}
           kind={resolved}
           downloadName={downloadName}
+          overModal={overModal}
           onClose={() => setOpen(false)}
         />
       )}

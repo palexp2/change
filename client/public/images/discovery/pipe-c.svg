@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs><clipPath id="pipe-c-rim"><circle cx="160" cy="170" r="80"/></clipPath></defs>
+  <rect width="640" height="300" fill="#fff"/>
+
+  <!-- Corps du tuyau, couché, vu de trois quarts -->
+  <path d="M160 90H520A64 80 0 0 1 520 250H160Z" fill="#eef8f9" stroke="#7ecdd0" stroke-width="5" stroke-linejoin="round"/>
+  <path d="M210 210H544" fill="none" stroke="#b9e2e4" stroke-width="3" stroke-linecap="round"/>
+
+  <!-- Rainure en C sur toute la longueur, avec son polylock -->
+  <path d="M182 95H542M223 156H583" fill="none" stroke="#b9e2e4" stroke-width="3" stroke-linecap="round"/>
+  <path d="M199 106H559L577 134H217Z" fill="#cbd5e1" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round"/>
+  <polyline points="235 109 257 131 279 109 301 131 323 109 345 131 367 109 389 131 411 109 433 131 455 109 477 131 499 109 521 131 543 109" fill="none" stroke="#475569" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>
+
+  <!-- Bout avant : tuyau creux, rainure en queue d'aronde -->
+  <g transform="translate(160 0) scale(0.8 1) translate(-160 0)">
+    <g transform="rotate(50 160 170)">
+      <circle cx="160" cy="170" r="80" fill="#7ecdd0"/>
+      <circle cx="160" cy="170" r="67" fill="#fff"/>
+      <circle cx="164" cy="178" r="55" fill="#f1f5f9"/>
+      <g clip-path="url(#pipe-c-rim)">
+        <rect x="119" y="90" width="82" height="40" fill="#7ecdd0"/>
+        <rect x="130" y="101" width="60" height="16" fill="#fff"/>
+        <rect x="142" y="88" width="36" height="16" fill="#fff"/>
+      </g>
+      <circle cx="160" cy="108" r="4.5" fill="#475569"/>
+    </g>
+  </g>
+
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

@@ -200,7 +200,7 @@ function QbStatusCell({ p }) {
   return (
     <span
       className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 px-2 py-0.5 rounded"
-      title="Écriture QB non posée — ouvrir la ligne pour pousser"
+      title="Écriture QuickBooks non posée — ouvrir la ligne pour publier"
     >
       <RefreshCw size={10} /> à pousser
     </span>

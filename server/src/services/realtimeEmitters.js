@@ -13,6 +13,7 @@ import db from '../db/database.js'
 import { readRelation, ACTIVITY_ENTITY_MAP } from './customFieldsView.js'
 import { emit } from './realtime.js'
 import { logActivity, deriveActivityLabel } from './activityLog.js'
+import { storedQbUrl } from './bankQbLink.js'
 
 function buildOrderListRow(id) {
   // company_name / assigned_name / items_count sont des champs convertis
@@ -143,6 +144,68 @@ export function emitFacturePaymentsChanged(factureId, actorUserId = null) {
     actorUserId,
     ts: Date.now(),
   })
+}
+
+// ── Rapprochement bancaire ──────────────────────────────────────────────────
+//
+// Une ligne de relevé change SANS que personne ne clique dessus : un passage de
+// vérification retrouve son écriture dans QuickBooks, une facture appariée y est
+// publiée, un lien refusé est effacé. Sans ces émissions, tout ce travail restait
+// invisible dans l'onglet /rapprochement resté ouvert — il fallait recharger.
+//
+// Charge utile = SEULEMENT les colonnes qui bougent. La route
+// GET /bank/accounts/:id/transactions enrichit chaque ligne (`label`,
+// `matched_label`, `vendor_name`, `proposal_count`, `qb_url` du document) et le
+// client fusionne `{ ...row, ...payload }` : renvoyer la ligne entière écraserait
+// ces champs-là par des `undefined`.
+const BANK_TXN_LIVE_COLS = `id, account_id, status, comment, qb_txn_id, qb_txn_type,
+  qb_match_method, qb_match_delta, qb_match_account, qb_match_rate`
+
+let bankTxnLiveStmt = null
+
+/**
+ * @param {'updated'|'created'} verb
+ * @param {string} id  id de la transaction bancaire
+ * @param {object} payload  colonnes qui bougent + account_id (canal du compte)
+ */
+export function emitBankTxn(verb, id, payload) {
+  if (!id || !payload?.account_id) return
+  emit(['bank_transaction:list', `bank_account:${payload.account_id}`], {
+    type: `bank_transaction:${verb}`,
+    payload,
+    actorUserId: null,
+    ts: Date.now(),
+  })
+}
+
+/**
+ * « Ces lignes ont bougé, relis-les et dis-le ». Le point de passage unique des
+ * effets de bord bancaires : un `qb_txn_id` peut être posé sans que le statut
+ * change (ligne déjà comptabilisée), refreshStatuses ne le verrait pas.
+ */
+export function touchBankTxns(ids) {
+  const list = [...new Set((Array.isArray(ids) ? ids : [ids]).filter(Boolean))]
+  if (!list.length) return 0
+  // Préparé à la première utilisation : au chargement du module, la table peut
+  // ne pas encore exister (harnais de test, première migration).
+  if (!bankTxnLiveStmt) {
+    bankTxnLiveStmt = db.prepare(
+      `SELECT ${BANK_TXN_LIVE_COLS} FROM bank_transactions WHERE id = ? AND deleted_at IS NULL`
+    )
+  }
+  let n = 0
+  for (const id of list) {
+    const row = bankTxnLiveStmt.get(id)
+    if (!row) continue
+    emitBankTxn('updated', id, { ...row, qb_url: storedQbUrl(row) })
+    n++
+  }
+  // Le classeur TRX_Orisha suit le même mouvement que l'écran : une ligne qui
+  // change de statut ici est repeinte là-bas quelques secondes plus tard (un
+  // seul aller-retour vers Google pour toute une rafale). Import dynamique :
+  // le miroir importe la base, on ne veut pas de cycle au chargement.
+  if (n) import('./trxSheetMirror.js').then((m) => m.mirrorOnChange('statut')).catch(() => {})
+  return n
 }
 
 /**

@@ -1,6 +1,6 @@
 import {
   SlidersHorizontal, MapPin, BookOpen,
-  Server, Users, Plug, Activity, Network, Trash2, Mail,
+  Server, Users, Plug, Activity, Network, Trash2, Mail, Sparkles, Keyboard,
 } from 'lucide-react'
 
 // Sections de la page Paramètres (/parametres) — source unique de vérité. Elles
@@ -18,6 +18,8 @@ export const SETTINGS_SECTIONS = [
   { key: 'adresses',    label: 'Adresses',       icon: MapPin,            group: 'Mon compte' },
   { key: 'gmail',       label: 'Gmail',          icon: Mail,              group: 'Mon compte' },
   { key: 'quickbooks',  label: 'QuickBooks',     icon: BookOpen,          group: 'Mon compte' },
+  { key: 'raccourcis',  label: 'Raccourcis',     icon: Keyboard,          group: 'Boréal' },
+  { key: 'nouveautes',  label: 'Nouveautés',     icon: Sparkles,          group: 'Boréal', full: true },
   { key: 'systeme',     label: 'Système',        icon: Server,   group: 'Administration', adminOnly: true },
   { key: 'utilisateurs', label: 'Utilisateurs',  icon: Users,    group: 'Administration', adminOnly: true, full: true },
   { key: 'connecteurs', label: 'Connecteurs',    icon: Plug,     group: 'Administration', adminOnly: true },

@@ -19,8 +19,9 @@ export const FINANCE_SECTIONS = [
   { to: '/rapprochement',    label: 'Rapprochement bancaire',   icon: ArrowLeftRight, group: 'Trésorerie' },
   { to: '/propositions',     label: 'Propositions',             icon: ListChecks,     group: 'Trésorerie' },
   { to: '/regles-bancaires', label: 'Règles bancaires',         icon: Wand2,          group: 'Trésorerie' },
-  { to: '/stripe-payouts',   label: 'Stripe Payouts',           icon: CreditCard,     group: 'Trésorerie' },
+  { to: '/stripe-payouts',   label: 'Versements Stripe',        icon: CreditCard,     group: 'Trésorerie' },
   { to: '/comptes-prepayes', label: 'Comptes prépayés',         icon: Wallet,         group: 'Trésorerie' },
+  { to: '/cartes-paiement',  label: 'Cartes de paiement',       icon: CreditCard,     group: 'Trésorerie' },
   // Le compte CARM de l'ASFC est un compte prépayé : il vit dans un onglet de
   // la page ci-dessus, l'entrée de menu y saute directement.
   { to: '/comptes-prepayes?onglet=douanes', label: 'Douanes (ASFC)', icon: Ship,      group: 'Trésorerie' },

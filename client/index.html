@@ -27,6 +27,64 @@
   </head>
   <body>
     <div id="root"></div>
+    <!-- Indépendant du bundle : fonctionne même si celui-ci ne charge pas
+         après la restauration d'un onglet ou un déploiement. -->
+    <script>
+      (function () {
+        var key = 'boreal.blank-recovery'
+        var emptySince = Date.now()
+        var retrying = false
+        var root = document.getElementById('root')
+        var notice
+
+        function check() {
+          if (root.childElementCount) {
+            emptySince = Date.now()
+            if (notice) { notice.remove(); notice = null }
+            return
+          }
+          if (document.visibilityState !== 'visible' || retrying || Date.now() - emptySince < 15000) return
+          // Ne recharge jamais un formulaire monté, et au maximum une fois
+          // par cinq minutes, même si la nouvelle version reste défectueuse.
+          var last
+          try { last = Number(sessionStorage.getItem(key)) } catch (e) { last = Date.now() }
+          if (!notice) {
+            notice = document.createElement('p')
+            notice.setAttribute('role', 'status')
+            notice.style.cssText = 'padding:32px;font:16px system-ui;text-align:center'
+            notice.append('Boréal n’a pas pu s’afficher. Reconnexion en cours. ')
+            var link = document.createElement('a')
+            link.href = window.location.href
+            link.textContent = 'Réessayer'
+            notice.append(link)
+            document.body.append(notice)
+          }
+          if (last && Date.now() - last < 300000) {
+            notice.firstChild.textContent = 'Boréal n’a pas pu s’afficher. '
+            return
+          }
+          retrying = true
+          var controller = new AbortController()
+          var timeout = setTimeout(function () { controller.abort() }, 10000)
+          // Attendre une réponse exploitable avant de recharger : une coupure
+          // réseau ne doit pas transformer l'onglet en page d'erreur navigateur.
+          fetch('/erp/', { cache: 'no-store', signal: controller.signal })
+            .then(function (res) { return res.ok ? res.text() : '' })
+            .then(function (html) {
+              if (!html.includes('id="root"') || !html.includes('type="module"') || root.childElementCount) return
+              try { sessionStorage.setItem(key, String(Date.now())) } catch (e) { return }
+              console.warn('[Boréal] Écran vide : récupération automatique')
+              window.location.reload()
+            })
+            .catch(function () {})
+            .finally(function () { clearTimeout(timeout); retrying = false })
+        }
+        setInterval(check, 5000)
+        document.addEventListener('visibilitychange', check)
+        window.addEventListener('pageshow', check)
+        window.addEventListener('online', check)
+      })()
+    </script>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

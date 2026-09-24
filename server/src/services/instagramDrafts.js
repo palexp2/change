@@ -15,6 +15,8 @@
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
+import { SEGMENTS, SEGMENT_LABELS, instructionsForSegment } from './instagramSegments.js'
+import { ACTIVITIES, profileOf, arrivalOf } from './instagramProfiles.js'
 
 export const DRAFT_WRITE_AUTOMATION_ID = 'sys_instagram_draft_write'
 export const DRAFT_SEND_AUTOMATION_ID = 'sys_instagram_draft_send'
@@ -69,6 +71,7 @@ export const REVIEW_LABELS = {
   deja_client: 'Déjà cliente ou déjà en discussion',
   autre_langue: 'Message dans une autre langue',
   relance_sans_reponse: 'On lui a déjà écrit sans réponse',
+  conversation_en_cours: 'Conversation en cours — un message écrit d’avance tomberait à côté',
   rien_a_dire: 'On ne sait pas ce qu’elle a fait',
   nouveau_message: 'Elle a réécrit depuis',
 }
@@ -92,7 +95,7 @@ function foreignLanguage(t) {
  * Décide si un brouillon peut partir seul. Retourne la raison (clé de
  * REVIEW_LABELS) ou null quand rien ne s'y oppose.
  */
-export function reviewReasonFor({ prospect, incomingText = '', outgoingCount = 0, replied = false, activeRules }) {
+export function reviewReasonFor({ prospect, incomingText = '', outgoingCount = 0, replied = false, liveConversation = false, activeRules }) {
   const rules = activeRules instanceof Set
     ? activeRules
     : new Set(String(activeRules || getWriteConfig().review_rules).split(',').map(s => s.trim()).filter(Boolean))
@@ -102,6 +105,7 @@ export function reviewReasonFor({ prospect, incomingText = '', outgoingCount = 0
   if (rules.has('probleme_precis') && mentionsProblem(t)) return 'probleme_precis'
   if (rules.has('deja_client') && prospectIsKnown(prospect)) return 'deja_client'
   if (rules.has('autre_langue') && foreignLanguage(t)) return 'autre_langue'
+  if (rules.has('relance_sans_reponse') && liveConversation) return 'conversation_en_cours'
   if (rules.has('relance_sans_reponse') && outgoingCount > 0 && !replied) return 'relance_sans_reponse'
   if (!t && !prospect?.first_comment_text) return 'rien_a_dire'
   return null
@@ -113,6 +117,43 @@ export function reviewReasonFor({ prospect, incomingText = '', outgoingCount = 0
 function prospectIsKnown(p) {
   if (!p) return false
   return !!(p.contacted || p.replied)
+}
+
+
+
+
+// Un vrai échange déjà engagé : elle a écrit plusieurs fois et quelqu'un lui a
+// répondu. Un message rédigé d'avance, qui repart de son commentaire d'origine,
+// tomberait complètement à côté.
+function isLiveConversation(messages) {
+  const incoming = messages.filter(m => m.direction === 'in' && m.kind !== 'user_thread_new')
+  return incoming.length >= 2 && messages.some(m => m.direction === 'out')
+}
+
+// « On lui a déjà écrit sans réponse » ne doit compter que de vraies relances.
+// ManyChat répond automatiquement dans la seconde qui suit un commentaire ou un
+// message : tout ce qui part dans les dix minutes suivant son geste, c'est la
+// machine, pas nous.
+const AUTO_REPLY_WINDOW_MS = 10 * 60 * 1000
+function countRealFollowUps(messages, incoming) {
+  if (!incoming?.sent_at) return 0
+  const t0 = new Date(incoming.sent_at).getTime() + AUTO_REPLY_WINDOW_MS
+  return messages.filter(m => m.direction === 'out' && m.sent_at && new Date(m.sent_at).getTime() > t0).length
+}
+
+// Les mots que la personne a réellement écrits. Nos étiquettes d'activité
+// (« 📝 A commenté « Coach » », « 📣 Mention dans une story ») sont de la prose
+// à nous : les analyser comme si c'était elle qui parlait faisait passer la
+// moitié des fiches pour du chinois.
+function userWords(msg) {
+  const t = String(msg?.text || '').trim()
+  if (!t) return ''
+  const quoted = t.match(/^📝 A commenté « (.*) »$/)
+  if (quoted) return quoted[1]
+  const written = t.match(/^💬 A écrit : « (.*) »$/)
+  if (written) return written[1]
+  if (/^(📝|💬 A |📣|🔗|✨|📎|📷|🎬|🎧|👤)/u.test(t)) return ''
+  return t
 }
 
 // ── Cohérence avec le reste de la chaîne ───────────────────────────────────
@@ -173,6 +214,17 @@ function buildContext(prospect, messages) {
   if (prospect.capture_label) lines.push(`Ce qu'elle a fait : ${prospect.capture_label}`)
   if (prospect.first_comment_text) lines.push(`Son commentaire : « ${prospect.first_comment_text} »`)
   if (prospect.keyword) lines.push(`Mot-clé déclencheur : ${prospect.keyword}`)
+  // Son profil public lu : écrire à la personne qu'elle est vraiment, pas à
+  // l'idée qu'on s'en fait d'après un émoji.
+  const prof = profileOf(prospect)
+  if (prospect.profile_who) lines.push(`Qui c'est : ${prospect.profile_who}`)
+  if (prospect.profile_activity) {
+    lines.push(`Activité principale : ${ACTIVITIES[prospect.profile_activity] || prospect.profile_activity}` +
+      (prospect.profile_level && prospect.profile_level !== 'inconnu' ? ` (${prospect.profile_level})` : ''))
+  }
+  if (prof?.bio) lines.push(`Bio : ${String(prof.bio).replace(/\s+/g, ' ').slice(0, 200)}`)
+  const caps = (prof?.posts || []).map(x => String(x.caption || '').replace(/\s+/g, ' ').slice(0, 120)).filter(Boolean).slice(0, 3)
+  if (caps.length) lines.push(`Ses dernières publications : ${caps.map(c => `« ${c} »`).join(' ; ')}`)
   const last = messages.slice(-8)
   if (last.length) {
     lines.push('Conversation (du plus ancien au plus récent) :')
@@ -191,7 +243,9 @@ async function askModel({ rules, context, instructions, model, temperature }) {
   const specific = (instructions || '').trim()
   const userMessage = `Contexte :\n\n${context}` +
     (specific ? `\n\nINSTRUCTIONS SPÉCIFIQUES (priorité haute) :\n${specific}` : '') +
-    '\n\nÉcris le message privé Instagram. JSON strict : { "text": "…" }.'
+    // Le contexte est en français ; le message, lui, part toujours en anglais.
+    "\n\nÉcris le message privé Instagram, EN ANGLAIS, adapté à son activité réelle (profil ci-dessus) — " +
+    'sans lui prêter une culture que son profil ne montre pas. JSON strict : { "text": "…" }.'
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -222,7 +276,8 @@ async function askModel({ rules, context, instructions, model, temperature }) {
 
 const PROSPECT_FOR_DRAFT = `
   SELECT id, ig_username, full_name, manychat_subscriber_id, capture_label, capture_url,
-         first_comment_text, keyword, contacted, replied, dm_sent
+         first_comment_text, keyword, contacted, replied, dm_sent, segment,
+         profile_json, profile_who, profile_activity, profile_level
   FROM instagram_prospects WHERE id = ? AND deleted_at IS NULL
 `
 
@@ -243,19 +298,25 @@ export async function writeDraft(prospectId, { instructions, force = false } = {
   const cfg = getWriteConfig()
   const { thread, messages } = threadFor(p)
   const incoming = [...messages].reverse().find(m => m.direction === 'in')
-  const outgoingCount = messages.filter(m => m.direction === 'out').length
+  // On ne compte comme « on lui a déjà écrit » que ce qui est parti APRÈS son
+  // dernier geste : la réponse automatique de ManyChat, envoyée dans la seconde
+  // qui suit un commentaire, n'est pas une relance restée sans réponse.
+  const outgoingCount = countRealFollowUps(messages, incoming)
   const reason = reviewReasonFor({
     prospect: p,
-    incomingText: incoming?.text || p.first_comment_text || '',
+    incomingText: userWords(incoming) || p.first_comment_text || '',
     outgoingCount,
     replied: !!p.replied,
+    liveConversation: isLiveConversation(messages),
     activeRules: cfg.review_rules,
   })
 
   const text = await askModel({
     rules: cfg.rules,
     context: buildContext(p, messages),
-    instructions: instructions ?? existing?.instructions,
+    // Chaque type de demande a son propre message : celle qui a écrit « coach »
+    // ne reçoit pas le même mot que celle qui fait pousser des fleurs.
+    instructions: instructions ?? existing?.instructions ?? instructionsForSegment(p.segment || 'commentaire'),
     model: cfg.model,
     temperature: cfg.temperature,
   })
@@ -294,6 +355,7 @@ export async function runDraftWriting({ force = false, trigger = 'schedule' } = 
     const todo = db.prepare(`
       SELECT p.id FROM instagram_prospects p
       WHERE p.deleted_at IS NULL AND p.ig_username IS NOT NULL AND p.contacted = 0
+        AND COALESCE(p.segment,'commentaire') NOT IN ('story','robot')
         AND NOT EXISTS (SELECT 1 FROM instagram_drafts d WHERE d.prospect_id = p.id)
       ORDER BY COALESCE(p.last_event_at, p.created_at) DESC
       LIMIT ?
@@ -485,6 +547,46 @@ export function listDrafts() {
 }
 
 
+
+/**
+ * Re-trie les messages déjà écrits sans les réécrire : quand la règle de mise
+ * de côté change, la pile doit suivre au lieu de rester figée sur l'ancien
+ * verdict.
+ */
+export function reclassifyDrafts() {
+  const rows = db.prepare(`
+    SELECT d.id, d.prospect_id, d.manychat_user_id, d.status, d.review_reason,
+           p.contacted, p.replied, p.first_comment_text
+    FROM instagram_drafts d
+    JOIN instagram_prospects p ON p.id = d.prospect_id
+    WHERE d.status IN ('draft','queued','review','held')
+  `).all()
+  const cfg = getWriteConfig()
+  let changed = 0
+  for (const r of rows) {
+    const messages = r.manychat_user_id
+      ? db.prepare('SELECT direction, text, kind, sent_at FROM manychat_messages WHERE user_id=? ORDER BY sent_at').all(String(r.manychat_user_id))
+      : []
+    const incoming = [...messages].reverse().find(m => m.direction === 'in')
+    const outgoingCount = countRealFollowUps(messages, incoming)
+    const reason = reviewReasonFor({
+      prospect: r,
+      incomingText: userWords(incoming) || r.first_comment_text || '',
+      outgoingCount,
+      replied: !!r.replied,
+      liveConversation: isLiveConversation(messages),
+      activeRules: cfg.review_rules,
+    })
+    const status = reason ? 'review' : (r.status === 'review' ? 'draft' : r.status)
+    if (reason !== r.review_reason || status !== r.status) {
+      db.prepare("UPDATE instagram_drafts SET review_reason=?, status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+        .run(reason, status, r.id)
+      changed++
+    }
+  }
+  return { changed, total: rows.length }
+}
+
 /**
  * La liste unique de Philippe : les gens qui attendent quelque chose de lui.
  *
@@ -495,7 +597,9 @@ export function listDrafts() {
 export function workbench({ all = false } = {}) {
   const rows = db.prepare(`
     SELECT p.id AS prospect_id, p.ig_username, p.full_name, p.capture_label, p.capture_url,
-           p.contacted, p.contacted_at, p.replied,
+           p.contacted, p.contacted_at, p.replied, p.segment, p.segment_source,
+           p.first_comment_text, p.first_comment_at, p.first_post_url, p.capture_kind,
+           p.profile_who, p.profile_status, p.profile_activity, p.profile_level,
            t.user_id AS manychat_user_id, t.last_incoming_at, t.last_message_text,
            t.last_message_at, t.last_direction,
            d.id AS draft_id, d.text AS draft_text, d.status AS draft_status,
@@ -505,19 +609,25 @@ export function workbench({ all = false } = {}) {
     LEFT JOIN instagram_drafts d ON d.prospect_id = p.id
       AND d.status IN ('draft','queued','review','held','failed')
     WHERE p.deleted_at IS NULL AND p.ig_username IS NOT NULL
+      AND COALESCE(p.segment,'commentaire') NOT IN ('story','robot')
       AND (${all ? '1=1 OR' : ''} p.contacted = 0 OR (t.last_incoming_at IS NOT NULL AND t.last_incoming_at > COALESCE(p.contacted_at,'')))
     ORDER BY COALESCE(t.last_incoming_at, p.last_event_at, p.created_at) DESC
     LIMIT ${all ? 1000 : 400}
   `).all()
 
+  // Une personne écrit à nouveau après avoir été traitée : elle revient dans sa
+  // pile, au lieu de rester rangée avec les dossiers clos.
+  const reopened = r => !!(r.contacted && r.last_incoming_at && r.last_incoming_at > (r.contacted_at || ''))
   const items = rows.map(r => {
-    const group = r.contacted && !r.draft_status ? 'done'
-      : r.draft_status === 'review' ? 'review'
-      : ['held', 'failed'].includes(r.draft_status) ? 'held'
-        : r.draft_status ? 'ready' : 'waiting'
+    const segment = SEGMENT_LABELS[r.segment] ? r.segment : 'commentaire'
+    const arrival = arrivalOf(r)
     return {
       ...r,
-      group,
+      segment,
+      arrival: arrival.text,
+      arrival_url: arrival.url,
+      reopened: reopened(r),
+      group: r.contacted && !reopened(r) ? 'done' : segment,
       review_label: r.review_reason ? REVIEW_LABELS[r.review_reason] || r.review_reason : null,
       window_open: r.last_incoming_at ? Date.now() - new Date(r.last_incoming_at).getTime() < WINDOW_MS : false,
     }
@@ -525,16 +635,19 @@ export function workbench({ all = false } = {}) {
 
   const cfg = getSendConfig()
   const next = db.prepare("SELECT MIN(scheduled_at) m FROM instagram_drafts WHERE status='queued'").get()?.m || null
+  const counts = {
+    ready: items.filter(i => i.group !== 'done' && i.draft_status === 'draft').length,
+    review: items.filter(i => i.group !== 'done' && i.draft_status === 'review').length,
+    held: items.filter(i => i.group !== 'done' && ['held', 'failed'].includes(i.draft_status)).length,
+    queued: items.filter(i => i.draft_status === 'queued').length,
+    done: items.filter(i => i.group === 'done').length,
+    todo: items.filter(i => i.group !== 'done').length,
+  }
+  for (const s of SEGMENTS) counts[s.key] = items.filter(i => i.group === s.key).length
   return {
     items,
-    counts: {
-      ready: items.filter(i => i.group === 'ready').length,
-      review: items.filter(i => i.group === 'review').length,
-      held: items.filter(i => i.group === 'held').length,
-      waiting: items.filter(i => i.group === 'waiting').length,
-      done: items.filter(i => i.group === 'done').length,
-      queued: items.filter(i => i.draft_status === 'queued').length,
-    },
+    segments: SEGMENTS,
+    counts,
     next_at: next,
     spacing_seconds: Number(cfg.spacing_seconds),
     hours: `${cfg.start_hour} h – ${cfg.end_hour} h`,
@@ -558,6 +671,7 @@ export function previewDraftWriting() {
   const todo = db.prepare(`
     SELECT COUNT(*) n FROM instagram_prospects p
     WHERE p.deleted_at IS NULL AND p.ig_username IS NOT NULL AND p.contacted = 0
+      AND COALESCE(p.segment,'commentaire') NOT IN ('story','robot')
       AND NOT EXISTS (SELECT 1 FROM instagram_drafts d WHERE d.prospect_id = p.id)
   `).get().n
   const cfg = getWriteConfig()

@@ -142,8 +142,8 @@
          la palette la plus saturée du lot. */
   .row-st-rapproche { background-color: rgb(var(--c-green-100) / .7); }
   .row-st-rapproche.row-st-rapproche:hover { background-color: rgb(var(--c-green-200) / .8); }
-  .row-st-comptabilise { background-color: rgb(var(--c-amber-100) / .7); }
-  .row-st-comptabilise.row-st-comptabilise:hover { background-color: rgb(var(--c-amber-200) / .8); }
+  .row-st-comptabilise { background-color: rgb(var(--c-yellow-200) / .75); }
+  .row-st-comptabilise.row-st-comptabilise:hover { background-color: rgb(var(--c-yellow-300) / .85); }
   .row-st-facture_recue { background-color: rgb(var(--c-sky-100) / .65); }
   .row-st-facture_recue.row-st-facture_recue:hover { background-color: rgb(var(--c-sky-200) / .8); }
   .row-st-a_traiter { background-color: rgb(var(--c-red-100) / .6); }
@@ -156,6 +156,62 @@
      couleur de statut (l'ancien fond ambre entrait en collision avec le jaune
      « comptabilisé »). Même vocabulaire que les règles de couleur de vue. */
   .row-flagged { box-shadow: inset 3px 0 0 0 rgb(var(--c-amber-500) / .85); }
+
+  /* DataTable `skin="ledger"` — le classeur papier (maquette C5 · Crayon,
+     choisie par Charles le 2026-09-22) : fond crème, grille fine, écriture
+     à l'ancienne, chiffres de machine à écrire. « À traiter » reste papier nu :
+     le rouge est réservé au rond de relecture de Michel. */
+  .dt-skin-ledger {
+    --lg-paper: #f6f1e4; --lg-head: #ece4d1; --lg-rule: #d9cfb9; --lg-ink: #2b2a26; --lg-muted: #8a8270;
+    --lg-green: #d3e5c8; --lg-yellow: #f1e3a8; --lg-blue: #d6e2ef; --lg-gray: #e2ded5;
+    --lg-pen: #b3261e; --lg-ribbon: #e2711d;
+    background: var(--lg-paper); color: var(--lg-ink);
+    font-family: 'Newsreader', Georgia, serif; border-color: var(--lg-rule);
+  }
+  .dark .dt-skin-ledger {
+    --lg-paper: #1d1b17; --lg-head: #26231d; --lg-rule: #3a352b; --lg-ink: #ece4d1; --lg-muted: #a39a86;
+    --lg-green: #243322; --lg-yellow: #3a3218; --lg-blue: #1f2a36; --lg-gray: #2b2924;
+    --lg-pen: #ff7a6e; --lg-ribbon: #f08a3c;
+  }
+  .dt-skin-ledger .text-sm { font-size: 15px; }
+  .dt-skin-ledger .tabular-nums { font-family: 'Courier Prime', ui-monospace, monospace; font-size: 14px; }
+  .dt-skin-ledger [data-row-id] { border-bottom-color: var(--lg-rule); color: var(--lg-ink); }
+  .dt-skin-ledger [data-row-id] > div { border-right: 1px solid var(--lg-rule); }
+  .dt-skin-ledger .group\/header { background: var(--lg-head); border-bottom: 2px solid var(--lg-ink); }
+  .dt-skin-ledger [data-testid^="col-header-"] { color: var(--lg-muted); text-transform: uppercase; letter-spacing: .07em; font-size: 11.5px; border-right: 1px solid var(--lg-rule); }
+  .dt-skin-ledger .row-st-a_traiter,
+  .dt-skin-ledger .row-st-a_traiter.row-st-a_traiter:hover { background-color: transparent; }
+  .dt-skin-ledger .row-st-rapproche, .dt-skin-ledger .row-st-rapproche.row-st-rapproche:hover { background-color: var(--lg-green); }
+  .dt-skin-ledger .row-st-comptabilise, .dt-skin-ledger .row-st-comptabilise.row-st-comptabilise:hover { background-color: var(--lg-yellow); }
+  .dt-skin-ledger .row-st-facture_recue, .dt-skin-ledger .row-st-facture_recue.row-st-facture_recue:hover { background-color: var(--lg-blue); }
+  .dt-skin-ledger .row-st-ignore, .dt-skin-ledger .row-st-ignore.row-st-ignore:hover { background-color: var(--lg-gray); color: var(--lg-muted); }
+  .dt-skin-ledger [data-row-id]:hover { filter: brightness(.97); }
+  .dt-skin-ledger .lg-title { font-family: 'Newsreader', Georgia, serif; color: var(--lg-ink); }
+  /* Rond rouge au crayon autour de la date : « à réviser ». */
+  .dt-skin-ledger .lg-pen {
+    display: inline-block; padding: 1px 7px; border: 2px solid var(--lg-pen); border-radius: 50%;
+    color: var(--lg-pen); font-weight: 700; transform: rotate(-3deg);
+  }
+  /* Les deux boutons de marque : fantômes au repos, nets au survol, pleins une fois posés. */
+  .dt-skin-ledger [data-row-id] > div:has(.lg-marks) { padding-left: 4px; padding-right: 4px; }
+  .dt-skin-ledger .lg-marks button { flex-shrink: 0; opacity: 0; transition: opacity .12s, transform .12s; cursor: pointer; }
+  .dt-skin-ledger [data-row-id]:hover .lg-marks button { opacity: .45; }
+  .dt-skin-ledger .lg-marks button:hover { opacity: 1 !important; transform: scale(1.15); }
+  .dt-skin-ledger .lg-marks button[aria-pressed="true"] { opacity: 1; }
+  .dt-skin-ledger .lg-mark-pen { width: 15px; height: 15px; border: 2px solid var(--lg-pen); border-radius: 50%; }
+  .dt-skin-ledger .lg-mark-pen[aria-pressed="true"] { background: var(--lg-pen); }
+  .dt-skin-ledger .lg-mark-ribbon { width: 14px; height: 22px; background: var(--lg-ribbon); clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%); }
+  .dt-skin-ledger .lg-tabs { height: 40px; background: var(--lg-head); border-top: 2px solid var(--lg-ink); padding-left: 48px; font-size: 14px; }
+  .dt-skin-ledger .lg-tab { color: var(--lg-muted); }
+  .dt-skin-ledger .lg-tab:hover { color: var(--lg-ink); }
+  .dt-skin-ledger .lg-tab-on { background: var(--lg-paper); color: var(--lg-ink); font-style: italic; font-weight: 600; border-left: 1px solid var(--lg-rule); border-right: 1px solid var(--lg-rule); margin-top: -2px; }
+  .dt-skin-ledger .lg-count {
+    display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 3px;
+    border: 2px solid var(--lg-pen); border-radius: 50%; color: var(--lg-pen); font-size: 11px; font-weight: 700; font-style: normal;
+    font-family: 'Courier Prime', ui-monospace, monospace;
+  }
+  /* Légende : pastille « À traiter » = papier nu, bordée. */
+  .dt-skin-ledger [data-testid="reconcile-legend-a_traiter"] .row-st-a_traiter { background: var(--lg-paper); border-color: var(--lg-rule); }
 }
 
 @layer components {
@@ -469,3 +525,22 @@
    plus grande que l'icône qu'elle contient. */
 .pick-hero-check { width: clamp(2.75rem, 6cqw, 7rem); height: clamp(2.75rem, 6cqw, 7rem); }
 .pick-hero-icon-sm { width: clamp(0.9rem, 2.6cqw, 3rem); height: clamp(0.9rem, 2.6cqw, 3rem); }
+
+/* Carte des clients — les points « client » respirent doucement : c'est le
+   terrain déjà gagné, il doit attirer l'œil avant le reste. */
+@keyframes map-pulse-glow {
+  0%, 100% { stroke-opacity: 0.9; stroke-width: 2; }
+  50%      { stroke-opacity: 0.35; stroke-width: 6; }
+}
+.map-pulse { animation: map-pulse-glow 3.2s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .map-pulse { animation: none; } }
+
+/* Infobulle d'un point : compacte, sur le fond sombre de la carte. */
+.leaflet-popup-content .map-pop { font-size: 12px; line-height: 1.5; }
+.leaflet-popup-content .map-pop a { color: #0f766e; font-weight: 500; }
+
+/* Formulaire de découverte (System builder) : texte agrandi d'un cran. */
+.discovery-form-large .text-xs { font-size: 0.875rem; line-height: 1.25rem; }
+.discovery-form-large .text-sm { font-size: 1rem; line-height: 1.5rem; }
+.discovery-form-large .text-base { font-size: 1.125rem; line-height: 1.75rem; }
+.discovery-form-large input, .discovery-form-large select, .discovery-form-large textarea { font-size: 1rem; }

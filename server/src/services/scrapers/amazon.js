@@ -47,13 +47,16 @@ async function signIn(ctx) {
   await page.goto(`${BASE}/ap/signin?openid.mode=checkid_setup&openid.return_to=${encodeURIComponent(BASE + ORDERS_PATH)}&openid.ns=http%3A%2F%2Fspecs.openid.net%2Fauth%2F2.0&openid.identity=http%3A%2F%2Fspecs.openid.net%2Fauth%2Fidentifier_select&openid.claimed_id=http%3A%2F%2Fspecs.openid.net%2Fauth%2Fidentifier_select&openid.assoc_handle=caflex&openid.pape.max_auth_age=0`, { waitUntil: 'domcontentloaded' })
 
   // Étape courriel (parfois fusionnée avec le mot de passe sur un seul écran).
-  const email = page.locator('input[type="email"], #ap_email, input[name="email"]').first()
+  // `:visible` est indispensable : Amazon laisse traîner un `<input name="email"
+  // type="hidden" id="ap-claim">` déjà rempli, que le sélecteur nu attrapait —
+  // la tournée expirait alors 30 s sur un champ qui ne sera jamais éditable.
+  const email = page.locator('input[type="email"]:visible, #ap_email:visible, input[name="email"]:visible').first()
   if (await email.count()) {
     await email.fill(ctx.credentials.username)
     await submitForm(page, email, '#continue, input#continue, [type="submit"]')
   }
 
-  const pwd = page.locator('#ap_password, input[type="password"]').first()
+  const pwd = page.locator('#ap_password:visible, input[type="password"]:visible').first()
   await pwd.waitFor({ state: 'visible', timeout: 20_000 })
   await pwd.fill(credentials.password)
   const remember = page.locator('input[name="rememberMe"]').first()

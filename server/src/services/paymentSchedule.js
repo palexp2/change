@@ -53,7 +53,10 @@ export const shiftIso = (iso, days) => {
 // prochaine séance.
 //
 // La fenêtre n'est ni la semaine civile ni 7 jours glissants : elle va
-// d'aujourd'hui au mardi qui SUIT la prochaine séance de paiement.
+// d'aujourd'hui au PROCHAIN mardi strictement après aujourd'hui. Un mardi, c'est
+// le mardi d'après ; hors séance (ex. un mercredi), seulement ce qui ne peut pas
+// attendre la séance qui vient — ce qui échoit après elle s'y paiera (demande
+// de Charles, 2026-09-23 : un mercredi, la cédule proposait deux semaines).
 export const PAY_WEEKDAY = 2   // mardi (1 = lundi … 7 = dimanche, ISO-8601)
 
 // Prochaine séance de paiement : aujourd'hui si on y est déjà, sinon le
@@ -66,8 +69,8 @@ export function nextPayDay(fromIso, weekday = PAY_WEEKDAY) {
 
 export function scheduleWindow(todayIsoStr, weekday = PAY_WEEKDAY) {
   const pay_day = nextPayDay(todayIsoStr, weekday)
-  // Dernière échéance couverte = le jour de paie suivant, inclus.
-  const end = shiftIso(pay_day, 7)
+  // Dernière échéance couverte = le premier jour de paie APRÈS aujourd'hui, inclus.
+  const end = nextPayDay(shiftIso(todayIsoStr, 1), weekday)
   return {
     start: dayOnly(todayIsoStr),
     pay_day,
@@ -75,6 +78,8 @@ export function scheduleWindow(todayIsoStr, weekday = PAY_WEEKDAY) {
     // Première échéance NON couverte — c'est le « avant le mercredi » de la règle.
     cutoff: shiftIso(end, 1),
     weekday,
+    // Consultée hors séance : la liste ne garde que l'urgent.
+    off_session: pay_day !== dayOnly(todayIsoStr),
   }
 }
 

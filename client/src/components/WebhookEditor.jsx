@@ -322,7 +322,7 @@ function RotateTokenButton({ automationId }) {
   const [busy, setBusy] = useState(false)
   async function rotate() {
     if (busy) return
-    if (!window.confirm('Régénérer le token ? L\'ancienne URL cessera immédiatement de fonctionner.')) return
+    if (!window.confirm('Régénérer la clé ? L\'ancienne URL cessera immédiatement de fonctionner.')) return
     setBusy(true)
     try { await api.automations.rotateToken(automationId); window.location.reload() } catch { setBusy(false) }
   }

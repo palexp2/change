@@ -1,3 +1,4 @@
+import { encryptCredentials, decryptCredentials } from '../utils/encryption.js'
 import db from '../db/database.js'
 import { APP_URL } from '../config/appUrl.js'
 
@@ -57,7 +58,7 @@ export async function getAccessToken() {
 
   // Token valide → retour immédiat
   if (!row.expiry_date || Date.now() <= row.expiry_date - 60_000) {
-    return row.access_token
+    return decryptCredentials(row.access_token)
   }
 
   // Un refresh est déjà en cours → attendre sa résolution
@@ -74,7 +75,7 @@ export async function getAccessToken() {
         ORDER BY updated_at DESC LIMIT 1
       `).get()
       if (fresh && (!fresh.expiry_date || Date.now() <= fresh.expiry_date - 60_000)) {
-        return fresh.access_token
+        return decryptCredentials(fresh.access_token)
       }
 
       const { clientId, clientSecret } = getCredentials()
@@ -85,7 +86,7 @@ export async function getAccessToken() {
       const resp = await fetch('https://airtable.com/oauth2/v1/token', {
         method: 'POST',
         headers,
-        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: fresh.refresh_token }),
+        body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: decryptCredentials(fresh.refresh_token) }),
       })
       if (!resp.ok) {
         const body = await resp.text()
@@ -97,7 +98,7 @@ export async function getAccessToken() {
         UPDATE connector_oauth
         SET access_token=?, refresh_token=COALESCE(?,refresh_token), expiry_date=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id=?
-      `).run(tokens.access_token, tokens.refresh_token || null, tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null, fresh.id)
+      `).run(encryptCredentials(tokens.access_token), encryptCredentials(tokens.refresh_token) || null, tokens.expires_in ? Date.now() + tokens.expires_in * 1000 : null, fresh.id)
       return tokens.access_token
     } finally {
       refreshLock = null
@@ -137,6 +138,31 @@ export async function airtablePatch(path, accessToken, body) {
   })
   if (!resp.ok) throw new Error(`Airtable PATCH ${path} ${resp.status}: ${await resp.text()}`)
   return resp.json()
+}
+
+// Suppression de records (10 au plus par appel, limite Airtable). Un record
+// déjà absent d'Airtable compte comme supprimé : c'est l'état voulu.
+export async function airtableDelete(path, accessToken, recordIds) {
+  const del = async ids => {
+    const qs = ids.map(id => `records[]=${encodeURIComponent(id)}`).join('&')
+    const resp = await fetch(`https://api.airtable.com/v0${path}?${qs}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${accessToken}` },
+    })
+    return resp.ok ? null : { status: resp.status, text: await resp.text() }
+  }
+  for (let i = 0; i < recordIds.length; i += 10) {
+    const chunk = recordIds.slice(i, i + 10)
+    const failed = await del(chunk)
+    if (!failed) continue
+    if (failed.status !== 404 && failed.status !== 422) {
+      throw new Error(`Airtable DELETE ${path} ${failed.status}: ${failed.text}`)
+    }
+    // Un id introuvable fait échouer tout le lot : on reprend un par un.
+    for (const id of chunk) {
+      const one = await del([id])
+      if (one && one.status !== 404) throw new Error(`Airtable DELETE ${path} ${one.status}: ${one.text}`)
+    }
+  }
 }
 
 // Timeout par défaut sur chaque requête HTTP Airtable. Sans ça, si Airtable ou

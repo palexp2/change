@@ -115,7 +115,7 @@ export function VendorSelect({ value = '', vendorId = null, onChange, required =
               <span>{c.name}</span>
               <span className="flex items-center gap-2 ml-2">
                 {c.quickbooks_vendor_id && (
-                  <span className="text-xs text-slate-400">QB</span>
+                  <span className="text-xs text-slate-400">QuickBooks</span>
                 )}
               </span>
             </li>

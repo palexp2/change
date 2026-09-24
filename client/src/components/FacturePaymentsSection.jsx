@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect } from 'react'
 import { Plus, ArrowDownCircle, ArrowUpCircle, AlertCircle, RefreshCw, ExternalLink, RotateCcw } from 'lucide-react'
 import { Link } from 'react-router-dom'
@@ -65,7 +66,7 @@ export default function FacturePaymentsSection({
   const looksPaidOutOfBand = !!facturePaidAt
     && !facturePaidChargeId
     && !facturePaidPaymentIntent
-  const isAdmin = user?.role === 'admin'
+  const isAdmin = hasRole(user, 'admin')
 
   function reload() {
     setLoading(true)
@@ -517,7 +518,7 @@ const QB_LINK_TYPES = [
   { value: 'qb_payment_id', label: 'Sales Receipt', prefix: 'SR' },
 ]
 const fmtMoneyShort = (n, currency = 'CAD') => fmtMoney(n, currency, { fallback: '', maximumFractionDigits: 0 })
-function QbSkippedCell({ payment, isAdmin, onChanged }) {
+function QbSkippedCell({ payment, isAdmin, onChanged, depositOnly = false }) {
   const [editing, setEditing] = useState(false)
   const [col, setCol] = useState('qb_deposit_id')
   const [qbId, setQbId] = useState('')
@@ -533,10 +534,13 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
     if (!editing || suggestions !== null) return
     setLoadingSugg(true)
     api.payments.qbLinkSuggestions(payment.id)
-      .then(r => setSuggestions(r.suggestions || []))
-      .catch(() => setSuggestions([]))
+      .then(r => {
+        setSuggestions((r.suggestions || []).filter(s => !depositOnly || s.type === 'deposit'))
+        if (r.errors?.deposit) setErr('Impossible de charger les dépôts QuickBooks : ' + r.errors.deposit)
+      })
+      .catch(e => { setSuggestions([]); setErr(e.message || 'Impossible de charger les dépôts') })
       .finally(() => setLoadingSugg(false))
-  }, [editing, suggestions, payment.id])
+  }, [editing, suggestions, payment.id, depositOnly])
 
   function pickSuggestion(s) {
     setCol(s.column)
@@ -546,8 +550,9 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
   }
 
   async function save() {
+    if (saving) return
     const trimmed = qbId.trim()
-    if (!trimmed) { setErr('ID QB requis'); return }
+    if (!trimmed) { setErr('Identifiant QuickBooks requis'); return }
     setSaving(true)
     setErr(null)
     try {
@@ -556,7 +561,9 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
         qb_credit_account_id: creditAcctId.trim() || null,
         qb_credit_account_name: creditAcctName.trim() || null,
       }
-      const res = await api.admin.paymentRawUpdate(payment.id, payload)
+      const res = depositOnly
+        ? await api.payments.updateDepositLink(payment.id, { qb_deposit_id: trimmed, previous_deposit_id: payment.qb_deposit_id || null })
+        : await api.admin.paymentRawUpdate(payment.id, payload)
       if (res?.rejected && Object.keys(res.rejected).length) {
         setErr(`Rejeté : ${JSON.stringify(res.rejected)}`)
         return
@@ -573,9 +580,23 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
     }
   }
 
+  async function unlink() {
+    setSaving(true)
+    setErr(null)
+    try {
+      await api.payments.updateDepositLink(payment.id, { qb_deposit_id: null, previous_deposit_id: payment.qb_deposit_id })
+      await onChanged?.()
+    } catch (e) {
+      setErr(e.message || 'Impossible de délier le dépôt')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   if (editing) {
     return (
       <div className="inline-flex flex-col gap-1.5 align-top" data-testid={`payment-qb-link-form-${payment.id}`}>
+        {depositOnly && <p className="text-xs text-slate-500 whitespace-normal max-w-md">Choisissez un dépôt existant ou saisissez son identifiant. Cette action modifie uniquement le lien du paiement ; les dépôts restent dans QuickBooks.</p>}
         <div className="inline-flex items-center gap-1">
           <select
             value={col}
@@ -583,11 +604,12 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
             className="text-xs border border-slate-300 rounded px-1 py-0.5"
             disabled={saving}
           >
-            {QB_LINK_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            {QB_LINK_TYPES.filter(t => !depositOnly || t.value === 'qb_deposit_id').map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
           </select>
           <input
             type="text"
             value={qbId}
+            aria-label="Identifiant QuickBooks"
             onChange={e => setQbId(e.target.value)}
             onKeyDown={e => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false) }}
             className="w-20 text-xs border border-slate-300 rounded px-1 py-0.5"
@@ -610,7 +632,7 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
           >
             ✕
           </button>
-          {err && <span className="text-xs text-red-600 ml-1" title={err}>!</span>}
+          {err && <span role="alert" className="text-xs text-red-600 whitespace-normal">{err}</span>}
         </div>
         {/* Compte crédité — auto-rempli depuis QB quand on choisit une
             suggestion (Deposit/JE), éditable pour saisie manuelle. Trace
@@ -621,6 +643,7 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
           <input
             type="text"
             value={creditAcctName}
+            readOnly={depositOnly}
             onChange={e => setCreditAcctName(e.target.value)}
             className="text-xs border border-slate-300 rounded px-1 py-0.5 w-64"
             disabled={saving}
@@ -631,7 +654,7 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
             autour de la date du paiement. Clic = remplit le type + l'ID. */}
         <div className="border border-slate-200 rounded bg-white max-w-md" data-testid={`payment-qb-suggestions-${payment.id}`}>
           {loadingSugg && (
-            <div className="text-[11px] text-slate-400 px-2 py-1.5">Chargement des opérations QB…</div>
+            <div className="text-[11px] text-slate-400 px-2 py-1.5">Chargement des opérations QuickBooks…</div>
           )}
           {!loadingSugg && suggestions && suggestions.length === 0 && (
             <div className="text-[11px] text-slate-400 px-2 py-1.5 italic">
@@ -646,6 +669,7 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
                   <li key={`${s.type}:${s.qb_id}`}>
                     <button
                       onClick={() => pickSuggestion(s)}
+                      disabled={saving}
                       className={`w-full text-left px-2 py-1 text-[11px] hover:bg-slate-50 ${selected ? 'bg-brand-50' : ''}`}
                       data-testid={`payment-qb-suggestion-${s.type}-${s.qb_id}`}
                     >
@@ -675,10 +699,22 @@ function QbSkippedCell({ payment, isAdmin, onChanged }) {
     )
   }
 
+  if (depositOnly) return isAdmin ? (
+    <div className="flex flex-col items-start gap-1 text-xs whitespace-normal">
+      <div className="flex gap-2">
+        <button disabled={saving} className="link-record disabled:opacity-50" onClick={() => { setEditing(true); setSuggestions(null); setErr(null) }}>
+          {payment.qb_deposit_id ? 'Changer de dépôt' : 'Lier un dépôt existant'}
+        </button>
+        {payment.qb_deposit_id && <button title="Retirer le lien du paiement sans supprimer le dépôt dans QuickBooks" disabled={saving} className="text-slate-500 hover:text-red-700 disabled:opacity-50" onClick={unlink}>Délier le dépôt</button>}
+      </div>
+      {err && <span role="alert" className="text-red-600">{err}</span>}
+    </div>
+  ) : null
+
   return (
     <span
       className="inline-flex items-center gap-1.5 text-xs text-slate-500"
-      title="L'écriture QB a été marquée comme déjà postée manuellement à la création du paiement"
+      title="L'écriture QuickBooks a été marquée comme déjà postée manuellement à la création du paiement"
       data-testid={`payment-qb-skipped-${payment.id}`}
     >
       saisi à la main
@@ -739,10 +775,10 @@ function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
         setName(r.credit_account_name)
         setAcctId(r.credit_account_id || '')
       } else {
-        setErr('Aucun compte crédité détecté dans QB pour ce client')
+        setErr('Aucun compte crédité détecté dans QuickBooks pour ce client')
       }
     } catch (e) {
-      setErr(e.message || 'Erreur QB')
+      setErr(e.message || 'Erreur QuickBooks')
     } finally {
       setAutoLoading(false)
     }
@@ -818,7 +854,7 @@ function QbCreditAccountInline({ payment, isAdmin, onChanged }) {
     <button
       onClick={() => setEditing(true)}
       className="text-[10px] link-record mt-0.5 w-fit"
-      title="Annoter le compte crédité dans QB pour la traçabilité comptable"
+      title="Annoter le compte crédité dans QuickBooks pour la traçabilité comptable"
       data-testid={`payment-qb-credit-add-${payment.id}`}
     >
       + compte crédité
@@ -838,8 +874,9 @@ function PaymentList({ title, rows, icon: Icon, colorClass, onRetryQb, isAdmin, 
             <th className="text-left pb-2 font-medium">Date</th>
             <th className="text-left pb-2 font-medium">Mode</th>
             <th className="text-right pb-2 font-medium w-32">Montant</th>
-            <th className="text-left pb-2 pl-4 font-medium">Payout</th>
-            <th className="text-left pb-2 font-medium">QB</th>
+            <th className="text-left pb-2 pl-4 font-medium">Versement</th>
+            <th className="text-left pb-2 font-medium">QuickBooks</th>
+            <th className="text-left pb-2 pl-4 font-medium">Créé par</th>
           </tr>
         </thead>
         <tbody>
@@ -883,7 +920,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
             <Link
               to={`/stripe-payouts/${p.payout_stripe_id}`}
               className="inline-flex items-center gap-1 text-xs font-mono link-record"
-              title="Voir le payout Stripe"
+              title="Voir le versement Stripe"
             >
               {p.payout_stripe_id.slice(-8)}
             </Link>
@@ -903,7 +940,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                     className="inline-flex items-center gap-1 text-xs font-mono link-record"
                     title="Ouvrir dans QuickBooks"
                   >
-                    QB <ExternalLink size={10} />
+                    QuickBooks <ExternalLink size={10} />
                   </a>
                 )
               }
@@ -923,7 +960,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                 )
               }
               return (
-                <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="La JE QB sera posée au push du payout Stripe">
+                <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="L'écriture QuickBooks sera posée à la publication du versement Stripe">
                   au payout
                 </span>
               )
@@ -940,11 +977,11 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
               // bouton "lier" pour rattacher l'id du Deposit/JE/SR créé à la
               // main dans QB, ce qui transforme la cellule en lien cliquable.
               if (p.qb_skipped) {
-                return <QbSkippedCell payment={p} isAdmin={isAdmin} onChanged={onChanged} />
+                return <QbSkippedCell payment={p} isAdmin={isAdmin} onChanged={onChanged} depositOnly={p.direction === 'in' && p.method !== 'stripe'} />
               }
               // Paiement/refund Stripe (row payments réelle) : la pose comptable
               // se fait au payout, pas par ligne. Pas de Retry — on affiche le
-              // Deposit du payout s'il a été poussé, sinon "au payout".
+              // Deposit du payout s'il a été publié, sinon "au versement".
               if (p.method === 'stripe') {
                 if (p.payout_qb_deposit_id) {
                   return (
@@ -960,7 +997,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                   )
                 }
                 return (
-                  <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="La JE QB sera posée au push du payout Stripe">
+                  <span className="inline-flex items-center gap-1 text-xs text-slate-400" title="L'écriture QuickBooks sera posée à la publication du versement Stripe">
                     au payout
                   </span>
                 )
@@ -969,7 +1006,7 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                 <button
                   onClick={() => onRetryQb(p.id)}
                   className="inline-flex items-center gap-1 text-xs text-amber-700 bg-amber-50 hover:bg-amber-100 px-2 py-0.5 rounded"
-                  title="Écriture QB non posée — réessayer"
+                  title="Écriture QuickBooks non posée — réessayer"
                 >
                   <RefreshCw size={10} /> Retry
                 </button>
@@ -995,10 +1032,16 @@ function PaymentRow({ p, isAdmin, onRetryQb, onChanged }) {
                 ) : (
                   <span className="text-xs font-mono">{label} #{qbId}</span>
                 )}
+                {p.qb_deposit_id && p.direction === 'in' && p.method !== 'stripe' && !p.qb_journal_entry_id && !p.qb_payment_id && (
+                  <QbSkippedCell payment={p} isAdmin={isAdmin} onChanged={onChanged} depositOnly />
+                )}
                 <QbCreditAccountInline payment={p} isAdmin={isAdmin} onChanged={onChanged} />
               </div>
             )
           })()}
+        </td>
+        <td className="py-2 pl-4 text-xs text-slate-600">
+          {p.created_by_name || 'Non renseigné'}
         </td>
       </tr>
     </>

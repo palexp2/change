@@ -20,6 +20,7 @@
 // services/plaidSync.js) coche automatiquement `cleared_at` via `autoClearFromBank`.
 import db from '../db/database.js'
 import { resolveVendorProfileId } from './vendorProfiles.js'
+import { queueBillPaymentPush } from './billPaymentQb.js'
 import { newRecordId } from '../utils/recordId.js'
 import { qbGet } from '../connectors/quickbooks.js'
 
@@ -168,6 +169,11 @@ export function createPayment(body, userId = null) {
     body.sheet_seen_at || null, body.source || 'manual', body.import_key || null, userId,
     vendorProfileId,
   )
+  // Régler une facture ici la marque payée dans QuickBooks : l'écriture de
+  // paiement part toute seule, sans faire attendre l'utilisateur ni le faire
+  // dépendre de QuickBooks. Les paiements sans facture liée, ceux qui viennent
+  // déjà de QuickBooks et ceux du fichier de suivi sont écartés en amont.
+  queueBillPaymentPush(id, { userId })
   return getPayment(id)
 }
 

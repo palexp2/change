@@ -1,7 +1,9 @@
-const { test, before, after } = require('node:test')
+const { test, before, after, describe } = require('node:test')
 const assert = require('node:assert/strict')
 const { chromium } = require('playwright')
-
+// Enveloppé dans describe : sous Node 18, un after() de premier niveau n'est joué
+// qu'une fois la boucle vide — un navigateur ouvert l'en empêche, le test pend.
+describe('sale-receipt-company-editable', () => {
 const URL = process.env.ERP_URL || 'http://localhost:3004/erp'
 const EMAIL = process.env.ERP_EMAIL || 'claude@orisha.io'
 const PASS = process.env.ERP_PASS
@@ -98,4 +100,5 @@ test('le champ Date s\'affiche en format lisible, est éditable et autosave', as
   const newDisplay = (await dateDisplay.innerText()).trim()
   assert.ok(newDisplay.includes('2025'), `l'affichage doit refléter la nouvelle date, vu: "${newDisplay}"`)
   assert.ok(!/^\d{4}-\d{2}-\d{2}$/.test(newDisplay), 'l\'affichage ne doit pas être en ISO brut')
+})
 })

@@ -50,6 +50,34 @@ function trailingAmount(line) {
   return m ? parsePrintedNumber(m[1]) : null
 }
 
+const AMOUNT_ONLY = /^-?\(?\$?\s?\d{1,3}(?:[ \u00a0]\d{3})*[.,]\d{2}\)?$/
+
+// Une ligne du sommaire porte UNE ou DEUX paires « libellé … montant » : NovoXpress
+// imprime ses frais sur deux colonnes dès qu'il y en a beaucoup
+// (« Frais de Base   37,50   Droits   1,25 »). Ne lire que le montant de fin de ligne
+// perdait toute la colonne de gauche — sous-total faux, « écart » fantôme sur la fiche.
+function summaryPairs(line) {
+  const pairs = []
+  let label = []
+  for (const tok of String(line || '').split(/\s{2,}/).map(t => t.trim()).filter(Boolean)) {
+    if (AMOUNT_ONLY.test(tok)) {
+      if (label.length) pairs.push({ label: label.join(' ').trim(), amount: parsePrintedNumber(tok) })
+      label = []
+      continue
+    }
+    // Libellé et montant séparés par une seule espace (« P.S.T. (7%) 1,00 »).
+    const m = tok.match(/^(.*\S)\s+(-?\(?\$?\s?\d{1,3}(?:[ \u00a0]\d{3})*[.,]\d{2}\)?)$/)
+    if (m) {
+      label.push(m[1])
+      pairs.push({ label: label.join(' ').trim(), amount: parsePrintedNumber(m[2]) })
+      label = []
+    } else {
+      label.push(tok)
+    }
+  }
+  return pairs
+}
+
 // Ligne « … Total   17,21 » d'une expédition (jamais « Montant total dû », qui ne finit
 // pas par le mot Total avant le montant).
 const SHIPMENT_TOTAL_RE = /(?:^|\s)Total\s+(-?\(?\$?\s?[\d\u00a0 ',.]+)\s*$/
@@ -66,7 +94,7 @@ function taxField(label) {
   return null
 }
 
-const IS_TAX_LINE = /\b(T\.?P\.?S\.?|T\.?V\.?Q\.?|T\.?V\.?H\.?|G\.?S\.?T|Q\.?S\.?T|H\.?S\.?T|P\.?S\.?T)\b/i
+const IS_TAX_LINE = /\b(T\.?P\.?S\.?|T\.?V\.?Q\.?|T\.?V\.?H\.?|T\.?V\.?P\.?|G\.?S\.?T|Q\.?S\.?T|H\.?S\.?T|P\.?S\.?T|R\.?S\.?T)\b/i
 
 /**
  * Sommaire imprimé d'une facture de transport, ou null si le document n'en est pas une
@@ -86,11 +114,12 @@ export function parseTransportInvoiceSummary(text) {
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i]
     if (!line.trim()) { if (charges.length || taxes.length) break; continue }
-    const amount = trailingAmount(line)
-    if (amount == null) break
-    const label = line.replace(/\s{2,}[^\s]*$/, '').trim()
-    if (IS_TAX_LINE.test(label)) taxes.push({ label, amount, field: taxField(label) })
-    else charges.push({ label, amount })
+    const pairs = summaryPairs(line)
+    if (!pairs.length) break
+    for (const { label, amount } of pairs) {
+      if (IS_TAX_LINE.test(label)) taxes.push({ label, amount, field: taxField(label) })
+      else charges.push({ label, amount })
+    }
   }
   if (!charges.length && !taxes.length) return null
 
@@ -127,6 +156,14 @@ export function parseTransportInvoiceSummary(text) {
     const n = parsePrintedNumber(m[1])
     if (n != null && n !== 0) shipmentTotals.push(n)
   }
+
+  // Garde-fou : « Sommaire des frais » n'appartient pas qu'au transport — une
+  // facture de téléphonie Bell imprime « Sommaire des frais courants ». On y
+  // lisait alors une charge et zéro taxe, et la confrontation inventait deux
+  // écarts (TPS et TVQ « manquantes » sur le papier). Une vraie facture de
+  // transport porte toujours son « Montant total dû » : sans lui, ce n'en est
+  // pas une, et le peu qu'on a lu ne vaut pas confrontation.
+  if (totalDue == null) return null
 
   return {
     invoice_number: invoiceNumber,

@@ -190,6 +190,36 @@ router.get('/:id/returns', (req, res) => {
   res.json({ data: rows })
 })
 
+// GET /api/companies/:id/tickets — les billets qui citent cette entreprise.
+// `tickets.company_id` a été droppée (migration 040) : le lien vit dans les
+// champs lien des billets qui visent `companies` (« Entreprise » aujourd'hui),
+// lus du registre plutôt que nommés — un renommage ne coupe pas la liste. La
+// valeur porte un record ID Airtable ou un id ERP, brut ou en tableau JSON : on
+// cherche l'identifiant DANS le texte (même règle que GET /products/:id/purchases).
+router.get('/:id/tickets', (req, res) => {
+  const company = db.prepare('SELECT id, airtable_id FROM companies WHERE id = ?').get(req.params.id)
+  if (!company) return res.status(404).json({ error: 'Company not found' })
+
+  const physical = new Set(db.pragma('table_info(tickets)').map(c => c.name))
+  const columns = db.prepare(
+    `SELECT column_name FROM custom_fields
+     WHERE erp_table='tickets' AND deleted_at IS NULL
+       AND json_valid(options) AND json_extract(options, '$.link_display_target')='companies'`
+  ).all().map(r => r.column_name).filter(c => physical.has(c))
+  const keys = [company.airtable_id, company.id].filter(Boolean)
+  if (!columns.length) return res.json({ data: [] })
+
+  const where = columns.flatMap(c => keys.map(() => `instr(COALESCE(t.[${c}], ''), ?) > 0`)).join(' OR ')
+  // Plus récent d'abord : la « Date » du billet si le champ existe encore.
+  const order = physical.has('cf_date') ? 't.cf_date DESC, t.updated_at DESC' : 't.updated_at DESC'
+  const rows = db.prepare(`
+    SELECT t.* FROM ${readRelation('tickets')} t
+    WHERE ${where}
+    ORDER BY ${order}
+  `).all(...columns.flatMap(() => keys))
+  res.json({ data: rows })
+})
+
 // GET /api/companies/:id/onboarding-responses
 // Réponses du wizard post-paiement (`customer_onboarding_responses`).
 router.get('/:id/onboarding-responses', (req, res) => {

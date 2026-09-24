@@ -35,12 +35,13 @@ function upsertAdded(accountId, txn) {
   const { description, details } = labelsFor(txn)
   const res = db.prepare(`
     INSERT OR IGNORE INTO bank_transactions
-      (id, account_id, txn_date, description, details, reference, amount, dedup_key, pending)
-    VALUES (?,?,?,?,?,?,?,?,?)
+      (id, account_id, txn_date, description, details, reference, amount, dedup_key, pending, bank_state)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
   `).run(
     newRecordId(), accountId, txn.date, description, details,
     txn.transaction_id, toLedgerAmount(txn.amount), plaidDedupKey(txn.transaction_id),
-    txn.pending ? 1 : 0
+    txn.pending ? 1 : 0,
+    txn.pending ? 'en_attente' : 'complete'
   )
   return res.changes
 }
@@ -49,10 +50,11 @@ function updateModified(txn) {
   const { description, details } = labelsFor(txn)
   db.prepare(`
     UPDATE bank_transactions
-    SET description=?, details=COALESCE(?, details), txn_date=?, amount=?, pending=?
+    SET description=?, details=COALESCE(?, details), txn_date=?, amount=?, pending=?, bank_state=?
     WHERE dedup_key=? AND deleted_at IS NULL
   `).run(description, details, txn.date, toLedgerAmount(txn.amount),
-    txn.pending ? 1 : 0, plaidDedupKey(txn.transaction_id))
+    txn.pending ? 1 : 0, txn.pending ? 'en_attente' : 'complete',
+    plaidDedupKey(txn.transaction_id))
 }
 
 function removeTxn(transactionId) {
@@ -109,7 +111,9 @@ export function importPlaidTransactions(accountsByPlaidId, { added, modified, re
 // venait du fichier Drive « Maintien du solde disponible BNC »). Plaid le
 // donne à chaque sync : on l'enregistre comme n'importe quelle saisie, avec
 // source='plaid'. Anti-bruit : un solde identique noté depuis moins de 6 h
-// n'est pas ré-enregistré (la sync passe toutes les 30 min).
+// n'est pas ré-enregistré (la sync passe toutes les 10 min) — mais sa date de
+// confirmation, elle, est rafraîchie à chaque passage : c'est elle que la page
+// affiche, sinon un solde stable a l'air vieux de six heures.
 const BALANCE_MIN_AGE_MIN = 6 * 60
 
 // ⚠️ Sur le compte chèques BNC, `current` ne veut rien dire : le compte est

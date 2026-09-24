@@ -216,7 +216,7 @@ const FIELD_TYPE_OPTIONS = [
   { id: 'percent',            label: 'Pourcentage',     kind: 'data', type: 'percent', hint: '« 45 % » ou barre de progression' },
   { id: 'duration',           label: 'Durée',           kind: 'data', type: 'duration', hint: '« 1:30 », stockée en secondes' },
   { id: 'rating',             label: 'Évaluation',      kind: 'data', type: 'rating', hint: 'Note de 0 à 5 étoiles' },
-  { id: 'date',               label: 'Date',            kind: 'data', type: 'date', hint: 'Date sans heure' },
+  { id: 'date',               label: 'Date',            kind: 'data', type: 'date', hint: 'Date, heure en option' },
   { id: 'url',                label: 'URL',             kind: 'data', type: 'url', hint: 'Lien cliquable' },
   { id: 'phone',              label: 'Téléphone',       kind: 'data', type: 'phone', hint: 'Formaté et cliquable' },
   { id: 'checkbox',           label: 'Case à cocher',   kind: 'data', type: 'checkbox', hint: 'Oui / non' },
@@ -648,6 +648,9 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   // Mode d'affichage quand le champ est rendu en pourcentage : 'percent' ou
   // 'bar'. Rangé dans `options` (comme les choix d'une Sélection native).
   const [nativePercentDisplay, setNativePercentDisplay] = useState('percent')
+  // Format d'affichage d'une date (avec ou sans heure), rangé dans `options`.
+  const [nativeDateFormat, setNativeDateFormat] = useState('iso_date')
+  const lastSavedDateFormat = useRef('iso_date')
   const [saving, setSaving] = useState(false)
   const [savedFlash, setSavedFlash] = useState(false)
   const [error, setError] = useState(null)
@@ -697,6 +700,9 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     // Sélection : les choix configurés, sinon la liste d'origine de tableDefs.js
     // (chaque valeur avec elle-même comme libellé et sa couleur d'origine).
     setNativePercentDisplay(percentDisplayOf(override))
+    const df = dateFormatOf(override)
+    setNativeDateFormat(df)
+    lastSavedDateFormat.current = df
     const conf = parseNativeChoices(override)
     setChoices(conf.length ? conf : baselineChoices(column))
     lastSavedChoicesJson.current = conf.length ? JSON.stringify(serializeChoices(conf)) : ''
@@ -749,6 +755,9 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   // revenus à leur valeur d'origine) ne doit pas l'effacer au passage — seul le
   // bouton « Réinitialiser » le fait.
   const hasChoicesConfig = () => lastSavedChoicesJson.current !== ''
+  // Idem pour le format d'une date : un réglage d'`options` que le retour
+  // automatique à l'original ne doit pas effacer.
+  const hasOptionsConfig = () => hasChoicesConfig() || lastSavedDateFormat.current !== 'iso_date'
   const hasDescription = () => lastSavedDescription.current !== ''
 
   // Autosave de la description. Une description effacée alors que plus rien
@@ -761,7 +770,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     try {
       const ls = lastSaved.current
       const nothingElse = ls.label === originalLabel && ls.type === originalType
-        && !(ls.type === 'phone' && ls.countryCode === 'show') && !hasChoicesConfig()
+        && !(ls.type === 'phone' && ls.countryCode === 'show') && !hasOptionsConfig()
       if (!v && nothingElse) {
         if (hasOverride) await api.fieldOverrides.reset(table, column.id)
         setHasOverride(false)
@@ -822,6 +831,25 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     }
   }
 
+  async function persistDateFormat(v) {
+    setNativeDateFormat(v)
+    if (v === lastSavedDateFormat.current) return
+    setError(null)
+    setSaving(true)
+    try {
+      await api.fieldOverrides.save(table, column.id, { options: { format: v } })
+      lastSavedDateFormat.current = v
+      setHasOverride(true)
+      onSaved?.()
+      setSavedFlash(true)
+      setTimeout(() => setSavedFlash(false), 1500)
+    } catch (e) {
+      setError(e.message || 'Erreur')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   // Autosave (règle « autosave partout ») : persiste l'état courant, avec
   // valeurs explicites pour contourner l'asynchronisme de setState. Valeurs
   // revenues à l'origine → l'override est retiré.
@@ -848,7 +876,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     setError(null)
     setSaving(true)
     try {
-      if (!labelChanged && !typeIsOverridden && !ccIsOverridden && !hasChoicesConfig() && !hasDescription()) {
+      if (!labelChanged && !typeIsOverridden && !ccIsOverridden && !hasOptionsConfig() && !hasDescription()) {
         // Tout est revenu aux valeurs d'origine → on retire l'override.
         if (hasOverride) {
           await api.fieldOverrides.reset(table, column.id)
@@ -892,6 +920,8 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
       setDecimals(2)
       setCountryCode('hide')
       setNativePercentDisplay('percent')
+      setNativeDateFormat('iso_date')
+      lastSavedDateFormat.current = 'iso_date'
       setChoices(baselineChoices(column))
       lastSavedChoicesJson.current = ''
       setDescription('')
@@ -991,6 +1021,10 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
           <PercentDisplaySelect value={nativePercentDisplay} onChange={persistPercentDisplay} />
         )}
 
+        {type === 'date' && (
+          <DateFormatSelect value={nativeDateFormat} onChange={persistDateFormat} name="field-override-date-format" />
+        )}
+
         {typeChanged && (type === 'number' || type === 'currency' || type === 'percent') && (
           <div>
             <label className="label">Décimales (0 à 5)</label>
@@ -1079,7 +1113,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
 //   - lookup  : valeur tirée d'une table liée via FK
 //   - auto    : champ système lecture seule (created_time, last_modified_time, created_by, last_modified_by)
 // En mode édition, le kind est figé.
-function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot }) {
+function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot, formulaColumns, formulaLabelSearch = false }) {
   const { addToast } = useToast()
   const [kind, setKind] = useState('data')
   const [name, setName] = useState('')
@@ -1189,7 +1223,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setDefaultValue(editing.default_value ?? '')
       // Devise : le symbole (texte libre) est lu depuis options ; défaut « $ »
       // pour les champs créés avant ce choix.
-      setCurrencySymbol(editing.type === 'currency' ? currencySymbolOf(editing) : '$')
+      setCurrencySymbol(editing.type === 'currency' || editing.result_type === 'currency' ? currencySymbolOf(editing) : '$')
       if (editing.type === 'duration') {
         // Duration : format (h:mm/h:mm:ss) lu depuis options ; la valeur par défaut
         // (secondes en DB) est affichée formatée et alignée sur lastSaved pour éviter
@@ -1754,6 +1788,30 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
     autosave({ result_type: rt })
   }
 
+  // Devise : simple symbole texte (ex. « $ », « € »), pas de code ISO — champ de
+  // donnée, ou champ calculé au format « Devise ».
+  function renderCurrencySymbol() {
+    return (
+      <div>
+        <label className="label">Symbole de devise</label>
+        <input
+          type="text"
+          value={currencySymbol}
+          onChange={e => setCurrencySymbol(e.target.value)}
+          onBlur={() => {
+            const v = currencySymbol.trim() || '$'
+            if (v !== currencySymbol) setCurrencySymbol(v)
+            if (editing && v !== currencySymbolOf({ options: lastSaved.current.options })) {
+              autosave({ options: { currency: v } })
+            }
+          }}
+          className="input text-sm w-24"
+          data-testid="cf-currency-symbol"
+        />
+      </div>
+    )
+  }
+
   // Mode d'affichage d'un pourcentage. En édition, il se persiste tout de suite
   // (pas de blur sur une tuile) — sauf pendant une conversion, où il partira
   // dans le PUT unique de handleConvert.
@@ -1885,6 +1943,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           name: name.trim(),
           formula_expr: formulaExpr.trim(),
           result_type: resultType,
+          ...(resultType === 'currency' ? { options: { currency: currencySymbol } } : {}),
           ...descPayload,
         })
       } else if (kind === 'lookup') {
@@ -1919,6 +1978,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           // ARRAY / ARRAYUNIQUE produisent une liste texte → forcer le type texte
           // (le tri/filtre/affichage numérique n'a pas de sens sur une liste).
           result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
+          ...(!isArrayAgg(rollupAgg) && resultType === 'currency' ? { options: { currency: currencySymbol } } : {}),
           ...descPayload,
         })
       } else if (kind === 'auto') {
@@ -2072,26 +2132,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 onPersist={saveOptionsIfEditing}
               />
             )}
-            {/* Devise : simple symbole texte (ex. « $ », « € »), pas de code ISO. */}
-            {type === 'currency' && (
-              <div>
-                <label className="label">Symbole de devise</label>
-                <input
-                  type="text"
-                  value={currencySymbol}
-                  onChange={e => setCurrencySymbol(e.target.value)}
-                  onBlur={() => {
-                    const v = currencySymbol.trim() || '$'
-                    if (v !== currencySymbol) setCurrencySymbol(v)
-                    if (editing && v !== currencySymbolOf({ options: lastSaved.current.options })) {
-                      autosave({ options: { currency: v } })
-                    }
-                  }}
-                  className="input text-sm w-24"
-                  data-testid="cf-currency-symbol"
-                />
-              </div>
-            )}
+            {type === 'currency' && renderCurrencySymbol()}
             {type === 'percent' && (
               <PercentDisplaySelect value={percentDisplay} onChange={changePercentDisplay} />
             )}
@@ -2141,29 +2182,15 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 ou locale (date seule, ou + heure). Aucune saisie n'est affectée,
                 seul le rendu change. */}
             {type === 'date' && (
-              <div>
-                <label className="label">Format d'affichage</label>
-                <div className="grid grid-cols-2 gap-2">
-                  {DATE_DISPLAY_FORMATS.map(o => (
-                    <label key={o.value} data-testid={`cf-date-format-${o.value}`} className={`flex flex-col items-start gap-0.5 px-3 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${dateFormat === o.value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
-                      <input
-                        type="radio" name="cf-date-format" value={o.value}
-                        checked={dateFormat === o.value}
-                        onChange={() => {
-                          setDateFormat(o.value)
-                          // En édition : autosave immédiat (seul réglage de la date).
-                          if (editing && o.value !== normalizeDateFormat(dateFormat)) {
-                            autosave({ options: { format: o.value } })
-                          }
-                        }}
-                        className="sr-only"
-                      />
-                      <span className="font-medium">{o.label}</span>
-                      <span className="text-[11px] text-slate-400 tabular-nums">{o.hint}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
+              <DateFormatSelect
+                value={dateFormat}
+                name="cf-date-format"
+                onChange={v => {
+                  setDateFormat(v)
+                  // En édition : autosave immédiat (seul réglage de la date).
+                  if (editing && v !== normalizeDateFormat(dateFormat)) autosave({ options: { format: v } })
+                }}
+              />
             )}
             {/* Téléphone : affichage (ou non) de l'indicatif de pays. Par défaut
                 masqué → (514) 123-4567 ; coché → +1 (514) 123-4567 sur les
@@ -2265,6 +2292,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 if (v && v !== lastSaved.current.formula_expr) autosave({ formula_expr: v })
               }}
               sourceColumns={meta?.source_columns || []}
+              displayColumns={formulaColumns}
+              labelSearchOnly={formulaLabelSearch}
               functions={meta?.formula_functions || []}
             />
             <ResultTypeSelect value={resultType} onChange={changeResultType} />
@@ -2535,6 +2564,8 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           && (kind === 'lookup' ? lookupFormat : resultType) === 'percent' && (
           <PercentDisplaySelect value={percentDisplay} onChange={changePercentDisplay} />
         )}
+        {['formula', 'rollup'].includes(kind) && resultType === 'currency' && !converting
+          && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && renderCurrencySymbol()}
 
         {editing && viewError && (
           <div className="rounded bg-red-50 border border-red-200 p-2 text-xs text-red-700">
@@ -2753,7 +2784,7 @@ function displayToExpr(text, byToken) {
 // d'interface entre accolades et s'affichent en mauve, l'autocomplete propose
 // champs et fonctions. La formule STOCKÉE reste en noms de colonnes SQL (seuls
 // compris par la VUE) : la traduction se fait aux frontières de l'éditeur.
-function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [] }) {
+function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [], displayColumns, labelSearchOnly = false }) {
   const taRef = useRef(null)
   const mirrorRef = useRef(null)
   const pendingCaret = useRef(null)
@@ -2767,15 +2798,19 @@ function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [] 
   // technique (unique) sert alors de repli, sinon la relecture serait ambiguë.
   const fields = useMemo(() => {
     const taken = new Set()
+    // Variante locale : reprendre les libellés effectifs du tableau (renommages
+    // compris), sans proposer de colonne absente des sources calculables.
+    const labels = new Map((displayColumns || []).map(c => [c.field || c.id, c.label]))
     return (sourceColumns || [])
       .map(c => (typeof c === 'string' ? { column: c, label: null } : c))
+      .map(f => ({ ...f, label: labels.get(f.column) || f.label }))
       .map(f => {
         const wanted = f.label && !/[{}]/.test(f.label) ? f.label : f.column
         const token = taken.has(normalizeSearch(wanted)) ? f.column : wanted
         taken.add(normalizeSearch(token))
         return { ...f, token }
       })
-  }, [sourceColumns])
+  }, [sourceColumns, displayColumns])
   const byColumn = useMemo(() => new Map(fields.map(f => [f.column, f])), [fields])
   const byToken = useMemo(() => {
     const m = new Map()
@@ -2842,9 +2877,10 @@ function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [] 
     if (!at) return []
     const tok = normalizeSearch(at.tok)
     const rank = (keys) => (keys.some(k => k.startsWith(tok)) ? 0 : 1)
-    // Un champ se cherche par son nom d'interface OU par son nom technique.
+    // Un champ se cherche par son nom d'interface OU par son nom technique —
+    // sauf variante `labelSearchOnly` : le nom d'interface seul.
     const fieldItems = fields
-      .map(f => ({ f, keys: [normalizeSearch(f.token), normalizeSearch(f.column)] }))
+      .map(f => ({ f, keys: labelSearchOnly ? [normalizeSearch(f.token)] : [normalizeSearch(f.token), normalizeSearch(f.column)] }))
       .filter(({ keys }) => keys.some(k => k.includes(tok)))
       .map(({ f, keys }) => ({ type: 'field', name: f.column, display: f.token, hint: 'Champ', keys }))
     // Dans une accolade, on ne propose que des champs.
@@ -3105,6 +3141,30 @@ function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [] 
   )
 }
 
+// Format d'affichage d'une date : avec ou sans heure. Commun aux champs perso et
+// natifs. Un format « + heure » fait aussi saisir l'heure dans la fiche.
+function DateFormatSelect({ value, onChange, name }) {
+  return (
+    <div>
+      <label className="label">Format d'affichage</label>
+      <div className="grid grid-cols-2 gap-2">
+        {DATE_DISPLAY_FORMATS.map(o => (
+          <label key={o.value} data-testid={`${name}-${o.value}`} className={`flex flex-col items-start gap-0.5 px-3 py-2 text-sm rounded-lg border cursor-pointer transition-colors ${value === o.value ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-slate-200 hover:bg-slate-50 text-slate-700'}`}>
+            <input
+              type="radio" name={name} value={o.value}
+              checked={value === o.value}
+              onChange={() => onChange(o.value)}
+              className="sr-only"
+            />
+            <span className="font-medium">{o.label}</span>
+            <span className="text-[11px] text-slate-400 tabular-nums">{o.hint}</span>
+          </label>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // Mode d'affichage d'un pourcentage : le nombre (« 45 % ») ou une barre de
 // progression remplie d'autant. Même donnée, deux rendus — c'est le seul
 // réglage propre au type, d'où ces deux tuiles plutôt qu'une liste.
@@ -3149,6 +3209,7 @@ function PercentDisplaySelect({ value, onChange }) {
 const RESULT_TYPE_OPTIONS = [
   { v: 'text',   label: 'Texte' },
   { v: 'number', label: 'Nombre' },
+  { v: 'currency', label: 'Devise' },
   { v: 'percent', label: 'Pourcentage' },
   // Évaluation : la valeur calculée (souvent la moyenne d'un rollup) se rend en
   // étoiles — l'étoile de fin est remplie en partie pour « 3,5 ».
@@ -3156,7 +3217,12 @@ const RESULT_TYPE_OPTIONS = [
   { v: 'date',   label: 'Date' },
   { v: 'url',    label: 'URL' },
 ]
-const RESULT_TYPE_LABELS = Object.fromEntries(RESULT_TYPE_OPTIONS.map(o => [o.v, o.label]))
+const RESULT_TYPE_LABELS = {
+  ...Object.fromEntries(RESULT_TYPE_OPTIONS.map(o => [o.v, o.label])),
+  // Un lookup peut hériter de ce format ; on ne le PROPOSE pas pour autant à une
+  // formule ou un rollup (ils ne fabriquent pas de fichiers).
+  attachment: 'Attachement',
+}
 
 function ResultTypeSelect({ value, onChange }) {
   // Format d'affichage d'un champ calculé — sous-réglage du type, pas un second

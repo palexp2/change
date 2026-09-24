@@ -50,7 +50,7 @@ export default function QuickBooksAccountCard() {
           </span>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={connect} className="btn-secondary btn-sm text-xs" title="Réautoriser (si le token a expiré)">
+          <button onClick={connect} className="btn-secondary btn-sm text-xs" title="Réautoriser (si l'accès a expiré)">
             <Link2 size={12} /> Reconnecter
           </button>
           <button onClick={disconnect} className="text-red-400 hover:text-red-600 p-1" title="Déconnecter mon compte">

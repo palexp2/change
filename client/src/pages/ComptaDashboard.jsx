@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, RefreshCw, Landmark, ShieldAlert, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, List, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react'
+import { Plus, RefreshCw, Landmark, ShieldAlert, ShieldCheck, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, List, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
@@ -675,7 +675,7 @@ export function TreasuryProjectionSection() {
     }
   }
 
-  // Le solde se met à jour tout seul (sync Plaid aux 30 min) ; ce bouton sert
+  // Le solde se met à jour tout seul (lecture à la banque aux 10 min) ; ce bouton sert
   // quand on vient de faire un virement et qu'on ne veut pas attendre.
   async function pullBalance() {
     setPulling(true)
@@ -749,7 +749,7 @@ export function TreasuryProjectionSection() {
           {e.qb_url && (
             <a href={e.qb_url} target="_blank" rel="noreferrer"
               className="inline-flex items-center text-[10px] font-semibold px-1.5 py-0.5 rounded-r-full border-l border-white bg-slate-100 text-slate-500 hover:bg-emerald-50 hover:text-emerald-700"
-              title="Ouvrir l'écriture dans QuickBooks">QB</a>
+              title="Ouvrir l'écriture dans QuickBooks">QuickBooks</a>
           )}
         </span>
       )
@@ -760,7 +760,7 @@ export function TreasuryProjectionSection() {
     )
     if (e.kind === 'payout' && e.ref) return (
       <Link key={i} to={`/stripe-payouts/${e.ref}`} className={`${cls} hover:ring-1 hover:ring-emerald-300`}
-        title={compact ? `${title || compactTitle} — voir le payout Stripe` : 'Voir le payout Stripe'}>{text}</Link>
+        title={compact ? `${title || compactTitle} — voir le versement Stripe` : 'Voir le versement Stripe'}>{text}</Link>
     )
     if (e.kind === 'recurring' && e.ref) {
       const rec = recurring.find(r => r.id === e.ref)
@@ -790,7 +790,7 @@ export function TreasuryProjectionSection() {
             />
             <button onClick={pullBalance} disabled={pulling} data-testid="treasury-balance-pull"
               className="p-1.5 text-slate-400 hover:text-slate-700 disabled:opacity-40"
-              title="Lire le solde à la banque maintenant (sinon automatique aux 30 min)">
+              title="Lire le solde à la banque maintenant (sinon automatique aux 10 min)">
               <RefreshCw size={15} className={pulling ? 'animate-spin' : ''} />
             </button>
             {/* Action transactionnelle : chaque saisie crée une entrée horodatée */}
@@ -812,7 +812,9 @@ export function TreasuryProjectionSection() {
                 label="Solde BNC noté"
                 value={entry ? fmtCad(entry.balance, 0) : '—'}
                 sub={entry
-                  ? (entry.source === 'plaid' ? `banque · ${formatRelativeTime(entry.noted_at)}` : formatRelativeTime(entry.noted_at))
+                  ? (entry.source === 'plaid'
+                      ? `banque · ${formatRelativeTime(entry.confirmed_at || entry.noted_at)}`
+                      : formatRelativeTime(entry.noted_at))
                   : 'aucune saisie'}
                 tone={entry && !proj.balance_stale ? 'slate' : 'amber'}
               />
@@ -997,7 +999,11 @@ function selectablePaies(paies) {
   return [...todoPaies(paies), ...done]
 }
 
-function PaieComptabilisationCard() {
+// `paieId` : la paie à présélectionner. Le rapprochement bancaire ouvre cette
+// carte dans un panneau depuis la ligne du débit de paie — la période y est
+// déjà connue, il n'y a pas à la rechercher. Absent : la carte choisit la plus
+// ancienne paie à comptabiliser, comme sur cette page.
+export function PaieComptabilisationCard({ paieId: pinnedPaieId = null }) {
   const [paies, setPaies] = useState([])
   const [paieId, setPaieId] = useState('')
   const [loaded, setLoaded] = useState(false)
@@ -1035,7 +1041,16 @@ function PaieComptabilisationCard() {
         // (on comptabilise dans l'ordre chronologique) ; sinon la dernière
         // comptabilisée, pour rester consultable et corrigeable.
         const opts = selectablePaies(data)
-        if (opts.length) selectPaie(todoPaies(data).slice(-1)[0] || opts[0])
+        const pinned = pinnedPaieId ? data.find(p => p.id === pinnedPaieId) : null
+        if (pinned) selectPaie(pinned)
+        else if (pinnedPaieId) {
+          // Paie plus ancienne que les 12 dernières : on va la chercher plutôt
+          // que d'en comptabiliser une autre à sa place.
+          api.paies.get(pinnedPaieId)
+            .then(p => { setPaies(list => [...list, p]); selectPaie(p) })
+            .catch(() => { if (opts.length) selectPaie(todoPaies(data).slice(-1)[0] || opts[0]) })
+        }
+        else if (opts.length) selectPaie(todoPaies(data).slice(-1)[0] || opts[0])
       })
     ).catch(() => setLoaded(true))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1363,7 +1378,7 @@ function PaieComptabilisationCard() {
                 ? 'Le débit est encore en attente à la banque — son montant peut changer'
                 : (!preview ? 'Saisis le montant passé au compte BNC pour publier' : undefined)}
               className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50 whitespace-nowrap">
-              {pushing ? 'Publication…' : 'Pousser dans QuickBooks'}
+              {pushing ? 'Publication…' : 'Publier dans QuickBooks'}
             </button>
           )}
         </div>
@@ -1503,7 +1518,7 @@ function AgaRepartitionCard() {
           // Action transactionnelle (publication QB) : bouton volontaire.
           <button onClick={push} disabled={pushing} data-testid="compta-aga-push"
             className="px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-            {pushing ? 'Publication…' : 'Publier sur QB'}
+            {pushing ? 'Publication…' : 'Publier dans QuickBooks'}
           </button>
         )}
         {pushed && (pushed.url ? (
@@ -1555,12 +1570,41 @@ const ANOMALY_KIND_LABELS = {
   duplicate_number: 'Doublon (nº facture)',
   duplicate_amount: 'Doublon (montant)',
   already_in_qb: 'Déjà dans QuickBooks',
-  possible_duplicate_in_qb: 'Peut-être déjà dans QB',
+  possible_duplicate_in_qb: 'Peut-être déjà dans QuickBooks',
   amount_outlier: 'Montant inhabituel',
   currency_mismatch: 'Devise incohérente',
   zero_total: 'Document à 0 $',
   extraction_incomplete: 'Extraction ratée',
-  qb_entry_missing: 'Écriture QB disparue',
+  qb_entry_missing: 'Écriture QuickBooks disparue',
+}
+
+// Portails de collecte en panne. Les échecs se répétaient chaque nuit sans que
+// personne ne l'apprenne : ils se voient maintenant ici, avec ce qu'il y a à
+// faire quand un geste humain est attendu.
+function CollectionHealthBanner() {
+  const [state, setState] = useState(null)
+  useEffect(() => { api.scrapers.health().then(setState).catch(() => setState({})) }, [])
+  const broken = (state?.portals || []).filter(p => p.state !== 'ok')
+  if (!broken.length) return null
+  return (
+    <div data-testid="compta-collection-health"
+      className="mb-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3">
+      <p className="text-sm font-medium text-amber-900">
+        {broken.length} portail{broken.length > 1 ? 's' : ''} ne rapporte{broken.length > 1 ? 'nt' : ''} plus de factures
+      </p>
+      <ul className="mt-1.5 space-y-0.5">
+        {broken.map(p => (
+          <li key={p.account_id} className="text-xs text-amber-800">
+            <span className="font-medium">{p.label}</span>
+            {p.detail ? ` — ${p.detail}` : ''}
+          </li>
+        ))}
+      </ul>
+      <Link to="/sale-receipts?onglet=collecte" className="inline-block mt-2 text-xs font-medium text-amber-900 underline">
+        Ouvrir la collecte de factures
+      </Link>
+    </div>
+  )
 }
 
 function AnomaliesCard() {
@@ -1612,7 +1656,7 @@ function AnomaliesCard() {
   return (
     <Card
       title="Anomalies transactions"
-      description="Doublons probables, montants hors norme, devises incohérentes, captures ratées et liens QuickBooks périmés. Un doublon ouvert bloque le push QB."
+      description="Doublons probables, montants hors norme, devises incohérentes, captures ratées et liens QuickBooks périmés. Un doublon ouvert bloque la publication dans QuickBooks."
       icon={ShieldAlert}
       iconClass="bg-amber-50 text-amber-600"
       testId="compta-anomalies"
@@ -1650,6 +1694,115 @@ function AnomaliesCard() {
             </li>
           ))}
         </ul>
+      )}
+    </Card>
+  )
+}
+
+// ── Contrôles comptables ─────────────────────────────────────────────────────
+// Ce que la vérification quotidienne a trouvé et qui n'a pas encore été traité :
+// même mouvement comptabilisé deux fois, ligne importée en double, lien vers une
+// écriture disparue, solde qui ne tombe pas. Un contrôle constate, il ne corrige
+// jamais.
+
+const AUDIT_SEVERITY = {
+  high: { cls: 'bg-red-100 text-red-700', label: 'Grave' },
+  medium: { cls: 'bg-amber-100 text-amber-700', label: 'À voir' },
+  low: { cls: 'bg-slate-100 text-slate-600', label: 'Mineur' },
+}
+
+function AuditCard() {
+  const [rows, setRows] = useState(null)
+  const [running, setRunning] = useState(false)
+  const [all, setAll] = useState(false)
+  const { addToast } = useToast()
+
+  const load = useCallback(async () => {
+    try {
+      const out = await api.audit.findings({ status: 'open' })
+      setRows(out.findings || [])
+    } catch (e) {
+      addToast({ message: `Contrôles : ${e.message}`, type: 'error' })
+    }
+  }, [addToast])
+
+  useEffect(() => { load() }, [load])
+
+  // Réversible (la constatation se rouvre), donc pas de confirmation.
+  async function dismiss(f) {
+    setRows(rs => rs.filter(r => r.id !== f.id))
+    try {
+      await api.audit.dismiss(f.id, null)
+    } catch (e) {
+      setRows(rs => [f, ...rs])
+      addToast({ message: e.message, type: 'error' })
+    }
+  }
+
+  async function run() {
+    setRunning(true)
+    try {
+      const out = await api.audit.run()
+      addToast({ message: out.summary, type: 'success' })
+      await load()
+    } catch (e) {
+      addToast({ message: e.message, type: 'error' })
+    } finally {
+      setRunning(false)
+    }
+  }
+
+  const linkFor = (f) => {
+    if (f.entity_type === 'bank_transaction' || f.entity_type === 'bank_account') return '/rapprochement'
+    return null
+  }
+
+  return (
+    <Card
+      title="Contrôles"
+      description="Double comptabilisation, ligne importée deux fois, écriture disparue, solde qui ne tombe pas."
+      icon={ShieldCheck}
+      iconClass="bg-indigo-50 text-indigo-600"
+      testId="compta-audit"
+      actions={(
+        <button onClick={run} disabled={running} title="Relancer les contrôles"
+          className="px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg disabled:opacity-50 flex items-center gap-1.5">
+          <RefreshCw size={12} className={running ? 'animate-spin' : ''} /> Vérifier
+        </button>
+      )}
+    >
+      {rows === null && <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
+      {rows && rows.length === 0 && (
+        <p className="text-xs text-slate-400 flex items-center gap-1.5"><CheckCircle2 size={13} className="text-green-500" /> Rien à signaler.</p>
+      )}
+      {rows && rows.length > 0 && (
+        <ul className="divide-y divide-slate-100">
+          {(all ? rows : rows.slice(0, 8)).map(f => (
+            <li key={f.id} className="py-2.5 flex items-start gap-3">
+              <span className={`shrink-0 mt-0.5 text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${(AUDIT_SEVERITY[f.severity] || AUDIT_SEVERITY.low).cls}`}>
+                {(AUDIT_SEVERITY[f.severity] || AUDIT_SEVERITY.low).label}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm text-slate-700 leading-snug">{f.title}</p>
+                {f.explanation && <p className="text-xs text-slate-500 mt-0.5 leading-snug">{f.explanation}</p>}
+                <p className="text-xs text-slate-400 mt-0.5">
+                  {linkFor(f) && <Link to={linkFor(f)} className="link-record mr-2">Ouvrir</Link>}
+                  {f.data?.url && <a href={f.data.url} target="_blank" rel="noreferrer" className="link-record mr-2">QuickBooks</a>}
+                  {fmtDate(f.first_seen_at)}
+                </p>
+              </div>
+              <button onClick={() => dismiss(f)} title="Ce n'en est pas un — ne plus signaler"
+                className="shrink-0 px-2 py-1 text-xs text-slate-500 hover:bg-slate-100 rounded-lg">
+                Écarter
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {rows && rows.length > 8 && !all && (
+        <button onClick={() => setAll(true)} className="mt-2 text-xs text-slate-500 hover:text-slate-700">
+          {rows.length - 8} autres
+        </button>
       )}
     </Card>
   )
@@ -1827,17 +1980,20 @@ export default function ComptaDashboard() {
     <Layout>
       <div className="p-6 max-w-7xl">
         <div className="mb-6">
-          <PageTitle>Dashboard comptabilité</PageTitle>
+          <PageTitle>Comptabilité</PageTitle>
           <p className="text-xs text-slate-500 mt-0.5">
             Trésorerie, projection BNC et reçus manquants.
           </p>
         </div>
+
+        <CollectionHealthBanner />
 
         <TreasuryProjectionSection />
 
         <div className="grid gap-6 lg:grid-cols-2 items-start">
           <CardCeilingsCard />
           <AnomaliesCard />
+          <AuditCard />
           <PaieComptabilisationCard />
           <AgaRepartitionCard />
 

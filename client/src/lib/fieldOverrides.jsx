@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import api from './api.js'
-import { fmtDate } from './formatDate.js'
+import { fmtDateWithFormat } from './formatDate.js'
 import { fmtNumber } from '../utils/formatters.js'
 import {
   formatCurrency, UrlValue, PhoneValue, isCheckboxTruthy, parseAttachments, LinkedRecordsValue,
-  PercentValue, percentDisplayOf, ChoiceBadge,
+  PercentValue, percentDisplayOf, ChoiceBadge, dateFormatOf,
 } from './customFieldDisplay.jsx'
 import { TABLE_LABELS, TABLE_RECORD_LABELS } from './tableDefs.js'
 import { RatingStars } from '../components/RatingStars.jsx'
@@ -228,7 +228,7 @@ export function renderOverriddenValue(ov, value) {
     )
   }
   if (ov.type === 'rating') return <RatingStars value={value} />
-  if (ov.type === 'date') return <span className="text-slate-500">{fmtDate(value)}</span>
+  if (ov.type === 'date') return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(ov))}</span>
   if (ov.type === 'url') return <UrlValue value={value} />
   if (ov.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodePref(ov)} />
   return <span className="text-slate-700">{String(value)}</span>
@@ -356,6 +356,10 @@ export function applyFieldOverrides(columns, overrides) {
       // remplace le rendu par PhoneValue (le render natif fmtPhone masque
       // toujours l'indicatif) sans toucher au type/tri/filtre.
       next.render = row => renderOverriddenValue({ type: 'phone', country_code: ov.country_code }, row[col.field])
+    } else if (origType === 'date' && dateFormatOf(ov) !== 'iso_date') {
+      // Date native avec un format choisi (ex. + heure) : rendu générique au
+      // format, à la place du rendu de la page (qui ne connaît que la date).
+      next.render = row => renderOverriddenValue({ type: 'date', options: ov.options }, row[col.field])
     }
     return next
   })

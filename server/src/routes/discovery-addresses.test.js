@@ -9,6 +9,9 @@ const app = buildTestApp({ '/api/discovery-forms': formsRouter, '/api/customer/p
 const { base, server } = await listen(app)
 after(() => closeServer(server))
 const { token } = createTestUser()
+// Colonnes dynamiques de la prod, lues par le calcul du coût expédié et la reprise Airtable.
+try { db.exec('ALTER TABLE products ADD COLUMN cout_unitaire TEXT') } catch {}
+try { db.exec('ALTER TABLE orders ADD COLUMN deleted_at TIMESTAMP') } catch {}
 async function api(method, path, body, publicRequest = false) {
   const result = await fetch(base + '/api' + path, { method, headers: { ...(!publicRequest ? { Authorization: `Bearer ${token}` } : {}), 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
   return { status: result.status, body: await result.json() }

@@ -1,3 +1,4 @@
+import { decryptCredentials } from '../utils/encryption.js'
 import Stripe from 'stripe'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -14,7 +15,7 @@ export function getStripeKey() {
   const row = db.prepare(
     "SELECT value FROM connector_config WHERE connector='stripe' AND key='secret_key'"
   ).get()
-  return row?.value || null
+  return decryptCredentials(row?.value) || null
 }
 
 export function isStripeConfigured() {

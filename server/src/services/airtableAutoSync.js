@@ -132,6 +132,21 @@ function percentToPoints(val) {
   return Math.round(val * 100 * 10000) / 10000
 }
 
+// Champ lien dont la valeur ERP ne porte que des ids Boréal (référent né dans
+// l'ERP, sans jumeau Airtable — ex. une adresse créée par le System builder) :
+// Airtable n'a jamais pu recevoir ce lien, son champ vide ne doit donc pas
+// l'effacer. Toute vraie valeur Airtable, elle, reste prioritaire.
+const AIRTABLE_REC_ID = /^rec[A-Za-z0-9]{14}$/
+export function keepLocalOnlyLink(existing, incoming) {
+  const empty = v => v == null || v === '' || v === '[]'
+  if (!empty(incoming) || empty(existing)) return incoming
+  let ids
+  try { ids = JSON.parse(existing) } catch { ids = String(existing).split(',') }
+  if (!Array.isArray(ids)) ids = [ids]
+  ids = ids.map(v => String(v ?? '').trim()).filter(Boolean)
+  return ids.length && ids.every(id => !AIRTABLE_REC_ID.test(id)) ? existing : incoming
+}
+
 export function convertValue(val, fieldType, options) {
   if (val === null || val === undefined) return null
 
@@ -660,13 +675,21 @@ export async function syncDynamicFields(module, erpTable, airtableBaseId, airtab
       `UPDATE ${erpTable} SET ${updateStmt} WHERE airtable_id=?`
     )
 
+    const linkCols = writable.filter(f => f.fieldType === 'link').map(f => f.columnName)
+    const linkStmt = linkCols.length
+      ? db.prepare(`SELECT ${linkCols.map(c => `"${c}"`).join(', ')} FROM ${erpTable} WHERE airtable_id=?`)
+      : null
     const populated = db.transaction((recs) => {
       let count = 0
       for (const rec of recs) {
-        const values = writable.map(f => attachCols.has(f.columnName)
-          ? (attached.get(`${rec.id}::${f.columnName}`) ?? null)
-          : mirrored.get(`${rec.id}::${f.airtableFieldName}`)
-            ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options))
+        const existing = linkStmt?.get(rec.id)
+        const values = writable.map(f => {
+          const v = attachCols.has(f.columnName)
+            ? (attached.get(`${rec.id}::${f.columnName}`) ?? null)
+            : mirrored.get(`${rec.id}::${f.airtableFieldName}`)
+              ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options)
+          return existing && f.fieldType === 'link' ? keepLocalOnlyLink(existing[f.columnName], v) : v
+        })
         const result = stmt.run(...values, rec.id)
         if (result.changes > 0) count++
       }
@@ -830,10 +853,13 @@ export async function updateDynamicFields(erpTable, hardcodedFieldMap, records) 
     for (const rec of recs) {
       const existing = selectStmt.get(rec.id)
       if (!existing) continue // record pas (encore) importé : rien à enrichir
-      const values = writable.map(f => attachCols.has(f.columnName)
-        ? (attached.get(`${rec.id}::${f.columnName}`) ?? null)
-        : mirrored.get(`${rec.id}::${f.airtableFieldName}`)
-          ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options))
+      const values = writable.map(f => {
+        const v = attachCols.has(f.columnName)
+          ? (attached.get(`${rec.id}::${f.columnName}`) ?? null)
+          : mirrored.get(`${rec.id}::${f.airtableFieldName}`)
+            ?? convertValue(rec.fields[f.airtableFieldName], f.fieldType, f.options)
+        return f.fieldType === 'link' ? keepLocalOnlyLink(existing[f.columnName], v) : v
+      })
       const changed = []
       for (let i = 0; i < writable.length; i++) {
         if (!sameStored(existing[writable[i].columnName], values[i] ?? null)) changed.push(i)

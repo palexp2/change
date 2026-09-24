@@ -60,14 +60,14 @@ export default function StripePayouts() {
 
   return (
     <ListPage
-      title="Stripe Payouts"
-      subtitle={<p className="text-xs text-slate-500 mt-0.5">Virements Stripe → banque. Pousser vers QuickBooks en tant que Deposit.</p>}
+      title="Versements Stripe"
+      subtitle={<p className="text-xs text-slate-500 mt-0.5">Virements Stripe → banque. Publier dans QuickBooks en tant que Deposit.</p>}
       actions={<>
         <button
           onClick={handleSync}
           disabled={syncing}
           className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 disabled:opacity-50"
-          title="Synchroniser les nouveaux payouts depuis Stripe"
+          title="Chercher les nouveaux versements chez Stripe"
         >
           <RefreshCw size={14} className={syncing ? 'animate-spin' : ''} />
           {syncing ? 'Synchronisation…' : 'Sync Stripe'}

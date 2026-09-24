@@ -114,6 +114,41 @@ describe('bankActions', () => {
       assert.equal(achat.tax_code_id, 'TPS/TVQ')
     })
 
+    it('coupe l\'écriture en plusieurs comptes', () => {
+      const t = txn({ amount: -300 })
+      const { achatId } = addExpenseFromTxn(t, account(BNC), {
+        ...body,
+        expense_account_id: '',
+        lines: [
+          { expense_account_id: '5410', amount: 200 },
+          { expense_account_id: '5420', amount: 100, description: 'part atelier' },
+        ],
+      }, null)
+      const achat = db.prepare('SELECT * FROM achats_fournisseurs WHERE id=?').get(achatId)
+      const parts = JSON.parse(achat.lines)
+      assert.equal(parts.length, 2)
+      assert.equal(parts[0].account_id, '5410')
+      assert.equal(parts[1].amount, 100)
+      assert.equal(achat.expense_account_id, '5410', 'le premier compte reste celui de l\'achat')
+      assert.equal(achat.total_cad, 300)
+    })
+
+    it('refuse des parts qui ne font pas le montant', () => {
+      const t = txn({ amount: -300 })
+      assert.throws(() => addExpenseFromTxn(t, account(BNC), {
+        ...body,
+        lines: [{ expense_account_id: '5410', amount: 200 }, { expense_account_id: '5420', amount: 50 }],
+      }, null), /répartir 300/)
+    })
+
+    it('une seule part ne coupe rien', () => {
+      const t = txn({ amount: -75 })
+      const { achatId } = addExpenseFromTxn(t, account(BNC), {
+        ...body, lines: [{ expense_account_id: '5410', amount: 75 }],
+      }, null)
+      assert.equal(db.prepare('SELECT lines FROM achats_fournisseurs WHERE id=?').get(achatId).lines, null)
+    })
+
     it('sur une carte, l\'écriture est payée par carte de crédit', () => {
       const t = txn({ account_id: MCR, amount: -50 })
       const { achatId } = addExpenseFromTxn(t, account(MCR), body, null)

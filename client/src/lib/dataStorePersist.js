@@ -12,7 +12,7 @@
 // quitte/revient — c'est rattrapé par le delta au démarrage.
 
 const DB_NAME = 'erp_data_store'
-const DB_VERSION = 1
+const DB_VERSION = 2
 const STORE_NAME = 'tables'
 const META_KEY = '__meta__'
 
@@ -23,6 +23,7 @@ function openDb() {
   dbPromise = new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = () => {
+      if (req.result.objectStoreNames.contains(STORE_NAME)) req.result.deleteObjectStore(STORE_NAME)
       const db = req.result
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME)

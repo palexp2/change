@@ -1,4 +1,5 @@
 import { greenhouseSideVentsOnly } from './discoveryEquipment.js'
+import { greenhouseLimits } from './discoveryFormOptions.js'
 
 // `hasMobileController` : un contrôleur central internet mobile est déjà à la
 // commande (option du formulaire, ou produit détecté sur la facture Stripe).
@@ -12,9 +13,21 @@ export function discoveryAnswerErrors(response, { hasMobileController = false } 
   }
   for (const [i, g] of (response.greenhouses || []).entries()) {
     const name = `Serre #${i + 1}`
-    // Serre Helper : côtés ouvrants seulement — ni louvres ni humidité ne lui
-    // sont demandées, donc rien à exiger ici.
-    if (greenhouseSideVentsOnly(g, response)) continue
+    const helperOnly = greenhouseSideVentsOnly(g, response)
+    // Toits ouvrants : posés au chef de culture, ou au Helper qui a reçu une
+    // permission Toits ouvrants.
+    const limits = greenhouseLimits(response.form_options, i, g.permission_level || response.permission_level)
+    if (limits.roofs && g.has_roof_vents === true) {
+      if (!['110', '240', '24_dc'].includes(g.roof_motor_voltage)) errors.push(`${name} : indiquez la tension du moteur du toit ouvrant.`)
+      if (typeof g.has_roof_inverter !== 'boolean') errors.push(`${name} : indiquez si vous avez déjà l’inverseur du toit ouvrant.`)
+      if (g.has_roof_inverter === true) {
+        if (!['harnois_8ze141l', 'vre_mc21', 'other'].includes(g.roof_inverter_type)) errors.push(`${name} : choisissez la marque et le modèle de l’inverseur.`)
+        if (g.roof_inverter_type === 'other' && (!String(g.roof_inverter_brand || '').trim() || !String(g.roof_inverter_model || '').trim())) errors.push(`${name} : précisez la marque et le modèle de l’inverseur.`)
+      }
+      if (g.has_roof_inverter === false && g.roof_motor_voltage === '240' && typeof g.roof_motor_ridder_rw240 !== 'boolean') errors.push(`${name} : précisez si le moteur est un Ridder RW240, 1 phase, 5 fils.`)
+    }
+    // Serre Helper : ni louvres ni humidité ne lui sont demandées.
+    if (helperOnly) continue
     if (typeof g.has_louvers !== 'boolean') errors.push(`${name} : indiquez la présence de louvres.`)
     if (g.has_louvers) {
       if (!Array.isArray(g.louvers) || !g.louvers.length || g.louvers.length > 50) errors.push(`${name} : indiquez entre 1 et 50 louvres.`)
@@ -28,7 +41,6 @@ export function discoveryAnswerErrors(response, { hasMobileController = false } 
     }
     if (response.form_options?.humidity_retention) {
       if (typeof g.humidity_valve !== 'boolean' || typeof g.humidity_haf !== 'boolean') errors.push(`${name} : complétez les options de conservation de l’humidité.`)
-      if (g.humidity_haf && (!Number.isInteger(Number(g.humidity_haf_count)) || Number(g.humidity_haf_count) < 1 || Number(g.humidity_haf_count) > 100)) errors.push(`${name} : indiquez entre 1 et 100 HAF.`)
     }
   }
   return errors

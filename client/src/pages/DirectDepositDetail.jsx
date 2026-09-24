@@ -146,7 +146,7 @@ export default function DirectDepositDetail({ recordId: id }) {
           </span>
         )
       } else if (res.qb_skipped) {
-        setActionInfo('Paiement enregistré — écriture QB marquée comme déjà postée (rien envoyé).')
+        setActionInfo('Paiement enregistré — écriture QuickBooks marquée comme déjà postée (rien envoyé).')
       }
       await load(res.payment?.id || id)
     } catch (e) {
@@ -166,7 +166,7 @@ export default function DirectDepositDetail({ recordId: id }) {
       if (r.qb_deposit_id) setActionInfo(`Deposit QB #${r.qb_deposit_id} créé`)
       await load(data.deposit.id)
     } catch (e) {
-      setActionError(e.message || 'Erreur push QB')
+      setActionError(e.message || 'La publication dans QuickBooks a échoué')
     } finally {
       setPushing(false)
     }
@@ -209,13 +209,13 @@ export default function DirectDepositDetail({ recordId: id }) {
                     title={`Ouvrir le ${qbLabel} dans QuickBooks`}
                     data-testid="direct-deposit-qb-pill"
                   >
-                    <CheckCircle2 size={10} /> QB {qbLabel} #{qbId}
+                    <CheckCircle2 size={10} /> QuickBooks {qbLabel} #{qbId}
                     <ExternalLink size={10} />
                   </a>
                 ) : p.qb_skipped ? (
-                  <Badge color="gray">Saisi à la main dans QB</Badge>
+                  <Badge color="gray">Saisi à la main dans QuickBooks</Badge>
                 ) : (
-                  <Badge color="red">QB non posté</Badge>
+                  <Badge color="red">QuickBooks non posté</Badge>
                 )}
               </div>
               <p className="text-sm text-slate-500 mt-1">
@@ -262,7 +262,7 @@ export default function DirectDepositDetail({ recordId: id }) {
               <h2 className="text-sm font-semibold text-slate-900">QuickBooks</h2>
               <p className="text-xs text-slate-500 mt-0.5">
                 {isCandidate
-                  ? 'Construire et pousser un Deposit pour cet encaissement reçu directement en banque.'
+                  ? 'Construire et publier un Deposit pour cet encaissement reçu directement en banque.'
                   : qbId
                     ? 'Écriture comptabilisée — ouvrir le Deposit dans QuickBooks via le badge ci-dessus.'
                     : p.qb_skipped
@@ -290,7 +290,7 @@ export default function DirectDepositDetail({ recordId: id }) {
                   title="Enregistrer l'encaissement et créer le Deposit dans QuickBooks"
                   data-testid="direct-deposit-push"
                 >
-                  <Send size={14} /> {pushing ? 'Envoi…' : (skipQb ? 'Enregistrer (sans pousser)' : 'Pousser vers QB')}
+                  <Send size={14} /> {pushing ? 'Envoi…' : (skipQb ? 'Enregistrer (sans publier)' : 'Publier dans QuickBooks')}
                 </button>
               ) : qbId ? (
                 <button
@@ -307,7 +307,7 @@ export default function DirectDepositDetail({ recordId: id }) {
                   className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 rounded-lg hover:bg-brand-700 disabled:opacity-50"
                   data-testid="direct-deposit-retry"
                 >
-                  <RefreshCw size={14} className={pushing ? 'animate-spin' : ''} /> {pushing ? 'Envoi…' : 'Pousser vers QB'}
+                  <RefreshCw size={14} className={pushing ? 'animate-spin' : ''} /> {pushing ? 'Envoi…' : 'Publier dans QuickBooks'}
                 </button>
               ) : null}
             </div>
@@ -398,11 +398,11 @@ function DepositPreviewPanel({ preview }) {
         <InfoField label="Compte crédité" value={summary.credit_account} />
         <InfoField label="Montant reçu (TTC)" value={fmtMoney(summary.amount, cur)} />
         <InfoField label="Base HT" value={fmtMoney(summary.line_ht, cur)} />
-        <InfoField label="Taxes (calculées par QB)" value={summary.taxes ? fmtMoney(summary.taxes, cur) : null} />
+        <InfoField label="Taxes (calculées par QuickBooks)" value={summary.taxes ? fmtMoney(summary.taxes, cur) : null} />
         <InfoField label="Code de taxe" value={summary.tax_code} />
         <InfoField label="Date" value={summary.txn_date} />
         {cur !== 'CAD' && <InfoField label={`Taux ${cur}→CAD`} value={summary.exchange_rate} />}
-        <InfoField label="Client QB" value={summary.customer_name} />
+        <InfoField label="Client QuickBooks" value={summary.customer_name} />
       </div>
       {warnings && warnings.length > 0 && (
         <div className="border-t border-amber-200 bg-amber-50 px-4 py-2 space-y-1">

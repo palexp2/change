@@ -12,9 +12,10 @@ import { sendEmail as sendGmail } from '../services/gmail.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
 import { parseFiniteInt, parsePositiveInt, parseNonNegativeInt } from '../utils/validateNumbers.js';
 import { readRelation } from '../services/customFieldsView.js'
+import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
-import { addScanCode, normalizeScanCodes, matchesScanCode } from '../utils/scanCodes.js'
+import { productPurchasePrefill, createProductPurchase, syncProductPurchase, readProductPurchase, createPurchasesFromPo } from '../services/productPurchase.js'
 
 const INSTALLATION_DOC_FIELDS = [
   { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
@@ -72,9 +73,9 @@ router.get('/', (req, res) => {
   const params = [];
 
   if (search) {
-    where += ' AND (unaccent(sku) LIKE unaccent(?) OR unaccent(name_fr) LIKE unaccent(?) OR unaccent(name_en) LIKE unaccent(?) OR unaccent(supplier) LIKE unaccent(?) OR unaccent(scan_codes) LIKE unaccent(?))';
+    where += ' AND (unaccent(sku) LIKE unaccent(?) OR unaccent(name_fr) LIKE unaccent(?) OR unaccent(name_en) LIKE unaccent(?) OR unaccent(supplier) LIKE unaccent(?))';
     const q = `%${search}%`;
-    params.push(q, q, q, q, q);
+    params.push(q, q, q, q);
   }
   if (type) {
     where += ' AND type = ?';
@@ -144,6 +145,25 @@ router.get('/:id/purchases', (req, res) => {
   res.json({ data: rows });
 });
 
+router.get('/:id/purchases/prefill', (req, res) => {
+  res.json(productPurchasePrefill(req.params.id))
+})
+
+router.post('/:id/purchases', async (req, res) => {
+  const id = createProductPurchase(req.params.id, req.body)
+  const airtable = await syncProductPurchase(req.params.id, id)
+  const created = readProductPurchase(id)
+  emitEntity('purchase', 'created', id, created, req.user?.id)
+  res.status(201).json({ ...created, airtable })
+})
+
+router.post('/:id/purchases/:purchaseId/sync', async (req, res) => {
+  const airtable = await syncProductPurchase(req.params.id, req.params.purchaseId)
+  const purchase = readProductPurchase(req.params.purchaseId)
+  emitEntity('purchase', 'updated', purchase.id, purchase, req.user?.id)
+  res.json({ ...purchase, airtable })
+})
+
 // POST /api/products
 router.post('/', (req, res) => {
   const { sku, name_fr, name_en, type, unit_cost, price_cad, stock_qty, min_stock, order_qty, supplier, procurement_type, weight_lbs, notes } = req.body;
@@ -162,24 +182,36 @@ router.post('/', (req, res) => {
   res.status(201).json(product);
 });
 
+// Section « Ajustement d'inventaire » : champs poussés vers Airtable, où la
+// formule « Quantité en inventaire » (et ses automatisations) vivent encore.
+const AIRTABLE_ADJUSTMENT_COLUMNS = ['ajustement_manuel', 'raison_de_l_ajustement_manuel'];
+
 // PUT /api/products/:id — partial update
-router.put('/:id', (req, res) => {
+router.put('/:id', async (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Product not found' });
+
+  if ('ajustement_manuel' in req.body) {
+    const v = req.body.ajustement_manuel;
+    if (v !== null && v !== '' && parseFiniteInt(v) === null) {
+      return res.status(400).json({ error: 'Ajustement manuel : nombre entier attendu' });
+    }
+  }
 
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['sku', 'name_fr', 'name_en', 'type', 'unit_cost', 'price_cad', 'price_usd',
       'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'min_stock', 'order_qty',
       'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
       'weight_lbs', 'notes', 'active', 'manufacturier', 'order_email',
-      'role', 'purchase_snooze_until', 'scan_codes'],
+      'role', 'purchase_snooze_until', ...AIRTABLE_ADJUSTMENT_COLUMNS],
     nonNullable: new Set(['name_fr']),
     coerce: {
       is_sellable: v => v ? 1 : 0,
       buy_via_po: v => v ? 1 : 0,
       active: v => v ? 1 : 0,
       order_email: v => v ? String(v).trim() : null,
-      scan_codes: v => normalizeScanCodes(v),
+      ajustement_manuel: v => (v === null || v === '' ? null : parseFiniteInt(v)),
+      raison_de_l_ajustement_manuel: v => (v ? String(v) : null),
     },
   });
   if (error) return res.status(400).json({ error });
@@ -188,43 +220,14 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id);
   }
 
-  const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
-  res.json(updated);
-});
-
-// POST /api/products/:id/scan-codes — apprend un code-barre à la pièce
-// (étiquette fournisseur/fabricant scannée au prélèvement). Lecture-modif-
-// écriture faite ici pour que deux apprentissages simultanés ne s'écrasent pas.
-router.post('/:id/scan-codes', (req, res) => {
-  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
-  if (!product) return res.status(404).json({ error: 'Product not found' });
-
-  const code = String(req.body?.code || '').trim();
-  if (!code) return res.status(400).json({ error: 'code is required' });
-  if (/[,;\n\r]/.test(code)) return res.status(400).json({ error: 'code cannot contain a separator' });
-
-  // Un code déjà porté par une AUTRE pièce (comme SKU ou comme code-barre)
-  // rendrait le scan ambigu : on refuse plutôt que de créer un doublon muet.
-  const skuOwner = db.prepare('SELECT id, sku, name_fr FROM products WHERE sku = ? COLLATE NOCASE AND id <> ? AND deleted_at IS NULL')
-    .get(code, req.params.id);
-  if (skuOwner) return res.status(409).json({ error: `Code déjà utilisé comme SKU par « ${skuOwner.name_fr} »` });
-
-  const others = db.prepare(
-    `SELECT id, name_fr, scan_codes FROM products
-     WHERE id <> ? AND deleted_at IS NULL AND scan_codes IS NOT NULL AND scan_codes <> ''
-       AND instr(lower(scan_codes), lower(?)) > 0`
-  ).all(req.params.id, code);
-  const codeOwner = others.find(p => matchesScanCode(p.scan_codes, code));
-  if (codeOwner) return res.status(409).json({ error: `Code déjà associé à « ${codeOwner.name_fr} »` });
-
-  const next = addScanCode(product.scan_codes, code);
-  db.prepare(`UPDATE products SET scan_codes = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
-    .run(next, req.params.id);
+  // Attendu (et non fire-and-forget) : un échec Airtable doit se voir dans la
+  // fiche, sinon l'ajustement resterait local et serait écrasé au prochain sync.
+  const pushCols = AIRTABLE_ADJUSTMENT_COLUMNS.filter(c => c in req.body);
+  const airtable = pushCols.length ? await writeBackRecord('pieces', req.params.id, pushCols) : undefined;
 
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
-  res.json(updated);
+  res.json(airtable ? { ...updated, airtable } : updated);
 });
 
 // POST /api/products/:id/stock — adjust stock
@@ -232,7 +235,41 @@ router.post('/:id/stock', (req, res) => {
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
-  const { type, qty, reason, reference_id, allow_negative } = req.body;
+  const { qty, allow_negative } = req.body;
+  let { type, reason } = req.body;
+  // Forme de la modale : le « Type » d'Airtable (`reason`) + la variation
+  // signée (`change`), comme « Changement » dans Airtable. Le sens se déduit
+  // comme à l'import : libellé « Ajustement… », sinon le signe.
+  const hasChange = req.body.change !== undefined && req.body.change !== null;
+  if (hasChange) {
+    const change = parseFiniteInt(req.body.change);
+    if (!change) return res.status(400).json({ error: 'change must be a non-zero integer' });
+    if (!reason) return res.status(400).json({ error: 'reason is required' });
+    if (/ajustement/i.test(reason)) {
+      type = 'adjustment';
+      reason = change < 0 ? 'Ajustement (diminution)' : 'Ajustement (augmentation)';
+    } else {
+      type = change > 0 ? 'in' : 'out';
+    }
+    const newQty = product.stock_qty + change;
+    if (newQty < 0 && !allow_negative) {
+      return res.status(400).json({ error: `Resulting stock would be negative (${newQty}). Set allow_negative to force.` });
+    }
+    const movId = newRecordId();
+    db.transaction(() => {
+      db.prepare(
+        `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(movId, req.params.id, type, Math.abs(change), reason, req.user.id);
+      db.prepare(`UPDATE products SET stock_qty=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+        .run(newQty, req.params.id);
+    })();
+    createInAirtable('stock_movements', movId, { rowOverrides: { signed_change: change } });
+    const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
+    emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
+    return res.json(updated);
+  }
+
   if (!type || !['in', 'out', 'adjustment'].includes(type)) {
     return res.status(400).json({ error: 'type must be in|out|adjustment' });
   }
@@ -278,14 +315,20 @@ router.post('/:id/stock', (req, res) => {
 
   const run = db.transaction(() => {
     db.prepare(
-      `INSERT INTO stock_movements (id, product_id, type, qty, reason, reference_id, user_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).run(movId, req.params.id, type, movQty, reason || null, reference_id || null, req.user.id);
+      `INSERT INTO stock_movements (id, product_id, type, qty, reason, user_id)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(movId, req.params.id, type, movQty, reason || null, req.user.id);
 
     db.prepare(`UPDATE products SET stock_qty=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(newQty, req.params.id);
   });
   run();
+
+  // Vers Airtable si le sens des mouvements le demande (sinon ignoré). Un
+  // ajustement garde le niveau cible dans `qty` : on passe la vraie variation.
+  createInAirtable('stock_movements', movId, {
+    rowOverrides: type === 'adjustment' ? { signed_change: newQty - product.stock_qty } : {},
+  });
 
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
   emitEntity('product', 'updated', req.params.id, updated, req.user?.id);
@@ -309,18 +352,42 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
     supplier = db.prepare('SELECT id, name, currency, language FROM companies WHERE id = ?').get(product.supplier_company_id)
     if (supplier?.currency) currency = supplier.currency
     if (supplier?.language) lang = supplier.language === 'English' ? 'en' : 'fr'
+    // Contacts liés au fournisseur : entreprise principale (legacy) OU lien
+    // multiple contact_companies — un contact rattaché à plusieurs entreprises
+    // doit aussi être proposé.
     contacts = db.prepare(`
-      SELECT id, first_name, last_name, email
-      FROM contacts
-      WHERE company_id = ? AND email IS NOT NULL AND email != '' AND deleted_at IS NULL
-      ORDER BY created_at ASC
-    `).all(product.supplier_company_id)
+      SELECT id, first_name, last_name, email, language
+      FROM contacts ct
+      WHERE (ct.company_id = ? OR EXISTS (
+          SELECT 1 FROM contact_companies cc WHERE cc.contact_id = ct.id AND cc.company_id = ?))
+        AND ct.email IS NOT NULL AND ct.email != '' AND ct.deleted_at IS NULL
+      ORDER BY ct.created_at ASC
+    `).all(product.supplier_company_id, product.supplier_company_id)
+  }
+  const contactLang = (c) => c?.language === 'English' ? 'en' : c?.language === 'French' ? 'fr' : null
+  const supplierEmail = product.order_email || contacts[0]?.email || null
+  // La langue du contact destinataire prime sur celle de l'entreprise.
+  const recipient = contacts.find(c => c.email.toLowerCase() === String(supplierEmail || '').toLowerCase())
+  if (contactLang(recipient)) lang = contactLang(recipient)
+
+  // Les pièces importées peuvent n'avoir que le nom texte du fournisseur.
+  // Le lien explicite reste prioritaire : un ancien libellé ne doit jamais
+  // ramener une pièce désormais liée à une autre entreprise. Sans lien sur la
+  // pièce de départ, on regroupe seulement les pièces au même fournisseur texte.
+  if (product.supplier_company_id || product.supplier?.trim()) {
     supplierProducts = db.prepare(`
-      SELECT id, sku, name_fr, name_en, manufacturier, order_qty, unit_cost
+      SELECT id, sku, name_fr, name_en, manufacturier, order_qty, unit_cost, image_url
       FROM products
-      WHERE supplier_company_id = ? AND deleted_at IS NULL
+      WHERE deleted_at IS NULL AND (
+        supplier_company_id = ?
+        OR (
+          COALESCE(supplier_company_id, '') = ''
+          AND NULLIF(trim(supplier), '') IS NOT NULL
+          AND lower(trim(supplier)) = lower(trim(?))
+        )
+      )
       ORDER BY name_fr
-    `).all(product.supplier_company_id)
+    `).all(product.supplier_company_id || null, product.supplier || null)
   }
 
   const po_number = reservePurchaseOrderNumber(db, product.id)
@@ -332,7 +399,10 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
     product_id: p.id,
     product: toLabel(p),
     qty: Number(p.order_qty) || 0,
-    rate: Number(p.unit_cost) || 0,
+    // Tarif à 0 par défaut (demande de Martin) : le coût du catalogue n'est
+    // pas le prix négocié du PO, on le saisit à la main.
+    rate: 0,
+    image_url: p.image_url || null,
   })
 
   const items = [
@@ -349,11 +419,12 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
     date: today,
     currency,
     supplier: supplier?.name || product.supplier || '',
-    supplier_email: product.order_email || contacts[0]?.email || null,
+    supplier_email: supplierEmail,
     supplier_contacts: contacts.map(c => ({
       id: c.id,
       name: [c.first_name, c.last_name].filter(Boolean).join(' ').trim() || c.email,
       email: c.email,
+      lang: contactLang(c),
     })),
     supplier_products: supplierProducts.map(sp => ({
       id: sp.id,
@@ -361,6 +432,7 @@ router.get('/:id/purchase-order/prefill', (req, res) => {
       label: toLabel(sp),
       order_qty: Number(sp.order_qty) || 0,
       unit_cost: Number(sp.unit_cost) || 0,
+      image_url: sp.image_url || null,
     })),
     details: '',
     bill_to: {
@@ -501,16 +573,16 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
   })
   persist()
 
-  // Un PO envoyé ne crée plus d'achats (table `purchases`) : les colonnes qui
-  // décrivaient la commande — produit, référence, date, quantité, prix unitaire,
-  // notes — ont été droppées sur demande (migration 035). Il ne reste rien à y
-  // écrire. Le bill brouillon dans achats_fournisseurs, lui, est inchangé : la
-  // comptabilité du PO est intacte.
+  // Un achat (table `purchases`) par ligne liée au catalogue, via les champs
+  // personnalisés et le push Airtable de la section Achats de la fiche produit.
+  const purchases = await createPurchasesFromPo(po, product.id)
+  for (const id of purchases.purchase_ids) emitEntity('purchase', 'created', id, readProductPurchase(id), req.user?.id)
   res.json({
     success: true,
     interaction_id: interactionId,
     email_id: emailId,
     achat_id: achatId,
+    ...purchases,
   })
 });
 

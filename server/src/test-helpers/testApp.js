@@ -11,10 +11,9 @@
 import './testEnv.js'
 
 import express from 'express'
-import jwt from 'jsonwebtoken'
+import { issueSession } from '../services/sessionSecurity.js'
 import { randomUUID } from 'node:crypto'
 import { existsSync, unlinkSync } from 'node:fs'
-import { JWT_SECRET } from '../config/secrets.js'
 import { initSchema } from '../db/schema.js'
 import db from '../db/database.js'
 
@@ -106,7 +105,9 @@ export function listen(app) {
 // Forge un JWT valide signé avec le même secret que requireAuth vérifie.
 export function makeToken({ id, role = 'admin', name = 'E2E Route Test' } = {}) {
   const uid = id || randomUUID()
-  return { id: uid, token: jwt.sign({ id: uid, role, name }, JWT_SECRET, { algorithm: 'HS256' }) }
+  initTestDb()
+  db.prepare('INSERT OR IGNORE INTO users (id, email, password_hash, name, role) VALUES (?,?,?,?,?)').run(uid, `e2e-${uid}@example.com`, 'test-hash', name, role)
+  return { id: uid, token: issueSession(db.prepare('SELECT * FROM users WHERE id=?').get(uid)) }
 }
 
 // Insère un vrai user en DB (pour les routes qui font un JOIN sur users) et

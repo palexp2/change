@@ -111,7 +111,9 @@ function GuardStatus() {
   )
 }
 
-export default function Changelog() {
+// Journal seul (garde + tableau), sans coquille de page : servi par la page
+// /changelog et par la section « Nouveautés » des Paramètres.
+export function ChangelogContent() {
   // Demandeur : uniquement le champ `requester` de l'entrée — le nom que la
   // demande d'origine a fait remonter jusqu'ici. Aucune déduction — absent = « — ».
   const rows = useMemo(
@@ -177,12 +179,8 @@ export default function Changelog() {
   )
 
   return (
-    <ListPage
-      title="Nouveautés"
-      icon={Sparkles}
-      subtitle={<p className="text-xs text-slate-400 mt-0.5">Ce qui change dans l'ERP, et qui l'a demandé</p>}
-      banner={<GuardStatus />}
-    >
+    <>
+      <GuardStatus />
       <DataTable
         table="changelog"
         columns={columns}
@@ -195,6 +193,18 @@ export default function Changelog() {
           description: "Les évolutions de l'ERP s'afficheront ici.",
         }}
       />
+    </>
+  )
+}
+
+export default function Changelog() {
+  return (
+    <ListPage
+      title="Nouveautés"
+      icon={Sparkles}
+      subtitle={<p className="text-xs text-slate-400 mt-0.5">Ce qui change dans l'ERP, et qui l'a demandé</p>}
+    >
+      <ChangelogContent />
     </ListPage>
   )
 }

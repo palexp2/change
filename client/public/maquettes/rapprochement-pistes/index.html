@@ -1,0 +1,363 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Rapprochement, cinq pistes</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ink: #17211c;
+    --ink-2: #5c6b62;
+    --ink-3: #8d9a92;
+    --page: #f3f2ee;
+    --surface: #ffffff;
+    --line: #e2e1da;
+    --line-soft: #eeede7;
+    --brand: #21b14b;
+    --brand-soft: #eefaf1;
+    --red: #b3261e;
+    --red-bg: #fbe9e7;
+    --amber: #8a5a00;
+    --amber-bg: #fcf2dc;
+    --sky: #14618f;
+    --sky-bg: #e6f2fa;
+    --green: #1b8e3c;
+    --green-bg: #e7f6ec;
+    --mute-bg: #ececeb;
+    --shadow: 0 1px 2px rgba(23,33,28,.06), 0 8px 24px rgba(23,33,28,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e8ece9; --ink-2: #a3b0a8; --ink-3: #74827a;
+      --page: #121613; --surface: #1a201c; --line: #2b332e; --line-soft: #232a26;
+      --brand: #43cc6e; --brand-soft: #16301f;
+      --red: #ff9b93; --red-bg: #3a1d1a;
+      --amber: #e8b866; --amber-bg: #372b12;
+      --sky: #8fc7ea; --sky-bg: #142a38;
+      --green: #6bd588; --green-bg: #16301f;
+      --mute-bg: #232823;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e8ece9; --ink-2: #a3b0a8; --ink-3: #74827a;
+    --page: #121613; --surface: #1a201c; --line: #2b332e; --line-soft: #232a26;
+    --brand: #43cc6e; --brand-soft: #16301f;
+    --red: #ff9b93; --red-bg: #3a1d1a;
+    --amber: #e8b866; --amber-bg: #372b12;
+    --sky: #8fc7ea; --sky-bg: #142a38;
+    --green: #6bd588; --green-bg: #16301f;
+    --mute-bg: #232823;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 10px 28px rgba(0,0,0,.35);
+  }
+
+  body {
+    background: var(--page);
+    color: var(--ink);
+    font-family: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding-inline: 16px; padding-block: 40px 72px; }
+  h1 { font-size: 26px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .pistes { display: flex; flex-direction: column; gap: 56px; margin-top: 40px; }
+  .head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .code {
+    font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 12px; font-weight: 500;
+    color: var(--brand); border: 1px solid var(--brand); border-radius: 4px; padding: 1px 6px;
+  }
+  .head h2 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .head p { margin: 0; font-size: 14px; color: var(--ink-2); }
+
+  /* ── cadre d'écran ─────────────────────────────── */
+  .screen {
+    background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: var(--shadow); overflow: hidden;
+  }
+  .screen-in { padding: 14px 16px 16px; min-width: 640px; }
+  .scroll { overflow-x: auto; }
+  .bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .title { font-size: 15px; font-weight: 600; }
+  .sub { font-size: 12px; color: var(--ink-3); }
+  .tabs { display: flex; gap: 14px; border-bottom: 1px solid var(--line); margin: 12px 0 0; }
+  .tab { font-size: 13px; color: var(--ink-3); padding: 6px 1px; border-bottom: 2px solid transparent; white-space: nowrap; }
+  .tab.on { color: var(--ink); font-weight: 500; border-bottom-color: var(--brand); }
+  .tab .n { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--red); margin-left: 5px; }
+  .btn {
+    font: inherit; font-size: 13px; border-radius: 7px; border: 1px solid var(--line);
+    background: var(--surface); color: var(--ink-2); padding: 5px 10px; white-space: nowrap;
+  }
+  .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 500; }
+  :root[data-theme="dark"] .btn.primary, :root:not([data-theme="light"]) .btn.primary { color: #06170c; }
+  .btn.ghost { border-color: transparent; }
+  .icons { display: flex; gap: 6px; }
+  .icon {
+    width: 28px; height: 28px; border: 1px solid var(--line); border-radius: 7px; color: var(--ink-3);
+    display: grid; place-items: center; font-size: 12px;
+  }
+  .num { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; }
+
+  /* ── tableau ───────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--ink-3); padding: 7px 8px; border-bottom: 1px solid var(--line);
+  }
+  td { padding: 7px 8px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+  td.r, th.r { text-align: right; }
+  .desc { font-weight: 500; }
+  .meta { color: var(--ink-3); font-size: 12px; }
+  .rail { border-left: 3px solid transparent; }
+  .rail.a { border-left-color: var(--red); }
+  .rail.f { border-left-color: var(--sky); }
+  .rail.c { border-left-color: var(--amber); }
+  .rail.r { border-left-color: var(--green); }
+  .tint-a { background: var(--red-bg); }
+  .tint-f { background: var(--sky-bg); }
+  .tint-c { background: var(--amber-bg); }
+  .tint-r { background: var(--green-bg); }
+  .tint-i { background: var(--mute-bg); color: var(--ink-3); }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px; font-size: 11px; border-radius: 999px;
+    padding: 2px 8px; background: var(--mute-bg); color: var(--ink-2);
+  }
+  .chip.a { background: var(--red-bg); color: var(--red); }
+  .chip.f { background: var(--sky-bg); color: var(--sky); }
+  .chip.c { background: var(--amber-bg); color: var(--amber); }
+  .chip.r { background: var(--green-bg); color: var(--green); }
+  .dot { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+
+  /* ── R1 pile ───────────────────────────────────── */
+  .stack { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+  .item {
+    display: grid; grid-template-columns: 74px 1fr auto auto; gap: 14px; align-items: center;
+    border: 1px solid var(--line); border-radius: 9px; padding: 10px 12px; background: var(--surface);
+  }
+  .item .why { font-size: 12px; color: var(--ink-2); }
+  .amount { font-family: 'IBM Plex Mono', monospace; font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 500; }
+  .folded {
+    border: 1px dashed var(--line); border-radius: 9px; padding: 9px 12px; font-size: 13px;
+    color: var(--ink-3); display: flex; justify-content: space-between; align-items: center;
+  }
+
+  /* ── R3 écart ──────────────────────────────────── */
+  .gap-hero { display: flex; align-items: flex-end; gap: 26px; flex-wrap: wrap; margin: 14px 0 4px; }
+  .gap-big { font-family: 'IBM Plex Mono', monospace; font-size: 34px; font-weight: 500; letter-spacing: -.02em; color: var(--red); line-height: 1; }
+  .gap-side { font-size: 12px; color: var(--ink-3); line-height: 1.7; }
+  .breaks { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0 2px; }
+  .brk { border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; }
+  .brk.on { border-color: var(--brand); background: var(--brand-soft); }
+  .brk .k { font-size: 12px; color: var(--ink-2); }
+  .brk .v { font-family: 'IBM Plex Mono', monospace; font-size: 17px; font-weight: 500; margin-top: 2px; }
+
+  /* ── R4 carte ──────────────────────────────────── */
+  .card-one { display: grid; grid-template-columns: 1fr 260px; gap: 22px; margin-top: 16px; align-items: start; }
+  .card-one .big { font-family: 'IBM Plex Mono', monospace; font-size: 38px; font-weight: 500; letter-spacing: -.02em; }
+  .card-one .lbl { font-size: 19px; font-weight: 600; margin-top: 4px; }
+  .proof { border: 1px solid var(--line); border-radius: 9px; padding: 11px 13px; font-size: 13px; line-height: 1.6; }
+  .proof .t { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin-bottom: 4px; }
+  .keys { display: flex; gap: 8px; align-items: center; margin-top: 18px; flex-wrap: wrap; }
+  kbd {
+    font-family: 'IBM Plex Mono', monospace; font-size: 11px; border: 1px solid var(--line);
+    border-bottom-width: 2px; border-radius: 5px; padding: 2px 6px; color: var(--ink-2); background: var(--page);
+  }
+  .progress { height: 3px; background: var(--line-soft); border-radius: 2px; overflow: hidden; margin-top: 14px; }
+  .progress i { display: block; height: 100%; width: 38%; background: var(--brand); }
+
+  /* ── R5 couplage ───────────────────────────────── */
+  .pair { display: grid; grid-template-columns: 1fr 34px 1fr; gap: 10px; margin-top: 14px; align-items: stretch; }
+  .col-t { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink-3); margin-bottom: 7px; }
+  .side { border: 1px solid var(--line); border-radius: 9px; padding: 10px; display: flex; flex-direction: column; gap: 7px; }
+  .line {
+    display: flex; justify-content: space-between; gap: 10px; align-items: center;
+    border: 1px solid var(--line-soft); border-radius: 7px; padding: 8px 10px; font-size: 13px;
+  }
+  .line.sel { border-color: var(--brand); background: var(--brand-soft); }
+  .link-col { display: grid; place-items: center; color: var(--ink-3); font-size: 12px; }
+
+  @media (max-width: 720px) {
+    .card-one { grid-template-columns: 1fr; }
+    .pair { grid-template-columns: 1fr; }
+    .breaks { grid-template-columns: 1fr; }
+  }
+</style>
+<style>body{margin:0}img{max-width:100%}</style></head><body>
+
+
+<div class="wrap">
+  <h1>Rapprochement bancaire — cinq pistes</h1>
+
+  <div class="pistes">
+
+    <!-- R1 ───────────────────────────────────────── -->
+    <section>
+      <div class="head"><span class="code">R1</span><h2>La pile</h2><p>Seulement ce qui attend un geste ; le reste est replié.</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="bar">
+          <div><span class="title">BNC CAD</span> <span class="sub">· 9 à traiter</span></div>
+          <div class="icons"><button class="btn ghost">Comptes</button><button class="btn">Relevé</button><button class="btn primary">Tout confirmer</button></div>
+        </div>
+        <div class="stack">
+          <div class="item">
+            <span class="meta num">14 sept.</span>
+            <div><div class="desc">PROVO LTD</div><div class="why">Facture PRV-88421 · même montant, 14 sept.</div></div>
+            <span class="amount">−463,79</span>
+            <button class="btn primary">Confirmer</button>
+          </div>
+          <div class="item">
+            <span class="meta num">14 sept.</span>
+            <div><div class="desc">DEBOURSE MCR</div><div class="why">Balayage de la marge — habituel, 12 fois</div></div>
+            <span class="amount">+2 908,00</span>
+            <button class="btn primary">Confirmer</button>
+          </div>
+          <div class="item">
+            <span class="meta num">14 sept.</span>
+            <div><div class="desc">Frais suivi annuel/renouvellement</div><div class="why">BDC · Frais bancaires, TPS/TVQ</div></div>
+            <span class="amount">−300,00</span>
+            <button class="btn primary">Confirmer</button>
+          </div>
+          <div class="item">
+            <span class="meta num">11 sept.</span>
+            <div><div class="desc">WWW.PISHOP.CA</div><div class="why"><span class="chip a">Aucune facture</span> demander à PiShop</div></div>
+            <span class="amount">−1 285,43</span>
+            <button class="btn">Chercher</button>
+          </div>
+          <div class="item">
+            <span class="meta num">15 sept.</span>
+            <div><div class="desc">MAXI QUEBEC MYRAND</div><div class="why">Épicerie · 4 fois sur Repas et représentation</div></div>
+            <span class="amount">−60,95</span>
+            <button class="btn primary">Confirmer</button>
+          </div>
+          <div class="folded"><span>142 lignes réglées depuis le 1<sup>er</sup> sept.</span><span>Voir</span></div>
+        </div>
+      </div></div></div>
+    </section>
+
+    <!-- R2 ───────────────────────────────────────── -->
+    <section>
+      <div class="head"><span class="code">R2</span><h2>Le relevé au calme</h2><p>Le tableau d'aujourd'hui : filet de couleur, une colonne de montant, boutons sous « ⋯ ».</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="bar">
+          <div style="display:flex;align-items:center;gap:10px">
+            <button class="btn">BNC CAD ▾</button>
+            <span class="sub">Écart <span class="num" style="color:var(--green);font-weight:500">0,00</span></span>
+          </div>
+          <div class="icons"><button class="btn primary">Rapprocher</button><span class="icon">⋯</span></div>
+        </div>
+        <div class="tabs">
+          <span class="tab on">À réviser <span class="n">9</span></span>
+          <span class="tab">Catégorisées</span>
+          <span class="tab">Exclues</span>
+        </div>
+        <table style="margin-top:6px">
+          <thead><tr><th style="width:86px">Date</th><th>Libellé</th><th>Rattaché à</th><th class="r" style="width:110px">Montant</th><th class="r" style="width:110px">Solde</th></tr></thead>
+          <tbody>
+            <tr><td class="rail a meta num">15 sept.</td><td class="desc">AMZN MKTP CA</td><td class="meta">—</td><td class="r num">−13,56</td><td class="r num meta">48 217,04</td></tr>
+            <tr><td class="rail a meta num">15 sept.</td><td class="desc">MAXI QUEBEC MYRAND</td><td class="meta">—</td><td class="r num">−60,95</td><td class="r num meta">48 230,60</td></tr>
+            <tr><td class="rail f meta num">14 sept.</td><td class="desc">PROVO LTD</td><td class="meta">Facture PRV-88421</td><td class="r num">−463,79</td><td class="r num meta">48 291,55</td></tr>
+            <tr><td class="rail c meta num">14 sept.</td><td class="desc">COMPTE DIVERS</td><td class="meta">Dépôt QB #4417</td><td class="r num">+1 756,48</td><td class="r num meta">48 755,34</td></tr>
+            <tr><td class="rail a meta num">14 sept.</td><td class="desc">Frais suivi annuel/renouvellement</td><td class="meta">—</td><td class="r num">−300,00</td><td class="r num meta">46 998,86</td></tr>
+            <tr><td class="rail r meta num">11 sept.</td><td class="desc">DKC*DIGI-KEY CORP</td><td class="meta">Dépense QB #9902</td><td class="r num">−174,29</td><td class="r num meta">47 298,86</td></tr>
+            <tr><td class="rail r meta num">10 sept.</td><td class="desc">ASSURANCE ENT.</td><td class="meta">Dépense QB #9881</td><td class="r num">−2 737,95</td><td class="r num meta">47 473,15</td></tr>
+            <tr><td class="rail r meta num">8 sept.</td><td class="desc">STRIPE — Inbound Transfer</td><td class="meta">Versement Stripe</td><td class="r num">+2 955,05</td><td class="r num meta">50 211,10</td></tr>
+          </tbody>
+        </table>
+      </div></div></div>
+    </section>
+
+    <!-- R3 ───────────────────────────────────────── -->
+    <section>
+      <div class="head"><span class="code">R3</span><h2>L'écart d'abord</h2><p>Le seul chiffre en haut, décomposé en trois blocs qui filtrent la liste.</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="bar">
+          <div><span class="title">BNC CAD</span> <span class="sub">au 15 sept. 2026</span></div>
+          <div class="icons"><button class="btn">Relevé</button><button class="btn primary">Rapprocher</button></div>
+        </div>
+        <div class="gap-hero">
+          <div><div class="sub" style="margin-bottom:6px">Écart banque ↔ QuickBooks</div><div class="gap-big">−1 612,27</div></div>
+          <div class="gap-side">Relevé <span class="num">48 217,04</span><br>QuickBooks <span class="num">49 829,31</span></div>
+        </div>
+        <div class="breaks">
+          <div class="brk on"><div class="k">Au relevé, pas dans QB</div><div class="v">−1 649,33</div><div class="sub">4 lignes</div></div>
+          <div class="brk"><div class="k">Dans QB, pas au relevé</div><div class="v">+2 908,00</div><div class="sub">1 écriture</div></div>
+          <div class="brk"><div class="k">Montants qui divergent</div><div class="v">−2 870,94</div><div class="sub">2 paires</div></div>
+        </div>
+        <table style="margin-top:10px">
+          <thead><tr><th style="width:86px">Date</th><th>Libellé</th><th class="r" style="width:110px">Montant</th><th style="width:150px"></th></tr></thead>
+          <tbody>
+            <tr><td class="meta num">15 sept.</td><td class="desc">MAXI QUEBEC MYRAND</td><td class="r num">−60,95</td><td class="r"><button class="btn">Comptabiliser</button></td></tr>
+            <tr><td class="meta num">15 sept.</td><td class="desc">AMZN MKTP CA</td><td class="r num">−13,56</td><td class="r"><button class="btn">Comptabiliser</button></td></tr>
+            <tr><td class="meta num">14 sept.</td><td class="desc">Frais suivi annuel/renouvellement</td><td class="r num">−300,00</td><td class="r"><button class="btn">Comptabiliser</button></td></tr>
+            <tr><td class="meta num">11 sept.</td><td class="desc">WWW.PISHOP.CA</td><td class="r num">−1 285,43</td><td class="r"><button class="btn">Comptabiliser</button></td></tr>
+          </tbody>
+        </table>
+      </div></div></div>
+    </section>
+
+    <!-- R4 ───────────────────────────────────────── -->
+    <section>
+      <div class="head"><span class="code">R4</span><h2>Une ligne à la fois</h2><p>Plein cadre, la preuve à droite, deux touches, la suivante arrive.</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="bar">
+          <div><span class="title">BNC CAD</span> <span class="sub">· 4 sur 9</span></div>
+          <div class="icons"><button class="btn ghost">Quitter le tri</button></div>
+        </div>
+        <div class="card-one">
+          <div>
+            <div class="sub">11 septembre 2026</div>
+            <div class="big">−1 285,43 $</div>
+            <div class="lbl">WWW.PISHOP.CA · NEPEAN ON</div>
+            <div class="meta" style="margin-top:6px">Carte ••4417 · 3 achats cette année, toujours Pièces électroniques</div>
+            <div class="keys">
+              <button class="btn primary">Pièces électroniques · TPS/TVQ</button>
+              <kbd>↵</kbd>
+              <button class="btn">Autre compte</button><kbd>A</kbd>
+              <button class="btn">Plus tard</button><kbd>→</kbd>
+            </div>
+            <div class="progress"><i></i></div>
+          </div>
+          <div class="proof">
+            <div class="t">Ce qu'on a trouvé</div>
+            Aucune facture au même montant à ±7 jours.<br>
+            <span class="chip a">Facture manquante</span>
+            <div style="margin-top:9px"><button class="btn">Écrire à PiShop</button></div>
+          </div>
+        </div>
+      </div></div></div>
+    </section>
+
+    <!-- R5 ───────────────────────────────────────── -->
+    <section>
+      <div class="head"><span class="code">R5</span><h2>Banque ↔ QuickBooks</h2><p>Deux colonnes : on apparie, le lien se dessine.</p></div>
+      <div class="screen"><div class="scroll"><div class="screen-in">
+        <div class="bar">
+          <div><span class="title">BNC CAD</span> <span class="sub">· 9 non appariées · 1 écriture orpheline</span></div>
+          <div class="icons"><button class="btn">Relevé</button><button class="btn primary">Apparier ce qui est sûr</button></div>
+        </div>
+        <div class="pair">
+          <div>
+            <div class="col-t">Relevé</div>
+            <div class="side">
+              <div class="line sel"><span><span class="meta num">14 sept.</span> <b>PROVO LTD</b></span><span class="num">−463,79</span></div>
+              <div class="line"><span><span class="meta num">14 sept.</span> Frais suivi annuel</span><span class="num">−300,00</span></div>
+              <div class="line"><span><span class="meta num">15 sept.</span> AMZN MKTP CA</span><span class="num">−13,56</span></div>
+              <div class="line"><span><span class="meta num">11 sept.</span> WWW.PISHOP.CA</span><span class="num">−1 285,43</span></div>
+            </div>
+          </div>
+          <div class="link-col">⟷</div>
+          <div>
+            <div class="col-t">QuickBooks</div>
+            <div class="side">
+              <div class="line sel"><span>Facture fourn. PRV-88421 <span class="meta">Provo</span></span><span class="num">−463,79</span></div>
+              <div class="line"><span>Dépense #9944 <span class="meta">BDC</span></span><span class="num">−300,00</span></div>
+              <div class="line"><span>Dépôt #4417 <span class="meta">sans ligne au relevé</span></span><span class="num">+2 908,00</span></div>
+              <div class="line"><span class="meta">Rien pour −1 285,43</span><button class="btn">Créer</button></div>
+            </div>
+          </div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+          <button class="btn">Séparer</button><button class="btn primary">Lier les deux</button>
+        </div>
+      </div></div></div>
+    </section>
+
+  </div>
+</div>
+
+</body></html>

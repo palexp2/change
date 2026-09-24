@@ -8,8 +8,11 @@
 //   3. péremption des propositions devenues sans objet sur la même ligne ;
 //   4. en cas d'échec, retour à « proposée » avec le message — rien n'est perdu.
 import db from '../../db/database.js'
+import { alignReceiptDate } from '../receiptBankDate.js'
 import { refreshStatuses } from '../bankReconciliation.js'
+import { touchBankTxns } from '../realtimeEmitters.js'
 import { decode } from './store.js'
+import { PUBLISHES_TO_QB } from './model.js'
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 
@@ -32,6 +35,7 @@ function applyQbLink(p) {
   `).run(entity || null, String(qbId), delta ?? null,
     method === 'autre_compte' ? (accountName || null) : null, rate || null, p.bank_txn_id)
   if (!res.changes) throw new ProposalError('Transaction introuvable', 404)
+  touchBankTxns([p.bank_txn_id])
   return { qb_txn_id: String(qbId), qb_txn_type: entity || null }
 }
 
@@ -80,6 +84,10 @@ function applyDocMatch(p) {
   // La garde `matched_id IS NULL` rejoue la validation au moment d'écrire :
   // la ligne a pu être appariée à la main entre-temps.
   if (!res.changes) throw new ProposalError('Cette ligne vient d\'être liée ailleurs', 409)
+  // La date comptable du document suit le débit.
+  if (type === 'receipt') {
+    try { alignReceiptDate(String(id)) } catch (e) { console.warn('alignReceiptDate:', e.message) }
+  }
   return { matched_type: type, matched_id: String(id) }
 }
 
@@ -121,8 +129,9 @@ const APPLIERS = {
 }
 
 // Les natures dont l'acceptation écrit dans QuickBooks. Aucune n'est jamais
-// appliquée sans geste humain — c'est l'invariant du moteur.
-export const PUBLISHES_TO_QB = new Set(['aga_repartition', 'vendor_expense'])
+// appliquée sans geste humain — c'est l'invariant du moteur. La liste vit dans
+// model.js (pur) ; elle est ré-exportée ici pour les appelants historiques.
+export { PUBLISHES_TO_QB }
 
 export function getProposal(id) {
   return decode(db.prepare('SELECT * FROM bank_proposals WHERE id=?').get(id))
@@ -151,6 +160,8 @@ export async function acceptProposal(id, userId) {
       WHERE bank_txn_id=? AND id!=? AND status='proposee'
     `).run(p.bank_txn_id, id)
     refreshStatuses(accountOf(p.bank_txn_id))
+    // La ligne vient de changer d'état : le fichier de suivi doit suivre.
+    import('../trxSheetMirror.js').then((m) => m.mirrorOnChange('proposition')).catch(() => {})
     return { ...getProposal(id), result }
   } catch (e) {
     db.prepare(`UPDATE bank_proposals SET status='proposee', decided_at=NULL, decided_by=NULL, last_error=?, updated_at=${NOW} WHERE id=?`)

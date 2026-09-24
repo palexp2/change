@@ -4,6 +4,20 @@ import { newRecordId } from '../utils/recordId.js'
 const fields = ['line1', 'city', 'province', 'postal_code', 'country']
 const normalized = (address, field) => String(address?.[field] || (field === 'country' ? 'Canada' : '')).trim().toLowerCase()
 
+// Adresse née dans Boréal : son équivalent déjà présent dans Airtable (même
+// entreprise, même code postal, même numéro civique), pour que la commande y
+// soit liée — Airtable ne connaît pas les adresses créées ici.
+const compact = v => String(v || '').toLowerCase().replace(/[^a-z0-9]/g, '')
+const streetNumber = v => String(v || '').trim().match(/^\d+/)?.[0] || ''
+export function airtableTwinAddress(address) {
+  if (!address?.id || address.airtable_id || !address.company_id) return address
+  const postal = compact(address.postal_code), number = streetNumber(address.line1)
+  if (!postal || !number) return address
+  const twin = db.prepare('SELECT * FROM adresses WHERE company_id=? AND airtable_id IS NOT NULL AND id<>?').all(address.company_id, address.id)
+    .find(a => compact(a.postal_code) === postal && streetNumber(a.line1) === number)
+  return twin || address
+}
+
 // Retrouver les réponses exactes, sans remplacer l'adresse d'un autre site
 // ni modifier une adresse déjà utilisée par une commande antérieure.
 export function discoveryAddresses(row, { persist = false } = {}) {

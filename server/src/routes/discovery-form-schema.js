@@ -97,7 +97,7 @@ function visibleIf(v) {
 // formulaire public (qui, lui, retombe sur ses defaults clé par clé).
 function sanitize(input) {
   const src = input && typeof input === 'object' ? input : {}
-  const out = { images: {}, texts: {}, choices: {}, brands: null, hidden: {}, custom: [], equipment: { products: {} } }
+  const out = { images: {}, texts: {}, choices: {}, hidden: {}, custom: [], equipment: { products: {} } }
 
   for (const [, id] of QUESTION_IMAGES) {
     const image = normalizeQuestionImage(src.images?.[id])
@@ -122,15 +122,6 @@ function sanitize(input) {
           : null)))
       .filter(Boolean)
     if (opts.length) out.choices[k] = opts
-  }
-  if (Array.isArray(src.brands)) {
-    const brands = src.brands
-      .filter(b => b && str(b.brand) && b.brand.trim() !== '')
-      .map(b => ({
-        brand: String(b.brand).trim(),
-        models: Array.isArray(b.models) ? b.models.map(m => String(m).trim()).filter(Boolean) : [],
-      }))
-    out.brands = brands.length ? brands : null
   }
   for (const [k, v] of Object.entries(src.hidden || {})) {
     if (v) out.hidden[k] = true
@@ -179,7 +170,7 @@ router.get('/', (req, res) => {
   let schema = null
   if (row?.schema_json) { try { schema = JSON.parse(row.schema_json) } catch { schema = null } }
   res.json({
-    schema: schema || { texts: {}, choices: {}, brands: null, hidden: {}, custom: [], equipment: { products: {} } },
+    schema: schema || { texts: {}, choices: {}, hidden: {}, custom: [], equipment: { products: {} } },
     updated_at: row?.updated_at || null,
     updated_by: row?.updated_by || null,
   })

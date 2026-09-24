@@ -1,7 +1,10 @@
 // Parcours public avec réponses API simulées : aucun enregistrement de production.
-const { test, before, after } = require('node:test')
+const { test, before, after, describe } = require('node:test')
 const assert = require('node:assert/strict')
 const { chromium } = require('playwright')
+// Enveloppé dans describe : sous Node 18, un after() de premier niveau n'est joué
+// qu'une fois la boucle vide — un navigateur ouvert l'en empêche, le test pend.
+describe('discovery-form-question-pages', () => {
 const URL = process.env.ERP_URL || 'http://localhost:3004/erp'
 let browser
 before(async () => { browser = await chromium.launch({ headless: true }) })
@@ -156,7 +159,7 @@ test('détails de chaque équipement et questions conditionnelles, sur mobile', 
     is_new_site: 'add_to_existing', within_central_controller_range: true, shipping_address: { line1: '10 rue Test', province: 'QC' }, num_greenhouses: 2,
     form_options: { humidity_retention: true },
     greenhouses: [
-      { permission_level: 'chief_grower', length_range: 'up_to_200', has_side_vents: true, num_side_vent_motors: 2, side_pipe_type: 'steel_O', guide_pipes_state: 'present', has_existing_side_vent_motors: true, num_fans: '2', has_louvers: true, louvers: [{ voltage: 'other', voltage_other: '240 V', control_type: 'open_close', has_fan: true }, { voltage: '24', control_type: 'spring_loaded', has_fan: false }], humidity_valve: false, humidity_haf: true, humidity_haf_count: 2, has_furnaces: true, num_furnaces: 2, furnaces: [{ brand: 'Modine', model: 'PDP' }, { brand: 'Autre', model: 'Autre' }], irrigation_zones: 2, needs_orisha_valves: false },
+      { permission_level: 'chief_grower', length_range: 'up_to_200', has_side_vents: true, num_side_vent_motors: 2, side_pipe_type: 'steel_O', guide_pipes_state: 'present', has_existing_side_vent_motors: true, num_fans: '2', has_louvers: true, louvers: [{ voltage: 'other', voltage_other: '240 V', control_type: 'open_close', has_fan: true }, { voltage: '24', control_type: 'spring_loaded', has_fan: false }], humidity_valve: false, humidity_haf: true, humidity_haf_count: 2, has_furnaces: true, num_furnaces: 2, furnaces: [{ dry_contact_24v: 'unknown', brand: 'Modine', model: 'PDP' }, { dry_contact_24v: 'yes' }], irrigation_zones: 2, needs_orisha_valves: false },
       { permission_level: 'helper', has_side_vents: false, has_louvers: false, humidity_valve: false, humidity_haf: false },
     ],
   }, schema: { custom: [
@@ -165,8 +168,10 @@ test('détails de chaque équipement et questions conditionnelles, sur mobile', 
   ] } })
   // Le formulaire reprend à la première question sans réponse : on remonte au
   // début pour dérouler le parcours complet.
+  // La première page ne porte pas de bouton « Précédent » : son absence est la
+  // fin de la remontée (l'attendre activé expirerait).
   const previous = page.getByRole('button', { name: 'Précédent', exact: true })
-  while (await previous.isEnabled()) {
+  while (await previous.count()) {
     const id = await current(page)
     await previous.click()
     await page.waitForFunction(x => document.querySelector('[data-question-page]')?.dataset.questionPage !== x, id)
@@ -188,7 +193,7 @@ test('détails de chaque équipement et questions conditionnelles, sur mobile', 
     await answerIfBlocked(page)
     await next(page)
   }
-  for (const id of ['motor_brand', 'motor_model', 'louver:0:type', 'louver:1:fan', 'furnace:0:brand', 'furnace:1:model_other', 'haf_count', 'valve_wire', 'valve_model', 'custom:sides', 'custom:chief']) assert.ok(visited.includes(`greenhouse:0:${id}`), `page manquante : ${id}`)
+  for (const id of ['motor_brand', 'motor_model', 'louver:0:type', 'louver:1:fan', 'furnace:0:dry_contact', 'furnace:0:brand', 'furnace:0:model', 'furnace:1:dry_contact', 'haf_count', 'valve_wire', 'valve_model', 'custom:sides', 'custom:chief']) assert.ok(visited.includes(`greenhouse:0:${id}`), `page manquante : ${id}`)
   assert.ok(visited.indexOf('greenhouse:0:side_vents') < visited.indexOf('greenhouse:0:length_range'))
   assert.equal(visited[visited.indexOf('greenhouse:0:side_vents') + 1], 'greenhouse:0:existing_motors')
   for (const id of ['side_vent_height', 'side_pipe_type', 'side_pipe_diameter', 'side_pipe_diameter:other']) assert.ok(!visited.includes(`greenhouse:0:${id}`), `question inutile avec moteurs existants : ${id}`)
@@ -258,7 +263,7 @@ test('type de louvre : les combinaisons en images, « autre » sauvegardé et so
 
 for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 }]) {
   test(`fournaises : trois images, détails et sauvegarde (${viewport.width}px)`, async t => {
-    const firstFurnace = { brand: 'Modine', model: 'Existant', control_wire_feet: '25', backup_thermostat: true }
+    const firstFurnace = { dry_contact_24v: 'yes', control_wire_feet: '25', backup_thermostat: true }
     const { page, state } = await openForm(t, { viewport, response: {
       is_new_site: 'add_to_existing', within_central_controller_range: true,
       shipping_address: { line1: '10 rue Test', province: 'QC' },
@@ -285,14 +290,14 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
 
     await page.screenshot({ path: `/tmp/erp-furnaces-${viewport.width}.png` })
     await choose('2')
-    await next(page, 'greenhouse:0:furnace:0:brand')
+    await next(page, 'greenhouse:0:furnace:0:dry_contact')
     assert.equal(state.response.greenhouses[0].has_furnaces, true)
     assert.equal(state.response.greenhouses[0].num_furnaces, 2)
     assert.deepEqual(state.response.greenhouses[0].furnaces, [firstFurnace, {}])
     await back(page, 'greenhouse:0:furnaces')
     assert.equal(await page.getByRole('radio', { name: '2', exact: true }).isChecked(), true)
     await choose('1')
-    await next(page, 'greenhouse:0:furnace:0:brand')
+    await next(page, 'greenhouse:0:furnace:0:dry_contact')
     assert.equal(state.response.greenhouses[0].num_furnaces, 1)
     assert.deepEqual(state.response.greenhouses[0].furnaces, [firstFurnace])
     await back(page, 'greenhouse:0:furnaces')
@@ -316,7 +321,7 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
     await page.getByRole('radio', { name: 'Aucune', exact: true }).focus()
     await page.keyboard.press('ArrowRight')
     assert.equal(await page.getByRole('radio', { name: '1', exact: true }).isChecked(), true)
-    await next(page, 'greenhouse:0:furnace:0:brand')
+    await next(page, 'greenhouse:0:furnace:0:dry_contact')
     assert.deepEqual(state.response.greenhouses[0].furnaces, [{}])
   })
 }
@@ -327,7 +332,9 @@ for (const zones of [4, 5, 9]) {
       is_new_site: 'add_to_existing', within_central_controller_range: true,
       shipping_address: { line1: '10 rue Test', province: 'QC' },
       valve_blocks_needed: Math.max(0, Math.ceil((zones - 4) / 4)), valve_blocks_paid: false,
-      greenhouses: [{ permission_level: 'chief_grower', has_side_vents: false, num_fans: '0', has_louvers: false, has_furnaces: false, irrigation_zones: zones, needs_orisha_valves: true, valve_control_wire_feet: '25' }],
+      // Au-delà de 4 zones, il faut des permissions Irrigation.
+      form_options: { additional_equipment: [{ valves: 2 }] },
+      greenhouses: [{ permission_level: 'chief_grower', has_side_vents: false, num_fans: '0', has_louvers: false, has_furnaces: false, irrigation_zones: zones, needs_orisha_valves: true, orisha_valves_count: 1, valve_control_wire_feet: '25' }],
     } })
     const checkoutRequests = []
     page.on('request', request => { if (request.url().includes('valve-blocks-checkout')) checkoutRequests.push(request.url()) })
@@ -343,9 +350,6 @@ for (const zones of [4, 5, 9]) {
       visited.push(id)
       assert.ok(visited.length < 60)
       assert.notEqual(id, 'valve_payment')
-      if (id === 'greenhouse:0:irrigation_zones') {
-        assert.equal(await page.getByText('Un vendeur vous contactera pour vos zones d’irrigation supplémentaires.', { exact: true }).count(), zones > 4 ? 1 : 0)
-      }
       await answerIfBlocked(page)
       await next(page)
     }
@@ -354,7 +358,52 @@ for (const zones of [4, 5, 9]) {
     await page.getByRole('heading', { name: 'Informations enregistrées' }).waitFor()
     assert.equal(state.submitted, true)
     assert.equal(state.response.greenhouses[0].irrigation_zones, zones)
-    assert.equal(await page.getByText('Un vendeur vous contactera pour vos zones d’irrigation supplémentaires.', { exact: true }).count(), zones > 4 ? 1 : 0)
     assert.deepEqual(checkoutRequests, [])
   })
 }
+
+
+test('permissions supplémentaires : plafonds relevés, rien d’ajouté d’office, Helper questionné', async t => {
+  const { page, state } = await openForm(t, { viewport: { width: 390, height: 844 }, response: {
+    is_new_site: 'add_to_existing', within_central_controller_range: true,
+    shipping_address: { line1: '10 rue Test', province: 'QC' }, num_greenhouses: 2,
+    // Chef : Chauffage ×1 (4 fournaises), Irrigation ×1 (8 valves). Helper : Chauffage ×1, Toits ×2.
+    form_options: { additional_equipment: [{ furnaces: 1, valves: 1, rollups: 0, roofs: 0 }, { furnaces: 1, valves: 0, rollups: 0, roofs: 2 }] },
+    greenhouses: [
+      { permission_level: 'chief_grower', has_side_vents: false, num_side_vent_motors: 0, num_fans: '0', has_louvers: false },
+      { permission_level: 'helper', has_side_vents: false, num_side_vent_motors: 0 },
+    ],
+  } })
+  const previous = page.getByRole('button', { name: 'Précédent', exact: true })
+  while (await previous.count()) {
+    const id = await current(page)
+    await previous.click()
+    await page.waitForFunction(x => document.querySelector('[data-question-page]')?.dataset.questionPage !== x, id)
+  }
+  const visited = []
+  for (let i = 0; i < 120 && await current(page) !== 'submit'; i++) {
+    const id = await current(page)
+    visited.push(id)
+    if (id === 'greenhouse:0:furnaces') await page.getByRole('spinbutton', { name: 'Fournaises', exact: true }).fill('3')
+    else if (id === 'greenhouse:0:irrigation_zones') await page.getByRole('spinbutton', { name: 'Valves', exact: true }).fill('7')
+    else if (id === 'greenhouse:0:orisha_valves') {
+      await page.locator('[data-question-page] input[type=radio]').first().check({ force: true })
+      await page.locator('[data-question-page] input[type=radio]').last().check({ force: true })
+    } else if (id === 'greenhouse:1:roof_present') {
+      await page.getByRole('radio', { name: 'Oui', exact: true }).check({ force: true })
+      await page.locator('[data-question-page] input[type=number]').fill('2')
+    } else await answerIfBlocked(page)
+    await next(page)
+  }
+  assert.equal(await current(page), 'submit')
+  assert.ok(visited.includes('greenhouse:1:furnaces'), 'Helper avec permission Chauffage')
+  assert.ok(visited.includes('greenhouse:1:roof_voltage'), 'Helper avec permission Toits ouvrants')
+  assert.ok(!visited.includes('greenhouse:1:irrigation_zones'), 'Helper sans permission Irrigation')
+  assert.equal(state.response.greenhouses[0].num_furnaces, 3)
+  assert.equal(state.response.greenhouses[0].furnaces.length, 3)
+  assert.equal(state.response.greenhouses[0].irrigation_zones, 7)
+  assert.equal(state.response.greenhouses[1].num_roof_vents, 2)
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true)
+  await page.screenshot({ path: '/tmp/discovery-additional-equipment-mobile.png', fullPage: true })
+})
+})

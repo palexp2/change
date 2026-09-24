@@ -1,4 +1,6 @@
+import { shutdownScriptRuntime } from './services/scriptSandbox.js'
 import express from 'express'
+import { requireAuth } from './middleware/auth.js'
 import cors from 'cors'
 import helmet from 'helmet'
 import path from 'path'
@@ -58,14 +60,19 @@ import shipmentsRouter from './routes/shipments.js'
 import automationsRouter from './routes/automations.js'
 import tasksRouter from './routes/tasks.js'
 import agentRouter from './routes/agent.js'
+import aiUsageRouter from './routes/aiUsage.js'
 import travauxRouter from './routes/travaux.js'
 import achatsFournisseursRouter from './routes/achats-fournisseurs.js'
 import vendorSubscriptionsRouter from './routes/vendor-subscriptions.js'
 import vendorProfilesRouter from './routes/vendor-profiles.js'
+import paymentCardsRouter from './routes/payment-cards.js'
 import treasuryRouter from './routes/treasury.js'
 import bankRouter from './routes/bank.js'
 import bankRulesRouter from './routes/bankRules.js'
+import bankStatementsRouter from './routes/bankStatements.js'
 import plaidRouter, { plaidWebhookRouter } from './routes/plaid.js'
+import vennRouter from './routes/venn.js'
+import qbWebhookRouter from './routes/quickbooks-webhook.js'
 import prepaidRouter from './routes/prepaid.js'
 import ltDebtsRouter from './routes/lt-debts.js'
 import marketingBudgetRouter from './routes/marketing-budget.js'
@@ -76,6 +83,7 @@ import monthEndRouter from './routes/month-end.js'
 import deferredRevenueRouter from './routes/deferred-revenue.js'
 import driveInventoryRouter from './routes/drive-inventory.js'
 import mapaqRouter from './routes/mapaq.js'
+import clientMapRouter from './routes/clientMap.js'
 import employeesRouter from './routes/employees.js'
 import vacationsRouter from './routes/vacations.js'
 import qualificationCallsRouter from './routes/qualification-calls.js'
@@ -88,11 +96,13 @@ import activityCodesRouter from './routes/activity-codes.js'
 import opsIssuesRouter from './routes/ops-issues.js'
 import saleReceiptsRouter from './routes/sale-receipts.js'
 import anomaliesRouter from './routes/anomalies.js'
+import auditRouter from './routes/audit.js'
 import changelogRouter from './routes/changelog.js'
 import { runAnomalyScan, runQbLinkVerification } from './services/transactionAnomalies.js'
 import attachmentsRouter from './routes/attachments.js'
 import journalEntriesRouter from './routes/journal-entries.js'
 import stockMovementsRouter from './routes/stock-movements.js'
+import fournituresRouter from './routes/fournitures.js'
 import stripeWebhooksRouter from './routes/stripe-webhooks.js'
 import hooksRouter from './routes/hooks.js'
 import instagramRouter from './routes/instagram.js'
@@ -101,6 +111,7 @@ import stripeSubscriptionsRouter from './routes/stripe-subscriptions.js'
 import customerPayRouter from './routes/customer-pay.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
 import discoveryFormsRouter from './routes/discovery-forms.js'
+import { retryPendingDiscoveryOrders } from './services/discoveryOrderAirtable.js'
 import discoveryFormSchemaRouter from './routes/discovery-form-schema.js'
 import emailTrackingRouter from './routes/email-tracking.js'
 import stripeQueueRouter from './routes/stripe-queue.js'
@@ -128,7 +139,7 @@ import { initScheduler } from './services/automationScheduler.js'
 import { syncAllMailboxes } from './services/gmail.js'
 import { syncCompanies, syncContacts, syncProjets, syncPieces, syncOrders, syncOrderItems, syncAchats, syncBillets, syncSerials, syncEnvois, syncSoumissions, syncRetours, syncRetourItems, syncAdresses, syncBomItems, syncSerialStateChanges, syncAssemblages, syncStockMovements, syncEmployees, syncPaies, syncPaieItems } from './services/airtable.js'
 import { tracked } from './services/syncState.js'
-import { routeSync } from './services/airtableMirrorEngine.js'
+import { routeSync, ENGINE_ONLY_SYNCS } from './services/airtableMirrorEngine.js'
 import { syncStripeSubscriptions, isStripeConfigured } from './services/stripe.js'
 import { syncAndPushStripePayouts, getStripePayoutPushConfig, importFromQB } from './services/quickbooks.js'
 import cron from 'node-cron'
@@ -173,6 +184,14 @@ app.use((req, res, next) => {
     origin: (o, cb) => {
       if (!o) return cb(null, true) // same-origin direct / curl / server-to-server
       if (allowedOrigins.includes(o)) return cb(null, true)
+      // Module Chrome « pont de session » (browser-extension/) : il envoie les
+      // cookies d'un portail fournisseur depuis le navigateur de l'utilisateur.
+      // Son origine est chrome-extension://<id>, imprévisible et impossible à
+      // whitelister ; l'accès reste gardé par le jeton d'authentification, et
+      // la permission ne vaut QUE pour ces routes-là.
+      if (o.startsWith('chrome-extension://') && req.url.includes('/scrapers/session-bridge/')) {
+        return cb(null, true)
+      }
       // Same-host (origin host matches request Host header) — accept.
       try {
         const u = new URL(o)
@@ -217,6 +236,19 @@ app.use('/api/plaid/webhook', express.raw({ type: 'application/json' }), (req, r
   next()
 }, plaidWebhookRouter)
 
+// Avis instantanés de QuickBooks : `intuit-signature` = HMAC-SHA256 du corps
+// BRUT, même contrainte que Stripe et Plaid.
+//
+// `type: () => true` et NON `'application/json'` : Intuit envoie parfois un
+// Content-Type avec charset, ou vide. express.raw laisserait alors `req.body`
+// à `{}`, le corps brut serait vide et la signature échouerait EN SILENCE —
+// c'est le mode d'échec le plus probable de ce montage.
+app.use('/api/quickbooks/webhook', express.raw({ type: () => true }), (req, res, next) => {
+  req.rawBody = req.body
+  try { req.body = JSON.parse(req.body) } catch { req.body = {} }
+  next()
+}, qbWebhookRouter)
+
 app.use(express.json({ limit: '10mb' }))
 app.use(express.urlencoded({ extended: true }))
 
@@ -237,15 +269,15 @@ app.get('/api/health', (req, res) => {
 })
 
 // Serve call recordings
-app.use('/api/recordings', express.static(uploadsPath('calls')))
+app.use('/api/recordings', requireAuth, express.static(uploadsPath('calls')))
 // Serve bons de livraison
-app.use('/api/bons-livraison', express.static(uploadsPath('bons-livraison')))
+app.use('/api/bons-livraison', requireAuth, express.static(uploadsPath('bons-livraison')))
 // Serve product images
 app.use('/api/product-images', express.static(uploadsPath('products')))
 // Serve product installation/replacement PDFs (cached copies of lien_pdf_*)
 app.use('/api/product-docs', express.static(uploadsPath('products', 'docs')))
-// Serve record attachments
-app.use('/api/attachments', express.static(uploadsPath('attachments')))
+// Airtable image mirror requires a session; other private attachments use download routers.
+app.use('/api/attachments/airtable', requireAuth, express.static(uploadsPath('attachments', 'airtable')))
 
 import { ensureNativeFieldDefs } from './services/airtableAutoSync.js'
 import { regenerateAllViews } from './services/customFieldsView.js'
@@ -416,15 +448,20 @@ app.use('/api/hooks', hooksRouter)
 app.use('/api/instagram', instagramRouter)
 app.use('/api/tasks', tasksRouter)
 app.use('/api/agent', agentRouter)
+app.use('/api/ai-usage', aiUsageRouter)
 app.use('/api/travaux', travauxRouter)
 app.use('/api/achats-fournisseurs', achatsFournisseursRouter)
 app.use('/api/vendor-subscriptions', vendorSubscriptionsRouter)
 app.use('/api/vendor-profiles', vendorProfilesRouter)
+app.use('/api/payment-cards', paymentCardsRouter)
 app.use('/api/treasury', treasuryRouter)
-// Les règles bancaires avant le routeur général : /api/bank/rules lui est propre.
+// Les règles bancaires et le dépôt de relevés avant le routeur général :
+// /api/bank/rules et /api/bank/statements leur sont propres.
 app.use('/api/bank/rules', bankRulesRouter)
+app.use('/api/bank/statements', bankStatementsRouter)
 app.use('/api/bank', bankRouter)
 app.use('/api/plaid', plaidRouter)
+app.use('/api/venn', vennRouter)
 app.use('/api/prepaid', prepaidRouter)
 app.use('/api/lt-debts', ltDebtsRouter)
 app.use('/api/marketing-budget', marketingBudgetRouter)
@@ -435,14 +472,17 @@ app.use('/api/month-end', monthEndRouter)
 app.use('/api/deferred-revenue', deferredRevenueRouter)
 app.use('/api/drive-inventory', driveInventoryRouter)
 app.use('/api/mapaq', mapaqRouter)
+app.use('/api/client-map', clientMapRouter)
 app.use('/api/sale-receipts', saleReceiptsRouter)
 app.use('/api/anomalies', anomaliesRouter)
+app.use('/api/audit', auditRouter)
 app.use('/api/changelog', changelogRouter)
 // Pièces jointes polymorphes (toute entité). Le static '/api/attachments'
 // (ligne ~189) sert les fichiers bruts ; ce router gère list/upload/download/delete.
 app.use('/api/attachments', attachmentsRouter)
 app.use('/api/journal-entries', journalEntriesRouter)
 app.use('/api/stock-movements', stockMovementsRouter)
+app.use('/api/fournitures', fournituresRouter)
 app.use('/api/stripe-queue', stripeQueueRouter)
 app.use('/api/stripe-invoices', stripeInvoicesRouter)
 app.use('/api/stripe-subscriptions', stripeSubscriptionsRouter)
@@ -638,6 +678,7 @@ const server = app.listen(PORT, () => {
       // des items) — sans ce filet elles restaient périmées entre deux syncs
       // manuels, et des remboursements manquaient à la publication QB.
       ['employees', syncEmployees], ['paies', syncPaies], ['paie_items', syncPaieItems],
+      ...Object.entries(ENGINE_ONLY_SYNCS),
     ]
     // Même aiguillage que le routeur de webhooks : un module basculé sur le
     // moteur unique y part aussi pour le sync de rattrapage quotidien, sinon les
@@ -665,6 +706,15 @@ const server = app.listen(PORT, () => {
   // Appels orphelins → contacts : toutes les heures (détaché du sync Gmail).
   setTimeout(scheduleCallRematch, 45_000)
   setInterval(scheduleCallRematch, 60 * 60 * 1000)
+
+  // Commandes System Builder : le bouton crée la commande dans Boréal seulement,
+  // l'envoi à Airtable suit en arrière-plan. Ce battement reprend ce qui manque
+  // (commande ou articles sans jumeau Airtable), avec un délai croissant par commande.
+  const scheduleDiscoveryOrderRetry = () => {
+    retryPendingDiscoveryOrders().catch(e => console.error('System Builder retry:', e.message))
+  }
+  setTimeout(scheduleDiscoveryOrderRetry, 60_000)
+  setInterval(scheduleDiscoveryOrderRetry, 5 * 60 * 1000)
 
   // Comptes prépayés : détection des transactions QB des fournisseurs suivis
   // (recharges/factures Twilio…) — toutes les 6 h. logSync interne au service.
@@ -972,6 +1022,13 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('treasury cron:', e.message))
   })
 
+  // Le Sheet du solde BNC est désormais entretenu depuis la projection Boréal.
+  const mirrorTreasurySheet = () => import('./services/treasurySheetMirror.js')
+    .then(({ syncTreasuryMirror }) => syncTreasuryMirror())
+    .catch(e => console.error('treasury sheet mirror:', e.message))
+  cron.schedule('*/20 * * * *', mirrorTreasurySheet)
+  setTimeout(mirrorTreasurySheet, 160_000)
+
   // Sync du Google Sheet « Maintien du solde disponible BNC » vers la projection
   // de trésorerie (le fichier fait foi) : toutes les 60 min, à l'heure pile.
   // Cron plutôt que setInterval — l'intervalle repartait de zéro à chaque
@@ -1017,20 +1074,58 @@ const server = app.listen(PORT, () => {
   setTimeout(runQbClearSync, 210_000)
   setInterval(runQbClearSync, 60 * 60 * 1000)
 
-  // Sync aux 20 minutes du fichier TRX_Orisha (relevés des 11 comptes bancaires)
-  // vers le rapprochement bancaire : import des nouvelles transactions, matching
-  // auto, liaison QuickBooks et audit d'anomalies (alerte Slack sur du neuf).
-  // Coupe-circuit si l'automation sys_bank_trx_sheet est désactivée ;
-  // journalise lui-même chaque passage (sync_log + automation_logs). Un passage
-  // plus long que l'intervalle ne se chevauche pas : scheduledTrxSheetSync
-  // ignore l'appel si la sync précédente tourne encore.
-  const runTrxSheetSync = () => {
-    import('./services/bankTrxSheet.js')
-      .then(({ scheduledTrxSheetSync }) => scheduledTrxSheetSync())
-      .catch(e => console.error('trx sheet sync:', e.message))
+  // Vérification QuickBooks du rapprochement — LE moteur unique depuis le
+  // 2026-09-15 (services/bankQbVerify.js). Il remplace à lui seul la sync
+  // entrante du fichier TRX_Orisha et l'audit des comptes Plaid, qui
+  // reconstruisaient le MÊME index de grand livre à trente secondes
+  // d'intervalle : ~72 rapports par heure, désormais 12. Filet horaire sur une
+  // fenêtre glissante ; le passage profond (tout l'historique, effacement des
+  // liens morts) tourne une fois par jour. La détection immédiate, elle, vient
+  // des avis de QuickBooks (routes/quickbooks-webhook.js).
+  // Interrogation rapprochée de QuickBooks : « qu'est-ce qui a changé depuis
+  // 30 secondes ? ». Un seul appel, et le changement trouvé suit exactement le
+  // même chemin qu'un avis reçu d'Intuit. Coupe-circuit : sys_qb_change_poll.
+  const runQbChangePoll = () => {
+    import('./services/qbChangePoll.js')
+      .then(({ pollQbChanges }) => pollQbChanges())
+      .catch(e => console.error('qb change poll:', e.message))
   }
-  setTimeout(runTrxSheetSync, 240_000)
-  setInterval(runTrxSheetSync, 20 * 60 * 1000)
+  setTimeout(runQbChangePoll, 90_000)
+  setInterval(runQbChangePoll, 30 * 1000)
+
+  const runQbVerify = () => {
+    import('./services/bankQbVerify.js')
+      .then(({ scheduledQbVerify }) => scheduledQbVerify({ trigger: 'planifie' }))
+      .catch(e => console.error('bank qb verify:', e.message))
+  }
+  setTimeout(runQbVerify, 240_000)
+  setInterval(runQbVerify, 60 * 60 * 1000)
+
+  cron.schedule('0 6 * * *', () => {
+    import('./services/bankQbVerify.js')
+      .then(({ scheduledQbVerify }) => scheduledQbVerify({ deep: true, trigger: 'cron quotidien' }))
+      .catch(e => console.error('bank qb verify (profond):', e.message))
+    import('./routes/quickbooks-webhook.js')
+      .then(({ purgeOldWebhookEvents }) => purgeOldWebhookEvents(30))
+      .catch(e => console.error('purge avis quickbooks:', e.message))
+  })
+
+  // Le sens inverse : Boreal recopie le rapprochement dans un classeur Google,
+  // couleurs comprises. Décalé de 5 min de la sync entrante pour que le miroir
+  // reflète ce qui vient d'arriver. Coupe-circuit : sys_trx_sheet_mirror,
+  // éteinte tant que Charles n'a pas demandé la création du classeur.
+  const runTrxSheetMirror = () => {
+    import('./services/trxSheetMirror.js')
+      .then(({ syncMirror }) => syncMirror({ trigger: 'planifie' }))
+      .catch(e => console.error('trx sheet mirror:', e.message))
+  }
+  setTimeout(runTrxSheetMirror, 540_000)
+  setInterval(runTrxSheetMirror, 20 * 60 * 1000)
+  // Et l'inverse : une modification faite au fichier (commentaire de Michel)
+  // revient dans Boréal en moins d'une demi-minute.
+  import('./services/trxSheetMirror.js')
+    .then(({ watchFileEdits }) => watchFileEdits())
+    .catch(e => console.error('trx sheet watch:', e.message))
 
   // Une banque qui se tait ne fait aucun bruit : ni erreur, ni écran rouge,
   // juste plus de transactions. Trois passages par jour suffisent à s'en
@@ -1052,19 +1147,22 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('plaid sync:', e.message))
   }
   setTimeout(runPlaidSync, 120_000)
-  setInterval(runPlaidSync, 30 * 60 * 1000)
+  // 10 min (choix de Charles, 2026-09-19) : le solde du compte de projection ne
+  // vient plus que de là et la lecture ne coûte rien de plus (aucun appel au
+  // produit Balance, facturé à l'appel).
+  setInterval(runPlaidSync, 10 * 60 * 1000)
 
-  // Vérification QuickBooks des comptes Plaid (BNC) — remplace pour eux le
-  // rôle de l'audit TRX_Orisha ci-dessus (voir services/plaidQbAudit.js).
-  // Coupe-circuit si sys_plaid_qb_audit est désactivée.
-  const runPlaidQbAudit = () => {
-    if (!isSystemAutomationActive('sys_plaid_qb_audit')) return
-    import('./services/plaidQbAudit.js')
-      .then(({ scheduledPlaidQbAudit }) => scheduledPlaidQbAudit())
-      .catch(e => console.error('plaid qb audit:', e.message))
-  }
-  setTimeout(runPlaidQbAudit, 270_000)
-  setInterval(runPlaidQbAudit, 20 * 60 * 1000)
+  // Lecture Venn planifiée — une fois par jour (5 h UTC = 1 h à Montréal), sur
+  // les comptes Venn CAD et Venn USD reliés depuis /connecteurs. Venn ne
+  // prévient pas l'ERP : ce passage est le SEUL chemin automatique. Relire une
+  // fenêtre large ne coûte rien, la dédup est portée par l'identifiant de
+  // transaction de Venn. Coupe-circuit si sys_venn_sync est désactivée.
+  cron.schedule('0 5 * * *', () => {
+    if (!isSystemAutomationActive('sys_venn_sync')) return
+    import('./services/vennSync.js')
+      .then(({ scheduledVennSync }) => scheduledVennSync({ trigger: 'scheduled' }))
+      .catch(e => console.error('venn sync:', e.message))
+  })
 
   // Sync quotidienne de l'onglet « Fournisseurs_TPS_TVQ_Anomalies » (Sheet du
   // mentor comptable) vers les profils fournisseurs : chaque correction de
@@ -1126,6 +1224,17 @@ const server = app.listen(PORT, () => {
       const res = await runBankEngine({})
       if (res.produced) console.log('bankEngine:', res.summary)
     } catch (e) { console.error('bankEngine cron:', e.message) }
+  })
+
+  // Contrôles comptables : une passe par jour, à distance du passage profond de
+  // 6 h et du moteur de 9 h pour ne pas lire le grand livre en même temps
+  // qu'eux. Silencieux — les constatations attendent sur le tableau de bord.
+  cron.schedule('0 14 * * *', async () => {
+    try {
+      const { scheduledAudit } = await import('./services/audit/index.js')
+      const res = await scheduledAudit({ trigger: 'planifie' })
+      if (res?.found) console.log('audit:', res.summary)
+    } catch (e) { console.error('audit cron:', e.message) }
   })
 
   // DigiKey : rapatriement des commandes et de leurs factures PDF, une fois par
@@ -1207,6 +1316,14 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('manychat sync cron:', e.message))
   })
 
+  // Instagram : tri par type de demande, juste avant l'écriture — un message
+  // écrit sans savoir ce que la personne demande tombe à côté.
+  cron.schedule('30 9,10 * * *', () => {
+    import('./services/instagramSegments.js')
+      .then(({ runSegmentation }) => runSegmentation({ trigger: 'cron quotidien' }))
+      .catch(e => console.error('instagram segmentation cron:', e.message))
+  })
+
   // Instagram : écriture des messages d'avance, tous les matins après la
   // lecture de ManyChat. Deux heures UTC pour couvrir l'été et l'hiver.
   cron.schedule('0 10,11 * * *', () => {
@@ -1265,7 +1382,7 @@ const server = app.listen(PORT, () => {
 })
 
 // Kill Claude process on shutdown so pm2 restart doesn't leave orphans
-process.on('SIGINT',  () => { shutdownTaskRunner(); process.exit(0) })
-process.on('SIGTERM', () => { shutdownTaskRunner(); process.exit(0) })
+process.on('SIGINT',  () => { shutdownScriptRuntime(); shutdownTaskRunner(); process.exit(0) })
+process.on('SIGTERM', () => { shutdownScriptRuntime(); shutdownTaskRunner(); process.exit(0) })
 
 export default app

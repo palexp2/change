@@ -274,6 +274,11 @@ export const COMPANIES_FIELD_MAP_PLAN = {
 export const PAIES_UNMAPPED_AIRTABLE_FIELDS = {
   total_excl_reimb: 'Total de la paie incluant les remises aux organismes et excluant les remboursements de dépenses',
   expense_reimb_total: 'Remboursements de dépenses',
+  // « Période de paie » (« YYYY-MM-DD au YYYY-MM-DD ») : démappée de
+  // /champs/paies par la migration 051, mais c'est elle qui dit le début de
+  // période. Nom en dur ici — la lire ne remet pas de ligne réglable dans
+  // l'interface (demande de Charles, 2026-09-19 : ne plus le déduire).
+  period_range: 'Période de paie',
 }
 
 // Colonne ERP → nom du champ Airtable, tel que réglé dans /champs/:table.

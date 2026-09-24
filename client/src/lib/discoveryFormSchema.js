@@ -19,7 +19,6 @@ import { normalizeQuestionImage } from './discoveryQuestionImages.js'
 //   - réécrire n'importe quel titre, question, aide ou libellé de choix ;
 //   - ajouter / retirer des choix de réponse à une question ;
 //   - masquer les questions facultatives (marquées `hideable`) ;
-//   - gérer la liste marques/modèles de fournaises ;
 //   - ajouter ses propres questions dans n'importe quelle section.
 
 export const DEFAULT_TEXTS = {
@@ -58,18 +57,28 @@ export const DEFAULT_TEXTS = {
   'greenhouse.motors_label': 'Avez-vous déjà les moteurs ?',
   'greenhouse.side_vent_height_label': 'Hauteur des côtés ouvrants (pi)',
   'greenhouse.side_pipe_type_label': 'Type de tuyau de côté',
-  'greenhouse.guide_pipes_label': 'Tuyaux guides',
+  'greenhouse.guide_pipes_label': 'Avez-vous des tuyaux de 1 po à 1 ⁵⁄₁₆ po de diamètre qui peuvent servir de tuyaux guides ?',
   'greenhouse.diameter_other_label': 'Diamètre externe exact',
 
   'louvers.title': 'Louvres',
+  'roofs.present': 'Est-ce que cette serre a un toit ouvrant ?',
+  'roofs.count': 'Nombre de toits ouvrants à automatiser',
+  'roofs.voltage': 'Quelle est la tension du moteur du toit ouvrant ?',
+  'roofs.inverter': 'Avez-vous déjà votre inverseur pour le toit ouvrant ?',
+  'roofs.ridder': 'Est-ce un moteur Ridder RW240, 240 V, 1 phase, 5 fils ?',
+  'roofs.inverter_model': 'Quelle est la marque et le modèle de votre inverseur ?',
+  'roofs.brand': 'Marque de l’inverseur',
+  'roofs.model': 'Modèle de l’inverseur',
+  'roofs.supply_possible': 'Orisha peut peut-être fournir l’inverseur pour ce moteur. La disponibilité et la compatibilité seront à confirmer avec notre équipe.',
+  'roofs.supply_customer': 'Vous devez fournir l’inverseur pour ce moteur. Orisha peut seulement envisager de le fournir pour un moteur 24 V DC ou un moteur Ridder RW240, 240 V, 1 phase, 5 fils.',
+
   'louvers.present': 'Combien de louvres à automatiser dans cette serre ?',
   'louvers.type': 'Comment cette louvre est-elle commandée ?',
   'louvers.fan': 'Un ventilateur est-il associé à cette louvre ?',
   'louvers.fan_unavailable': 'Orisha ne propose pas de contrôle séparé pour ce ventilateur. Configuration à vérifier.',
   'humidity.title': 'Conservation de l’humidité',
   'humidity.valve': 'Souhaitez-vous ajouter une valve pour la conservation de l’humidité ?',
-  'humidity.haf': 'Souhaitez-vous ajouter des ventilateurs HAF ?',
-  'humidity.haf_count': 'Nombre de HAF à fournir',
+  'humidity.haf': 'Avez-vous des ventilateurs HAF à automatiser ?',
   'chief.furnaces_heading': 'Fournaises',
   'chief.has_furnaces_label': 'Cette serre a-t-elle des fournaises à automatiser ?',
   'chief.furnaces_count_label': 'Combien y a-t-il de fournaises à automatiser dans cette serre:',
@@ -78,13 +87,13 @@ export const DEFAULT_TEXTS = {
   'chief.irrigation_zones_label': "Combien de zones d'irrigation pour cette serre ?",
   'chief.orisha_valves_label': "Souhaitez-vous qu'Orisha fournisse les valves 1 po ?",
 
+  'furnace.dry_contact_label': 'Votre fournaise peut-elle être activée avec un thermostat mural ordinaire ?',
   'furnace.brand_label': 'Marque',
   'furnace.model_label': 'Modèle',
-  'furnace.model_other_label': 'Précisez le modèle',
   'furnace.wire_label': 'Filage de contrôle requis ? (pieds)',
   'furnace.wire_help': 'Pensez à inclure les longueurs verticales (monter, traverser une porte, redescendre) — pas seulement la distance horizontale.',
   'furnace.wire_feet_label': 'Nombre de pieds nécessaires',
-  'furnace.thermostat_label': 'Thermostat de secours requis ? (gratuit)',
+  'furnace.thermostat_label': 'L’installation d’un thermostat de secours est fortement recommandée et nous pouvons vous en fournir un gratuitement.',
 
   'submit.label': 'Soumettre',
   'submit.incomplete': 'Complétez les champs obligatoires pour continuer',
@@ -93,6 +102,16 @@ export const DEFAULT_TEXTS = {
 }
 
 export const DEFAULT_CHOICES = {
+  'roofs.voltage_options': [
+    { value: '110', label: '110 V' },
+    { value: '240', label: '240 V' },
+    { value: '24_dc', label: '24 V DC' },
+  ],
+  'roofs.inverter_options': [
+    { value: 'harnois_8ze141l', label: 'Harnois 8ZE141L' },
+    { value: 'vre_mc21', label: 'VRE MC21' },
+    { value: 'other', label: 'Autre (préciser marque et modèle)' },
+  ],
   // Une louvre se décrit par une seule question illustrée : les combinaisons
   // offertes (voltage + commande) sont montrées en images, le voltage ne se
   // demande plus à part. Valeurs lues par `LOUVER_COMBOS`.
@@ -125,8 +144,8 @@ export const DEFAULT_CHOICES = {
     { value: 'over_200', label: 'Plus de 200 pi' },
   ],
   'greenhouse.motors_options': [
-    { value: 'yes', label: "J'ai déjà mes moteurs" },
     { value: 'no', label: "J'ai besoin de moteurs" },
+    { value: 'yes', label: "J'ai déjà mes moteurs" },
   ],
   'greenhouse.side_vent_height_range_options': [
     { value: 'up_to_6', label: '6 pi et moins' },
@@ -134,14 +153,13 @@ export const DEFAULT_CHOICES = {
     { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'greenhouse.side_pipe_type_options': [
-    { value: 'aluminum_C', label: 'Aluminium extrudé (profil C)' },
     { value: 'steel_O', label: 'Acier (profil rond / O)' },
+    { value: 'aluminum_C', label: 'Aluminium extrudé (profil C)' },
     { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'greenhouse.guide_pipes_options': [
-    { value: 'present', label: 'Déjà présents' },
-    { value: 'needed', label: 'À fournir' },
-    { value: 'unknown', label: 'Je ne sais pas' },
+    { value: 'present', label: 'Oui' },
+    { value: 'needed', label: 'Non' },
   ],
   'chief.has_furnaces_options': [
     { value: 'yes', label: 'Oui, il y a des fournaises' },
@@ -151,6 +169,19 @@ export const DEFAULT_CHOICES = {
     { value: 'yes', label: 'Oui, fournir les valves 1 po' },
     { value: 'no', label: "Non, j'ai déjà mes valves" },
   ],
+  // Le contact sec dit tout ce qu'il faut savoir de la fournaise. Marque et
+  // modèle ne se demandent qu'à qui ne le sait pas.
+  'furnace.dry_contact_options': [
+    { value: 'yes', label: 'Oui' },
+    { value: 'no', label: 'Non' },
+    { value: 'unknown', label: 'Je ne sais pas' },
+  ],
+  'furnace.brand_options': [
+    { value: 'Modine', label: 'Modine' },
+    { value: 'Reznor', label: 'Reznor' },
+    { value: 'LB White', label: 'LB White' },
+    { value: 'Autre', label: 'Autre' },
+  ],
   'furnace.wire_options': [
     { value: '25', label: '25 pi' },
     { value: '50', label: '50 pi' },
@@ -159,20 +190,10 @@ export const DEFAULT_CHOICES = {
     { value: 'over_100', label: 'Plus de 100 pi' },
   ],
   'furnace.thermostat_options': [
-    { value: 'yes', label: 'Oui, fournir un thermostat de secours' },
-    { value: 'no', label: 'Non merci' },
+    { value: 'yes', label: 'J’ai besoin d’un thermostat de secours' },
+    { value: 'no', label: 'J’ai déjà un thermostat de secours' },
   ],
 }
-
-// Liste marques → modèles des fournaises. Librement éditable (ajout/retrait).
-export const DEFAULT_BRANDS = [
-  { brand: 'Modine', models: ['PDP', 'PTC', 'PTS', 'PV', 'PA', 'BT', 'BTV', 'BG', 'EF', 'HD'] },
-  { brand: 'Reznor', models: ['F', 'UDAP', 'UDAS', 'UEAS', 'UEZ', 'V3', 'X', 'XL', 'P7', 'CF'] },
-  { brand: 'Sterling', models: ['GG', 'TF', 'XF', 'QVF', 'HS', 'GFH', 'GFP', 'NEMA'] },
-  { brand: 'Roberts Gordon', models: ['CoRayVac', 'Vantage', 'GORDONray', 'Blackheat', 'CTHN', 'CTH2'] },
-  { brand: 'Lennox', models: ['LB-LF24', 'LF24', 'LF25', 'EL296V', 'SL280V'] },
-  { brand: 'L.B. White', models: ['Therma Grow', 'Guardian', 'Premier 350', 'Premier 170', 'AD-100', 'AW250'] },
-]
 
 // Sections où l'utilisateur peut déposer ses propres questions.
 // `greenhouse` se répète sur chaque carte de serre, `greenhouse_chief` seulement
@@ -238,7 +259,7 @@ export const CUSTOM_TYPES = [
 
 // Descripteurs pour l'éditeur : quoi montrer, dans quel ordre, sous quel titre
 // (`short` : libellé de la barre de sections).
-// `kind` : text | textarea | choices | brands | group. `fixedValues` : les
+// `kind` : text | textarea | choices | group. `fixedValues` : les
 // valeurs des choix sont portées par le code (renommer/retirer/ajouter, jamais
 // renuméroter). `hideable` (kind group) : le bloc peut être retiré du
 // formulaire sans casser la validation ; les items qui suivent jusqu'au
@@ -322,6 +343,14 @@ export const SCHEMA_GROUPS = [
     ],
   },
   {
+    id: 'roofs', title: 'Toits ouvrants', short: 'Toits', section: null,
+    items: [
+      ...['present', 'count', 'voltage', 'inverter', 'ridder', 'inverter_model', 'brand', 'model', 'supply_possible', 'supply_customer'].map(key => ({ id: `roofs.${key}`, kind: 'text', label: DEFAULT_TEXTS[`roofs.${key}`] })),
+      { id: 'roofs.voltage_options', kind: 'choices', label: 'Tensions', fixedValues: true },
+      { id: 'roofs.inverter_options', kind: 'choices', label: 'Inverseurs', fixedValues: true },
+    ],
+  },
+  {
     id: 'louvers', title: 'Louvres et ventilateurs', short: 'Louvres', section: null,
     // Les réponses (0, 1, 2 louvres ; combinaisons de commande) sont des images
     // dessinées par le code.
@@ -329,7 +358,7 @@ export const SCHEMA_GROUPS = [
   },
   {
     id: 'humidity', title: 'Conservation de l’humidité', short: 'Humidité', section: null,
-    items: ['title', 'valve', 'haf', 'haf_count'].map(key => ({ id: `humidity.${key}`, kind: 'text', label: { title: 'Titre', valve: 'Question valve', haf: 'Question HAF', haf_count: 'Nombre de HAF' }[key] })),
+    items: ['title', 'valve', 'haf'].map(key => ({ id: `humidity.${key}`, kind: 'text', label: { title: 'Titre', valve: 'Question valve', haf: 'Question HAF' }[key] })),
   },
   {
     id: 'chief', title: 'Serres Chef de culture', short: 'Chef de culture', section: 'greenhouse_chief',
@@ -346,16 +375,17 @@ export const SCHEMA_GROUPS = [
   {
     id: 'furnace', title: 'Fournaise', short: 'Fournaise', section: null,
     items: [
+      { id: 'furnace.dry_contact_label', kind: 'text', label: 'Question thermostat mural' },
+      { id: 'furnace.dry_contact_options', kind: 'choices', label: 'Choix thermostat mural', fixedValues: true },
       { id: 'furnace.brand_label', kind: 'text', label: 'Libellé marque' },
+      { id: 'furnace.brand_options', kind: 'choices', label: 'Choix marque', fixedValues: true },
       { id: 'furnace.model_label', kind: 'text', label: 'Libellé modèle' },
-      { id: 'furnace.model_other_label', kind: 'text', label: 'Libellé « autre modèle »' },
       { id: 'furnace.wire_label', kind: 'text', label: 'Libellé filage' },
       { id: 'furnace.wire_options', kind: 'choices', label: 'Choix filage', fixedValues: true },
       { id: 'furnace.wire_help', kind: 'textarea', label: 'Aide filage' },
       { id: 'furnace.wire_feet_label', kind: 'text', label: 'Libellé nombre de pieds' },
       { id: 'furnace.thermostat_label', kind: 'text', label: 'Libellé thermostat' },
       { id: 'furnace.thermostat_options', kind: 'choices', label: 'Choix thermostat', fixedValues: true },
-      { id: 'furnace.brands', kind: 'brands', label: 'Marques et modèles' },
     ],
   },
   {
@@ -414,17 +444,6 @@ export function slugChoiceValue(label, taken = []) {
   let i = 2
   while (taken.includes(v)) v = `${base}_${i++}`
   return v
-}
-
-function normalizeBrands(list) {
-  if (!Array.isArray(list)) return null
-  const out = list
-    .map(b => ({
-      brand: String(b?.brand || '').trim(),
-      models: Array.isArray(b?.models) ? b.models.map(m => String(m).trim()).filter(Boolean) : [],
-    }))
-    .filter(b => b.brand)
-  return out.length ? out : null
 }
 
 // ─── Affichage conditionnel ───────────────────────────────────────────────
@@ -568,7 +587,6 @@ export function buildForm(overrides) {
   for (const [k, def] of Object.entries(DEFAULT_CHOICES)) {
     choices[k] = mergeChoiceList(k, def, o.choices?.[k])
   }
-  const brands = normalizeBrands(o.brands) || DEFAULT_BRANDS
   const hidden = {}
   for (const id of HIDEABLE_IDS) if (o.hidden?.[id]) hidden[id] = true
   const custom = (Array.isArray(o.custom) ? o.custom : [])
@@ -589,7 +607,6 @@ export function buildForm(overrides) {
     t: (id) => texts[id] ?? '',
     image: (id) => normalizeQuestionImage(o.images?.[id]),
     opts: (id) => choices[id] || [],
-    brands,
     isHidden: (id) => !!hidden[id],
     // Sans `ctx`, toutes les questions de la section (fiche interne, éditeur) ;
     // avec, seules celles que les réponses courantes rendent visibles.
@@ -600,7 +617,7 @@ export function buildForm(overrides) {
 
 /** Calque vide — point de départ de l'éditeur. */
 export function emptyOverrides() {
-  return { images: {}, texts: {}, choices: {}, brands: null, hidden: {}, custom: [], equipment: { products: {} } }
+  return { images: {}, texts: {}, choices: {}, hidden: {}, custom: [], equipment: { products: {} } }
 }
 
 // Une serre de niveau Helper n'automatise que ses côtés ouvrants : ventilateurs,

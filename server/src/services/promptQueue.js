@@ -26,7 +26,6 @@ import {
 import { heuristicTitle, refineTitle, refineProjectTitle } from './promptTitle.js'
 import { classifyPreset, provisionalPreset, PRESET_KEYS } from './promptPreset.js'
 import { KNOWN_MODELS } from './agentModel.js'
-import { APP_URL } from '../config/appUrl.js'
 
 
 // Items dont l'exécution avec --resume a échoué et qui ont déjà été relancés à
@@ -1079,15 +1078,17 @@ export async function onAgentTaskFinalized(task) {
     return
   }
 
-  try { await sendRecap(finished, task, { stopped: stopHere }) } catch (e) { console.error('🤖 File de travaux: recap Slack en échec —', e.message) }
+  // Aucun avis Slack de fin de tâche (demande de Charles, 2026-09-15) : la fin se
+  // constate dans la carte de /travaux, où vit le compte-rendu. Ne pas réintroduire.
   advanceQueue()
 }
 
 /**
  * Exécution avortée faute de quota Claude (« session limit »). L'item n'a pas échoué :
  * il n'a pas travaillé. Il retourne donc en file à sa place, sans réponse dans le fil
- * ni recap — le runner rallume tout à la réinitialisation. Un seul avis Slack par
- * fenêtre de quota, pour ne pas transformer une pause en pluie de notifications.
+ * ni recap — le runner rallume tout à la réinitialisation. Aucun avis Slack : la
+ * file n'en envoie plus aucun (demande de Charles, 2026-09-15), la pause se voit
+ * sur /travaux.
  */
 export function onAgentTaskDeferred(task, { label = '' } = {}) {
   if (!task || task.kind !== 'queue' || !task.work_prompt_id) return
@@ -1100,22 +1101,7 @@ export function onAgentTaskDeferred(task, { label = '' } = {}) {
     WHERE id=?
   `).run(row.id)
   broadcast()
-  notifyLimitOnce(label)
-}
-
-let _limitNotified = ''
-
-async function notifyLimitOnce(label) {
-  if (_limitNotified === label) return
-  _limitNotified = label
-  const url = process.env.SLACK_WEBHOOK_PERSO
-  if (!url) return
-  // Même règle que le recap : une ligne, rien à faire de plus que la lire.
-  const text = `:hourglass_flowing_sand: *File de travaux en pause* — limite de session Claude atteinte, ` +
-    `reprise à ${label || 'la réinitialisation du quota'}.`
-  try {
-    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
-  } catch (e) { console.error('🤖 File de travaux: avis de quota non envoyé —', e.message) }
+  console.log(`🤖 File de travaux: en pause (quota Claude) — reprise à ${label || 'la réinitialisation'}`)
 }
 
 // ─── Réparation des réponses manquantes ───────────────────────────────────────
@@ -1192,41 +1178,14 @@ async function runRepair(promptId = null) {
   return fixed
 }
 
-// ─── Recap Slack ──────────────────────────────────────────────────────────────
-
-// UNE SEULE LIGNE, volontairement : le DM sert à savoir qu'une tâche est finie (ou
-// qu'une question attend), pas à raconter le travail. Le compte-rendu vit dans le
-// fil de la carte, dans l'ERP — c'est là qu'on le lit. Une version qui recopiait le
-// compte-rendu complet a été essayée puis retirée (même raison que le hook
-// ~/.claude/slack-notify.sh) : ne pas la réintroduire.
-export function buildRecapMessage(prompt, task, { stopped = false } = {}) {
-  const ok = prompt.status === 'done'
-  // Une question en attente change la nature du message : ce n'est plus une fin à
-  // constater, c'est une action à faire pour que le travail reprenne.
-  const asking = !!task?.pending_question?.question
-  const head = asking
-    ? `:raised_hand: *Question à répondre* — ${prompt.title}`
-    : `${ok ? ':white_check_mark:' : ':warning:'} *${ok ? 'Tâche terminée' : 'Tâche bloquée'}* — ${prompt.title}`
-  const cta = asking ? 'Répondre' : 'Ouvrir'
-  // Pause demandée sur cet item : sans ce mot, le silence de la file ressemble à
-  // une panne. C'est le seul complément admis sur la ligne.
-  const pause = stopped ? ' · file en pause' : ''
-  return `${head} · <${APP_URL}/erp/travaux?onglet=file|${cta}>${pause}`
-}
-
-async function sendRecap(prompt, task, { stopped = false } = {}) {
-  const url = process.env.SLACK_WEBHOOK_PERSO
-  if (!url) {
-    console.warn('🤖 File de travaux: SLACK_WEBHOOK_PERSO absent — recap non envoyé')
-    return
-  }
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: buildRecapMessage(prompt, task, { stopped }) }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
-}
+// ─── Avis Slack de fin de tâche : RETIRÉ ──────────────────────────────────────
+// Le DM de fin (« Tâche terminée », « Question à répondre ») a été supprimé le
+// 2026-09-15 à la demande de Charles : il ne veut plus d'alerte quand une tâche
+// se termine. La fin, le compte-rendu et les questions en attente se lisent dans
+// la carte de la tâche sur /travaux. Ne pas le réintroduire.
+// La mise en pause pour quota Claude a suivi le 2026-09-15 : elle ne part plus
+// non plus sur Slack, elle se voit dans la file. AUCUN avis Slack n'est émis par
+// la file de travaux — ne rien y rebrancher.
 
 // ─── Démarrage ────────────────────────────────────────────────────────────────
 // Au boot, on réconcilie et on relance la file (un item « running » fauché par un

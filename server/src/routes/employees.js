@@ -1,3 +1,5 @@
+import { requireAuth, isHR } from '../middleware/auth.js'
+import { getRow } from '../utils/crudRouter.js'
 import db from '../db/database.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
 import { readRelation } from '../services/customFieldsView.js'
@@ -13,9 +15,18 @@ const DEPENDENTS = [
   { table: 'rd_month_hours', one: 'mois de R&D', many: 'mois de R&D' },
 ]
 
-export default crudRouter({ ...RECORD_REGISTRY.employees, view: readRelation('employees') }, {
+export default crudRouter({ ...RECORD_REGISTRY.employees, view: readRelation('employees'), auth: requireAuth }, {
   omit: ['delete'],
   extend(router) {
+    router.use((req, res, next) => {
+      if (isHR(req.user)) return next()
+      if (req.method !== 'GET') return res.status(403).json({ error: 'Accès RH requis' })
+      const employeeId = req.user.employee_id
+      const own = employeeId ? getRow({ ...RECORD_REGISTRY.employees, view: readRelation('employees') }, employeeId) : null
+      if (req.path === '/') return res.json({ data: own?.status === 200 ? [own.json] : [], total: own?.status === 200 ? 1 : 0, page: 1, limit: 1 })
+      if (!employeeId || req.path !== `/${employeeId}`) return res.status(403).json({ error: 'Accès à votre fiche uniquement' })
+      return res.status(own.status).json(own.json)
+    })
     router.get('/sync-config', (req, res) => {
       const cfg = db.prepare("SELECT module, base_id, table_id, field_map, last_synced_at FROM airtable_module_config WHERE module='employees'").get() || {}
       res.json(cfg)

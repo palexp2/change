@@ -15,11 +15,11 @@ const PASS = process.env.ERP_PASS
 if (!PASS) throw new Error('ERP_PASS env var required')
 
 const SECTIONS = [
-  'Dashboard comptabilité',
+  'Comptabilité',
   'Travaux',
   'Paiements émis',
   'Rapprochement bancaire',
-  'Stripe Payouts',
+  'Versements Stripe',
   'Comptes prépayés',
   'Fournisseurs',
   'Dettes long terme',

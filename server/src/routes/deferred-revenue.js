@@ -1,19 +1,13 @@
-// Revenus perçus d'avance — état mensuel, brouillon d'écriture, comptabilisation.
+// Revenus perçus d'avance — le compte 23900 (dépôts de commandes), prouvé.
 //
-// Le registre des constatations est servi par la fabrique CRUD
-// (RECORD_REGISTRY.deferred_revenue_recognitions) ; les routes calculées et
-// transactionnelles sont montées avant, via `extend`.
-import { crudRouter } from '../utils/crudRouter.js'
-import { RECORD_REGISTRY } from '../db/recordRegistry.js'
-import {
-  buildMonth, qbReconciliation, proposeDraft, updateDraft, deleteDraft, publishMonth, isMonth,
-} from '../services/deferredRevenue.js'
+// Trois routes : l'état du compte, l'écriture de correction proposée pour un
+// dossier, et son envoi. L'envoi reste un geste humain — rien ne part seul.
+import express from 'express'
+import { requireAuth } from '../middleware/auth.js'
+import { buildState, prepareCorrection, publishCorrection } from '../services/deferredDeposits.js'
 
-const guard = (req, res) => {
-  if (isMonth(req.params.month)) return false
-  res.status(400).json({ error: 'month invalide (YYYY-MM)' })
-  return true
-}
+const router = express.Router()
+router.use(requireAuth)
 
 const run = async (res, fn) => {
   try {
@@ -23,44 +17,23 @@ const run = async (res, fn) => {
   }
 }
 
-export default crudRouter(RECORD_REGISTRY.deferred_revenue_recognitions, {
-  extend: router => {
-    // État du mois : lignes, totaux, brouillon. Sans appel QuickBooks — la page
-    // s'affiche sans attendre le bilan.
-    router.get('/month/:month', (req, res) => {
-      if (guard(req, res)) return
-      run(res, () => buildMonth(req.params.month))
-    })
-
-    // Rapprochement avec le solde du compte de report dans QuickBooks : route
-    // séparée, le rapport de bilan est lent.
-    router.get('/month/:month/qb', (req, res) => {
-      if (guard(req, res)) return
-      run(res, () => qbReconciliation(req.params.month))
-    })
-
-    router.post('/month/:month/draft', (req, res) => {
-      if (guard(req, res)) return
-      run(res, () => proposeDraft(req.params.month, {
-        aggregated: req.body?.aggregated === true,
-        userId: req.user.id,
-      }))
-    })
-
-    router.put('/month/:month/draft', (req, res) => {
-      if (guard(req, res)) return
-      run(res, () => updateDraft(req.params.month, req.body || {}))
-    })
-
-    router.delete('/month/:month/draft', (req, res) => {
-      if (guard(req, res)) return
-      run(res, () => deleteDraft(req.params.month))
-    })
-
-    // Comptabilisation — action humaine explicite, jamais déclenchée ailleurs.
-    router.post('/month/:month/publish', (req, res) => {
-      if (guard(req, res)) return
-      run(res, () => publishMonth(req.params.month, { userId: req.user.id }))
-    })
-  },
+// L'état complet : chaque dossier, son solde, ses anomalies, et le solde
+// QuickBooks en face. Lent (deux rapports QB) — la page l'appelle une fois.
+router.get('/state', (req, res) => {
+  const end = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.end || '')) ? req.query.end : undefined
+  run(res, () => buildState({ end }))
 })
+
+// L'écriture qui solde un dossier, telle qu'elle partira.
+router.get('/correction/:key', (req, res) => {
+  run(res, () => prepareCorrection(req.params.key))
+})
+
+// Envoi dans QuickBooks — l'écriture affichée, pas une autre.
+router.post('/correction', (req, res) => {
+  const { key, lines, memo, txn_date } = req.body || {}
+  if (!key) return res.status(400).json({ error: 'key requis' })
+  run(res, () => publishCorrection({ key, lines, memo, txn_date, userId: req.user.id }))
+})
+
+export default router

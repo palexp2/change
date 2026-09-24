@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { lazy } from 'react'
 import api from './api.js'
 import { fmtAddress } from '../utils/formatters.js'
@@ -167,7 +168,7 @@ export const PEEK_ROUTES = {
     list: '/discovery-forms',
     Component: lazy(() => import('../pages/DiscoveryFormDetail.jsx')),
     load: id => api.discoveryForms.get(id),
-    title: r => r.company_name || 'System builder',
+    title: r => [r.form_number && `SYS-${r.form_number}`, r.company_name].filter(Boolean).join(' · ') || 'System builder',
     subtitle: r => (r.status === 'submitted' ? 'Soumis' : 'En cours'),
   },
   interactions: {
@@ -188,11 +189,19 @@ export const PEEK_ROUTES = {
     title: r => r.title || 'Problème',
     subtitle: r => [r.area, r.status].filter(Boolean).join(' · '),
   },
+  fournitures: {
+    label: 'Fourniture',
+    width: 680,
+    list: '/fournitures',
+    Component: lazy(() => import('../pages/FournitureDetail.jsx')),
+    load: id => api.fournitures.get(id),
+    title: r => r.name || 'Fourniture',
+    subtitle: r => r.supplier || '',
+  },
   employees: {
     label: 'Employé',
     width: 720,
     list: '/employees',
-    guard: 'hr',
     Component: lazy(() => import('../pages/EmployeeDetail.jsx')),
     load: id => api.employees.get(id),
     title: r => `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Employé',
@@ -203,8 +212,8 @@ export const PEEK_ROUTES = {
 // Rôle suffisant pour ouvrir la fiche (miroir des gardes de route de la liste).
 export function canOpenRecord(user, def) {
   if (!user) return false
-  if (def?.guard === 'admin') return user.role === 'admin'
-  if (def?.guard === 'hr') return ['admin', 'rh'].includes(user.role)
+  if (def?.guard === 'admin') return hasRole(user, 'admin')
+  if (def?.guard === 'hr') return hasRole(user, 'rh')
   return true
 }
 

@@ -1,4 +1,6 @@
-import { readFileSync } from 'fs'
+import { readFileSync, rmSync, mkdtempSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 import { spawnSync } from 'child_process'
 import db from '../db/database.js'
 import { emitEntity } from './realtimeEmitters.js'
@@ -11,6 +13,9 @@ import { autoLinkReceiptItems } from './purchaseLiaMatch.js'
 import { applyAwsInvoice } from './awsInvoice.js'
 import { applyMealTaxCodeNames, reconcileMealAmounts, isTipLine } from './mealReceipt.js'
 import { round2Safe as round2 } from '../utils/money.js'
+import { consolidateSingleItemCharges, extractChargeLines } from './saleReceiptSingleItem.js'
+import { canonicalVendorName, isAmazonStoreDocument, AMAZON_STORE_VENDOR } from './vendorIdentity.js'
+import { extractCardLast4 } from './paymentCards.js'
 
 // Ré-exportés ici pour compatibilité : ces filets vivent désormais dans servicePeriod.js
 // (le moteur de période complet), qui est aussi utilisé au moment de la publication QB.
@@ -36,6 +41,8 @@ CONTEXTE CRITIQUE — qui est qui sur le document :
 - Notre nom (Orisha) apparaît souvent bien en évidence en haut du document parce qu'il est le DESTINATAIRE (sous « Facturé à / Vendu à / Livré à / Bill to / Ship to », ou à côté de l'adresse de Québec ci-dessus). Ne te laisse pas piéger : ce n'est pas l'émetteur.
 - Pour trouver le vrai émetteur, cherche : le logo / l'en-tête de marque, le pied de page, les mentions « Émis par / Vendu par / Payable à », le numéro de téléphone de marque, le site web ou le domaine d'un courriel (ex. « bell.ca » → Bell ; « 310-BELL » → Bell), les coordonnées du marchand. Déduis le nom du marchand de ces indices même s'il n'est pas écrit en toutes lettres comme raison sociale.
 - Ne mets "company" = null que si, après avoir vraiment cherché, aucun émetteur distinct d'Orisha n'est identifiable.
+- IDENTITÉ VISUELLE : les pages te sont aussi montrées en IMAGE. Sers-t'en. Le logo, les couleurs, la typographie, la mise en page et le gabarit d'une facture identifient souvent le marchand mieux que le texte (un logo n'est pas du texte). Si le design est celui d'une enseigne connue, c'est elle l'émetteur, même si sa raison sociale n'est écrite nulle part.
+- MARKETPLACE : sur une facture de la boutique Amazon (gabarit « Invoice / Facture », numéro de commande 123-1234567-1234567, « ASIN », renvoi à amazon.ca), le nom sous « Vendu par / Sold by » est un marchand tiers, PAS l'émetteur : "company" vaut toujours « Amazon.ca ». Exception : Amazon Web Services (AWS), qui est une entité distincte.
 - Le champ "address" doit être l'adresse du FOURNISSEUR/MARCHAND (l'émetteur), pas notre adresse de Québec.
 
 Extrait toutes les informations disponibles et retourne un JSON valide avec exactement cette structure:
@@ -57,6 +64,7 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
   "freight_amount": 0.00,
   "total": 0.00,
   "payment_method": "méthode de paiement ou null",
+  "card_last4": "les 4 DERNIERS CHIFFRES de la carte qui a payé, s'ils sont imprimés (« VISA ****6015 », « se terminant par 4823 », « XXXX-XXXX-XXXX-5004 ») — 4 chiffres seuls, ou null",
   "currency": "CAD ou USD — voir la RÈGLE DEVISE, ne pas mettre CAD par défaut",
   "due_date": "YYYY-MM-DD ou null",
   "payment_terms_days": 0,
@@ -67,6 +75,10 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
 RÈGLE — "order_date" (date de la commande) :
 - Certains fournisseurs (Digikey notamment) impriment une « Date de la commande / Order Date » DISTINCTE de la « Date de facturation / Invoice Date » — la commande a pu être passée plusieurs jours ou semaines avant que cette expédition partielle soit facturée. Capture cette date exacte : elle sert à rapprocher automatiquement la ligne du bon de commande interne correspondant (cf. règle quantité/prix unitaire ci-dessous), en particulier quand plusieurs commandes de la même pièce sont en cours.
 - Si le document n'imprime qu'une seule date (pas de distinction commande/facture), laisse "order_date" à null.
+
+RÈGLE — "card_last4" (carte qui a payé) :
+- Ne renseigne ce champ QUE si le document montre explicitement les derniers chiffres d'une carte (masque ****1234, « se terminant par 1234 », « ending in 1234 », numéro partiellement masqué).
+- Ce ne sont jamais les 4 derniers chiffres d'un numéro de facture, de commande, de client ou de téléphone. Dans le doute, null.
 
 RÈGLE — TERMES DE PAIEMENT ET ÉCHÉANCE :
 - "due_date" : la date d'échéance de paiement IMPRIMÉE sur le document (« Due date », « Date d'échéance », « Payable avant le… »). null si aucune date d'échéance explicite.
@@ -149,6 +161,28 @@ DOCUMENT MULTIPAGE :
 Retourne UNIQUEMENT le JSON, sans texte supplémentaire ni balises markdown.
 Si une valeur est inconnue, utilise null pour les chaînes et 0 pour les nombres.`
 
+// Aperçu VISUEL d'un PDF : la première page rendue en image. Le texte seul (pdftotext)
+// perd tout ce qui identifie l'émetteur sans être écrit — logo, couleurs, typographie,
+// gabarit. Une facture de la boutique Amazon vendue par un marchand tiers, par exemple,
+// n'imprime que la raison sociale du marchand : à l'œil, c'est une facture Amazon.
+// On joint donc la 1re page de chaque PDF en image (2 au plus) EN PLUS du texte.
+function pdfFirstPageImage(filePath) {
+  let dir = null
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'erp-pdfpage-'))
+    const out = join(dir, 'p')
+    const r = spawnSync('pdftoppm', ['-jpeg', '-r', '110', '-f', '1', '-l', '1', filePath, out],
+      { timeout: 30000 })
+    if (r.status !== 0) return null
+    const file = [`${out}-1.jpg`, `${out}-01.jpg`, `${out}-001.jpg`].find(f => { try { readFileSync(f); return true } catch { return false } })
+    return file ? readFileSync(file).toString('base64') : null
+  } catch { return null } finally {
+    if (dir) { try { rmSync(dir, { recursive: true, force: true }) } catch { /* rien à nettoyer */ } }
+  }
+}
+
+const PDF_PREVIEW_PAGES = 2
+
 const MIME_MAP = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' }
 
 // Extraction IA d'un document pouvant comporter PLUSIEURS pages.
@@ -168,7 +202,9 @@ export async function extractWithOpenAI(pages, vendorContext = null) {
     { type: 'text', text: `Voici un document (reçu, facture ou relevé) que nous avons reçu d'un fournisseur, comportant ${list.length} page${list.length > 1 ? 's' : ''}. Extrait toutes les données disponibles en consolidant l'ensemble des pages en UN SEUL reçu. Le champ "company" est le fournisseur/marchand émetteur, jamais Orisha (qui est notre entreprise, le destinataire).` },
   ]
   if (vendorContext) content.push({ type: 'text', text: vendorContext })
+
   const pdfTexts = []
+  let pdfPreviews = 0
   list.forEach((p, idx) => {
     if (IMAGE_EXT.includes(p.fileExt)) {
       const base64 = readFileSync(p.filePath).toString('base64')
@@ -178,14 +214,24 @@ export async function extractWithOpenAI(pages, vendorContext = null) {
       const result = spawnSync('pdftotext', ['-layout', p.filePath, '-'], { encoding: 'utf8', timeout: 30000 })
       const t = result.stdout?.trim() || ''
       if (t) pdfTexts.push(`[Page ${idx + 1}]\n${t}`)
+      if (pdfPreviews < PDF_PREVIEW_PAGES) {
+        const b64 = pdfFirstPageImage(p.filePath)
+        if (b64) {
+          pdfPreviews++
+          content.push({ type: 'image_url', image_url: { url: `data:image/jpeg;base64,${b64}`, detail: 'high' } })
+        }
+      }
     }
   })
 
   const hasImage = content.some(c => c.type === 'image_url')
+  if (pdfPreviews) {
+    content.push({ type: 'text', text: `Les ${pdfPreviews} image${pdfPreviews > 1 ? 's' : ''} ci-dessus ${pdfPreviews > 1 ? 'sont des aperçus' : 'est un aperçu'} de la PREMIÈRE page des PDF joints — même document que le texte ci-dessous, pas des pages supplémentaires. Utilise-${pdfPreviews > 1 ? 'les' : 'le'} pour l'identité visuelle de l'émetteur (logo, gabarit, marque) et le texte pour les montants.` })
+  }
   if (pdfTexts.length) {
     // Les factures de transport multi-expéditions dépassent facilement 12 000 caractères
     // (une expédition détaillée par bloc, 6+ pages) — tronquer perdait les dernières
-    // expéditions et cassait la réconciliation. gpt-4o encaisse 40 000 sans problème.
+    // expéditions et cassait la réconciliation. On conserve jusqu’à 40 000 caractères.
     content.push({ type: 'text', text: `Contenu textuel des pages PDF :\n\n${pdfTexts.join('\n\n').slice(0, 40000)}` })
   }
   if (!hasImage && !pdfTexts.length) throw new Error('Impossible d\'extraire le contenu du document')
@@ -256,6 +302,16 @@ export function printedHtBase({ subtotal, tps, tvq, other_taxes, total }) {
   return sub > 0 ? sub : tot
 }
 
+// Arbitre du prorata transport/escompte : le MONTANT DÛ imprimé, taxes retirées. Le
+// sous-total ne convient pas — il est lu AVANT transport (règle du prompt), donc sans
+// taxes printedHtBase le renvoie et un vrai fret passait pour une valeur déclarée
+// (PCBWay YR1808976 : 556,33 $ + 34,34 $ de transport = 590,67 $, enregistrée à 556,33 $).
+export function amountDueHtBase({ subtotal, tps, tvq, other_taxes, total }) {
+  const tot = round2(Number(total) || 0)
+  if (!(tot > 0)) return printedHtBase({ subtotal, tps, tvq, other_taxes, total })
+  return round2(tot - (Number(tps) || 0) - (Number(tvq) || 0) - (Number(other_taxes) || 0))
+}
+
 // Écart entre la base HT imprimée et la somme des lignes d'articles extraites. 0 quand
 // il n'y a rien à réconcilier (facture de transport → shipments, aucune ligne chiffrée,
 // aucun montant imprimé). Une somme trop BASSE = frais oubliés (taxe municipale 911,
@@ -292,9 +348,11 @@ async function callOpenAI(apiKey, messages) {
   const resp = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-    // 4000 tokens : une facture de transport à 30+ expéditions produit un JSON bien
-    // au-delà des 2000 tokens historiques (réponse tronquée → JSON invalide).
-    body: JSON.stringify({ model: 'gpt-4o', messages, max_tokens: 4000, temperature: 0 }),
+    // Le budget couvre le raisonnement d’Astra et le JSON des factures multi-lignes.
+    body: JSON.stringify({
+      model: 'gpt-6-astra', messages, max_completion_tokens: 16000,
+      reasoning_effort: 'medium', response_format: { type: 'json_object' },
+    }),
   })
 
   if (!resp.ok) {
@@ -303,6 +361,9 @@ async function callOpenAI(apiKey, messages) {
   }
 
   const data = await resp.json()
+  if (data.choices?.[0]?.finish_reason === 'length') {
+    throw new Error('Extraction incomplète : la réponse du modèle a atteint sa limite de longueur.')
+  }
   const replyText = data.choices?.[0]?.message?.content?.trim() || ''
   const cleaned = replyText.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim()
   return { extracted: JSON.parse(cleaned), replyText }
@@ -321,30 +382,8 @@ async function callOpenAI(apiKey, messages) {
 const LIA_REF = /^\s*lia-\d+/i
 const FEE_LINE = /\b(transport|freight|shipping|frais|surcharge|handling|card\s*(?:processing\s*)?fee|fedex\s+ground)\b/i
 
-// Alias de fournisseurs : nom imprimé sur le document → nom canonique à enregistrer.
-// « Groupe Alliances et Privilèges » (marque NovoXpress) correspond au fournisseur
-// « Novo Express » dans notre liste QB — on enregistre donc CE nom exact pour que le
-// rapprochement du fournisseur QB tombe juste à la publication.
-const VENDOR_ALIASES = [
-  { match: /alliances?\s*(?:et|&)\s*privil|novo\s*xpress/i, name: 'Novo Express' },
-  // Les factures FedEx portent la raison sociale « Federal Express Canada Corporation »,
-  // qui ne partage aucun token avec le vendor QB « FedEx » — le rapprochement flou du
-  // client échouait et proposait de créer un doublon.
-  { match: /fed\s*ex(?!\w)|federal\s+express/i, name: 'FedEx' },
-  // Amazon : AWS est une entité DISTINCTE (testée en premier — « Amazon Web Services
-  // Canada, Inc. », « AWS »…). Tout le reste (« Amazon », « Amazon.com.ca ULC »,
-  // « Amazon Marketplace », « Amazon Prime »…) est TOUJOURS le fournisseur de la
-  // boutique « Amazon.ca » — l'extraction proposait de créer un fournisseur par
-  // variante de raison sociale.
-  { match: /amazon\s*web\s*services|(?<!\w)aws(?!\w)/i, name: 'Amazon Web Services' },
-  { match: /(?<!\w)amazon(?!\w)/i, name: 'Amazon.ca' },
-]
-
-export function canonicalVendorName(name) {
-  if (!name) return name
-  for (const a of VENDOR_ALIASES) if (a.match.test(name)) return a.name
-  return name
-}
+// Alias de fournisseurs et reconnaissance de la boutique Amazon : voir vendorIdentity.js.
+export { canonicalVendorName }
 
 export function consolidateSoleLiaItem(items) {
   const list = Array.isArray(items) ? items : []
@@ -543,7 +582,7 @@ function fetchSaleReceiptRow(id) {
 // déclenché par un opérateur ; 'scheduled' = ingestion automatique Gmail/Amazon).
 // L'appel reste fire-and-forget côté appelants : on trace ici (succès comme échec)
 // pour que tout coût OpenAI et toute mise en status='error' soit visible dans sync_log.
-export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt, pages, userId = null, trigger = 'manual' }) {
+export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt, pages, userId = null, trigger = 'manual', bankContext = null }) {
   const startedAt = Date.now()
   try {
     // Si la ligne a été supprimée pendant que l'extraction tournait, on s'arrête
@@ -555,6 +594,10 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     // l'extraction fonctionne sans.
     let vendorContext = null
     try { vendorContext = buildVendorExtractionContext() } catch {}
+    // Contexte bancaire : quand le document a été descendu POUR une sortie
+    // d'argent précise, on sait déjà à qui, combien et quand. C'est un repère,
+    // pas une consigne — le document reste la source des montants.
+    if (bankContext) vendorContext = [vendorContext, bankContext].filter(Boolean).join('\n\n')
     let extracted = await extractWithOpenAI(pageList, vendorContext)
 
     // Facture Amazon Web Services : chaque montant y est imprimé dans DEUX devises
@@ -619,6 +662,16 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     // Nom fournisseur : alias codés en dur d'abord, puis nom canonique du profil
     // fournisseur si le nom extrait y correspond (casse/accents/alias près).
     let company = canonicalVendorName(extracted.company) || null
+    // Gabarit de la boutique Amazon : le fournisseur est Amazon.ca, quoi qu'ait lu l'IA.
+    // Une facture vendue par un marchand tiers n'imprime que la raison sociale de CE
+    // marchand (« Vendu par : AMERICA UGREEN LIMITED ») — on créait alors un fournisseur
+    // par marchand du marketplace au lieu du seul « Amazon.ca ».
+    if (isAmazonStoreDocument(extracted._sourceText)) {
+      if (company !== AMAZON_STORE_VENDOR) {
+        console.log(`Extraction ${saleReceiptId}: gabarit Amazon reconnu — fournisseur « ${company || '—'} » → « ${AMAZON_STORE_VENDOR} »`)
+      }
+      company = AMAZON_STORE_VENDOR
+    }
     // Profil fournisseur : rattaché dès l'extraction — le profil est aussi utilisé
     // comme filet pour les termes de paiement (Net N mémorisé) quand le document ne
     // les imprime pas. La résolution du nom canonique passe aussi par ses alias.
@@ -649,14 +702,30 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
         console.log(`Extraction ${saleReceiptId}: ligne(s) de crédit passée(s) en négatif — somme des lignes réalignée sur le sous-total ${extracted.subtotal} $`)
         items = signed
       }
+      // Transport/escompte extrait comme ligne distincte : l'article unique l'absorbe.
+      items = consolidateSingleItemCharges(items)
       // Escompte / transport globaux (achat de plusieurs pièces, ex. CT Greenhouse) :
       // répartis au prorata du montant de chaque pièce — système « Pro rata transport »
       // du fichier CTB - Suivi. Le sous-total dérivé (somme des lignes ajustées) devient
       // alors la vraie base HT (subtotal + taxes = total imprimé tient à nouveau).
-      const discFreight = reconcileDiscountFreightProrata(items, {
+      // Transport/escompte imprimé sur SA PROPRE LIGNE alors que la facture porte
+      // plusieurs pièces (Provo INV375790 : « Coût d'expédition » 28,38 $ à côté de deux
+      // longueurs de câble) : l'IA le laisse dans les lignes au lieu de le remonter dans
+      // freight_amount/discount_amount, et le prorata ne voyait donc rien à répartir. On
+      // sort ces lignes et on les ajoute aux montants globaux ; si la répartition est
+      // refusée (garde-fou de la base HT), on retombe sur les lignes d'origine.
+      const charges = extractChargeLines(items)
+      const htBase = amountDueHtBase(extracted)
+      const fromLines = charges && reconcileDiscountFreightProrata(charges.articles, {
+        discount: round2((Number(extracted.discount_amount) || 0) + charges.discount),
+        freight: round2((Number(extracted.freight_amount) || 0) + charges.freight),
+        htBase,
+      })
+      if (fromLines) console.log(`Extraction ${saleReceiptId}: ligne(s) de frais (transport ${charges.freight} $ / escompte ${charges.discount} $) sorties des articles pour être réparties au prorata`)
+      const discFreight = fromLines || reconcileDiscountFreightProrata(items, {
         discount: extracted.discount_amount,
         freight: extracted.freight_amount,
-        htBase: printedHtBase(extracted),
+        htBase,
       })
       if (discFreight) {
         items = discFreight.items
@@ -782,13 +851,14 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
     db.prepare(`
       UPDATE sale_receipts SET
         status='done',
-        receipt_date=?, order_date=?, company=?, address=?, receipt_number=?, general_description=?, service_period=?,
+        receipt_date=?, document_date=?, order_date=?, company=?, address=?, receipt_number=?, general_description=?, service_period=?,
         subtotal=?, tps=?, tvq=?, other_taxes=?, total=?,
-        payment_method=?, currency=?, items=?, raw_data=?,
+        payment_method=?, card_last4=?, currency=?, items=?, raw_data=?,
         due_date=?, payment_terms_days=?, vendor_profile_id=?, extracted_transaction_type=?,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id=? AND deleted_at IS NULL
     `).run(
+      extracted.receipt_date || null,
       extracted.receipt_date || null,
       extracted.order_date || null,
       company,
@@ -804,6 +874,9 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       amounts ? amounts.other_taxes : (extracted.other_taxes || 0),
       amounts ? amounts.total : (extracted.total || 0),
       extracted.payment_method || null,
+      // 4 derniers chiffres de la carte : ceux que l'IA a lus, sinon relus dans le
+      // mode de paiement (« VISA ****6015 »). Ils désignent le compte qui a payé.
+      String(extracted.card_last4 || '').replace(/\D/g, '').slice(-4) || extractCardLast4(extracted.payment_method)[0] || null,
       extracted.currency || 'CAD',
       JSON.stringify(items),
       JSON.stringify(extracted),
@@ -813,6 +886,16 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       extractedTxType,
       saleReceiptId,
     )
+    // La facture est peut-être déjà appariée à sa ligne de relevé : sa date
+    // comptable est alors celle du débit, pas celle imprimée (qui reste dans
+    // `document_date`).
+    try {
+      const { alignReceiptDate } = await import('./receiptBankDate.js')
+      alignReceiptDate(saleReceiptId)
+    } catch (e) {
+      console.warn(`alignReceiptDate ${saleReceiptId}: ${e.message}`)
+    }
+
     // Détection d'anomalies (doublons, montant hors norme, devise) dès l'extraction —
     // best effort : une erreur ici ne doit pas faire échouer l'extraction.
     try {

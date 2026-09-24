@@ -9,8 +9,9 @@
 //      écart, et l'appariement ligne à ligne relevé ↔ grand livre QB.
 import db from '../db/database.js'
 import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
-import { fetchQbLedger, fetchQbLedgerRaw } from './bankQbLink.js'
-import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
+import { fetchQbLedgerRaw } from './bankQbLink.js'
+import { searchAccount } from './bankQbSearch.js'
+import { shiftDate } from '../utils/datetime.js'
 import { round2 } from '../utils/money.js'
 
 
@@ -198,7 +199,9 @@ export function summarizeAccount(accountId) {
 // ── Comparaison avec QuickBooks ──────────────────────────────────────────────
 
 
-const MAX_DAY_GAP = 4
+// Le grand livre déborde la fenêtre du relevé : une écriture peut porter une
+// date décalée de quelques jours par rapport au passage à la banque.
+const LEDGER_MARGIN_DAYS = 35
 
 // Un compte ERP peut couvrir plusieurs comptes QB (« 234,168 »), et le rapport
 // GeneralLedger ne respecte pas toujours son filtre `account` : la même écriture
@@ -234,7 +237,7 @@ async function qbCurrentBalance(qbAccountIds) {
 
 // Solde QB tel qu'il était à `asOf` : le solde courant moins tout ce qui a été
 // enregistré après cette date (QuickBooks ne fournit pas de solde daté).
-async function qbBalanceAsOf(qbAccountIds, asOf) {
+export async function qbBalanceAsOf(qbAccountIds, asOf) {
   const { accounts, total } = await qbCurrentBalance(qbAccountIds)
   const today = new Date().toISOString().slice(0, 10)
   const start = shiftDate(asOf, 1)
@@ -249,6 +252,15 @@ async function qbBalanceAsOf(qbAccountIds, asOf) {
 
 // Apparie relevé ↔ grand livre QB sur une période et retourne ce qui reste
 // orphelin de chaque côté : c'est la décomposition exacte de l'écart.
+//
+// L'appariement n'est PAS refait ici. Il y avait jusqu'au 2026-09-19 un second
+// moteur maison (montant exact, ±4 jours, aucune tolérance) dont le verdict
+// peignait le drapeau « aucune écriture correspondante » et les lignes
+// fantômes de la page Rapprochement — plus pauvre que celui qui pose les
+// liens, il contredisait donc l'état affiché sur la même ligne : les frais
+// mensuels de 8 $ US de juin et juillet et les paiements de la Visa USD
+// étaient liés à leur écriture ET signalés absents. Un seul juge désormais :
+// searchAccount(), celui de bankQbVerify.
 export async function compareWithQb(accountId, opts = {}) {
   const account = db.prepare('SELECT * FROM bank_accounts WHERE id=? AND deleted_at IS NULL').get(accountId)
   if (!account) throw new Error('Compte introuvable')
@@ -265,70 +277,59 @@ export async function compareWithQb(accountId, opts = {}) {
     return iso > summary.period.from ? iso : summary.period.from
   })()
 
+  // Mêmes colonnes que le moteur de vérification : searchAccount lit le
+  // libellé (affinité) et la couleur déclarée.
   const txns = db.prepare(`
-    SELECT id, txn_date, description, details, amount, status, qb_txn_id, qb_txn_type
+    SELECT id, txn_date, COALESCE(NULLIF(details,''), description) AS description, details, reference,
+           amount, status, matched_id, matched_type, sheet_color, qb_txn_id, qb_match_method, transfer_txn_id
     FROM bank_transactions
     WHERE account_id=? AND deleted_at IS NULL AND status != 'ignore'
-      AND txn_date BETWEEN ? AND ?
+      AND COALESCE(pending, 0) = 0 AND txn_date BETWEEN ? AND ?
     ORDER BY txn_date
   `).all(accountId, from, to)
 
-  const ledgerLists = []
-  for (const id of qbIds) ledgerLists.push(await fetchQbLedger(id, shiftDate(from, -MAX_DAY_GAP), shiftDate(to, MAX_DAY_GAP)))
-  const ledger = mergeLedgers(ledgerLists)
+  // L'écart passe par l'index PARTAGÉ du rapprochement (cache 5 min, invalidé
+  // dès qu'on écrit dans QuickBooks) : ouvrir un compte ne relance plus douze
+  // rapports de grand livre.
+  const { getSharedLedgerIndex, qbVerifyConfig } = await import('./bankQbVerify.js')
+  const index = await getSharedLedgerIndex(shiftDate(from, -LEDGER_MARGIN_DAYS), shiftDate(to, LEDGER_MARGIN_DAYS))
+  const ledger = index.byAccount.get(accountId) || []
 
-  // Orientation des signes : identique au moteur de liaison (services/bankQbLink),
-  // certains relevés notent en positif ce que QB crédite.
-  const run = (sign) => {
-    const used = new Set()
-    const pairs = []
-    const byAmount = new Map()
-    for (const e of ledger) {
-      const k = e.amount.toFixed(2)
-      if (!byAmount.has(k)) byAmount.set(k, [])
-      byAmount.get(k).push(e)
-    }
-    // Les liens déjà posés (qb_txn_id) sont prioritaires : ils consomment leur
-    // écriture avant tout appariement opportuniste.
-    for (const t of txns) {
-      if (!t.qb_txn_id) continue
-      const hit = ledger.find((e) => !used.has(e) && e.qbId === String(t.qb_txn_id))
-      if (hit) { used.add(hit); pairs.push([t, hit]) }
-    }
-    const paired = new Set(pairs.map(([t]) => t.id))
-    for (const t of txns) {
-      if (paired.has(t.id)) continue
-      const pool = byAmount.get((sign * Number(t.amount)).toFixed(2))
-      if (!pool?.length) continue
-      let best = null
-      let bestDiff = Infinity
-      for (const e of pool) {
-        if (used.has(e)) continue
-        const diff = dayDiff(t.txn_date, e.date)
-        if (diff <= MAX_DAY_GAP && diff < bestDiff) { best = e; bestDiff = diff }
-      }
-      if (!best) continue
-      used.add(best)
-      paired.add(t.id)
-      pairs.push([t, best])
-    }
-    return { pairs, used, paired }
-  }
-  const plus = run(1)
-  const minus = run(-1)
-  const { pairs, used, paired } = plus.pairs.length >= minus.pairs.length ? plus : minus
+  const { matches, unmatchedBank, unmatchedQb } = txns.length
+    ? searchAccount(account, txns, index)
+    : { matches: new Map(), unmatchedBank: [], unmatchedQb: ledger }
 
-  const inPeriod = (e) => e.date >= from && e.date <= to
-  const missingInQb = txns.filter((t) => !paired.has(t.id)).map((t) => ({
+  // Montant en devise du compte quand QuickBooks le fournit : le relevé, lui,
+  // est toujours en devise du compte.
+  const shown = (e) => (e.foreign != null ? e.foreign : e.amount)
+
+  // Garde-fous repris de bankQbVerify : une ligne trop fraîche n'est pas un
+  // écart (délai normal de saisie), une écriture antérieure au premier relevé
+  // du compte n'a rien à quoi être appariée, et une écriture non compensée est
+  // saisie dans QuickBooks mais jamais passée à la banque.
+  const graceDays = Number(qbVerifyConfig().grace_days) || 4
+  const cutoff = shiftDate(new Date().toISOString().slice(0, 10), -graceDays)
+  const firstStatementDate = db.prepare(`
+    SELECT MIN(txn_date) AS d FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL
+  `).get(accountId)?.d || from
+
+  const missingInQb = unmatchedBank.filter((t) => t.txn_date <= cutoff).map((t) => ({
     txn_id: t.id, date: t.txn_date, label: t.details || t.description || '(sans description)',
     amount: round2(t.amount), status: t.status,
   }))
-  const missingInStatement = ledger.filter((e) => !used.has(e) && inPeriod(e)).map((e) => ({
-    date: e.date, entity: e.entity, qb_id: e.qbId, amount: e.amount, url: qbEntityUrl(e.entity, e.qbId),
+  const missingInStatement = unmatchedQb.filter((e) => (
+    e.date >= from && e.date <= to && e.date >= firstStatementDate
+    && (e.cleared === 'C' || e.cleared === 'R')
+  )).map((e) => ({
+    date: e.date, entity: e.entity, qb_id: e.qbId, amount: shown(e),
+    label: e.name || e.type || null,
+    url: e.entity && e.qbId ? qbEntityUrl(e.entity, e.qbId) : null,
   }))
 
+  const inPeriod = (e) => e.date >= from && e.date <= to
   const statementMovement = round2(txns.reduce((s, t) => s + t.amount, 0))
-  const qbMovement = round2(ledger.filter(inPeriod).reduce((s, e) => s + e.amount, 0))
+  const qbMovement = round2(ledger.filter(inPeriod).reduce((s, e) => s + shown(e), 0))
 
   let balance = null
   try {
@@ -349,7 +350,7 @@ export async function compareWithQb(accountId, opts = {}) {
       statement: statementMovement, qb: qbMovement,
       difference: round2(statementMovement - qbMovement),
     },
-    matched: pairs.length,
+    matched: matches.size,
     scanned: txns.length,
     ledger_entries: ledger.length,
     missing_in_qb: missingInQb,

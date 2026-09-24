@@ -28,8 +28,8 @@ export function computePeriodBounds(paie) {
 // Temps (en minutes) payables d'un user sur une plage [start, end] inclusive.
 // - Mode detailed: somme des timesheet_entries dont activity_code.payable != 0 (null = payable)
 // - Mode simple:  max(0, end_time - start_time - break_minutes)
-// - Mode semaine: le total déclaré, rattaché au LUNDI de la semaine — une semaine
-//   à cheval sur deux paies tombe donc entière dans celle qui contient son lundi.
+// - Mode semaine: le total déclaré, rattaché au DIMANCHE de la semaine — une semaine
+//   à cheval sur deux paies tombe donc entière dans celle qui contient son dimanche.
 //   Pas de proratisation : l'employé a déclaré un chiffre, on ne le découpe pas.
 function computePayableMinutes(userId, start, end) {
   const detailed = db.prepare(`

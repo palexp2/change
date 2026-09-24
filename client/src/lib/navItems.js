@@ -67,8 +67,11 @@ export function applyNavOrder(items, order) {
 // `accent` : teinte de section (cf. index.css, `--acc-*`). Attachée au nom du
 // groupe et non à sa position — l'ordre de la nav est personnalisable par
 // utilisateur (`applyNavOrder`), la couleur ne doit pas se déplacer avec.
+//
+// `menuHidden` : absent du menu (et de sa personnalisation) mais gardé pour la
+// palette ⌘K et le titre de page. Le Dashboard : le logo y mène déjà.
 export const defaultNavItems = [
-  { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard' },
+  { to: '/dashboard',    icon: LayoutDashboard, label: 'Dashboard', menuHidden: true },
   { group: 'Clients', icon: Contact, accent: 'clients', items: [
     { to: '/contacts',     icon: Contact,       label: 'Contacts' },
     { to: '/companies',    icon: Building2,     label: 'Entreprises' },
@@ -112,7 +115,7 @@ export const defaultNavItems = [
     { to: '/serials',      icon: Barcode,     label: 'Numéros de série' },
   ]},
   { group: 'RH', icon: Users, accent: 'rh', items: [
-    { to: '/employees',        icon: Users,    label: 'Employés',              hrOnly: true },
+    { to: '/employees',        icon: Users,    label: 'Employés', selfLabel: 'Ma fiche personnelle' },
     { to: '/feuille-de-temps', icon: Clock,    label: 'Feuille de temps' },
     { to: '/codes-activite',   icon: Tag,      label: "Codes d'activité",      hrOnly: true },
     { to: '/paies',            icon: Banknote, label: 'Paies' },
@@ -127,6 +130,7 @@ export const defaultNavItems = [
     { to: '/connectors',   icon: Plug,            label: 'Connecteurs' },
     { to: '/public-files', icon: FolderOpen,      label: 'Fichiers publics' },
     { to: '/problemes-operations', icon: AlertTriangle, label: "Problèmes d'opérations" },
+    { to: '/fournitures', icon: ShoppingCart, label: 'Fournitures' },
     { external: true, href: 'https://customer.orisha.io/chatbot/admin', icon: Bot, label: 'Admin Chatbot' },
   ]},
 ]

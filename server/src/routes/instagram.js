@@ -443,6 +443,19 @@ router.get('/workbench', requireAuth, async (req, res) => {
   res.json(workbench({ all: String(req.query.all || '') === '1' }))
 })
 
+/** Le type de demande choisi à la main : il ne se fait jamais réécrire. */
+router.post('/prospects/:id/segment', requireAuth, async (req, res) => {
+  const { setSegment } = await import('../services/instagramSegments.js')
+  try { res.json(setSegment(String(req.params.id), String(req.body?.segment || ''))) }
+  catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+/** Tri immédiat : range les piles, écarte les robots, sort les déjà traités. */
+router.post('/segments/run', requireAdmin, async (req, res) => {
+  const { runSegmentation } = await import('../services/instagramSegments.js')
+  res.json(await runSegmentation({ force: true, trigger: 'page Instagram' }))
+})
+
 router.get('/drafts', requireAuth, async (req, res) => {
   const { listDrafts } = await import('../services/instagramDrafts.js')
   res.json(listDrafts())

@@ -6,6 +6,7 @@ import { test, describe } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   proposalFingerprint, reconcilePropositions, dedupeClaims, nextStatus, evidenceFor,
+  isBatchAcceptable, KINDS,
 } from './model.js'
 
 const base = { kind: 'qb_link', bank_txn_id: 'txn1', target_type: 'qb_entity', target_id: '4182' }
@@ -155,5 +156,20 @@ describe('evidenceFor', () => {
     const e = evidenceFor('qb_link', { method: 'tolerance', delta: -0.5, gap: 2 })
     assert.equal(e[1].detail, '-0.50 $')
     assert.equal(e[2].detail, '2 jours')
+  })
+})
+
+// « Un clic humain par écriture publiée » : la confirmation en lot ne doit
+// jamais pouvoir écrire dans QuickBooks, quelle que soit la page qui l'appelle.
+describe('confirmation en lot', () => {
+  test('retient les natures qui publient dans QuickBooks', () => {
+    assert.equal(isBatchAcceptable('vendor_expense'), false)
+    assert.equal(isBatchAcceptable('aga_repartition'), false)
+  })
+
+  test('laisse passer tout le reste', () => {
+    for (const k of KINDS.filter((k) => k !== 'vendor_expense' && k !== 'aga_repartition')) {
+      assert.equal(isBatchAcceptable(k), true, k)
+    }
   })
 })

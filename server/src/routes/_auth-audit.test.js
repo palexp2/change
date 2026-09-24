@@ -21,6 +21,9 @@ const PUBLIC_ROUTES = new Map([
   ['GET /api/discovery-form-schema/images/:filename', 'Illustrations publiques du formulaire client ; nom UUID validé, dépôt protégé par requireAuth'],
   ['POST /api/auth/login',                           'login endpoint (credentials)'],
   ['POST /api/auth/setup',                           'first-run setup (guarded by existing-user count check)'],
+  ['POST /api/auth/forgot-password',                 'Mot de passe oublié — réponse identique que le compte existe ou non, limité en débit (forgotRateLimit)'],
+  ['POST /api/auth/reset-password/check',            'Validité d’un lien de réinitialisation — le jeton de l’URL est le secret, ne renvoie que valid + courriel'],
+  ['POST /api/auth/reset-password',                  'Pose du nouveau mot de passe — le jeton à usage unique (haché en base, 1 h) est le secret'],
   ['POST /api/stripe-webhooks/',                     'Stripe webhook (verifies stripe-signature, fail-closed if secret missing)'],
   ['POST /api/stripe-webhooks/:legacy',              'Stripe webhook legacy path (same signature verification)'],
   ['POST /api/connectors/airtable/webhook-ping',     'Airtable webhook ping (no payload trusted, only triggers lookup by webhook id)'],
@@ -33,6 +36,8 @@ const PUBLIC_ROUTES = new Map([
   ['POST /api/instagram/manychat',                   'Webhook ManyChat — secret partagé comparé via timingSafeEqual (connector_config manychat/webhook_secret), 503 fail-closed si non configuré'],
   ['POST /api/hooks/telnyx/dlr',                     'Webhook Telnyx (DLR) — authentifié par signature Telnyx sur le body brut (voir routes/telnyx-webhooks.js)'],
   ['POST /api/plaid/webhook/',                       'Webhook Plaid — signature JWT vérifiée sur le corps brut (verifyWebhook, 401 si invalide)'],
+  ['POST /api/quickbooks/webhook/',                  'Avis QuickBooks — HMAC-SHA256 du corps brut comparé en timingSafeEqual au jeton de connector_config ; 503 fail-closed sans jeton, 401 si signature invalide'],
+  ['GET /api/quickbooks/webhook/',                   "Validation d'endpoint par Intuit — ne lit rien, ne renvoie rien"],
   ['GET /api/public/ticket-survey/:token',           'Sondage billet public — le token dans l\'URL est le secret'],
   ['POST /api/public/ticket-survey/:token',          'Sondage billet public — le token dans l\'URL est le secret'],
   ['POST /api/calls/ftp-ingest',                     'FTP ingest (requireFtpSecret — X-FTP-Secret header)'],
@@ -57,12 +62,13 @@ const PUBLIC_ROUTES = new Map([
 
 // Middleware names that count as "this route is protected". If a route's
 // first-positional-arg-after-path matches one of these tokens, it's OK.
-const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin', 'requireHROrAdmin'])
+const AUTH_TOKENS = new Set(['requireAuth', 'requireAdmin', 'requireHROrAdmin', 'requireHR'])
 
 // Mount paths, must stay in sync with index.js. Derived from routes/ filenames
 // where trivial (e.g. companies.js → /api/companies), overridden for the rest.
 const MOUNTS = {
   'bankRules.js':               '/api/bank/rules',
+  'bankStatements.js':          '/api/bank/statements',
   'discovery-form-schema.js':   '/api/discovery-form-schema',
   'achats-fournisseurs.js':     '/api/achats-fournisseurs',
   'scrapers.js':                '/api/scrapers',
@@ -77,6 +83,10 @@ const MOUNTS = {
   'bank.js':                    '/api/bank',
   'month-end.js':               '/api/month-end',
   'anomalies.js':               '/api/anomalies',
+  'audit.js':                   '/api/audit',
+  'venn.js':                   '/api/venn',
+  'payment-cards.js':           '/api/payment-cards',
+  'clientMap.js':               '/api/client-map',
   'changelog.js':               '/api/changelog',
   'hub.js':                     '/api/hub',
   'activity.js':                '/api/activity',
@@ -130,6 +140,9 @@ const MOUNTS = {
   // plaid.js expose deux routeurs : le routeur applicatif (JWT) et le webhook
   // Plaid monté à part dans index.js (corps brut pour la signature).
   'plaid.js':                   { router: '/api/plaid', plaidWebhookRouter: '/api/plaid/webhook' },
+  // Avis instantanés de QuickBooks — monté à part dans index.js (corps brut
+  // nécessaire à la vérification de la signature Intuit).
+  'quickbooks-webhook.js':      '/api/quickbooks/webhook',
   // public-files.js exporte deux routers : publicFilesRouter (auth) monté
   // sur /api/public-files, et publicFileServeRouter (token-based) monté
   // sur /erp/p. Le parser distingue les routes par variable de routeur.
@@ -147,6 +160,7 @@ const MOUNTS = {
   'serials.js':                 '/api/serials',
   'shipments.js':               '/api/shipments',
   'stock-movements.js':         '/api/stock-movements',
+  'fournitures.js':             '/api/fournitures',
   'customer-pay.js':            '/erp/pay',
   'customer-post-payment.js':   '/api/customer/post-payment',
   'email-tracking.js':          '/api/email-tracking',

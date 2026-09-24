@@ -8,6 +8,7 @@ import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
+import DebtPaymentPublish from '../components/DebtPaymentPublish.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
@@ -68,9 +69,9 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
         {field('lender', 'Prêteur')}
         {field('loan_number', 'No de prêt')}
         {field('principal', 'Montant du prêt', { type: 'number', step: '0.01' })}
-        {field('qb_debt_acctnum', 'No de compte de dette QB')}
-        {field('qb_interest_acctnum', "No de compte d'intérêts QB")}
-        {field('qb_bank_acctnum', 'No de compte de banque QB')}
+        {field('qb_debt_acctnum', 'No de compte de dette QuickBooks')}
+        {field('qb_interest_acctnum', "No de compte d'intérêts QuickBooks")}
+        {field('qb_bank_acctnum', 'No de compte de banque QuickBooks')}
         {/* Ce qui apparaît au relevé quand le versement sort (« BDC »,
             « VILLE DE QUEBEC ») : sans lui, aucun versement n'est reconnu au
             compte et la colonne « passé à la banque » reste muette. */}
@@ -87,7 +88,7 @@ function DebtModal({ debt, onClose, onSaved, onDeleted }) {
             {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
           </select>
         </div>
-        {field('annual_fee_acctnum', 'No de compte QB des frais')}
+        {field('annual_fee_acctnum', 'No de compte QuickBooks des frais')}
         {field('annual_fee_label', 'Libellé des frais')}
         {!isNew && (
           <div>
@@ -358,7 +359,7 @@ function QbBalanceCheck({ debt }) {
   }, [debt.id, debt.qb_debt_acctnum, debt.payment_count, debt.pushed_count])
 
   if (!debt.qb_debt_acctnum) return null
-  if (!state) return <span className="text-xs text-slate-400" data-testid="qb-balance-check">Vérification du solde QB…</span>
+  if (!state) return <span className="text-xs text-slate-400" data-testid="qb-balance-check">Vérification du solde dans QuickBooks…</span>
   if (state.error) {
     return <span className="text-xs text-slate-400" data-testid="qb-balance-check">Solde QB indisponible : {state.error}</span>
   }
@@ -378,72 +379,12 @@ function QbBalanceCheck({ debt }) {
 }
 
 function PublishModal({ debt, payment, onClose, onPublished }) {
-  const [publishing, setPublishing] = useState(false)
-  const { addToast } = useToast()
-  const total = Math.round((payment.principal + payment.interest) * 100) / 100
-
-  async function publish() {
-    setPublishing(true)
-    try {
-      const r = await api.ltDebts.publishPayment(payment.id)
-      addToast({
-        message: r.warning || `Dépense publiée dans QB (#${r.qb_txn_id}) — cédule jointe en PDF`,
-        type: r.warning ? 'error' : 'success',
-      })
-      onPublished()
-      onClose()
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setPublishing(false)
-    }
-  }
-
-  const row = (label, acct, dr, cr) => (
-    <tr className="border-t border-slate-100">
-      <td className="py-1.5 pr-3">{label}</td>
-      <td className="py-1.5 pr-3 text-slate-500 font-mono text-xs">{acct ? `#${acct}` : <span className="text-red-600">manquant</span>}</td>
-      <td className="py-1.5 pr-3 text-right tabular-nums">{dr ? fmtMoney(dr, debt.currency) : ''}</td>
-      <td className="py-1.5 text-right tabular-nums">{cr ? fmtMoney(cr, debt.currency) : ''}</td>
-    </tr>
-  )
-
   return (
     <Modal isOpen onClose={onClose} title={`Comptabiliser le versement du ${fmtDate(payment.payment_date)}`} size="md">
-      <p className="text-sm text-slate-600 mb-3">
-        Dépense qui sera publiée dans QuickBooks ({debt.label}{debt.loan_number ? ` · prêt ${debt.loan_number}` : ''}) :
-      </p>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-xs text-slate-400">
-            <th className="text-left font-medium pb-1">Compte</th><th className="text-left font-medium pb-1">No</th>
-            <th className="text-right font-medium pb-1">Débit</th><th className="text-right font-medium pb-1">Crédit</th>
-          </tr>
-        </thead>
-        <tbody>
-          {payment.principal > 0 && row('Dette à long terme (capital)', debt.qb_debt_acctnum, payment.principal, null)}
-          {payment.interest > 0 && row("Frais d'intérêts", debt.qb_interest_acctnum, payment.interest, null)}
-          {row('Banque', debt.qb_bank_acctnum, null, total)}
-        </tbody>
-        <tfoot>
-          <tr className="border-t border-slate-200 font-medium">
-            <td className="py-1.5" colSpan={2}>Total</td>
-            <td className="py-1.5 text-right tabular-nums">{fmtMoney(payment.principal + payment.interest, debt.currency)}</td>
-            <td className="py-1.5 text-right tabular-nums">{fmtMoney(total, debt.currency)}</td>
-          </tr>
-        </tfoot>
-      </table>
-      {payment.balance_after != null && (
-        <p className="text-xs text-slate-500 mt-2">Solde de la dette après ce versement : {fmtMoney(payment.balance_after, debt.currency)}</p>
-      )}
-      {/* Bouton requis : action transactionnelle (publication d'une dépense dans QB) */}
-      <div className="flex justify-end gap-2 mt-4">
-        <button onClick={onClose} className="px-3 py-2 text-sm text-slate-600 hover:bg-slate-50 rounded-lg">Annuler</button>
-        <button onClick={publish} disabled={publishing}
-          className="px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-          {publishing ? 'Publication…' : 'Publier dans QuickBooks'}
-        </button>
-      </div>
+      <DebtPaymentPublish
+        debt={debt} payment={payment} onCancel={onClose}
+        onPublished={() => { onPublished(); onClose() }}
+      />
     </Modal>
   )
 }
@@ -497,7 +438,7 @@ const MONTHS = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin',
 
 function paymentStatus(p, qbMissing) {
   const txnLabel = `${p.qb_txn_type === 'purchase' ? 'Dépense' : 'JE'} #${p.qb_txn_id}`
-  if (p.qb_txn_id && qbMissing?.has(p.id)) return { label: `Non comptabilisé · ${txnLabel} supprimée dans QB`, color: 'red', missing: true }
+  if (p.qb_txn_id && qbMissing?.has(p.id)) return { label: `Non comptabilisé · ${txnLabel} supprimée dans QuickBooks`, color: 'red', missing: true }
   if (p.qb_txn_id) return { label: `Publié · ${txnLabel}`, color: 'green' }
   if (p.pushed_at) return { label: 'Comptabilisé', color: 'green' }
   if (p.payment_date <= today()) return { label: 'À comptabiliser', color: 'amber' }
@@ -643,7 +584,7 @@ export default function DettesLT() {
                   <div className="text-xs text-slate-500 mt-0.5">
                     Dette #{debt.qb_debt_acctnum || '—'} · Intérêts #{debt.qb_interest_acctnum || '—'} · Banque #{debt.qb_bank_acctnum || '—'}
                     {(!debt.qb_debt_acctnum || !debt.qb_interest_acctnum || !debt.qb_bank_acctnum) &&
-                      <span className="text-amber-600 ml-1">· comptes QB incomplets</span>}
+                      <span className="text-amber-600 ml-1">· comptes QuickBooks incomplets</span>}
                   </div>
                   {debt.annual_rate != null && (
                     <div className="text-xs text-slate-500 mt-0.5" data-testid="debt-terms">
@@ -717,7 +658,7 @@ export default function DettesLT() {
                                 className="px-2 py-1 text-xs font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-md">
                                 Comptabiliser
                               </button>
-                              <button onClick={() => markBooked(p)} title="Déjà comptabilisé à la main dans QB — marquer sans publier"
+                              <button onClick={() => markBooked(p)} title="Déjà comptabilisé à la main dans QuickBooks — marquer sans publier"
                                 className="ml-1.5 px-2 py-1 text-xs text-slate-500 hover:bg-slate-50 border border-slate-200 rounded-md">
                                 <CheckCircle2 size={13} className="inline -mt-0.5" /> Marquer
                               </button>

@@ -1,3 +1,4 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useMemo, lazy, Suspense } from 'react'
 import { EyeOff } from 'lucide-react'
 import { useFieldVisibilityRules, useFieldGuardContext } from '../lib/useFieldVisibilityRules.js'
@@ -66,7 +67,7 @@ export function FieldGuard({
   // admin où on garde un indicateur très discret pour pouvoir y revenir.
   // (Sinon on ne pourrait jamais retirer la règle via clic droit.)
   if (hidden) {
-    if (user?.role !== 'admin') return null
+    if (!hasRole(user, 'admin')) return null
     return (
       <>
         <div
@@ -113,7 +114,7 @@ export function FieldGuard({
               <div className="px-3 py-1.5 text-xs text-slate-400 border-b border-slate-100">
                 Champ : <span className="font-medium text-slate-600">{label || fieldId}</span>
               </div>
-              {user?.role === 'admin' ? (
+              {hasRole(user, 'admin') ? (
                 <button
                   onClick={openModal}
                   className="flex items-center gap-2 w-full px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 text-left"

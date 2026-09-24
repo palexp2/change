@@ -55,6 +55,7 @@ export const NAV_SUBSECTIONS = {
   '/tests-antoine': {
     kind: 'routes', items: [
       { to: '/tests-antoine', label: 'Import MAPAQ (serres)' },
+      { to: '/tests-antoine/carte', label: 'Carte des clients' },
     ],
   },
 

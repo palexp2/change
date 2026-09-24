@@ -1,5 +1,6 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
-import { ExternalLink, FileText } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
+import AttachmentPreview from './AttachmentPreview.jsx'
 import api from '../lib/api.js'
 import RecordPeekDrawer from './RecordPeekDrawer.jsx'
 import Spinner from './Spinner.jsx'
@@ -230,7 +231,22 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
                         </div>
                         <div className="flex items-center gap-3">
                           <span className="font-medium text-slate-700 text-sm">{inv.amount.toFixed(2)} {inv.currency}</span>
-                          {inv.pdf && <a onClick={e => e.stopPropagation()} href={inv.pdf} target="_blank" rel="noopener noreferrer" className="link-record text-xs inline-flex items-center gap-1"><FileText size={11} /></a>}
+                          {/* stopPropagation : la vignette et sa modale (portail, mais même arbre
+                              React) ne doivent pas ouvrir la fiche facture de la ligne. */}
+                          {inv.pdf && inv.id && (
+                            <span onClick={e => e.stopPropagation()} className="inline-flex">
+                              <AttachmentPreview
+                                url={`/erp/api/projets/abonnements/${aboState.id}/invoices/${inv.id}/pdf`}
+                                fileName={`${inv.number || inv.id}.pdf`}
+                                title={inv.number || 'Facture'}
+                                kind="pdf"
+                                size="compact"
+                                showFileName={false}
+                                overModal
+                                testId={`abo-invoice-pdf-${inv.id}`}
+                              />
+                            </span>
+                          )}
                         </div>
                       </div>
                       {(inv.lines?.length > 0 || inv.discounts?.length > 0) && (

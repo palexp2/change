@@ -221,8 +221,12 @@ export function recordLinkTargetOf(erpTable, column) {
 const RESULT_TYPE_BY_FIELD_TYPE = {
   number: 'number', currency: 'number', duration: 'number', rating: 'number',
   percent: 'percent', date: 'date', url: 'url',
+  // Pièces jointes : un lookup vers un champ « Attachement » rapatrie des
+  // descripteurs de fichiers, pas du texte. Sans ce format, la cellule affichait
+  // le JSON brut au lieu des vignettes (cf. attachmentCopyExpr ci-dessous).
+  attachment: 'attachment',
 }
-const LOOKUP_RESULT_TYPES = new Set(['text', 'number', 'date', 'url', 'percent'])
+const LOOKUP_RESULT_TYPES = new Set(['text', 'number', 'date', 'url', 'percent', 'attachment'])
 
 // Colonne NATIVE (aucune ligne dans custom_fields : son type ne vit que dans
 // tableDefs.js, côté client) : on lit le type déclaré SQLite, et le nom de
@@ -645,6 +649,47 @@ function linkedKeysCte(colRef) {
     `substr(_rest, instr(_rest, ',') + 1) FROM _keys WHERE _rest <> '')`
 }
 
+// ── Lookup vers un champ « Attachement » ────────────────────────────────────
+//
+// La colonne d'un champ Attachement porte des descripteurs de fichiers
+// ([{ id, name, size, type }]) ; les octets se servent par
+// /erp/api/custom-field-files/<champ>/<enregistrement>/<fichier>. Recopier les
+// descripteurs tels quels ne suffit donc pas : la ligne QUI AFFICHE le lookup
+// n'est pas celle qui PORTE les fichiers, et le champ affiché n'est pas celui
+// qui les stocke — sans les deux identifiants SOURCE, aucune URL ne se
+// construit et la cellule retombait sur du JSON brut. On les injecte donc dans
+// chaque descripteur au moment de la recopie.
+
+// Id du champ « Attachement » (kind='data') d'une colonne de la table liée.
+// NULL quand la colonne n'en est pas un — ou quand c'est elle-même un lookup
+// d'attachements, auquel cas sa valeur porte DÉJÀ les identifiants source et se
+// recopie telle quelle.
+function attachmentSourceFieldId(table, column) {
+  return db.prepare(
+    `SELECT id FROM custom_fields
+     WHERE erp_table=? AND column_name=? AND type='attachment'
+       AND (kind IS NULL OR kind='data') AND deleted_at IS NULL`
+  ).get(table, column)?.id || null
+}
+
+const sqlQuote = s => `'${String(s).replace(/'/g, "''")}'`
+
+// Un tableau JSON garanti : json_each() LÈVE sur du JSON invalide, ce qui
+// casserait la vue entière (même prudence que linkedKeysCte).
+const jsonArrayOrEmpty = ref =>
+  `CASE WHEN json_valid(${ref}) AND json_type(${ref})='array' THEN ${ref} ELSE '[]' END`
+
+// Recopie des descripteurs d'UNE ligne source, enrichis du champ et de
+// l'enregistrement qui portent réellement les fichiers. `[]` → NULL : « aucune
+// pièce jointe » se lit comme n'importe quelle cellule vide.
+function attachmentCopyExpr(valueRef, recordIdRef, srcFieldId) {
+  return `nullif(CASE WHEN ${valueRef} IS NULL THEN NULL ELSE (` +
+    `SELECT json_group_array(json_patch(_af.value, ` +
+    `json_object('field_id', ${sqlQuote(srcFieldId)}, 'record_id', ${recordIdRef}))) ` +
+    `FROM json_each(${jsonArrayOrEmpty(valueRef)}) AS _af ` +
+    `WHERE json_type(_af.value)='object') END, '[]')`
+}
+
 // Expression SELECT d'un lookup limité. Une seule valeur (n=1) reste scalaire —
 // donc typée comme la colonne récupérée (date, nombre…) ; au-delà, les valeurs
 // sont listées « , » comme un rollup ARRAY.
@@ -660,6 +705,20 @@ function limitedLookupExpr(cf, erpTable, n, dir) {
     `FROM _keys JOIN ${tgt} AS _t ON (_t.id = _keys._key${byAirtable}) ` +
     `WHERE _keys._i > 0 AND _keys._key <> ''${soft} ` +
     `ORDER BY _keys._i ${order} LIMIT ${n}`
+  // Pièces jointes : les descripteurs des N enregistrements liés se fondent en
+  // UN tableau JSON (pas une liste « , » : ce ne sont pas des libellés), chacun
+  // marqué de l'enregistrement d'où il vient.
+  const attachFieldId = attachmentSourceFieldId(tgt, cf.lookup_target_column)
+  if (attachFieldId) {
+    if (n === 1) {
+      return `(${cte} SELECT ${attachmentCopyExpr('_t.' + cf.lookup_target_column, '_t.id', attachFieldId)} ${rows}) AS ${cf.column_name}`
+    }
+    return `(${cte} SELECT nullif(json_group_array(json_patch(_af.value, ` +
+      `json_object('field_id', ${sqlQuote(attachFieldId)}, 'record_id', _s._id))), '[]') ` +
+      `FROM (SELECT _t.${cf.lookup_target_column} AS _v, _t.id AS _id ${rows}) AS _s, ` +
+      `json_each(${jsonArrayOrEmpty('_s._v')}) AS _af ` +
+      `WHERE json_type(_af.value)='object') AS ${cf.column_name}`
+  }
   if (n === 1) return `(${cte} SELECT _t.${cf.lookup_target_column} ${rows}) AS ${cf.column_name}`
   return `(${cte} SELECT group_concat(_v, ', ') FROM ` +
     `(SELECT _t.${cf.lookup_target_column} AS _v ${rows})) AS ${cf.column_name}`
@@ -680,8 +739,12 @@ function buildVirtualColumn(cf, erpTable, alias) {
     const { n, dir } = normalizeLookupLimit(cf.lookup_limit_n, cf.lookup_limit_dir)
     if (n) return { selectExpr: limitedLookupExpr(cf, erpTable, n, dir), joins: [] }
     const a = `_j${++alias.n}`
+    const attachFieldId = attachmentSourceFieldId(cf.lookup_target_table, cf.lookup_target_column)
+    const value = attachFieldId
+      ? attachmentCopyExpr(`${a}.${cf.lookup_target_column}`, `${a}.id`, attachFieldId)
+      : `${a}.${cf.lookup_target_column}`
     return {
-      selectExpr: `${a}.${cf.lookup_target_column} AS ${cf.column_name}`,
+      selectExpr: `${value} AS ${cf.column_name}`,
       joins: [`LEFT JOIN ${cf.lookup_target_table} AS ${a} ON ${a}.id = ${erpTable}.${cf.lookup_fk}`],
     }
   }

@@ -90,6 +90,38 @@ export function normalizeDateFormat(fmt) {
   return DATE_DISPLAY_FORMATS.some(f => f.value === fmt) ? fmt : 'iso_date'
 }
 
+// Le format choisi montre-t-il l'heure ? Si oui, la saisie du champ propose
+// aussi l'heure (sinon le format « + heure » n'aurait rien à afficher).
+export function dateFormatHasTime(fmt) {
+  const f = normalizeDateFormat(fmt)
+  return f === 'iso_24h' || f === 'iso_12h' || f === 'local_datetime'
+}
+
+// Valeur stockée → valeur d'un <input type="datetime-local"> (YYYY-MM-DDTHH:MM,
+// fuseau du navigateur). Une date métier sans heure part à minuit.
+export function toDateTimeLocalInput(v) {
+  if (!v) return ''
+  const s = String(v)
+  const dateOnly = s.match(/^(\d{4}-\d{2}-\d{2})$/) || s.match(/^(\d{4}-\d{2}-\d{2})T00:00:00(?:\.0+)?Z$/)
+  if (dateOnly) return `${dateOnly[1]}T00:00`
+  const dt = new Date(s)
+  if (isNaN(dt)) return ''
+  return `${ymdLocal(dt)}T${pad(dt.getHours())}:${pad(dt.getMinutes())}`
+}
+
+// Saisie datetime-local → ISO avec le décalage local (« 2026-08-20T20:00:00-04:00 »).
+// Pas de `toISOString()` : 20 h à Montréal = minuit UTC, que fmtDate prendrait
+// pour une date sans heure (encodage Airtable).
+export function fromDateTimeLocalInput(s) {
+  if (!s) return ''
+  const dt = new Date(s)
+  if (isNaN(dt)) return ''
+  const off = -dt.getTimezoneOffset()
+  const sign = off >= 0 ? '+' : '-'
+  const abs = Math.abs(off)
+  return `${ymdLocal(dt)}T${pad(dt.getHours())}:${pad(dt.getMinutes())}:00${sign}${pad(Math.floor(abs / 60))}:${pad(abs % 60)}`
+}
+
 const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre']
 
 // Rendu d'une date selon le format choisi par l'utilisateur. Une valeur

@@ -10,23 +10,40 @@ import {
   parseStatementText, importTransactions, findCandidates,
   autoMatchAccount, refreshStatuses, deriveStatus,
 } from '../services/bankReconciliation.js'
-import { listQbBankAccounts, linkAccountToQb, storedQbUrl } from '../services/bankQbLink.js'
+import { listQbBankAccounts, storedQbUrl } from '../services/bankQbLink.js'
+import { touchBankTxns } from '../services/realtimeEmitters.js'
 import { summarizeAccount, compareWithQb } from '../services/bankReconcileSummary.js'
-import { auditPlaidAccountVsQb } from '../services/plaidQbAudit.js'
+import { verifyAccount } from '../services/bankQbVerify.js'
+import { shiftDate } from '../utils/datetime.js'
 import { planRepair, applyRepair } from '../services/bankImportRepair.js'
 import { mergeSheetDuplicates, countSheetDuplicates } from '../services/plaidSync.js'
 import { resolveVendorFromBankLabel, invalidateBankLabelCache } from '../services/scrapers/vendorFromBankLabel.js'
 import { proposalsForTxn, proposalSummary, decode as decodeProposal } from '../services/bankProposals/store.js'
-import { acceptProposal, refuseProposal } from '../services/bankProposals/apply.js'
+import { ruleForTxn } from '../services/bankRules/store.js'
+import { acceptProposal, refuseProposal, getProposal } from '../services/bankProposals/apply.js'
+import { isBatchAcceptable, PUBLISHES_TO_QB } from '../services/bankProposals/model.js'
 import {
   BankActionError, suggestAddDefaults, addExpenseFromTxn,
   findTransferCandidates, linkTransfer, unlinkTransfer, pushTransferToQB,
 } from '../services/bankActions.js'
+import { matchedDocState, publishMatchedDoc } from '../services/bankMatchPublish.js'
+import { findInvoiceCandidates } from '../services/bankInvoiceMatch.js'
+import { findDocCandidates } from '../services/bankReceiptMatch.js'
+import { missingInvoiceAgeDays } from '../services/scrapers/invoiceNeeds.js'
 
 const router = Router()
 router.use(requireAuth)
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
+
+// Le fichier de suivi Google suit la page : dès qu'une ligne change ici, la
+// recopie est annoncée (elle part quelques secondes plus tard, une seule fois
+// pour toute une rafale — voir services/trxSheetMirror.js).
+function mirrorSoon(reason) {
+  import('../services/trxSheetMirror.js')
+    .then((m) => m.mirrorOnChange(reason))
+    .catch(() => { /* miroir indisponible : la page n'en dépend pas */ })
+}
 
 function getAccount(id) {
   return db.prepare('SELECT * FROM bank_accounts WHERE id=? AND deleted_at IS NULL').get(id)
@@ -39,6 +56,7 @@ router.get('/accounts', (req, res) => {
     SELECT a.*,
       (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL) AS txn_count,
       (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.status='a_traiter') AS a_traiter_count,
+      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.review_flag=1) AS review_count,
       (SELECT MAX(t.txn_date) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL) AS last_txn_date
     FROM bank_accounts a WHERE a.deleted_at IS NULL
     ORDER BY a.sort_order, a.name COLLATE NOCASE
@@ -46,7 +64,7 @@ router.get('/accounts', (req, res) => {
   res.json(accounts)
 })
 
-const ACCOUNT_FIELDS = ['name', 'kind', 'currency', 'account_number', 'institution', 'sort_order', 'active', 'qb_account_id']
+const ACCOUNT_FIELDS = ['name', 'kind', 'currency', 'account_number', 'institution', 'sort_order', 'active', 'qb_account_id', 'bookmark_txn_id']
 
 router.post('/accounts', (req, res) => {
   const name = String(req.body.name || '').trim()
@@ -105,7 +123,7 @@ router.get('/accounts/:id/transactions', (req, res) => {
   // lien direct vers la transaction QB si le document a été publié.
   const achatLabel = db.prepare('SELECT vendor, total_cad AS total, quickbooks_id, type FROM achats_fournisseurs WHERE id=?')
   const receiptLabel = db.prepare('SELECT company AS vendor, total, quickbooks_id, quickbooks_type FROM sale_receipts WHERE id=?')
-  const payoutQb = db.prepare('SELECT qb_deposit_id FROM stripe_payouts WHERE id=?')
+  const payoutQb = db.prepare('SELECT qb_deposit_id, stripe_id FROM stripe_payouts WHERE id=?')
   // Contrepartie d'un virement interne : le « document » de la ligne est
   // l'autre compte, pas une facture.
   const transferInfo = db.prepare(`
@@ -140,6 +158,8 @@ router.get('/accounts/:id/transactions', (req, res) => {
       if (doc?.quickbooks_id) t.qb_url = qbEntityUrl(doc.type === 'bill' ? 'bill' : 'expense', doc.quickbooks_id)
     } else if (t.matched_type === 'receipt') {
       doc = receiptLabel.get(t.matched_id)
+      // Le chemin qui ouvre le document lui-même en panneau, depuis le tableau.
+      t.matched_path = `/sale-receipts/${t.matched_id}`
       if (doc?.quickbooks_id) {
         const entity = doc.quickbooks_type === 'bill' ? 'bill'
           : doc.quickbooks_type === 'cc_credit' ? 'creditcardcredit'
@@ -148,8 +168,9 @@ router.get('/accounts/:id/transactions', (req, res) => {
       }
     } else if (t.matched_type === 'stripe_payout') {
       doc = { vendor: 'Payout Stripe' }
-      const depositId = payoutQb.get(t.matched_id)?.qb_deposit_id
-      if (depositId) t.qb_url = qbEntityUrl('deposit', depositId)
+      const payout = payoutQb.get(t.matched_id)
+      if (payout?.qb_deposit_id) t.qb_url = qbEntityUrl('deposit', payout.qb_deposit_id)
+      if (payout?.stripe_id) t.matched_path = `/stripe-payouts/${payout.stripe_id}`
     }
     t.matched_label = doc?.vendor || null
   }
@@ -158,11 +179,49 @@ router.get('/accounts/:id/transactions', (req, res) => {
   // et les filtres du tableau fonctionnent comme sur n'importe quelle colonne.
   for (const t of rows) t.vendor_name = t.matched_label || t.resolved_vendor?.name || null
   // Ce qui attend une décision sur cette ligne (une requête pour tout le compte).
+  // `publishing_count` isole celles qui écriraient dans QuickBooks : elles ne
+  // partent jamais en lot, la page a besoin de le dire AVANT le clic.
   const pending = new Map(db.prepare(`
-    SELECT bank_txn_id, COUNT(*) n FROM bank_proposals
-    WHERE status='proposee' AND account_id=? GROUP BY bank_txn_id
-  `).all(account.id).map((r) => [r.bank_txn_id, r.n]))
-  for (const t of rows) t.proposal_count = pending.get(t.id) || 0
+    SELECT bank_txn_id, kind, COUNT(*) n FROM bank_proposals
+    WHERE status='proposee' AND account_id=? GROUP BY bank_txn_id, kind
+  `).all(account.id).reduce((acc, r) => {
+    const cur = acc.get(r.bank_txn_id) || { n: 0, publishing: 0 }
+    cur.n += r.n
+    if (PUBLISHES_TO_QB.has(r.kind)) cur.publishing += r.n
+    acc.set(r.bank_txn_id, cur)
+    return acc
+  }, new Map()))
+  for (const t of rows) {
+    const p = pending.get(t.id)
+    t.proposal_count = p?.n || 0
+    t.publishing_count = p?.publishing || 0
+  }
+  // La règle qui a préparé l'écriture : la ligne doit pouvoir dire d'où vient
+  // ce qu'on lui propose (le champ était stocké et n'était affiché nulle part).
+  const ruleNames = new Map(db.prepare('SELECT id, name FROM bank_rules').all().map((r) => [r.id, r.name]))
+  for (const t of rows) t.rule_name = t.applied_rule_id ? (ruleNames.get(t.applied_rule_id) || null) : null
+  // Sorties d'argent qui attendent encore leur pièce justificative. Le drapeau
+  // est posé ici pour que la pastille « sans facture » de la barre d'outils
+  // filtre comme n'importe quelle autre colonne du tableau.
+  const ageThreshold = missingInvoiceAgeDays()
+  const needs = new Map(db.prepare(`
+    SELECT n.bank_txn_id, n.status,
+           CAST(julianday('now') - julianday(n.txn_date) AS INTEGER) AS age_days,
+           v.name AS vendor_name, s.label AS collector_label
+    FROM invoice_needs n
+    JOIN bank_transactions t ON t.id = n.bank_txn_id
+    LEFT JOIN vendor_profiles v ON v.id = n.vendor_profile_id
+    LEFT JOIN scraper_accounts s ON s.id = n.scraper_account_id
+    WHERE n.status != 'trouvee' AND t.account_id = ? AND t.deleted_at IS NULL
+  `).all(account.id).map(r => [r.bank_txn_id, r]))
+  for (const t of rows) {
+    const n = needs.get(t.id)
+    t.invoice_need = n
+      ? { status: n.status, age_days: n.age_days, vendor: n.vendor_name, collector: n.collector_label,
+          overdue: n.age_days >= ageThreshold }
+      : null
+    t.missing_invoice = n ? 1 : 0
+  }
   res.json(rows)
 })
 
@@ -221,19 +280,10 @@ router.get('/qb-accounts', async (req, res) => {
   }
 })
 
-// Apparie les transactions du compte à leurs transactions QuickBooks via le
-// grand livre (montant exact + date ±4 jours). Idempotent : ne touche que les
-// lignes sans qb_txn_id.
-router.post('/accounts/:id/qb-link', async (req, res) => {
-  const account = getAccount(req.params.id)
-  if (!account) return res.status(404).json({ error: 'Not found' })
-  if (!account.qb_account_id) return res.status(400).json({ error: 'Aucun compte QuickBooks mappé pour ce compte' })
-  try {
-    res.json(await linkAccountToQb(account.id))
-  } catch (e) {
-    res.status(502).json({ error: e.message })
-  }
-})
+// L'appariement naïf (montant exact, ±4 jours) a été débranché le 2026-09-15 :
+// deux matchers qui se contredisaient sur les mêmes lignes, et c'est celui-ci
+// qui perdait — 83 des 94 anomalies du 22 août 2026 étaient ses faux positifs.
+// Tout passe désormais par la recherche approfondie (bankQbVerify.js).
 
 // Relance le matching automatique sur les lignes à traiter.
 router.post('/accounts/:id/automatch', (req, res) => {
@@ -266,15 +316,19 @@ router.get('/accounts/:id/qb-compare', async (req, res) => {
   }
 })
 
-// Revérification robuste QuickBooks (comptes Plaid uniquement) : recherche
-// approfondie (bankQbSearch.js) sur tout l'historique non reconcilié — voir
-// services/plaidQbAudit.js. sinceDays omis = tout l'historique.
+// Vérification approfondie d'un compte contre QuickBooks — TOUS les comptes
+// mappés, plus seulement ceux branchés à Plaid. `deep: true` (ou sinceDays
+// omis) couvre tout l'historique et efface les liens devenus introuvables.
 router.post('/accounts/:id/qb-audit', async (req, res) => {
   const account = getAccount(req.params.id)
   if (!account) return res.status(404).json({ error: 'Not found' })
   const sinceDays = req.body?.sinceDays != null ? Number(req.body.sinceDays) : null
   try {
-    res.json(await auditPlaidAccountVsQb(account.id, { sinceDays, trigger: 'manual' }))
+    res.json(await verifyAccount(account.id, {
+      from: sinceDays ? shiftDate(new Date().toISOString().slice(0, 10), -sinceDays) : null,
+      deep: !sinceDays,
+      trigger: 'manuel',
+    }))
   } catch (e) {
     res.status(400).json({ error: e.message })
   }
@@ -297,7 +351,7 @@ router.post('/accounts/:id/repair-import', requireAdmin, async (req, res) => {
     let qb = null
     let qbError = null
     if (account.qb_account_id) {
-      try { qb = await auditPlaidAccountVsQb(account.id, { trigger: 'reparation' }) } catch (e) { qbError = e.message }
+      try { qb = await verifyAccount(account.id, { deep: true, trigger: 'reparation' }) } catch (e) { qbError = e.message }
     }
     res.json({ ...plan, applied: true, ...applied, qb, qbError, summary: summarizeAccount(account.id) })
   } catch (e) {
@@ -305,23 +359,94 @@ router.post('/accounts/:id/repair-import', requireAdmin, async (req, res) => {
   }
 })
 
-// Rapprochement complet en une action : appariement aux documents ERP puis
-// liaison au grand livre QuickBooks, avec le résumé recalculé en retour.
-router.post('/accounts/:id/reconcile-auto', async (req, res) => {
+// « Mettre à jour » — LE seul bouton de la page depuis le 2026-09-15. Il y en
+// avait quatre (« Rapprocher », « Recalculer QuickBooks », « Chercher dans tout
+// QuickBooks », « Relire TRX_Orisha ») et personne ne savait lequel faisait
+// quoi. Une seule action, trois temps : apparier aux documents de l'ERP,
+// vérifier dans QuickBooks, recalculer l'écart. Le tout raconté en une phrase.
+router.post('/accounts/:id/update-all', async (req, res) => {
   const account = getAccount(req.params.id)
   if (!account) return res.status(404).json({ error: 'Not found' })
+
   const auto = autoMatchAccount(account.id)
   let qb = null
   let qbError = null
   if (account.qb_account_id) {
-    try { qb = await linkAccountToQb(account.id) } catch (e) { qbError = e.message }
+    try { qb = await verifyAccount(account.id, { trigger: 'manuel' }) } catch (e) { qbError = e.message }
   }
-  res.json({ ...auto, qb, qbError, summary: summarizeAccount(account.id) })
+
+  const said = []
+  if (auto.matched) said.push(`${auto.matched} document${auto.matched > 1 ? 's' : ''} apparié${auto.matched > 1 ? 's' : ''}`)
+  if (qb?.linked) said.push(`${qb.linked} écriture${qb.linked > 1 ? 's' : ''} QuickBooks retrouvée${qb.linked > 1 ? 's' : ''}`)
+  if (qb?.proposed) said.push(`${qb.proposed} à confirmer`)
+  if (qbError) said.push(`QuickBooks indisponible (${qbError})`)
+  if (!said.length) said.push('rien de neuf')
+
+  res.json({ ...auto, qb, qbError, message: said.join(' · '), summary: summarizeAccount(account.id) })
 })
 
 function getTxn(id) {
   return db.prepare('SELECT * FROM bank_transactions WHERE id=? AND deleted_at IS NULL').get(id)
 }
+
+// Le geste qu'attend chaque ligne, pour tout un compte d'un coup (maquette B3,
+// 2026-09-19) : la vue QuickBooks pose sur la ligne le bouton juste — « Lier le
+// virement », « Apparier », « Publier » — au lieu de laisser chercher.
+// Un seul aller-retour : la page en fait un par compte, pas un par ligne.
+// Le plafond était de 120 lignes : un compte qui en a davantage (la BNC CAD en
+// a 133) laissait la colonne du geste vide sans le dire. 400 couvre tous les
+// comptes ; au-delà, mieux vaut découper que deviner.
+router.get('/accounts/:id/next-actions', (req, res) => {
+  const rows = db.prepare(`
+    SELECT * FROM bank_transactions
+    WHERE account_id = ? AND deleted_at IS NULL
+      AND transfer_txn_id IS NULL
+      AND status NOT IN ('rapproche', 'ignore')
+    ORDER BY txn_date DESC
+    LIMIT 400
+  `).all(req.params.id)
+
+  const out = {}
+  for (const t of rows) {
+    // Déjà dans QuickBooks (écriture retrouvée) : il n'y a plus rien à publier
+    // ni à apparier — proposer « Publier » sur une ligne jaune faisait croire
+    // qu'elle n'était pas comptabilisée, et risquait un doublon.
+    if (t.qb_txn_id) continue
+    // Déjà appariée : le seul geste qui reste est de faire partir l'écriture
+    // dans QuickBooks, quand elle n'est jamais partie.
+    if (t.matched_id) {
+      const state = matchedDocState(t)
+      if (state && !state.booked && !state.blocked) {
+        out[t.id] = { kind: 'comptabiliser', label: state.label, count: 1 }
+      }
+      continue
+    }
+    // Un virement interne se reconnaît sans ambiguïté : même montant, sens
+    // opposé, à un jour ou deux près. Il passe devant la facture, sinon la
+    // moitié d'un mouvement interne se retrouve comptabilisée en dépense.
+    const transfers = findTransferCandidates(t)
+    const tr = transfers[0]
+    if (tr && !tr.fx && tr.confidence >= 0.9) {
+      out[t.id] = { kind: 'virement', label: tr.account_name, count: transfers.length }
+      continue
+    }
+    const docs = findCandidates(t)
+    const doc = docs[0]
+    if (doc && doc.confidence >= 0.6) {
+      out[t.id] = { kind: 'apparier', label: doc.label, count: docs.length }
+      continue
+    }
+    const rule = ruleForTxn(t)
+    if (rule) {
+      out[t.id] = { kind: 'publier', label: rule.name, count: 1 }
+      continue
+    }
+    if (tr) { out[t.id] = { kind: 'virement', label: tr.account_name, count: transfers.length }; continue }
+    if (doc) { out[t.id] = { kind: 'apparier', label: doc.label, count: docs.length }; continue }
+    out[t.id] = { kind: 'rien', label: null, count: 0 }
+  }
+  res.json(out)
+})
 
 // Candidats de matching (pour le drawer de suggestions).
 router.get('/transactions/:id/suggestions', (req, res) => {
@@ -331,7 +456,10 @@ router.get('/transactions/:id/suggestions', (req, res) => {
 })
 
 // Appariement manuel. body: { matched_type, matched_id } — ou null pour délier.
-router.post('/transactions/:id/match', (req, res) => {
+// Le lien posé, le document apparié est publié dans QuickBooks s'il ne l'est
+// pas déjà : apparier ici, c'est comptabiliser là-bas (demande de Charles,
+// 2026-09-19). `push_qb: false` pour ne poser que le lien.
+router.post('/transactions/:id/match', async (req, res) => {
   const txn = getTxn(req.params.id)
   if (!txn) return res.status(404).json({ error: 'Not found' })
   const { matched_type: type, matched_id: id } = req.body
@@ -350,14 +478,43 @@ router.post('/transactions/:id/match', (req, res) => {
   if (!['achat', 'receipt', 'stripe_payout'].includes(type) || !id) {
     return res.status(400).json({ error: 'matched_type (achat, receipt, stripe_payout) et matched_id requis' })
   }
-  const status = deriveStatus({ ...txn, matched_type: type, matched_id: String(id), reconciled_at: null })
+  // Une ligne déjà rapprochée (verte) à laquelle on ne fait qu'ajouter la pièce
+  // qui lui manquait garde son rapprochement ; seule une ligne qui CHANGE de
+  // document repart à zéro.
+  const keep = !txn.matched_id && txn.reconciled_at ? txn : null
+  const status = deriveStatus({ ...txn, matched_type: type, matched_id: String(id), reconciled_at: keep?.reconciled_at || null })
   db.prepare(`
     UPDATE bank_transactions
     SET matched_type=?, matched_id=?, match_method='manuel', match_confidence=1,
-        reconciled_at=NULL, reconciled_by=NULL, status=?, updated_at=${NOW}
+        reconciled_at=?, reconciled_by=?, status=?, updated_at=${NOW}
     WHERE id=?
-  `).run(type, String(id), status, txn.id)
-  res.json(getTxn(txn.id))
+  `).run(type, String(id), keep?.reconciled_at || null, keep?.reconciled_by || null, status, txn.id)
+  // La date comptable du document devient celle du débit (sa date imprimée est
+  // conservée à part) — avant toute publication dans QuickBooks.
+  if (type === 'receipt') {
+    try {
+      const { alignReceiptDate } = await import('../services/receiptBankDate.js')
+      alignReceiptDate(String(id))
+    } catch (e) { console.warn('alignReceiptDate:', e.message) }
+  }
+  mirrorSoon('document')
+
+  let qb = { quickbooks_id: null, already: false, error: null, field: null }
+  if (req.body?.push_qb !== false) qb = await publishMatchedDoc(getTxn(txn.id))
+  res.json({ ...getTxn(txn.id), quickbooks_id: qb.quickbooks_id, qbAlready: qb.already, qbError: qb.error, qbField: qb.field })
+})
+
+// Rattrapage : publier le document d'une ligne déjà appariée mais dont
+// l'écriture n'est jamais partie dans QuickBooks.
+router.post('/transactions/:id/publish-matched', async (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  const state = matchedDocState(txn)
+  if (!state) return res.status(400).json({ error: 'Cette ligne n\'est appariée à aucun document' })
+  if (state.booked) return res.json({ ...txn, quickbooks_id: null, qbAlready: true, qbError: null })
+  const qb = await publishMatchedDoc(txn)
+  if (qb.error) return res.status(502).json({ error: qb.error, field: qb.field })
+  res.json({ ...getTxn(txn.id), quickbooks_id: qb.quickbooks_id, qbAlready: false, qbError: null })
 })
 
 // Rapprochement (vert) — en lot. body: { ids: [...] }. `unreconcile: true` pour annuler.
@@ -376,6 +533,7 @@ router.post('/transactions/reconcile', (req, res) => {
   })
   tx()
   // Les statuts dé-rapprochés retombent sur la valeur dérivée au prochain GET.
+  mirrorSoon('rapprochement')
   res.json({ changed })
 })
 
@@ -429,15 +587,20 @@ router.post('/proposals/:id/refuse', (req, res) => {
 
 // En lot : chaque proposition est indépendante — un échec QuickBooks sur l'une
 // ne doit pas annuler les autres.
+// Ce qui PUBLIE dans QuickBooks (dépense, répartition AGA) ne part jamais en
+// lot : ces propositions ressortent dans `skipped` et attendent leur clic.
 router.post('/proposals/accept', async (req, res) => {
   const ids = Array.isArray(req.body?.ids) ? req.body.ids : []
   const accepted = []
   const failed = []
+  const skipped = []
   for (const id of ids) {
+    const p = getProposal(id)
+    if (p && !isBatchAcceptable(p.kind)) { skipped.push({ id, kind: p.kind }); continue }
     try { accepted.push((await acceptProposal(id, req.user?.id)).id) }
     catch (e) { failed.push({ id, error: e.message }) }
   }
-  res.json({ accepted: accepted.length, failed })
+  res.json({ accepted: accepted.length, skipped, failed })
 })
 
 router.post('/proposals/refuse', (req, res) => {
@@ -496,6 +659,157 @@ router.get('/transactions/:id/qb-entry', async (req, res) => {
   })
 })
 
+// ── Le dossier d'une ligne ───────────────────────────────────────────────────
+//
+// Ce qu'il y a à comptabiliser pour cette ligne, et QUI le porte. Une ligne de
+// relevé n'a jamais une seule nature : c'est une facture à publier, un
+// versement de dette dont la ventilation vit dans la cédule, une paie, un
+// paiement émis. Chacune avait son écran ; le panneau latéral du rapprochement
+// les affiche maintenant sur place, d'où ce point d'entrée unique.
+//
+// Ne renvoie que ce qui EXISTE déjà (document apparié, versement rattaché) :
+// rien n'est deviné ici — deviner, c'est le travail des propositions.
+router.get('/transactions/:id/dossier', (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+
+  const out = { document: null, debt: null, paie: null, payment: null, invoices: [], receipts: [] }
+
+  // Le document apparié, avec la route qui l'ouvre en panneau empilé quand il
+  // y en a une (reçus, payouts) ; les achats fournisseurs n'ont pas de route
+  // de fiche, le client ouvre leur formulaire par `type`.
+  if (txn.matched_type && txn.matched_id) {
+    const id = String(txn.matched_id)
+    if (txn.matched_type === 'achat') {
+      const a = db.prepare(`SELECT vendor, total_cad, type, quickbooks_id, status FROM achats_fournisseurs WHERE id=?`).get(id)
+      if (a) {
+        out.document = {
+          type: 'achat', id, label: a.vendor || 'Achat', total: a.total_cad,
+          booked: !!a.quickbooks_id,
+          hint: a.type === 'bill' ? 'Facture fournisseur' : 'Dépense',
+        }
+      }
+    } else if (txn.matched_type === 'receipt') {
+      const r = db.prepare(`SELECT company, total, quickbooks_id FROM sale_receipts WHERE id=?`).get(id)
+      if (r) {
+        out.document = {
+          type: 'receipt', id, label: r.company || 'Document', total: r.total,
+          booked: !!r.quickbooks_id, path: `/sale-receipts/${id}`, hint: 'Document extrait',
+        }
+      }
+    } else if (txn.matched_type === 'stripe_payout') {
+      // La fiche d'un payout s'adresse par son id Stripe (po_…), pas par l'id
+      // ERP que porte `matched_id` — sans quoi le lien ne s'ouvre pas.
+      const p = db.prepare(`SELECT stripe_id, amount, qb_deposit_id FROM stripe_payouts WHERE id=?`).get(id)
+      if (p) {
+        out.document = {
+          type: 'stripe_payout', id, label: 'Payout Stripe', total: p.amount,
+          booked: !!p.qb_deposit_id, path: `/stripe-payouts/${p.stripe_id}`, hint: 'Versement Stripe',
+        }
+      }
+    }
+  }
+
+  // Le versement de dette rattaché à cette ligne : la ventilation capital /
+  // intérêts / frais se comptabilise depuis le panneau, sans passer par
+  // /dettes-lt.
+  const pay = db.prepare(`
+    SELECT p.*, d.id AS debt_id, d.label AS debt_label, d.loan_number, d.currency,
+           d.qb_debt_acctnum, d.qb_interest_acctnum, d.qb_bank_acctnum,
+           d.annual_fee_acctnum, d.annual_fee_label
+    FROM lt_debt_payments p JOIN lt_debts d ON d.id = p.debt_id
+    WHERE p.bank_txn_id = ? AND p.deleted_at IS NULL AND d.deleted_at IS NULL
+  `).get(txn.id)
+  if (pay) {
+    out.debt = {
+      debt: {
+        id: pay.debt_id, label: pay.debt_label, loan_number: pay.loan_number,
+        currency: pay.currency || 'CAD',
+        qb_debt_acctnum: pay.qb_debt_acctnum, qb_interest_acctnum: pay.qb_interest_acctnum,
+        qb_bank_acctnum: pay.qb_bank_acctnum,
+        annual_fee_acctnum: pay.annual_fee_acctnum, annual_fee_label: pay.annual_fee_label,
+      },
+      payment: {
+        id: pay.id, payment_date: pay.payment_date,
+        // La date qui sera comptabilisée : celle du débit au compte.
+        bank_date: txn.txn_date,
+        principal: pay.principal,
+        interest: pay.interest, balance_after: pay.balance_after,
+        bank_extra_amount: pay.bank_extra_amount, pushed_at: pay.pushed_at,
+        qb_txn_id: pay.qb_txn_id, qb_txn_type: pay.qb_txn_type,
+      },
+      qb_url: pay.qb_txn_id
+        ? qbEntityUrl(pay.qb_txn_type === 'purchase' ? 'expense' : 'journal', pay.qb_txn_id)
+        : null,
+    }
+  }
+
+  // La paie dont c'est le débit. Rattacher n'est pas publier : la dépense de
+  // paie reste un second geste, que le panneau ouvre au lieu d'y renvoyer.
+  const paie = db.prepare(`
+    SELECT id, number, period_start, period_end, salary_purchase_id
+    FROM paies WHERE bank_txn_id = ?
+  `).get(txn.id)
+  if (paie) out.paie = { ...paie, booked: !!paie.salary_purchase_id }
+
+  // ENCAISSEMENT CLIENT. Un virement Interac d'un client (« 600-4386 » pour La
+  // ferme Décembre) n'a aucun document dans l'ERP : il faut aller marquer la
+  // facture payée ailleurs. Les factures ouvertes DU MÊME MONTANT sont donc
+  // remontées ici, avec de quoi enregistrer le paiement sur place.
+  // Le montant ne désigne pas la facture à lui seul : plusieurs sont ouvertes
+  // au même total. Le nom du payeur écrit au relevé et la date tranchent, et
+  // chaque candidate arrive avec ses raisons.
+  if (txn.amount > 0 && !txn.matched_id && !txn.transfer_txn_id) {
+    const { candidates, ambiguous } = findInvoiceCandidates(txn, getAccount(txn.account_id))
+    out.invoices = candidates
+    out.invoices_ambiguous = ambiguous
+  }
+
+  // LA PIÈCE DÉJÀ LUE. Une sortie d'argent a presque toujours sa facture dans
+  // l'extracteur ou dans les achats, mais ni le montant ni la date ne suffisent
+  // à la désigner. Une entrée peut aussi avoir la sienne : remboursement
+  // d'impôt, note de crédit — une pièce à total négatif. Le statut de la ligne
+  // n'entre pas dans la condition : une ligne déjà rapprochée mais sans
+  // document mérite aussi sa pièce.
+  if (txn.amount && !txn.matched_id && !txn.transfer_txn_id) {
+    const { candidates, ambiguous } = findDocCandidates(txn, getAccount(txn.account_id), { excludeTxnId: txn.id })
+    out.receipts = candidates
+    out.receipts_ambiguous = ambiguous
+  }
+
+  // Le paiement émis passé au compte : rien à comptabiliser, mais il nomme la
+  // ligne mieux que le relevé.
+  const tp = db.prepare(`
+    SELECT id, label, payment_date, amount, direction, method, achat_id
+    FROM treasury_payments WHERE bank_txn_id = ? AND deleted_at IS NULL
+  `).get(txn.id)
+  if (tp) out.payment = tp
+
+  res.json(out)
+})
+
+// La détection n'a pas trouvé : l'humain cherche lui-même parmi les factures
+// ouvertes, par nom d'entreprise ou numéro. Les mêmes raisons sont calculées,
+// pour qu'un choix manuel se juge avec les mêmes yeux qu'une proposition.
+router.get('/transactions/:id/invoice-search', (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  const q = String(req.query.q || '').trim()
+  if (q.length < 2) return res.json({ candidates: [] })
+  res.json(findInvoiceCandidates(txn, getAccount(txn.account_id), { q, limit: 8 }))
+})
+
+// Même geste pour une sortie d'argent : l'humain nomme lui-même la pièce, par
+// fournisseur ou par numéro, et la voit notée comme si la détection l'avait
+// proposée.
+router.get('/transactions/:id/receipt-search', (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  const q = String(req.query.q || '').trim()
+  if (q.length < 2) return res.json({ candidates: [] })
+  res.json(findDocCandidates(txn, getAccount(txn.account_id), { q, limit: 8, excludeTxnId: txn.id }))
+})
+
 // « Ce n'est pas ça » : le lien proposé est refusé. On efface le lien, PAS
 // l'écriture QuickBooks — elle existe, elle appartient juste à une autre
 // ligne. La recherche approfondie pourra en proposer une autre.
@@ -510,11 +824,31 @@ router.delete('/transactions/:id/qb-link', (req, res) => {
     WHERE id=?
   `).run(txn.id)
   refreshStatuses(txn.account_id)
+  // Le lien disparaît même quand le statut ne bouge pas (la ligne reste
+  // comptabilisée par son document) : la page doit le voir partir.
+  touchBankTxns([txn.id])
+  mirrorSoon('lien-qb')
+  res.json(getTxn(txn.id))
+})
+
+// « X » : la ligne part à la relecture de Michel. La marque vit dans Boréal et
+// se recopie dans la colonne X du classeur, à la place où elle a toujours été.
+router.post('/transactions/:id/review', (req, res) => {
+  const txn = getTxn(req.params.id)
+  if (!txn) return res.status(404).json({ error: 'Not found' })
+  const on = req.body?.on !== false
+  db.prepare(`
+    UPDATE bank_transactions
+    SET review_flag=?, review_flag_at=${NOW}, updated_at=${NOW}
+    WHERE id=?
+  `).run(on ? 1 : 0, txn.id)
+  touchBankTxns([txn.id])
+  mirrorSoon('relecture')
   res.json(getTxn(txn.id))
 })
 
 // Édition libre : commentaire, statut ignore, date/montant (correction de collage).
-const TXN_FIELDS = ['comment', 'txn_date', 'description', 'details', 'reference', 'amount', 'balance']
+const TXN_FIELDS = ['comment', 'txn_date', 'description', 'details', 'reference', 'amount', 'balance', 'interest_cad']
 
 router.patch('/transactions/:id', (req, res) => {
   const txn = getTxn(req.params.id)
@@ -532,6 +866,7 @@ router.patch('/transactions/:id', (req, res) => {
   if (setClause) {
     db.prepare(`UPDATE bank_transactions SET ${setClause}, updated_at=${NOW} WHERE id=?`).run(...values, txn.id)
   }
+  mirrorSoon('modification')
   res.json(getTxn(txn.id))
 })
 
@@ -539,6 +874,7 @@ router.delete('/transactions/:id', (req, res) => {
   const txn = getTxn(req.params.id)
   if (!txn) return res.status(404).json({ error: 'Not found' })
   db.prepare(`UPDATE bank_transactions SET deleted_at=${NOW} WHERE id=?`).run(txn.id)
+  mirrorSoon('suppression')
   // La contrepartie d'un virement ne doit pas rester à pointer une ligne
   // supprimée : elle redevient une ligne ordinaire, à retraiter.
   if (txn.transfer_txn_id) {
@@ -603,6 +939,7 @@ router.post('/transactions/:id/add-expense', async (req, res) => {
   }
 
   refreshStatuses(txn.account_id)
+  mirrorSoon('ecriture')
   res.status(201).json({
     txn: getTxn(txn.id),
     achat_id: achatId,
@@ -657,6 +994,7 @@ router.post('/transactions/:id/transfer', async (req, res) => {
 
   refreshStatuses(txn.account_id)
   refreshStatuses(other.account_id)
+  mirrorSoon('virement')
   res.json({ txn: getTxn(txn.id), counterpart: getTxn(other.id), ...pushed })
 })
 
@@ -672,21 +1010,23 @@ router.delete('/transactions/:id/transfer', (req, res) => {
   }
 })
 
-// ── Sync du fichier TRX_Orisha (Drive) ───────────────────────────────────────
-
-// État de la sync automatique : automation active ? dernier passage, anomalies.
-router.get('/trx-sheet/status', async (req, res) => {
-  const { trxSheetStatus } = await import('../services/bankTrxSheet.js')
-  res.json(trxSheetStatus())
+// ── Le classeur Google (sens SORTANT uniquement) ─────────────────────────────
+//
+// La LECTURE du fichier TRX_Orisha est coupée depuis le 2026-09-15 : les
+// relevés entrent par le dépôt de fichiers et c'est Boréal qui écrit le
+// classeur. Relire ce qu'on vient d'écrire n'a plus de sens.
+// Voir services/trxSheetMirror.js.
+router.get('/trx-sheet/mirror', async (req, res) => {
+  const { mirrorStatus } = await import('../services/trxSheetMirror.js')
+  res.json(mirrorStatus())
 })
 
-// Sync immédiate. body: { dryRun: true } pour simuler sans écrire ni alerter.
-router.post('/trx-sheet/sync', async (req, res) => {
-  const { syncTrxSheet } = await import('../services/bankTrxSheet.js')
+router.post('/trx-sheet/mirror', async (req, res) => {
+  const { syncMirror } = await import('../services/trxSheetMirror.js')
   try {
-    res.json(await syncTrxSheet({ trigger: 'manual', apply: req.body?.dryRun !== true, userId: req.user.id }))
+    res.json(await syncMirror({ trigger: 'manuel', force: true }))
   } catch (e) {
-    res.status(502).json({ error: e.message })
+    res.status(400).json({ error: e.message })
   }
 })
 

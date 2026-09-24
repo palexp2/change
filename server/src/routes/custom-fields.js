@@ -1,8 +1,9 @@
+import { HR_TABLES, isHR } from '../services/dataAccess.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import { v4 as uuid } from 'uuid'
 import db from '../db/database.js'
-import { requireAuth } from '../middleware/auth.js'
+import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { regenerateView, validateFormulaExpr, validateFormulaReferences, validateLookup, normalizeLookupLimit, validateRollup, validateLink, setLinkValue, readLinkValue, getLinkOptions, deleteLinkGroup, LINK_TARGET_WHITELIST, getLookupMeta, inferLookupResultType, recordLinkTargetOf, previewFormula, getFieldDependents, ACTIVITY_ENTITY_MAP } from '../services/customFieldsView.js'
 import { parseDurationToSeconds, normalizeDurationFormat } from '../services/duration.js'
 import { normalizePercentDisplay } from '../services/percent.js'
@@ -23,6 +24,16 @@ import { syncChoicesForColumn } from '../services/airtableSelectChoices.js'
 
 const router = Router()
 router.use(requireAuth)
+for (const param of ['fieldId', 'id']) router.param(param, (req, res, next, id) => {
+  const field = db.prepare('SELECT erp_table, link_target_table FROM custom_fields WHERE id=?').get(id)
+  if (field && (HR_TABLES.has(field.erp_table) || HR_TABLES.has(field.link_target_table)) && !isHR(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+})
+
+router.param('erpTable', (req, res, next, table) => {
+  if (HR_TABLES.has(table) && !isHR(req.user)) return res.status(403).json({ error: 'Accès RH requis' })
+  next()
+})
 
 // Tables sur lesquelles on autorise les champs custom.
 //
@@ -64,6 +75,9 @@ const ALLOWED_TABLES = new Set([
   // sans cette entrée, /champs/stock_movements montrait la colonne « Champ
   // Airtable » sans pouvoir créer la colonne à alimenter.
   'stock_movements',
+  // Fournitures et leurs achats — miroirs Airtable, même raison : colonne
+  // d'accueil d'un champ Airtable branché dans /champs.
+  'fournitures', 'achats_fournitures',
 ])
 
 function slugify(s) {
@@ -588,6 +602,8 @@ function normalizeNativeOptions(raw) {
   const sel = normalizeNativeSelectOptions(obj)
   if (sel) Object.assign(out, sel)
   if (obj.display !== undefined) out.display = normalizePercentDisplay(obj.display)
+  // Date : format d'affichage (avec ou sans heure), même vocabulaire que les champs perso.
+  if (obj.format !== undefined) out.format = DATE_FORMATS.has(obj.format) ? obj.format : 'iso_date'
   return Object.keys(out).length ? out : null
 }
 
@@ -737,7 +753,7 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
     catch (e) { return res.status(400).json({ error: e.message }) }
   }
   if (cleanLabel == null && cleanType == null && cleanCountryCode == null && !hasOptions && !hasDescription) {
-    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type, indicatif, choix ou description requis' })
+    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type, indicatif, choix, format ou description requis' })
   }
 
   // Unicité du libellé dans la table : deux champs homonymes rendent tout
@@ -955,15 +971,24 @@ const fieldError = (status, message) => new FieldError(status, message)
 // c'est une URL valide.
 // 'percent' l'est aussi : la valeur reste un nombre (celui que calcule la
 // formule / le rollup), elle se rend en « 45 % » ou en barre de progression.
-const RESULT_TYPES = ['text', 'number', 'date', 'url', 'percent', 'rating']
-const RESULT_TYPE_ERROR = "result_type doit être 'text', 'number', 'date', 'url', 'percent' ou 'rating'"
+// 'currency' aussi : un nombre rendu « 1 234,50 $ » (symbole dans `options.currency`).
+const RESULT_TYPES = ['text', 'number', 'currency', 'date', 'url', 'percent', 'rating']
+const RESULT_TYPE_ERROR = "result_type doit être 'text', 'number', 'currency', 'date', 'url', 'percent' ou 'rating'"
 // Type de VALEUR d'un champ calculé selon son format d'affichage : un
 // pourcentage est un nombre (tri, filtre et agrégats numériques), il ne se
 // distingue que par son rendu.
+// Options posées à la création d'un champ calculé : seul le format « Devise »
+// en porte (son symbole).
+function resultTypeOptions(rt, body) {
+  if (rt !== 'currency') return {}
+  try { return { options: normalizeCurrencyOptions(body?.options).json } }
+  catch (e) { throw fieldError(400, e.message) }
+}
+
 function typeForResultType(rt) {
   // Une note en étoiles est un nombre elle aussi (une moyenne de rollup s'y rend
   // en étoile partielle) : seul son rendu diffère.
-  return rt === 'number' || rt === 'percent' || rt === 'rating' ? 'number' : 'text'
+  return rt === 'number' || rt === 'currency' || rt === 'percent' || rt === 'rating' ? 'number' : 'text'
 }
 
 function requireResultType(value, { fallback = null } = {}) {
@@ -1041,7 +1066,7 @@ const FIELD_KINDS = {
       validateFormulaReferences(expr, erpTable)
       return {
         type: typeForResultType(resultType),
-        columns: { formula_expr: expr, result_type: resultType },
+        columns: { formula_expr: expr, result_type: resultType, ...resultTypeOptions(resultType, body) },
       }
     },
   },
@@ -1082,7 +1107,7 @@ const FIELD_KINDS = {
       validateRollup(rollup, erpTable)
       return {
         type: typeForResultType(resultType),
-        columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType },
+        columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType, ...resultTypeOptions(resultType, body) },
       }
     },
   },
@@ -1454,7 +1479,7 @@ router.post('/:erpTable/formula/preview', (req, res) => {
 // POST /api/custom-fields/button/:fieldId/run — déclenche l'automation câblée sur
 // un champ Bouton, pour UN record précis (la ligne où l'utilisateur a cliqué).
 // Bypass du prédicat de déclenchement + pas de dedup (bouton répétable).
-router.post('/button/:fieldId/run', async (req, res) => {
+router.post('/button/:fieldId/run', requireAdmin, async (req, res) => {
   const field = db.prepare(`SELECT * FROM custom_fields WHERE id=? AND deleted_at IS NULL`).get(req.params.fieldId)
   if (!field) return res.status(404).json({ error: 'Champ introuvable' })
   if (field.kind !== 'button') return res.status(400).json({ error: 'Ce champ n\'est pas un bouton' })
@@ -1791,7 +1816,7 @@ router.put('/:id', (req, res) => {
   } else if ('options' in (req.body || {}) && existing.type === 'duration') {
     // Duration : la seule option éditable est le format d'affichage.
     updates.push('options=?'); values.push(normalizeDurationOptions(req.body.options).json)
-  } else if ('options' in (req.body || {}) && existing.type === 'currency') {
+  } else if ('options' in (req.body || {}) && (existing.type === 'currency' || existing.result_type === 'currency')) {
     // Devise : la seule option éditable est le symbole de devise (texte libre).
     let norm
     try { norm = normalizeCurrencyOptions(req.body.options) }

@@ -17,7 +17,9 @@ import { normalizeUploadName } from '../utils/uploadFileName.js'
 import { listTransactionTypes } from '../services/fiscalStatus.js'
 import { resolveFiscalDetection } from '../services/fiscalDetection.js'
 import { findVendorProfile, serializeProfile, profileDefaultsForCurrency } from '../services/vendorProfiles.js'
+import { matchCardForReceipt } from '../services/paymentCards.js'
 import { matchReceiptItems, completeLiaDescription } from '../services/purchaseLiaMatch.js'
+import { describeLinkedPurchases } from '../services/purchaseLinkAudit.js'
 import { detectPrepaidStatement, attachStatementToMonthQb, monthLabel } from '../services/prepaidStatementAttach.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { ensureUploadsDir } from '../config/uploads.js'
@@ -111,6 +113,10 @@ function serializeRow(row) {
     quickbooks_url: buildQbUrl(row),
     vendor_profile,
     vendor_defaults: vendor_profile ? profileDefaultsForCurrency(vendor_profile, row.currency) : null,
+    // Carte reconnue aux 4 derniers chiffres imprimés sur le document : elle dit
+    // quel compte a RÉELLEMENT payé (carte de l'entreprise, ou compte « rembourser
+    // à » quand un employé a avancé la dépense avec sa carte personnelle).
+    card_match: matchCardForReceipt(row),
   }
 }
 
@@ -134,7 +140,7 @@ function logReceiptEvent(receiptId, userId, action, detail = null) {
 // Libellés FR des champs éditables — pour le détail d'un événement 'updated'.
 const FIELD_LABELS = {
   company: 'Entreprise', address: 'Adresse', receipt_number: 'N° de reçu',
-  payment_method: 'Mode de paiement', receipt_date: 'Date', currency: 'Devise',
+  payment_method: 'Mode de paiement', card_last4: 'Carte (4 chiffres)', receipt_date: 'Date', currency: 'Devise',
   subtotal: 'Sous-total', tps: 'TPS', tvq: 'TVQ', other_taxes: 'Autres taxes',
   total: 'Total', items: 'Articles', memo: 'Mémo', general_description: 'Description générale',
   service_period: 'Période couverte',
@@ -185,14 +191,36 @@ router.get('/:id', (req, res) => {
   const row = db.prepare(`SELECT * FROM ${readRelation('sale_receipts')} WHERE id=? AND deleted_at IS NULL`)
     .get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
-  res.json(serializeRow(row))
+  res.json({ ...serializeRow(row), bank_txn: bankLineFor(req.params.id) })
 })
+
+// LA LIGNE DU RELEVÉ de ce document, quand le rapprochement l'a appariée. Elle
+// porte ce que le document ne sait pas : le JOUR où l'argent est sorti (c'est
+// cette date qui est comptabilisée), le compte qui a payé, et le montant
+// réellement débité quand la facture est dans une autre devise.
+function bankLineFor(receiptId) {
+  const t = db.prepare(`
+    SELECT t.id, t.txn_date, t.amount, t.description, t.details,
+           a.id AS account_id, a.name AS account_name, a.currency, a.qb_account_id
+    FROM bank_transactions t
+    JOIN bank_accounts a ON a.id = t.account_id
+    WHERE t.matched_type='receipt' AND t.matched_id=? AND t.deleted_at IS NULL
+    ORDER BY t.txn_date LIMIT 1
+  `).get(String(receiptId))
+  if (!t) return null
+  return {
+    ...t,
+    // Un compte ERP peut pointer vers plusieurs comptes QB (« 10020,10021 ») :
+    // on ne propose le compte de paiement que s'il n'y a aucune ambiguïté.
+    qb_account_id: t.qb_account_id && !String(t.qb_account_id).includes(',') ? String(t.qb_account_id) : null,
+  }
+}
 
 router.patch('/:id', (req, res) => {
   const row = db.prepare('SELECT id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
 
-  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'receipt_date', 'order_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total', 'fx_converted_to', 'fx_converted_from', 'fx_rate', 'fx_converted_at']
+  const editable = ['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'card_last4', 'receipt_date', 'order_date', 'currency', 'subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'items', 'memo', 'quickbooks_id', 'quickbooks_type', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'due_date', 'payment_terms_days', 'bank_charged_total', 'fx_converted_to', 'fx_converted_from', 'fx_rate', 'fx_converted_at']
   // bank_charged_total : paramètre de publication (conversion de devise) — persisté
   // comme brouillon pour être retrouvé au retour sur la facture.
   const numericFields = new Set(['subtotal', 'tps', 'tvq', 'other_taxes', 'total', 'bank_charged_total', 'fx_rate'])
@@ -201,7 +229,7 @@ router.patch('/:id', (req, res) => {
   // modèle erroné, et autosauvegardés comme BROUILLON par le formulaire de publication
   // (les choix faits avant de quitter la fiche sont retrouvés au retour).
   // transaction_type : statut fiscal — éditable pour corriger un classement a posteriori.
-  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'fx_converted_to', 'fx_converted_from', 'fx_converted_at'])
+  const textFields = new Set(['company', 'address', 'receipt_number', 'general_description', 'service_period', 'payment_method', 'card_last4', 'memo', 'expense_account_id', 'payment_account_id', 'tax_code_id', 'vendor_id', 'transaction_type', 'fx_converted_to', 'fx_converted_from', 'fx_converted_at'])
   const sets = []
   const values = []
   for (const key of editable) {
@@ -509,7 +537,7 @@ router.get('/:id/vendor-history', (req, res) => {
 // suggestion par ligne calculée par le moteur de score (purchaseLiaMatch.js). Route en
 // lecture seule : l'opérateur confirme la suggestion (ou choisit un autre code) via PATCH.
 router.get('/:id/lia-matches', (req, res) => {
-  const rec = db.prepare('SELECT id, company, receipt_date, order_date, vendor_profile_id, items FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  const rec = db.prepare('SELECT id, company, receipt_date, order_date, vendor_profile_id, items, quickbooks_id FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(req.params.id)
   if (!rec) return res.status(404).json({ error: 'Not found' })
   let items = []
   try { items = JSON.parse(rec.items || '[]') } catch {}
@@ -521,8 +549,25 @@ router.get('/:id/lia-matches', (req, res) => {
     orderDate: rec.order_date,
     excludeReceiptId: rec.id,
   })
+  // Achat déjà relié à chaque ligne : date de commande et « À recevoir » ou non, lus en base
+  // (l'achat relié n'est pas forcément parmi les candidats « à recevoir »).
+  const linked = describeLinkedPurchases({
+    ids: items.map(it => it?.purchase_id).filter(Boolean),
+    expenseDate: rec.receipt_date,
+    excludeTxnKey: `erp:${rec.id}`,
+  })
+  const linkedFor = it => {
+    const info = it?.purchase_id ? linked[it.purchase_id] : null
+    if (!info) return null
+    // La transaction QuickBooks de CE reçu n'est pas « une autre dépense ».
+    const own = o => o.source === 'qb' && rec.quickbooks_id && String(o.quickbooks_id) === String(rec.quickbooks_id)
+    return { ...info, other_links: info.other_links.filter(o => !own(o)) }
+  }
   res.json({
-    lines: lines.map(l => ({ index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null, link_check: l.link_check || null })),
+    lines: lines.map(l => ({
+      index: l.index, locked: !!l.locked, match: l.match || null, blocked_by: l.blocked_by || null,
+      link_check: l.link_check || null, review: l.review || null, linked: linkedFor(items[l.index]),
+    })),
     candidates,
   })
 })

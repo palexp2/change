@@ -1,5 +1,6 @@
+import { hasRole } from '../../../shared/roles.mjs'
 import db from '../db/database.js'
-import { requireAdmin } from '../middleware/auth.js'
+import { requireHR } from '../middleware/auth.js'
 import { crudRouter } from '../utils/crudRouter.js'
 import { RECORD_REGISTRY } from '../db/recordRegistry.js'
 
@@ -21,8 +22,8 @@ export default crudRouter(RECORD_REGISTRY.activity_codes, {
     //   - ?all=1         (admin): bypass complet du filtre de visibilité
     router.get('/', (req, res) => {
       const { include_inactive, for_user_id, all } = req.query
-      const isAdmin = req.user.role === 'admin'
-      if ((all || for_user_id) && !isAdmin) return res.status(403).json({ error: 'Accès refusé' })
+      const isHR = hasRole(req.user, 'rh')
+      if ((all || for_user_id) && !isHR) return res.status(403).json({ error: 'Accès refusé' })
 
       const conds = ['deleted_at IS NULL']
       const params = []
@@ -40,14 +41,14 @@ export default crudRouter(RECORD_REGISTRY.activity_codes, {
     })
 
     // Liste vide ⇒ code public (visible à tous).
-    router.get('/:id/users', requireAdmin, (req, res) => {
+    router.get('/:id/users', requireHR, (req, res) => {
       const code = db.prepare('SELECT id FROM activity_codes WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
       if (!code) return res.status(404).json({ error: 'Not found' })
       res.json({ data: usersOf.all(req.params.id) })
     })
 
     // Body : { user_ids: [...] }. Tableau vide ⇒ rend le code public.
-    router.put('/:id/users', requireAdmin, (req, res) => {
+    router.put('/:id/users', requireHR, (req, res) => {
       const code = db.prepare('SELECT id FROM activity_codes WHERE id = ? AND deleted_at IS NULL').get(req.params.id)
       if (!code) return res.status(404).json({ error: 'Not found' })
       const { user_ids } = req.body || {}

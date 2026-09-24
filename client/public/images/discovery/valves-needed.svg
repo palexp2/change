@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-labelledby="title">
+  <title id="title">Valves 1 po à fournir par Orisha</title>
+  <rect width="640" height="300" fill="#fff"/>
+
+  <!-- Colis à fournir, avec la même touche ambre que les équipements. -->
+  <g stroke="#b45309" stroke-width="3" stroke-linejoin="round">
+    <path d="M451 195l50-20 50 20v53l-50 18-50-18z" fill="#fbbf24"/>
+    <path d="M451 195l50 20 50-20M501 215v51" fill="none"/>
+    <path d="M478 185l49 20v16l-13 5v-16l-49-20" fill="#fef3c7"/>
+  </g>
+  <circle cx="514" cy="77" r="30" fill="#dcfce7"/>
+  <path d="M500 77h28M514 63v28" fill="none" stroke="#22a34a" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- Électrovanne : corps fileté, couvercle vissé et solénoïde déporté. -->
+  <g stroke="#475569" stroke-width="3.4" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256 90c-10-70 61-91 64-7" fill="none"/>
+    <path d="M260 90c-8-57 50-77 53-7" fill="none" stroke="#94a3b8" stroke-width="2"/>
+    <rect x="214" y="184" width="58" height="52" rx="12" fill="#64748b"/>
+    <ellipse cx="218" cy="210" rx="13" ry="25" fill="#334155"/>
+    <rect x="347" y="184" width="66" height="52" rx="12" fill="#64748b"/>
+    <ellipse cx="413" cy="210" rx="14" ry="25" fill="#334155"/>
+    <ellipse cx="413" cy="210" rx="8" ry="17" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+    <path d="M246 178v54q0 16 58 16t58-16v-54" fill="#64748b"/>
+    <ellipse cx="304" cy="178" rx="64" ry="26" fill="#94a3b8"/>
+    <ellipse cx="304" cy="175" rx="48" ry="17" fill="#475569"/>
+    <path d="M256 198v29M280 204v32M331 204v32M353 198v29" stroke="#94a3b8"/>
+    <path d="M241 91v70q0 15 26 15t26-15V91" fill="#64748b"/>
+    <path d="M241 115h52M246 135h42M247 151h40" stroke="#475569"/>
+    <path d="M206 84h37l13-8h26l12 8h11v20h-23l-13-8h-27l-36 7z" fill="#475569"/>
+    <ellipse cx="266" cy="84" rx="17" ry="6" fill="#334155" stroke-width="2"/>
+    <rect x="328" y="140" width="12" height="27" rx="3" fill="#64748b"/>
+    <rect x="324" y="137" width="20" height="8" rx="2" fill="#94a3b8"/>
+  </g>
+  <g fill="#f8fafc" stroke="#64748b" stroke-width="2.4">
+    <ellipse cx="250" cy="184" rx="7" ry="5"/>
+    <ellipse cx="275" cy="197" rx="7" ry="5"/>
+    <ellipse cx="340" cy="197" rx="7" ry="5"/>
+    <ellipse cx="362" cy="179" rx="7" ry="5"/>
+  </g>
+
+  <rect x="0" y="268" width="640" height="8" rx="4" fill="#22a34a"/>
+</svg>

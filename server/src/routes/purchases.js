@@ -9,6 +9,7 @@ import { logSync } from '../services/syncLog.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
+import { describeLinkedPurchases } from '../services/purchaseLinkAudit.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -83,6 +84,15 @@ router.get('/', (req, res) => {
   `).all(limitVal, offset)
 
   res.json({ data: purchases, total, page: parseInt(page), limit: parseInt(limit) })
+})
+
+// Achats désignés par les lignes d'une dépense (codes LIA) : date de commande, « À
+// recevoir » ou non à la date de la dépense, autres dépenses qui désignent le même achat. Affiché à côté de
+// chaque ligne dans « Modifier la dépense ».
+router.get('/lia-links', (req, res) => {
+  const refs = String(req.query.refs || '').split(',').map(s => s.trim()).filter(Boolean).slice(0, 100)
+  const date = /^\d{4}-\d{2}-\d{2}/.test(String(req.query.date || '')) ? String(req.query.date).slice(0, 10) : null
+  res.json(describeLinkedPurchases({ refs, expenseDate: date, excludeTxnKey: req.query.txn ? String(req.query.txn) : null }))
 })
 
 router.get('/:id', (req, res) => {

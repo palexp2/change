@@ -36,6 +36,13 @@ test('Groupe Alliances & Privilège (esperluette) → « Novo Express »', () =>
   assert.equal(canonicalVendorName('Groupe Alliances & Privilège Inc.'), 'Novo Express')
 })
 
+test('Yanghui (raison sociale de PCBWay) → « PCBWay »', () => {
+  assert.equal(canonicalVendorName('HONG KONG YANGHUI INFORMATION TECHNOLOGY LIMITED'), 'PCBWay')
+  assert.equal(canonicalVendorName('Hong Kong Yang Hui Information Technology Ltd.'), 'PCBWay')
+  assert.equal(canonicalVendorName('PCBWay'), 'PCBWay')
+  assert.equal(canonicalVendorName('PCB Way'), 'PCBWay')
+})
+
 test('pas de faux positifs — noms sans rapport intouchés', () => {
   assert.equal(canonicalVendorName('Federated Insurance'), 'Federated Insurance')
   assert.equal(canonicalVendorName('Express Scripts'), 'Express Scripts')

@@ -7,7 +7,8 @@ import { AttachmentField } from './AttachmentField.jsx'
 import { RatingInput } from './RatingStars.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { useExtraCustomFields } from '../lib/useDetailFields.jsx'
-import { parseSelectChoices, colorForChoice, ChoiceBadge, isAirtableLinkField, LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
+import { parseSelectChoices, colorForChoice, ChoiceBadge, isAirtableLinkField, LinkedRecordsValue, dateFormatOf } from '../lib/customFieldDisplay.jsx'
+import { dateFormatHasTime } from '../lib/formatDate.js'
 
 // Les champs personnalisés d'une table, rendus comme des blocs de champ
 // ordinaires d'une fiche.
@@ -104,7 +105,7 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, sele
     case 'percent':
       return <InlineNumber value={value} saving={saving} onSave={commit} suffix="%" className="input text-sm w-full" testId={`cf-input-${field.key}`} />
     case 'date':
-      return <InlineDate value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
+      return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} testId={`cf-input-${field.key}`} />
     case 'checkbox':
       return <InlineCheckbox value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     // Évaluation : les 5 étoiles, cliquables (re-cliquer l'étoile courante

@@ -24,13 +24,26 @@ import {
   runDiagnostic,
 } from '../services/novoxpressDiagnostic.js'
 import { uploadsPath } from '../config/uploads.js'
-import { createInAirtable } from '../services/airtableWriteback.js'
+import { createInAirtable, writeBackRecord } from '../services/airtableWriteback.js'
+import { refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
+import { matchReturnItem, receptionInstruction, receptionShelf } from '../services/returnReception.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
+import { logSync } from '../services/syncLog.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
 router.use(requireAuth)
 
 const MEMOS_DIR = uploadsPath('documents', 'retours')
+
+// Filet du write-back ERP → Airtable lancé en fire-and-forget (même helper que
+// routes/projets.js) : l'échec laisse une trace exploitable, pas un console.error.
+function traceRetourPush(promise, recordId) {
+  return promise.catch(e => {
+    console.error(`erp-writeback retour_items ${recordId} (async):`, e.message)
+    logSync('retours', 'erp-writeback', { status: 'error', error: `${recordId}: ${e.message}` })
+  })
+}
 
 function getReturnAutomationConfig(id) {
   const row = db.prepare('SELECT action_config FROM automations WHERE id = ? AND deleted_at IS NULL').get(id)
@@ -330,11 +343,11 @@ function instructionsAttachments(ret, returnId) {
   const out = []
   if (ret.return_label_pdf_path) {
     const labelPath = uploadsPath('labels', path.basename(ret.return_label_pdf_path))
-    if (fs.existsSync(labelPath)) out.push({ name: `etiquette-retour-${returnId}.pdf`, path: labelPath })
+    if (fs.existsSync(labelPath)) out.push({ name: `etiquette-retour-${returnId}.pdf`, path: labelPath, url: `/erp/api/novoxpress/labels/${path.basename(labelPath)}` })
   }
   if (ret.memo_pdf_path) {
     const memoPath = path.join(MEMOS_DIR, path.basename(ret.memo_pdf_path))
-    if (fs.existsSync(memoPath)) out.push({ name: `aide-memoire-${returnId}.pdf`, path: memoPath })
+    if (fs.existsSync(memoPath)) out.push({ name: `aide-memoire-${returnId}.pdf`, path: memoPath, url: `/erp/api/retours/memos/${path.basename(memoPath)}` })
   }
   return out
 }
@@ -350,7 +363,8 @@ router.get('/:id/instructions-email', (req, res) => {
     from: getAutomationFrom('sys_return_instructions_email') || null,
     subject: ctx.subject,
     bodyHtml: ctx.html,
-    attachments: instructionsAttachments(ctx.ret, req.params.id).map(a => a.name),
+    // `url` : la modale en montre une vignette et l'aperçu, sans quitter le brouillon.
+    attachments: instructionsAttachments(ctx.ret, req.params.id).map(a => ({ name: a.name, url: a.url })),
     already_sent_at: ctx.ret.instructions_sent_at || null,
   })
 })
@@ -503,6 +517,70 @@ router.post('/bulk-from-serials', (req, res) => {
     logSystemRun('sys_return_bulk_by_company', { status: 'error', error: e.message, triggerData: { company_id } })
     res.status(500).json({ error: e.message })
   }
+})
+
+// POST /api/retours/:id/receive-scan — réception au pistolet d'un article.
+//
+// Un seul geste : le code scanné désigne l'article du retour, à qui on pose la
+// date de réception et le réceptionniste choisis dans la section « Réception »
+// de la fiche. La réponse porte la phrase à afficher (étagère d'analyse ou de
+// reconditionnement, cf. services/returnReception.js — règle reprise
+// d'Airtable).
+//
+// Comme le scan de prélèvement des commandes : un refus répond 200 avec un
+// `action`, jamais une erreur HTTP — l'opérateur a les mains sur le pistolet,
+// pas sur une console.
+router.post('/:id/receive-scan', (req, res) => {
+  const ret = db.prepare('SELECT id FROM returns WHERE id = ?').get(req.params.id)
+  if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
+
+  const code = String(req.body.code || '').trim()
+  if (!code) return res.status(400).json({ error: 'code requis' })
+  const receivedBy = String(req.body.received_by || '').trim()
+  const receivedAt = String(req.body.received_at || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(receivedAt)) return res.status(400).json({ error: 'received_at attendu en AAAA-MM-JJ' })
+
+  // Les deux colonnes écrites doivent être en « Bidirectionnel » (/champs/
+  // return_items) : en sens import, la réception serait écrasée au prochain
+  // sync Airtable. La migration 070 les y a mises — si quelqu'un les repasse en
+  // import, le scan le dit au lieu d'écrire dans le vide.
+  const refused = refusedAirtablePullKeys('return_items', { received_at: receivedAt, received_by: receivedBy })
+  if (refused.length) return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+
+  const items = db.prepare(`
+    SELECT ri.id, ri.return_reason, ri.received_at, ri.received_by,
+           sn.serial AS serial_number,
+           COALESCE(pr.sku, psn.sku) AS sku,
+           COALESCE(pr.name_fr, psn.name_fr) AS product_name
+    FROM return_items ri
+    LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
+    LEFT JOIN products psn ON sn.product_id = psn.id
+    LEFT JOIN products pr ON ri.product_id = pr.id
+    WHERE ri.return_id = ?
+    ORDER BY ri.created_at
+  `).all(req.params.id)
+
+  const item = matchReturnItem(items, code)
+  if (!item) return res.json({ action: 'not_in_return', code })
+
+  const message = receptionInstruction(item.return_reason, receivedBy)
+  if (item.received_at) {
+    return res.json({ action: 'already_received', code, item, message, shelf: receptionShelf(item.return_reason) })
+  }
+
+  db.prepare('UPDATE return_items SET received_at = ?, received_by = ? WHERE id = ?')
+    .run(receivedAt, receivedBy || null, item.id)
+  traceRetourPush(writeBackRecord('retour_items', item.id, ['received_at', 'received_by']), item.id)
+
+  const updated = db.prepare(`SELECT * FROM ${readRelation('return_items')} WHERE id = ?`).get(item.id)
+  emitEntity('return_item', 'updated', item.id, updated, req.user?.id)
+  res.json({
+    action: 'received',
+    code,
+    item: { ...item, received_at: receivedAt, received_by: receivedBy },
+    message,
+    shelf: receptionShelf(item.return_reason),
+  })
 })
 
 export default router

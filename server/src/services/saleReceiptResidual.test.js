@@ -8,7 +8,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  reconcileDiscountFreightProrata, reconcileItemsResidual, residualLineDescription,
+  reconcileDiscountFreightProrata, reconcileItemsResidual, residualLineDescription, amountDueHtBase,
 } from './saleReceiptExtraction.js'
 
 // Facture DigiKey 132580242 : 4 lignes = 165,99 $, TPS 8,30 $, total 174,29 $, et
@@ -59,4 +59,23 @@ test('écart de plus de 25 % : rien n’est rafistolé, l’extraction est signa
   const out = reconcileItemsResidual([{ description: 'X', total: 10 }], 100)
   assert.equal(out.applied, false)
   assert.equal(out.delta, 90)
+})
+
+// PCBWay YR1808976 : lignes 556,33 $, transport 34,34 $, aucune taxe, total 590,67 $.
+test('transport réel sans taxes : le montant dû arbitre, le fret est réparti', () => {
+  const items = [
+    { description: 'PCB', quantity: 5, unit_price: 1.692, total: 8.46 },
+    { description: 'PCBA', quantity: 25, unit_price: 20.886, total: 522.15 },
+    { description: 'Frais de traitement bancaire', total: 25.72 },
+  ]
+  const htBase = amountDueHtBase({ subtotal: 556.33, tps: 0, tvq: 0, other_taxes: 0, total: 590.67 })
+  assert.equal(htBase, 590.67)
+  const out = reconcileDiscountFreightProrata(items, { freight: 34.34, htBase })
+  assert.equal(out.subtotal, 590.67)
+  assert.equal(Math.round(out.items.reduce((s, it) => s + it.total, 0) * 100) / 100, 590.67)
+})
+
+test('port payé DigiKey : le montant dû exclut le fret, rien n’est réparti', () => {
+  const htBase = amountDueHtBase({ subtotal: 165.99, tps: 8.3, tvq: 0, other_taxes: 0, total: 174.29 })
+  assert.equal(reconcileDiscountFreightProrata(DIGIKEY, { freight: 15, htBase }), null)
 })

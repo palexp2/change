@@ -24,6 +24,8 @@ import db, { openReaderConnection } from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { CACHED_TABLES, getAllCachedTableSpecs, CHANGE_LOG_RETENTION_HOURS } from '../db/changeLog.js'
 
+import { filterCachedSpecs } from '../services/dataAccess.js'
+
 const router = Router()
 
 // Rétention de change_log : la valeur vient de changeLog.js, qui porte aussi la
@@ -87,7 +89,7 @@ function writeChunk(res, chunk) {
 const ROWS_PER_CHUNK = 500
 
 router.get('/', requireAuth, async (req, res) => {
-  const specs = getAllCachedTableSpecs()
+  const specs = filterCachedSpecs(getAllCachedTableSpecs(), req.user)
   const snapshotTs = db.prepare(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ts`).get().ts
 
   // Connexion dédiée : l'itérateur reste ouvert pendant les `await` de
@@ -171,7 +173,7 @@ router.get('/delta', requireAuth, (req, res) => {
   }
 
   const snapshotTs = db.prepare(`SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS ts`).get().ts
-  const specs = getAllCachedTableSpecs()
+  const specs = filterCachedSpecs(getAllCachedTableSpecs(), req.user)
   const tables = {}
 
   // Lecture de la tranche `changed_at > since`, en index-only et déjà ordonnée
@@ -253,7 +255,7 @@ router.get('/delta', requireAuth, (req, res) => {
 
 // Endpoint de debug : liste les tables cachées et leur cardinalité actuelle.
 router.get('/info', requireAuth, (req, res) => {
-  const specs = getAllCachedTableSpecs()
+  const specs = filterCachedSpecs(getAllCachedTableSpecs(), req.user)
   const tables = {}
   for (const name of Object.keys(specs)) {
     const c = db.prepare(`SELECT COUNT(*) AS c FROM ${name}`).get()

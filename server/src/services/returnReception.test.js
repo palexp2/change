@@ -52,3 +52,7 @@ test('deux lignes du même produit : celle qui reste à recevoir', () => {
   ]
   assert.equal(matchReturnItem(items, 'CV-2').id, 'b')
 })
+
+test('nom complet d’un utilisateur Boréal : salué par le prénom', () => {
+  assert.match(receptionInstruction('Retour de garantie avec échange immédiat', 'Martin Audesse'), /^Bonjour Martin, /)
+})

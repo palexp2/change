@@ -10,6 +10,7 @@ import {
 import { nativeMappedColumn } from './airtableNativeMappedColumns.js'
 import { computedAirtableFieldNames } from './airtableFieldTypes.js'
 import { readRelation } from './customFieldsView.js'
+import { erpTableForAirtableTableId } from './airtableTableMap.js'
 
 // Résout l'airtable_id d'un record ERP lié (commande, adresse…) pour un linked record.
 function linkedAirtableId(table, erpId) {
@@ -185,6 +186,21 @@ export const WRITEBACK_MODULES = {
     // colonne field_map reste nommée ici : elle sert au repli de lecture, et
     // vaut NULL depuis la reprise.
     configSource: { table: 'airtable_projets_config', baseCol: 'base_id', tableIdCol: 'projects_table_id', fieldMapCol: 'field_map_projects' },
+    // Projet né dans Boréal : son client (et son contact) partent avec la
+    // création, quel que soit le sens réglé — sans eux, le projet naîtrait
+    // orphelin dans Airtable. « Client final » reste en import pour les
+    // modifications. Le contact n'a pas de mapping propre : il passe par celui
+    // de `contact_lie` (« Contact lié »).
+    createLinks: {
+      company_id: { table: 'companies' },
+      contact_id: { table: 'contacts', mappingColumn: 'contact_lie' },
+    },
+    valueCodecs: {
+      // « Probabilité » est un champ pourcentage : Airtable attend une FRACTION
+      // (0.5 = 50 %), la colonne stocke des points (cf. percentToPoints à
+      // l'import). Sans conversion, 50 devenait 5 000 %.
+      probability: v => (v === '' ? null : Math.round(Number(v) * 100) / 10000),
+    },
   },
   // Numéros de série : plus de field_map en base (cf. retireSerialsCoreFieldMap).
   // Tous les scalaires passent donc par le chemin dynamique de buildColumnMap,
@@ -286,7 +302,9 @@ export const WRITEBACK_MODULES = {
     // miroir porte des record ids bruts (mapping sans table cible) — le tableau
     // poussé est donc déjà celui d'Airtable ; `adresses` ne sert qu'aux valeurs
     // écrites en id Boréal (adresse créée ici, sans jumeau Airtable).
-    linkColumns: { adresse_de_livraison: 'adresses', adresse_de_la_ferme_pour_coordonnees_geographiques: 'adresses' },
+    // Même raison pour « Projet » : lié dans la fiche, il était effacé au sync
+    // suivant tant qu'Airtable gardait l'ancien lien (ou aucun).
+    linkColumns: { adresse_de_livraison: 'adresses', adresse_de_la_ferme_pour_coordonnees_geographiques: 'adresses', project_id: 'projects' },
     // La colonne ERP est un 0/1 ; le champ Airtable « Abonnement » est un
     // singleSelect Oui/Non (pas une case à cocher) — sans ce codec, Airtable
     // reçoit un entier et rejette l'écriture.
@@ -330,35 +348,28 @@ export const WRITEBACK_MODULES = {
   // cœur est sautée, et y laisser une clé ne servirait qu'à verrouiller un sens
   // dans une modale de mapping cœur qui n'existe plus pour ce module.
   //
-  // Les 5 LIENS restent hors du payload de mise à jour sans avoir à être
-  // nommés : leur mapping porte un `link_target_table` et la colonne ERP un id
-  // Boréal — buildColumnMap les écarte d'office (seules les colonnes de
-  // `linkColumns` sont traduites en record ids). `keyToColumn` reste : il sert
-  // encore à retrouver la colonne d'une clé hors de buildColumnMap.
+  // Les 4 LIENS du plan (retour, numéro de série, entreprise, produit à
+  // recevoir) ont un sens réglable comme tout champ lien : leur mapping porte un
+  // `link_target_table`, et writeBackRecord traduit l'id Boréal en [recXXX]
+  // (cf. pushableLinkColumn). `keyToColumn` reste : il sert encore à retrouver
+  // la colonne d'une clé hors de buildColumnMap.
   //
-  // `skipKeys` garde malgré tout les clés lien — contrairement aux autres
-  // modules à `uiFieldMapPlan`, où il est vide. Il n'a plus d'effet sur le
-  // payload (la boucle cœur est sautée) ni sur la page des champs (le sens de
-  // ces colonnes y est déjà figé par `link_target_table`), mais il verrouille
-  // encore le sens de la CLÉ cœur — celui que le moteur de miroir consulte à
-  // l'import (`fieldMapDirection(mirrorId, coreKey) === 'push'` ⇒ colonne pas
-  // importée). Le vider laisserait passer un 'push' sur « Retour » ou
-  // « Entreprise », donc arrêterait l'import du rattachement d'un article.
-  // Elles étaient 5 : « Produit à envoyer » est tombée avec sa colonne
-  // (migration 046).
+  // `skipKeys` garde « Retour » seul — contrairement aux autres modules à
+  // `uiFieldMapPlan`, où il est vide. `return_id` est la garde d'insertion du
+  // miroir (NOT NULL) : un 'push' arrêterait l'import de tout nouvel article.
+  // La clé est donc toujours importée (cf. importSkippedCoreKeys) et son sens
+  // ne peut être que « Airtable → Boréal » ou « Bidirectionnel ».
   retour_items: {
     erpTable: 'return_items',
     uiFieldMapPlan: RETOUR_ITEMS_FIELD_MAP_PLAN,
-    skipKeys: new Set(['return', 'serial', 'company', 'product_to_receive']),
+    skipKeys: new Set(['return']),
     keyToColumn: {
       return: 'return_id', serial: 'serial_id', company: 'company_id',
       product_to_receive: 'product_id',
     },
     defaultDirection: 'pull',
     // Liens réglés dans /champs/return_items (colonnes à record ids bruts) —
-    // mêmes règles que ci-dessus. Les 4 liens du plan, eux, restent en import :
-    // leur colonne porte un id Boréal, c'est la synchronisation cœur qui les
-    // tient.
+    // mêmes règles que ci-dessus.
     linkColumns: {
       commande: 'orders', commande_associee: 'order_items',
       billets: 'tickets', adresse_de_livraison: 'adresses',
@@ -550,12 +561,72 @@ export function isDynamicDirectionConfigurable(module) {
 }
 
 // Table ERP cible d'une colonne lien que le module sait POUSSER vers Airtable
-// (null si la colonne n'est pas un lien poussable). C'est la seule dérogation à
-// la règle « un champ lien n'est jamais réécrit » : le module déclare la table
-// dans laquelle résoudre l'id Boréal en record id Airtable, ce qui rend le PATCH
-// possible — et donc le sens du champ configurable dans /champs/:table.
-export function pushableLinkColumn(module, column) {
+// (null si la colonne n'est pas un lien poussable). La table sert à résoudre
+// un id Boréal en record id Airtable ; un record id déjà présent passe tel quel.
+//
+// Sources, dans l'ordre : `linkColumns` déclaré par le module, puis le mapping
+// lui-même — sa table cible (`link_target_table`), sinon la table miroir de la
+// table Airtable liée (`linked_table_id`). Tout champ lien vers une table
+// miroitée est donc bidirectionnel au choix de l'utilisateur ; seul un lien vers
+// une table Airtable non miroitée (rien où résoudre) reste en import.
+export function pushableLinkColumn(module, column, mappingOptions = null) {
+  const cfg = WRITEBACK_MODULES[module]
+  if (!cfg) return null
+  if (cfg.linkColumns?.[column]) return cfg.linkColumns[column]
+  let opts = mappingOptions
+  if (!opts) {
+    try {
+      const row = db.prepare(
+        `SELECT options FROM airtable_field_mappings
+          WHERE erp_table=? AND column_name=? AND import_disabled IS NOT 1`
+      ).get(cfg.erpTable, column)
+      opts = JSON.parse(row?.options || '{}')
+    } catch { return null }
+  }
+  let table = opts.link_target_table || null
+  if (!table && opts.linked_table_id) {
+    try { table = erpTableForAirtableTableId(opts.linked_table_id) } catch { table = null }
+  }
+  return table && hasAirtableIdColumn(table) ? table : null
+}
+
+// Vrai si la table ERP porte une colonne `airtable_id` (seul moyen de traduire
+// un id Boréal en record id).
+function hasAirtableIdColumn(table) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) return false
+  try {
+    return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === 'airtable_id')
+  } catch { return false }
+}
+
+// Colonnes lien DÉCLARÉES par le module (`linkColumns`) — le sync entrant ne
+// les écrit qu'en COALESCE, d'où leur traitement à part dans l'audit du miroir.
+export function declaredLinkColumn(module, column) {
   return WRITEBACK_MODULES[module]?.linkColumns?.[column] || null
+}
+
+// Clés cœur que l'import doit sauter : sens 'push' (Boréal → Airtable seul).
+// Pour un module à `uiFieldMapPlan`, le sens se règle dans /champs/:table sur
+// la COLONNE de la clé (`dyn:<colonne>`) : c'est lui qui compte. Une clé de
+// `skipKeys` n'est jamais sautée (rattachement requis à l'import).
+export function importSkippedCoreKeys(module, keys) {
+  const cfg = WRITEBACK_MODULES[module]
+  const out = new Set()
+  if (!cfg) return out
+  for (const key of keys) {
+    if (fieldMapDirection(module, key) === 'push') { out.add(key); continue }
+    const column = cfg.uiFieldMapPlan?.[key]
+    if (column && !cfg.skipKeys.has(key) && dynamicFieldDirection(module, column) === 'push') out.add(key)
+  }
+  return out
+}
+
+// Colonne ERP d'une clé cœur verrouillée en import (`skipKeys`) pour un module
+// à `uiFieldMapPlan` — son sens peut être bidirectionnel, jamais 'push'.
+export function isImportRequiredColumn(module, column) {
+  const cfg = WRITEBACK_MODULES[module]
+  if (!cfg?.uiFieldMapPlan) return false
+  return Object.entries(cfg.uiFieldMapPlan).some(([key, col]) => col === column && cfg.skipKeys.has(key))
 }
 
 // ── Champs CALCULÉS côté AIRTABLE : jamais réécrits ──────────────────────────
@@ -856,15 +927,12 @@ export function buildColumnMap(module, fieldMap) {
       if (dynamicFieldDirection(module, d.column_name) === 'pull') continue
       let opts = {}
       try { opts = JSON.parse(d.options || '{}') } catch {}
-      // Champ lien : pas poussé par défaut. Un champ « linked record » d'Airtable
-      // attend un TABLEAU de record IDs ; la colonne ERP porte soit des ids
-      // Boréal (`link_target_table` posée), soit les record IDs en texte
-      // (`linked_table_id` seul) — pousser la valeur telle quelle renverrait 422.
-      // Exception : les colonnes déclarées dans `linkColumns`, dont le module dit
-      // vers quelle table ERP les résoudre — writeBackRecord les traduit alors en
-      // [recXXX] (cf. « Commande lié » des envois). Pour toutes les autres, les
-      // associations faites dans l'ERP restent locales.
-      if ((opts.link_target_table || opts.linked_table_id) && !cfg.linkColumns?.[d.column_name]) continue
+      // Champ lien : Airtable attend un TABLEAU de record IDs ; la colonne ERP
+      // porte des ids Boréal (`link_target_table`) ou des record IDs en texte
+      // (`linked_table_id` seul). writeBackRecord les traduit en [recXXX] via
+      // la table de pushableLinkColumn ; sans table où résoudre (table Airtable
+      // non miroitée), le champ n'est pas poussé.
+      if ((opts.link_target_table || opts.linked_table_id) && !pushableLinkColumn(module, d.column_name, opts)) continue
       out[d.column_name] = d.airtable_field_name
       pushed.add(d.airtable_field_name)
     }
@@ -946,7 +1014,7 @@ export async function writeBackRecord(module, recordId, changedColumns = null) {
       // Colonne lien : Airtable attend un tableau de record ids. Un référent sans
       // jumeau Airtable est SAUTÉ plutôt que poussé vide — effacer le lien serait
       // pire que ne rien faire. Vide côté ERP → [] = délier côté Airtable.
-      const linkTable = cfg.linkColumns?.[col]
+      const linkTable = pushableLinkColumn(module, col)
       if (linkTable) {
         const ids = airtableLinkIds(linkTable, row[col])
         if (ids === null) continue
@@ -1083,7 +1151,7 @@ export async function createInAirtable(module, recordId, { initialFields = {}, r
     const fields = {}
     for (const [col, atField] of Object.entries(columnMap)) {
       if (frozen.has(col)) continue
-      const linkTable = cfg.linkColumns?.[col]
+      const linkTable = pushableLinkColumn(module, col)
       if (linkTable) {
         const ids = airtableLinkIds(linkTable, row[col])
         if (ids && ids.length) fields[atField] = ids
@@ -1105,6 +1173,19 @@ export async function createInAirtable(module, recordId, { initialFields = {}, r
       const atField = fieldMap[key]
       if (!atField) continue
       const ids = resolve(row)
+      if (ids && ids.length) fields[atField] = ids
+    }
+
+    // Liens posés à la création seulement, quel que soit leur sens de sync
+    // (cf. `createLinks` du module). Le champ Airtable est celui du mapping
+    // dynamique de la colonne.
+    for (const [col, { table, mappingColumn }] of Object.entries(cfg.createLinks || {})) {
+      const atField = db.prepare(
+        `SELECT airtable_field_name FROM airtable_field_mappings
+         WHERE erp_table=? AND column_name=? AND import_disabled IS NOT 1`
+      ).get(cfg.erpTable, mappingColumn || col)?.airtable_field_name
+      if (!atField || fields[atField]) continue
+      const ids = airtableLinkIds(table, row[col])
       if (ids && ids.length) fields[atField] = ids
     }
 

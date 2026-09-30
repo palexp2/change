@@ -12,11 +12,11 @@ test('JWT : une permission par fonction et par serre, ventilation partagée sans
     permission_level: 'chief_grower', irrigation_zones: 4, furnaces: [{}, {}], num_fans: 2,
     has_louvers: true, louvers: [{ voltage: '110', control_type: 'spring_loaded', has_fan: false }],
   }
-  const result = calc([greenhouse, greenhouse], { humidity_retention: true })
+  const result = calc([greenhouse, greenhouse], { additional_equipment: [{ humidity_valve: true }, { humidity_haf: true }] })
   assert.equal(permissions(result).length, 10)
   assert(result.orderItems.every(i => i.qty === 2))
   assert.deepEqual(result.orderItems.map(i => i.role).sort(), Object.keys(products).sort())
-  assert(result.greenhouses.every(g => g.slots === 9 && g.activation_modules === 3))
+  assert(result.greenhouses.every(g => g.slots === 10 && g.activation_modules === 3))
   assert(result.orderItems.every(i => /Serre #1.*Serre #2/.test(i.label) && /programmer.*montage/.test(i.label)))
 })
 
@@ -30,7 +30,7 @@ test('JWT : prévention systématique en Chef de culture, aucune permission avan
   const result = calc([
     { permission_level: 'chief_grower' },
     { permission_level: 'helper', irrigation_zones: 4, furnaces: [{}], has_louvers: true, num_fans: 2, has_roof_vents: true, has_side_vents: true, num_side_vent_motors: 2 },
-  ], { humidity_retention: true })
+  ], { additional_equipment: [{ humidity_valve: true }] })
   assert.deepEqual(permissions(result).map(i => [i.role, i.greenhouse]), [['jwt_humidity_conservation', 1], ['jwt_disease_prevention', 1]])
   assert(result.greenhouses[1].items.some(i => i.role === 'side_vent_module'))
   assert.deepEqual(permissions(calc([{}], {}, { permission_level: 'chief_grower' })).map(i => i.role), ['jwt_disease_prevention'])
@@ -46,7 +46,8 @@ test('JWT : besoins indépendants, humidité achetée même sans accessoires à 
     [{ has_louvers: true }, 'jwt_advanced_ventilation'],
     [{ has_roof_vents: true }, 'jwt_advanced_ventilation'],
   ]) assert.deepEqual(permissions(calc([answer])).map(i => [i.role, i.qty]), [[role, 1]])
-  assert.deepEqual(permissions(calc([{ humidity_valve: false, humidity_haf: false }], { humidity_retention: true })).map(i => i.role), ['jwt_humidity_conservation'])
+  assert.deepEqual(permissions(calc([{}], { additional_equipment: [{ humidity_haf: true }] })).map(i => i.role), ['jwt_humidity_conservation'])
+  assert.deepEqual(permissions(calc([{}], { humidity_retention: true })), [])
   assert.deepEqual(permissions(calc([{ irrigation_zones: 0, furnaces: [], num_fans: 0, has_louvers: false, has_roof_vents: false }])), [])
 })
 

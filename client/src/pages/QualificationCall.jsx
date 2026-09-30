@@ -9,6 +9,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate } from '../lib/formatDate.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // ── Dropdown "Nouvel appel" : sélection d'une entreprise avec recherche live.
 // On suit la règle CLAUDE.md : dropdowns avec >10 options doivent avoir une zone
@@ -443,7 +444,7 @@ export default function QualificationCall() {
       {creating && (
         <div className="fixed inset-0 bg-black/20 flex items-center justify-center z-50">
           <div className="card p-6 flex items-center gap-3">
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-emerald-600" />
+            <ThinkingOrb size={20} ink className="text-emerald-600" />
             <span className="text-sm text-slate-700">Préparation de l'appel…</span>
           </div>
         </div>

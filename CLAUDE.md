@@ -36,10 +36,12 @@ Sans ce build, les changements ne sont pas visibles — Vite n'est pas en mode w
 Format d'une entrée (à ajouter en tête de `entries`) :
 
 ```json
-{ "date": "YYYY-MM-DD", "title": "Titre court", "category": "Comptabilité",
-  "requester": "Prénom Nom",
+{ "date": "YYYY-MM-DD", "at": "2026-09-24T14:05:00+00:00", "title": "Titre court",
+  "category": "Comptabilité", "requester": "Prénom Nom",
   "changes": [ { "type": "new|improved|fixed", "text": "…" } ] }
 ```
+
+`at` = heure de l'ajout (`date -Iseconds`) : c'est elle qu'affiche la colonne « Date » de `/changelog` quand son format est réglé « + heure ». `date` reste la date seule (la garde de déploiement l'exige).
 
 `requester` = le nom de la personne qui a demandé le changement (colonne « Demandé par » sur `/changelog`). **Obligatoire dès que le brief donne un demandeur**, sous l'une de ces deux formes :
 - une section `=== DEMANDÉ PAR ===` suivie du nom — ajoutée automatiquement par la file de travaux quand la demande vient d'un humain (fenêtre « Modifier le système », page `/travaux`) ;
@@ -49,11 +51,19 @@ Recopier le nom **tel quel**. Sans demandeur dans le brief (travail lancé par l
 
 ## Redémarrage serveur
 
-Après une modification dans `server/src/`, redémarre :
+Après une modification dans `server/src/`, redémarre **sans coupure** :
 
 ```bash
-pm2 restart erp-server
+/home/ec2-user/erp/server/scripts/restart.sh
 ```
+
+Un relais (`erp-standby`, port 3007, arrêté hors redémarrage) répond à la place
+d'`erp-server` pendant qu'il redémarre ; nginx bascule seul dessus (serveur
+`backup` de l'upstream `erp_backend`). Les utilisateurs ne voient plus rien.
+**Jamais `pm2 restart erp-server` directement** (un hook le refuse) ; en
+urgence : `restart.sh --force`. Le relais ne lance aucune tâche de fond
+(`ERP_ROLE=standby` → sortie juste après le temps réel dans `index.js`) : tout
+nouveau planificateur, watcher ou cron va **après** ce retour.
 
 ## Chemins importants
 - Frontend source : `client/src/`
@@ -139,7 +149,7 @@ S'applique aux formulaires, aux fiches détail, et aux colonnes de `DataTable` a
 | But | Commande |
 |---|---|
 | Rebuild frontend | `cd client && npm run build` |
-| Redémarrer serveur | `pm2 restart erp-server` |
+| Redémarrer serveur | `server/scripts/restart.sh` (sans coupure) |
 | Logs serveur (stream) | `pm2 logs erp-server` |
 | Logs fichier | `~/.pm2/logs/erp-server-{out,error}.log` |
 | Lint serveur | `cd server && npm run lint` |
@@ -152,7 +162,7 @@ S'applique aux formulaires, aux fiches détail, et aux colonnes de `DataTable` a
 
 ## Déploiement
 
-- Script canonique : `/home/ec2-user/erp/deploy.sh` (pull `main` → build client → `pm2 restart erp-server`)
+- Script canonique : `/home/ec2-user/erp/deploy.sh` (pull `main` → build client → `server/scripts/restart.sh`)
 - Lancé **toutes les heures par cron**. Il ne travaille que si quelque chose a
   changé : une empreinte de `client/**` et une de `server/**` sont comparées à
   celles du dernier déploiement (`.deploy-fingerprints`). Le build ne part que si
@@ -214,7 +224,7 @@ Avant d'envoyer une tâche dans la file, le brief doit contenir, en clair :
 5. **Comment vérifier** le résultat, et les gestes humains restants (clés à
    saisir, configuration externe).
 6. Le rappel des obligations du dépôt qui s'appliquent : entrée dans
-   `client/src/data/changelog.json`, rebuild du client, `pm2 restart erp-server`.
+   `client/src/data/changelog.json`, rebuild du client, `server/scripts/restart.sh`.
 
 Règle de relecture : **si un collègue qui n'a pas assisté à la conversation ne
 peut pas exécuter le brief seul, il n'est pas prêt à partir.** Trop long n'est

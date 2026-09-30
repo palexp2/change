@@ -12,7 +12,7 @@ test('execCommand : modèle, effort, reprise de session et hook de steering', ()
     ...BASE, model: 'opus', effort: 'high',
     tools: 'Bash,Read', resumeSessionId: 'sess-1', settingsFile: '/s.json',
   })
-  assert.match(cmd, /--model "opus"/)
+  assert.match(cmd, /--model "claude-opus-5-5"/, "opus = Opus 5.5 figé")
   assert.match(cmd, /--effort "high"/)
   assert.match(cmd, /--resume "sess-1"/)
   assert.match(cmd, /--settings "\/s\.json"/)

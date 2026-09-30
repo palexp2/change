@@ -2,6 +2,8 @@ import { Router } from 'express'
 import db from '../db/database.js'
 import { getStripeClient, createOrRefreshCheckoutSession } from '../services/stripeInvoices.js'
 import { APP_URL } from '../config/appUrl.js'
+import { createSoumissionCheckout, SOUMISSION_PAY_KINDS } from '../services/soumissionCheckout.js'
+import { ensureSoumissionSystemBuilder } from '../services/soumissionSystemBuilder.js'
 
 const router = Router()
 
@@ -24,6 +26,69 @@ a.btn{display:inline-block;background:#4f46e5;color:#fff;padding:10px 18px;borde
 </style>
 </head><body><div class="box">${bodyHtml}</div></body></html>` }
 }
+
+// GET /pay/soumission/:id/:kind — boutons « S'abonner » / « Acheter » du PDF
+// d'une soumission. kind = abonnement | achat | annule (retour de Stripe).
+const SOUMISSION_ERRORS = {
+  not_found: [404, 'Lien introuvable', 'Cette soumission n’existe plus.'],
+  expired: [410, 'Soumission expirée', 'Cette soumission a expiré. Écrivez-nous pour la renouveler.'],
+  empty: [400, 'Rien à payer', 'Cette option ne comporte aucun montant.'],
+  mixed_discounts: [400, 'Paiement à confirmer', 'Les rabais de cette soumission doivent être appliqués par notre équipe. Écrivez-nous.'],
+  no_tax_place: [400, 'Adresse manquante', 'Nous devons confirmer votre adresse avant le paiement. Écrivez-nous.'],
+}
+// Session payée (ou sans montant dû : rabais de 100 %), et bien celle de cette soumission.
+async function paidSoumissionSession(soumissionId, sessionId) {
+  if (!sessionId) return { state: 'invalid' }
+  let session
+  try { session = await getStripeClient().checkout.sessions.retrieve(String(sessionId)) }
+  catch { return { state: 'invalid' } }
+  if (session.metadata?.erp_soumission_id !== soumissionId) return { state: 'invalid' }
+  if (session.status !== 'complete' || !['paid', 'no_payment_required'].includes(session.payment_status)) return { state: 'pending', session }
+  return { state: 'paid', session }
+}
+
+// GET /pay/soumission/:id/paye?session_id=… — retour de Stripe après paiement :
+// le System builder de la soumission est créé et le client est redirigé vers
+// son lien public. Automation désactivée ou soumission sans serre : ancien
+// parcours post-paiement.
+router.get('/soumission/:id/paye', async (req, res) => {
+  const { id } = req.params
+  const sessionId = req.query.session_id
+  const { state, session } = await paidSoumissionSession(id, sessionId)
+  if (state === 'invalid') return res.status(404).type('html').send(htmlPage('Lien introuvable', '<h1 class="error">Lien introuvable</h1>', 404).html)
+  if (state === 'pending') {
+    // Paiement différé (débit préautorisé) : recharger la page une fois confirmé.
+    const { html } = htmlPage('Paiement en cours',
+      '<h1>Merci !</h1><p>Votre paiement est en cours de confirmation. Rechargez cette page dans quelques minutes.</p><p class="muted">Thank you! Your payment is being confirmed. Reload this page in a few minutes.</p>')
+    return res.type('html').send(html)
+  }
+  let form = null
+  try { form = ensureSoumissionSystemBuilder({ soumissionId: id, session, source: 'redirect' }) }
+  catch (e) { console.error('soumission system builder error:', id, e.message) }
+  if (form?.public_token) return res.redirect(303, `${appBaseUrl()}/erp/d/${form.public_token}`)
+  return res.redirect(303, `${appBaseUrl()}/erp/customer/post-payment?session_id=${encodeURIComponent(session.id)}`)
+})
+
+router.get('/soumission/:id/:kind', async (req, res) => {
+  const { id, kind } = req.params
+  if (kind === 'annule') {
+    const { html } = htmlPage('Paiement annulé',
+      `<h1>Paiement annulé</h1><p>Aucun montant n’a été prélevé.</p><a class="btn" href="mailto:info@orisha.io">info@orisha.io</a>`)
+    return res.type('html').send(html)
+  }
+  if (!SOUMISSION_PAY_KINDS.includes(kind)) return res.status(404).type('html').send(htmlPage('Lien introuvable', '<h1 class="error">Lien introuvable</h1>').html)
+  try {
+    const { url } = await createSoumissionCheckout({ stripe: getStripeClient(), soumissionId: id, kind })
+    return res.redirect(303, url)
+  } catch (e) {
+    const [status, title, text] = SOUMISSION_ERRORS[e.code]
+      || [500, 'Erreur', 'Le paiement n’a pas pu être préparé. Écrivez-nous pour le régler autrement.']
+    if (!SOUMISSION_ERRORS[e.code]) console.error('soumission pay error:', id, kind, e.message)
+    const { html } = htmlPage(title,
+      `<h1 class="error">${title}</h1><p>${text}</p><a class="btn" href="mailto:info@orisha.io">info@orisha.io</a>`, status)
+    return res.status(status).type('html').send(html)
+  }
+})
 
 // GET /pay/:pendingId — public permanent payment link.
 // Looks up the pending_invoice. If valid + unpaid, redirects to a fresh-or-cached

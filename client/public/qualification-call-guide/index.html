@@ -3028,8 +3028,7 @@ function renderQuotePaidSuccess(){
         <fieldset id="discovery-purchased-options" style="text-align:left;margin:16px 0;padding:12px;border:1px solid #ddd;border-radius:8px">
           <legend>Purchased options</legend>
           <label style="display:block;margin:8px 0"><input type="checkbox" data-discovery-option="mobile_controller"> Mobile Internet controller</label>
-          <label style="display:block;margin:8px 0"><input type="checkbox" data-discovery-option="humidity_retention"> Humidity retention</label>
-          ${[['soil_temperature_sensor','Soil temperature sensor'],['outdoor_temperature_sensor','Outdoor temperature sensor'],['advanced_temperature_sensor','Advanced temperature sensor'],['solar_sensor','Solar sensor'],['rain_sensor','Rain sensor']].map(([role,label])=>`<label style="display:flex;justify-content:space-between;gap:12px;margin:8px 0">${label}<input type="number" min="0" max="100" step="1" value="0" data-discovery-sensor="${role}" style="width:64px"></label>`).join('')}
+          ${[['soil_temperature_sensor','Soil temperature sensor'],['outdoor_temperature_sensor','Outdoor temperature sensor'],['solar_sensor','Solar sensor'],['rain_sensor','Rain sensor']].map(([role,label])=>`<label style="display:flex;justify-content:space-between;gap:12px;margin:8px 0">${label}<input type="number" min="0" max="100" step="1" value="0" data-discovery-sensor="${role}" style="width:64px"></label>`).join('')}
         </fieldset>
         <button type="button" class="discovery-form-create-btn" id="discovery-form-create-btn">
           Create the technical discovery form

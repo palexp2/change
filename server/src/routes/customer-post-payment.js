@@ -57,7 +57,7 @@ const FIELD_TO_COLUMN = {
 }
 
 // Construit l'UPDATE partiel à partir d'un body. Retourne { updates, values } prêts à concat.
-function buildPartialUpdate(body) {
+export function buildPartialUpdate(body) {
   const updates = []
   const values = []
   for (const [key, coerce] of Object.entries(FIELD_COERCERS)) {
@@ -119,6 +119,13 @@ function loadOrInitResponse(sessionId, invoice) {
     const pending = db.prepare('SELECT company_id FROM pending_invoices WHERE id=?').get(pendingId)
     companyId = pending?.company_id || null
   }
+  // Paiement issu d'une soumission (sans facture en attente) : l'entreprise
+  // est dans les métadonnées — de la facture, ou de l'abonnement.
+  if (!companyId) {
+    const subMeta = invoice?.parent?.subscription_details?.metadata || invoice?.subscription_details?.metadata
+    companyId = invoice?.metadata?.erp_company_id || subMeta?.erp_company_id || null
+    if (companyId && !db.prepare('SELECT 1 FROM companies WHERE id=?').get(companyId)) companyId = null
+  }
   const id = newRecordId()
   db.prepare(`
     INSERT INTO customer_onboarding_responses
@@ -171,7 +178,22 @@ function shapeResponse(row) {
     valve_blocks_needed: valveBlocksNeeded,
     valve_blocks_paid: valveBlocksPaid,
     submitted_at: row.submitted_at,
+    // Le client peut revenir sur ses réponses, même envoyées, tant qu'aucune
+    // commande n'a été créée à partir du formulaire.
+    editable: !row.generated_order_id,
   }
+}
+
+const ORDER_LOCKED = 'Une commande a déjà été créée : vos réponses ne peuvent plus être modifiées.'
+
+// Nouvel envoi d'un formulaire déjà soumis : les adresses corrigées sont
+// réenregistrées, la date de première soumission reste.
+function resubmit(row) {
+  db.transaction(() => {
+    const claim = db.prepare("UPDATE customer_onboarding_responses SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND generated_order_id IS NULL").run(row.id)
+    if (claim.changes !== 1) throw Object.assign(new Error(ORDER_LOCKED), { status: 409 })
+    discoveryAddresses(row, { persist: true })
+  })()
 }
 
 function loadCompanyContext(companyId) {
@@ -247,13 +269,13 @@ router.post('/:sessionId/save', async (req, res) => {
   try {
     const { invoice } = await validateSession(req.params.sessionId)
     const row = loadOrInitResponse(req.params.sessionId, invoice)
-    if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
+    if (row.generated_order_id) return res.status(409).json({ error: ORDER_LOCKED })
 
     const { updates, values } = buildPartialUpdate(req.body)
     if (updates.length === 0) return res.json({ ok: true, saved: 0 })
     updates.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
     values.push(row.id)
-    db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=?`).run(...values)
+    db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=? AND generated_order_id IS NULL`).run(...values)
     const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
     res.json({ ok: true, response: shapeResponse(refreshed) })
   } catch (e) {
@@ -269,7 +291,7 @@ router.post('/:sessionId/submit', async (req, res) => {
   try {
     const { invoice } = await validateSession(req.params.sessionId)
     const row = loadOrInitResponse(req.params.sessionId, invoice)
-    if (row.status === 'submitted') {
+    if (row.status === 'submitted' && row.generated_order_id) {
       return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
     }
     if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
@@ -278,6 +300,10 @@ router.post('/:sessionId/submit', async (req, res) => {
     const submitRoles = await detectProductRoles(invoice, getStripeClient())
     const answerErrors = discoveryAnswerErrors(shapeResponse(row), { hasMobileController: submitRoles.includes('mobile_controller') })
     if (answerErrors.length) return res.status(400).json({ error: answerErrors[0], errors: answerErrors })
+    if (row.status === 'submitted') {
+      resubmit(row)
+      return res.json({ ok: true, resubmitted: true, response: shapeResponse(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)) })
+    }
 
     // Finalisation atomique. Endpoint public sans auth = exposé aux double-submits
     // (le client peut renvoyer /submit deux fois, ou deux onglets concurrents).
@@ -308,7 +334,7 @@ router.post('/:sessionId/submit', async (req, res) => {
     res.json({ ok: true, response: shapeResponse(refreshed) })
   } catch (e) {
     if (e.message === 'not_paid') return res.status(402).json({ error: 'Paiement non confirmé' })
-    res.status(500).json({ error: e.message })
+    res.status(e.status || 500).json({ error: e.message })
   }
 })
 
@@ -437,13 +463,13 @@ router.get('/by-token/:token', (req, res) => {
 router.post('/by-token/:token/save', (req, res) => {
   const row = loadByToken(req.params.token)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-  if (row.status === 'submitted') return res.status(400).json({ error: 'Déjà soumis' })
+  if (row.generated_order_id) return res.status(409).json({ error: ORDER_LOCKED })
 
   const { updates, values } = buildPartialUpdate(req.body)
   if (updates.length === 0) return res.json({ ok: true, saved: 0 })
   updates.push("updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')")
   values.push(row.id)
-  db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=?`).run(...values)
+  db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')} WHERE id=? AND generated_order_id IS NULL`).run(...values)
   const refreshed = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)
   res.json({ ok: true, response: shapeResponse(refreshed) })
 })
@@ -463,12 +489,16 @@ router.post('/by-token/:token/confirm-address', async (req, res) => {
 router.post('/by-token/:token/submit', (req, res) => {
   const row = loadByToken(req.params.token)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
-  if (row.status === 'submitted') {
+  if (row.status === 'submitted' && row.generated_order_id) {
     return res.json({ ok: true, already_submitted: true, response: shapeResponse(row) })
   }
   if (!row.is_new_site) return res.status(400).json({ error: 'is_new_site requis avant soumission' })
   const answerErrors = discoveryAnswerErrors(shapeResponse(row))
   if (answerErrors.length) return res.status(400).json({ error: answerErrors[0], errors: answerErrors })
+  if (row.status === 'submitted') {
+    try { resubmit(row) } catch (e) { return res.status(e.status || 500).json({ error: e.message }) }
+    return res.json({ ok: true, resubmitted: true, response: shapeResponse(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)) })
+  }
 
   // Les zones supplémentaires seront traitées avec le vendeur après l'envoi.
 

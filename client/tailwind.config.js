@@ -1,5 +1,6 @@
 import plugin from 'tailwindcss/plugin'
 import palette from 'tailwindcss/colors'
+import { LOOKS } from './src/lib/looks.js'
 
 /* Mode nuit — les couleurs Tailwind sont servies via des variables CSS.
    Chaque nuance devient `rgb(var(--c-<palette>-<nuance>) / <alpha>)` ; le mode
@@ -192,6 +193,72 @@ for (const [name, ramp] of Object.entries(THEMED)) {
   }
 }
 
+/* ── Looks (src/lib/looks.js) ───────────────────────────────────────── */
+
+/* Chaque look réécrit les neutres, `white` et `brand` à partir de ses
+   couleurs QNE, et publie ses variables brutes. Un look sombre porte aussi la
+   classe `.dark` (palettes chromatiques inversées). La même formule vaut
+   pour clair et sombre : dans les deux rampes de l'app, 50 = fond de page,
+   `white` = surface, les nuances hautes = texte. */
+
+function lookNeutrals(v) {
+  const ink = v['--c-ink'], ink3 = v['--c-ink-3'], ink5 = v['--c-ink-5']
+  const border = v['--c-border']
+  const r = {
+    50: v['--c-bg'],
+    100: v['--c-surface-2'],
+    200: border,
+    300: v['--c-border-2'] || mix(border, ink5, 0.3),
+    400: ink5,
+    500: v['--c-ink-4'] || mix(ink5, ink3, 0.5),
+    600: ink3,
+    700: v['--c-ink-2'] || mix(ink3, ink, 0.5),
+    800: ink,
+    900: ink,
+    950: ink,
+  }
+  return r
+}
+
+const BRAND_MIX = { 50: 0.1, 100: 0.2, 200: 0.36, 300: 0.58, 400: 0.8 }
+const BRAND_DEEP = { 600: 0.2, 700: 0.38, 800: 0.55, 900: 0.7, 950: 0.85 }
+
+function lookBrand(v) {
+  const a = v['--c-accent']
+  return Object.fromEntries(SHADES.map(s => [s,
+    s === 500 ? a : BRAND_MIX[s] != null ? mix(v['--c-bg'], a, BRAND_MIX[s]) : mix(a, v['--c-ink'], BRAND_DEEP[s])]))
+}
+
+function lookVars(v, dark) {
+  const out = { ...v }
+  const n = lookNeutrals(v)
+  const b = lookBrand(v)
+  for (const s of SHADES) {
+    out[`--c-slate-${s}`] = rgb(n[s])
+    out[`--c-gray-${s}`] = rgb(n[s])
+    out[`--c-brand-${s}`] = rgb(b[s])
+  }
+  out['--c-white'] = rgb(v['--c-surface'])
+  const acc = rgb(v['--c-accent'])
+  for (const k of ['brand', 'clients', 'envois', 'compta', 'inventaire', 'rh', 'outils']) out[`--acc-${k}`] = acc
+  out['--c-shadow'] = dark ? '0 0 0' : '58 44 24'
+  out['color-scheme'] = dark ? 'dark' : 'light'
+  return out
+}
+
+const lookBase = {}
+for (const look of LOOKS) {
+  const dark = look.mode === 'dark'
+  lookBase[`:root[data-look="${look.id}"]`] = lookVars(look.vars, dark)
+  if (look.panel) {
+    // Panneau sombre posé dans un look clair : neutres du panneau + palettes
+    // chromatiques de la nuit (texte coloré lisible sur fond sombre).
+    const chroma = Object.fromEntries(Object.entries(darkVars).filter(([k]) => !/^--c-(slate|gray|white|brand)/.test(k)))
+    const pv = { ...look.vars, ...look.panel }
+    lookBase[`:root[data-look="${look.id}"] .look-panel`] = { ...chroma, ...lookVars(pv, true) }
+  }
+}
+
 /* ── Ombres ─────────────────────────────────────────────────────────── */
 
 /* Reskin 2026-08 : l'ombre ne sert plus qu'à dire « ceci flotte au-dessus du
@@ -244,6 +311,7 @@ export default {
         // Pour les écrans déjà conçus « sombres » (page de connexion), qui
         // s'inverseraient à contresens. Les variables les plus proches gagnent.
         '.theme-light': { ...lightVars, 'color-scheme': 'light' },
+        ...lookBase,
       })
     }),
   ],

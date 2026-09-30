@@ -137,7 +137,7 @@ export function getProposal(id) {
   return decode(db.prepare('SELECT * FROM bank_proposals WHERE id=?').get(id))
 }
 
-export async function acceptProposal(id, userId) {
+export async function acceptProposal(id, userId, { auto = false } = {}) {
   const p = getProposal(id)
   if (!p) throw new ProposalError('Proposition introuvable', 404)
   const applier = APPLIERS[p.kind]
@@ -145,9 +145,9 @@ export async function acceptProposal(id, userId) {
 
   // Réservation : le premier clic gagne, le second reçoit un 409.
   const taken = db.prepare(`
-    UPDATE bank_proposals SET status='acceptee', decided_at=${NOW}, decided_by=?, last_error=NULL, updated_at=${NOW}
+    UPDATE bank_proposals SET status='acceptee', decided_at=${NOW}, decided_by=?, auto_accepted=?, last_error=NULL, updated_at=${NOW}
     WHERE id=? AND status='proposee'
-  `).run(userId || null, id)
+  `).run(userId || null, auto ? 1 : 0, id)
   if (!taken.changes) throw new ProposalError('Cette proposition a déjà été tranchée', 409)
 
   try {
@@ -164,7 +164,7 @@ export async function acceptProposal(id, userId) {
     import('../trxSheetMirror.js').then((m) => m.mirrorOnChange('proposition')).catch(() => {})
     return { ...getProposal(id), result }
   } catch (e) {
-    db.prepare(`UPDATE bank_proposals SET status='proposee', decided_at=NULL, decided_by=NULL, last_error=?, updated_at=${NOW} WHERE id=?`)
+    db.prepare(`UPDATE bank_proposals SET status='proposee', decided_at=NULL, decided_by=NULL, auto_accepted=0, last_error=?, updated_at=${NOW} WHERE id=?`)
       .run(e.message, id)
     throw e
   }
@@ -182,6 +182,51 @@ export function refuseProposal(id, userId, note = null) {
   if (!res.changes) throw new ProposalError('Cette proposition a déjà été tranchée', 409)
   return getProposal(id)
 }
+
+// Défaire une acceptation. Seulement pour ce qui n'a rien écrit dans
+// QuickBooks : on remet la ligne comme avant, et la proposition devient un
+// refus — l'app ne la reposera plus.
+const UNDOERS = {
+  payment_clear: async (p) => {
+    const { setCleared } = await import('../treasuryPayments.js')
+    setCleared(p.payload?.payment_id, false)
+  },
+  paie_debit: async (p) => {
+    const { attachPaieBankDebit } = await import('../paieSalaryExpense.js')
+    attachPaieBankDebit(p.payload?.paie_id, null)
+  },
+  debt_payment: async (p) => {
+    const { detachDebtPaymentBankTxn } = await import('../bankDebitLink.js')
+    detachDebtPaymentBankTxn(p.payload?.payment_id, p.bank_txn_id)
+  },
+  doc_match: async (p) => {
+    db.prepare(`
+      UPDATE bank_transactions
+      SET matched_type=NULL, matched_id=NULL, match_method=NULL, match_confidence=NULL,
+          status=CASE WHEN status='facture_recue' THEN 'a_traiter' ELSE status END, updated_at=${NOW}
+      WHERE id=? AND matched_id=?
+    `).run(p.bank_txn_id, String(p.payload?.matched_id))
+  },
+}
+
+export async function undoProposal(id, userId) {
+  const p = getProposal(id)
+  if (!p) throw new ProposalError('Proposition introuvable', 404)
+  if (p.status !== 'acceptee') throw new ProposalError('Rien à annuler', 409)
+  const undo = UNDOERS[p.kind]
+  if (!undo) throw new ProposalError('Celle-ci ne s\'annule pas ici', 400)
+  await undo(p)
+  db.prepare(`
+    UPDATE bank_proposals SET status='refusee', decided_at=${NOW}, decided_by=?, decision_note='annulée', updated_at=${NOW}
+    WHERE id=?
+  `).run(userId || null, id)
+  touchBankTxns([p.bank_txn_id])
+  refreshStatuses(accountOf(p.bank_txn_id))
+  import('../trxSheetMirror.js').then((m) => m.mirrorOnChange('proposition')).catch(() => {})
+  return getProposal(id)
+}
+
+export const UNDOABLE_KINDS = Object.keys(UNDOERS)
 
 function accountOf(txnId) {
   return db.prepare('SELECT account_id FROM bank_transactions WHERE id=?').get(txnId)?.account_id

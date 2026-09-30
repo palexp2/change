@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <polygon points="-275 292 385 292 885 142 225 142" fill="#e9f6ec"/>
+  <g>
+    <use href="#seedling" transform="translate(192 282.9) scale(1.8)"/>
+    <use href="#seedling" transform="translate(260 262.5) scale(1.8)"/>
+    <use href="#seedling" transform="translate(328 242.1) scale(1.8)"/>
+    <use href="#seedling" transform="translate(396 221.7) scale(1.8)"/>
+  </g>
+  <path d="M120 182 C159 182 185 194 185 220 V262 L525 160 V118 C525 92 499 80 460 80 Z" fill="#eaf7f8" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <g fill="none" stroke="#b9e2e4" stroke-width="2.6" stroke-linecap="round">
+    <path d="M188 161.6 C227 161.6 253 173.6 253 199.6 V241.6"/>
+    <path d="M256 141.2 C295 141.2 321 153.2 321 179.2 V221.2"/>
+    <path d="M324 120.8 C363 120.8 389 132.8 389 158.8 V200.8"/>
+    <path d="M392 100.4 C431 100.4 457 112.4 457 138.4 V180.4"/>
+    <path d="M185 220 L525 118"/>
+  </g>
+  <path d="M55 262 V220 C55 194 81 182 120 182 C159 182 185 194 185 220 V262 Z" fill="#f6fcfd" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M100 262 V226 h40 V262" fill="#d9eef1" stroke="#7ecdd0" stroke-width="3" stroke-linejoin="round"/>
+  <g fill="none" stroke="#94a3b8" stroke-width="2.6" stroke-linecap="round">
+    <path d="M110.2 149.4 L450.2 47.4"/>
+    <path d="M113.1 159 L107.4 139.9"/>
+    <path d="M453.1 57 L447.4 37.9"/>
+  </g>
+  <text x="275.6" y="83.1" transform="rotate(-16.7 275.6 83.1)" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#475569">More than 200 ft</text>
+</svg>

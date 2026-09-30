@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Rapprochement — maquettes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f6f7f5; --surface: #ffffff; --surface2: #f1f3f0; --hover: #f7f9f6;
+  --border: #e5e8e3; --border2: #d6dbd3;
+  --ink: #16201a; --ink2: #3a463e; --ink3: #6b766e; --ink4: #9aa39c;
+  --brand: #1f6b3a; --brand-soft: #e6f1e9; --brand-ink: #185a30;
+  --pos: #1f7a44; --neg: #16201a;
+  --amber: #b76e00; --amber-soft: #fdf3e1; --red: #c0392b; --red-soft: #fbe9e6;
+  --blue: #2d6cb5; --blue-soft: #e8f0fa; --gray-soft: #eef0ed;
+  --shadow: 0 1px 2px rgb(16 24 20 / .05), 0 8px 24px rgb(16 24 20 / .06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111613; --surface: #181e1a; --surface2: #1f2622; --hover: #1c231f;
+    --border: #2a332d; --border2: #36413a;
+    --ink: #e9eee9; --ink2: #c7d0c9; --ink3: #93a097; --ink4: #6c786f;
+    --brand: #5fbf82; --brand-soft: #1d3326; --brand-ink: #8fd6a8;
+    --pos: #6fcf93; --neg: #e9eee9;
+    --amber: #f0b04a; --amber-soft: #33291a; --red: #ff8a7a; --red-soft: #3a2220;
+    --blue: #7fb0ea; --blue-soft: #1c2a3b; --gray-soft: #222924;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111613; --surface: #181e1a; --surface2: #1f2622; --hover: #1c231f;
+  --border: #2a332d; --border2: #36413a;
+  --ink: #e9eee9; --ink2: #c7d0c9; --ink3: #93a097; --ink4: #6c786f;
+  --brand: #5fbf82; --brand-soft: #1d3326; --brand-ink: #8fd6a8;
+  --pos: #6fcf93; --neg: #e9eee9;
+  --amber: #f0b04a; --amber-soft: #33291a; --red: #ff8a7a; --red-soft: #3a2220;
+  --blue: #7fb0ea; --blue-soft: #1c2a3b; --gray-soft: #222924;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 Inter, system-ui, sans-serif; padding: 20px 16px 48px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+.num { font-variant-numeric: tabular-nums; }
+
+.top { max-width: 1320px; margin: 0 auto 14px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.top h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.opt { padding: 6px 12px; border: 1px solid var(--border2); border-radius: 999px; background: var(--surface); font-weight: 500; color: var(--ink2); }
+.opt b { color: var(--brand); margin-right: 5px; }
+.opt[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.opt[aria-pressed="true"] b { color: inherit; opacity: .6; }
+.theme { margin-left: auto; color: var(--ink3); font-size: 12px; border: 1px solid var(--border2); border-radius: 999px; padding: 5px 11px; background: var(--surface); }
+.lede { max-width: 1320px; margin: 0 auto 12px; color: var(--ink3); }
+
+/* écran */
+.screen { max-width: 1320px; height: 780px; margin: 0 auto; display: flex; border: 1px solid var(--border2); border-radius: 14px; overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
+.rail { width: 52px; flex: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; align-items: center; padding: 14px 0; gap: 18px; background: var(--surface); }
+.rail i { width: 18px; height: 18px; border: 1.5px solid var(--ink4); border-radius: 5px; display: block; opacity: .6; }
+.rail i.on { border-color: var(--brand); background: var(--brand-soft); opacity: 1; }
+.rail i.logo { border: 0; width: 16px; height: 18px; background: var(--brand); clip-path: polygon(50% 0, 100% 70%, 62% 70%, 62% 100%, 38% 100%, 38% 70%, 0 70%); opacity: 1; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.hub { display: flex; gap: 24px; padding: 0 22px; height: 46px; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--surface); flex: none; }
+.hub a { display: flex; align-items: center; gap: 6px; color: var(--ink3); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; }
+.hub a.on { color: var(--brand-ink); border-bottom-color: var(--brand); }
+.pill { min-width: 17px; height: 17px; padding: 0 5px; border-radius: 999px; background: var(--red); color: #fff; font-size: 10px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+.body { flex: 1; min-height: 0; display: flex; }
+.work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.scroll { flex: 1; min-height: 0; overflow: auto; }
+
+/* barre du compte */
+.acct-head { display: flex; align-items: flex-end; gap: 28px; padding: 18px 24px 14px; flex: none; flex-wrap: wrap; }
+.acct-head .name { font-size: 12px; color: var(--ink3); font-weight: 500; }
+.acct-head .bal { font-size: 26px; font-weight: 600; letter-spacing: -.02em; }
+.acct-head .bal small { font-size: 13px; color: var(--ink3); font-weight: 500; margin-left: 4px; }
+.kpi { display: flex; flex-direction: column; gap: 2px; }
+.kpi .k { font-size: 11px; color: var(--ink3); }
+.kpi .v { font-size: 15px; font-weight: 600; }
+.kpi .v.ok { color: var(--pos); }
+.kpi .v.warn { color: var(--amber); }
+.acct-head .spacer { flex: 1; }
+.search { width: 230px; height: 32px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); display: flex; align-items: center; padding: 0 11px; color: var(--ink4); gap: 7px; }
+.search::before { content: ''; width: 10px; height: 10px; border: 1.5px solid var(--ink4); border-radius: 50%; }
+.iconbtn { width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); display: inline-flex; align-items: center; justify-content: center; color: var(--ink3); }
+
+.progress { height: 4px; border-radius: 99px; background: var(--gray-soft); overflow: hidden; width: 160px; }
+.progress span { display: block; height: 100%; background: var(--brand); border-radius: 99px; }
+
+/* onglets comptes (T1) */
+.tabs-bottom { flex: none; display: flex; align-items: stretch; height: 42px; border-top: 1px solid var(--border); background: var(--surface); overflow-x: auto; padding-left: 8px; }
+.tabs-bottom button { padding: 0 14px; display: flex; align-items: center; gap: 7px; color: var(--ink3); white-space: nowrap; font-weight: 500; }
+.tabs-bottom button.on { color: var(--ink); font-weight: 600; box-shadow: inset 0 2px 0 var(--brand); background: var(--bg); }
+.tabs-bottom .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--red); }
+
+/* éléments communs */
+.av { width: 28px; height: 28px; border-radius: 8px; flex: none; display: inline-flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: #fff; }
+.vend { font-weight: 600; color: var(--ink); }
+.sub2 { color: var(--ink3); font-size: 12px; }
+.cat { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 6px; background: var(--surface2); color: var(--ink2); font-size: 11.5px; font-weight: 500; white-space: nowrap; }
+.doc { display: inline-flex; align-items: center; color: var(--blue); font-size: 11.5px; font-weight: 500; white-space: nowrap; text-decoration: underline; text-decoration-color: color-mix(in srgb, var(--blue) 35%, transparent); text-underline-offset: 2px; }
+.amt { font-weight: 600; text-align: right; white-space: nowrap; }
+.amt.pos { color: var(--pos); }
+.st { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.st.ok { background: var(--brand); }
+.st.book { background: #d9a520; }
+.st.todo { background: var(--ink4); box-shadow: 0 0 0 2px var(--surface), 0 0 0 3.5px var(--ink4); width: 6px; height: 6px; }
+.st.recv { background: var(--blue); }
+.st.warn { background: var(--amber); }
+.btn { height: 30px; padding: 0 13px; border-radius: 8px; font-weight: 600; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.btn.primary { background: var(--brand); color: #fff; }
+.btn.ghost { border: 1px solid var(--border2); background: var(--surface); color: var(--ink2); }
+.btn.link { color: var(--ink3); padding: 0 6px; font-weight: 500; }
+.kbd { font-size: 10.5px; border: 1px solid var(--border2); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; color: var(--ink3); background: var(--surface); }
+.flag { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-weight: 500; color: var(--amber); }
+.flag::before { content: '!'; width: 14px; height: 14px; border-radius: 50%; background: var(--amber-soft); color: var(--amber); font-size: 10px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.sweep { color: var(--ink4); font-size: 12px; display: flex; align-items: center; gap: 8px; }
+.sweep::before { content: ''; width: 14px; border-top: 1px dashed var(--ink4); }
+
+/* ── R1 · Boîte de réception ── */
+.inbox { padding: 0 24px 24px; }
+.sec-title { display: flex; align-items: center; gap: 10px; margin: 6px 0 10px; font-size: 12px; font-weight: 600; color: var(--ink2); }
+.sec-title .c { color: var(--ink4); font-weight: 500; }
+.sec-title .line { flex: 1; border-top: 1px solid var(--border); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; display: grid; grid-template-columns: 28px minmax(0, 1.2fr) minmax(0, 1.6fr) 120px auto; gap: 14px; align-items: center; margin-bottom: 8px; }
+.card:hover { border-color: var(--border2); box-shadow: var(--shadow); }
+.card .prop { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.card .prop .p1 { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.card .prop .arrow { color: var(--ink4); }
+.card .acts { display: flex; gap: 6px; justify-content: flex-end; }
+.card.warn { border-left: 3px solid var(--amber); }
+.done-day { display: grid; grid-template-columns: 96px 1fr; gap: 14px; padding: 10px 0; border-top: 1px solid var(--border); }
+.done-day .d { color: var(--ink3); font-size: 12px; font-weight: 500; padding-top: 2px; }
+.done-row { display: grid; grid-template-columns: 1fr auto 110px 16px; gap: 14px; align-items: center; padding: 3px 0; color: var(--ink2); }
+.done-row .n { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.done-row .n span.t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.check { width: 14px; height: 14px; color: var(--brand); }
+
+/* ── R2 · Relevé épuré ── */
+.filters { display: flex; gap: 6px; padding: 0 24px 12px; flex: none; flex-wrap: wrap; align-items: center; }
+.chip { height: 28px; padding: 0 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface); color: var(--ink2); font-weight: 500; font-size: 12px; display: inline-flex; align-items: center; gap: 6px; }
+.chip.on { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.chip .c { color: var(--ink4); }
+.chip.on .c { color: inherit; opacity: .6; }
+.ledger { margin: 0 24px 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.lg-head, .lg-row { display: grid; grid-template-columns: 10px 34px minmax(0, 1.6fr) minmax(0, 1fr) 120px 120px 120px; gap: 12px; align-items: center; padding: 0 16px; }
+.lg-head { height: 34px; font-size: 11px; font-weight: 500; color: var(--ink4); border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--surface); z-index: 1; }
+.lg-head .r { text-align: right; }
+.lg-day { padding: 14px 16px 6px 72px; font-size: 11.5px; font-weight: 600; color: var(--ink3); display: flex; gap: 10px; }
+.lg-day .net { margin-left: auto; font-weight: 500; color: var(--ink4); padding-right: 0; }
+.lg-row { min-height: 48px; border-top: 1px solid transparent; }
+.lg-row:hover { background: var(--hover); }
+.lg-row .who { display: flex; flex-direction: column; min-width: 0; }
+.lg-row .who .vend { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lg-row .meta { display: flex; gap: 8px; align-items: center; min-width: 0; flex-wrap: wrap; }
+.lg-row .bal { text-align: right; color: var(--ink4); }
+.lg-row.need { background: linear-gradient(90deg, var(--amber-soft), transparent 40%); }
+.lg-row.sweep-row { min-height: 30px; }
+.lg-row .todo-act { justify-self: end; }
+.lg-row .hover-act { opacity: 0; }
+.lg-row:hover .hover-act { opacity: 1; }
+
+/* ── R3 · Face à face ── */
+.vs-head, .vs-row { display: grid; grid-template-columns: minmax(0, 1fr) 70px minmax(0, 1fr); gap: 0; align-items: stretch; }
+.vs-head { padding: 0 24px 8px; font-size: 11px; font-weight: 600; color: var(--ink3); letter-spacing: .02em; }
+.vs-head .mid { text-align: center; color: var(--ink4); font-weight: 500; }
+.vs-wrap { padding: 0 24px 24px; }
+.vs-row { margin-bottom: 6px; }
+.vs-cell { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; display: grid; grid-template-columns: 58px minmax(0, 1fr) auto; gap: 12px; align-items: center; min-height: 54px; }
+.vs-cell .dt { color: var(--ink3); font-size: 12px; }
+.vs-cell.empty { border-style: dashed; background: transparent; color: var(--ink4); display: flex; justify-content: space-between; }
+.vs-cell.qb { background: color-mix(in srgb, var(--surface) 70%, var(--brand-soft)); }
+.vs-link { display: flex; align-items: center; justify-content: center; position: relative; }
+.vs-link::before { content: ''; position: absolute; left: 0; right: 0; top: 50%; border-top: 1.5px solid var(--brand); }
+.vs-link span { position: relative; width: 26px; height: 26px; border-radius: 50%; background: var(--brand); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; }
+.vs-link.sugg::before { border-top: 1.5px dashed var(--amber); }
+.vs-link.sugg span { background: var(--amber-soft); color: var(--amber); border: 1.5px solid var(--amber); font-size: 10.5px; }
+.vs-link.none::before { border-top: 1.5px dashed var(--border2); }
+.vs-link.none span { background: var(--surface); border: 1.5px dashed var(--border2); color: var(--ink4); }
+.vs-sum { margin: 0 24px 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+.vs-sum .b { flex: 1; min-width: 180px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; }
+.vs-sum .b.eq { flex: 0 0 auto; min-width: 0; background: var(--brand-soft); border-color: transparent; color: var(--brand-ink); font-weight: 600; }
+
+/* ── R4 · Focus ── */
+.focus { flex: 1; display: grid; grid-template-columns: 300px minmax(0, 1fr); min-height: 0; }
+.queue { border-right: 1px solid var(--border); background: var(--surface); overflow: auto; padding: 12px 10px; }
+.queue h4 { margin: 4px 8px 10px; font-size: 11px; color: var(--ink3); font-weight: 600; display: flex; justify-content: space-between; }
+.q { display: grid; grid-template-columns: 1fr auto; gap: 2px 10px; padding: 9px 10px; border-radius: 9px; margin-bottom: 2px; }
+.q:hover { background: var(--hover); }
+.q.on { background: var(--brand-soft); box-shadow: inset 3px 0 0 var(--brand); }
+.q .sub2 { grid-column: 1 / -1; }
+.stage { padding: 28px 40px; overflow: auto; display: flex; flex-direction: column; gap: 18px; }
+.hero { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 22px 24px; box-shadow: var(--shadow); }
+.hero .row1 { display: flex; align-items: center; gap: 14px; }
+.hero .big { font-size: 30px; font-weight: 600; letter-spacing: -.02em; margin-left: auto; }
+.hero .raw { margin-top: 12px; padding: 8px 12px; background: var(--surface2); border-radius: 8px; font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink3); }
+.choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.choice { background: var(--surface); border: 1.5px solid var(--border); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.choice.best { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.choice .tag { font-size: 10.5px; font-weight: 600; color: var(--brand-ink); display: flex; justify-content: space-between; }
+.choice .t { font-weight: 600; font-size: 14px; }
+.split { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 4px 16px; }
+.split .l { display: grid; grid-template-columns: 1fr 140px 110px; gap: 12px; padding: 9px 0; border-top: 1px solid var(--border); align-items: center; }
+.split .l:first-child { border-top: 0; }
+.stage-foot { display: flex; align-items: center; gap: 10px; }
+.stage-foot .keys { margin-left: auto; color: var(--ink4); font-size: 11.5px; display: flex; gap: 12px; align-items: center; }
+
+[hidden] { display: none !important; }
+@media (max-width: 900px) {
+  .screen { height: auto; min-height: 700px; }
+  .rail { display: none; }
+  .card { grid-template-columns: 28px 1fr auto; }
+  .card .prop, .card .amt-c { grid-column: 2 / -1; }
+  .lg-head, .lg-row { grid-template-columns: 10px 30px minmax(0, 1fr) 100px; }
+  .lg-head > :nth-child(4), .lg-head > :nth-child(6), .lg-head > :nth-child(7),
+  .lg-row > :nth-child(4), .lg-row > :nth-child(6), .lg-row > :nth-child(7) { display: none; }
+  .lg-day { padding-left: 16px; }
+  .focus { grid-template-columns: 1fr; }
+  .queue { display: none; }
+  .stage { padding: 16px; }
+  .choices { grid-template-columns: 1fr; }
+  .vs-head, .vs-row { grid-template-columns: 1fr 36px 1fr; }
+  .vs-cell { grid-template-columns: 1fr; gap: 2px; }
+  .search { width: 140px; }
+  .hub { gap: 14px; overflow-x: auto; }
+}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>Rapprochement</h1>
+  <div class="opts" role="group">
+    <button class="opt" data-v="r1" aria-pressed="true"><b>R1</b>Boîte de réception</button>
+    <button class="opt" data-v="r2" aria-pressed="false"><b>R2</b>Relevé épuré</button>
+    <button class="opt" data-v="r3" aria-pressed="false"><b>R3</b>Face à face</button>
+    <button class="opt" data-v="r4" aria-pressed="false"><b>R4</b>Focus</button>
+  </div>
+  <button class="theme" id="theme">Nuit</button>
+</div>
+<p class="lede" id="lede"></p>
+
+<div class="screen">
+  <nav class="rail"><i class="logo"></i><i></i><i></i><i class="on"></i><i></i><i></i><i></i></nav>
+  <div class="main">
+    <div class="hub">
+      <a class="on">Transactions</a><a>Rapprochement <span class="pill">2</span></a><a>Paiements émis</a><a>Règles</a><a>Extraction</a>
+    </div>
+    <div class="body"><div class="work">
+
+      <!-- R1 -->
+      <section data-view="r1" class="work">
+        <div class="acct-head">
+          <div><div class="name">BNC CAD</div><div class="bal num">71 056,01 $<small>au 25 sept.</small></div></div>
+          <div class="kpi"><span class="k">Septembre</span><div style="display:flex;align-items:center;gap:8px"><div class="progress"><span style="width:88%"></span></div><span class="v num" style="font-size:13px">44 / 50</span></div></div>
+          <div class="kpi"><span class="k">Écart QuickBooks</span><span class="v ok num">0,00 $</span></div>
+          <div class="spacer"></div>
+          <div class="search">Rechercher</div><button class="iconbtn">⋯</button>
+        </div>
+        <div class="scroll"><div class="inbox">
+          <div class="sec-title">À faire <span class="c">6</span><span class="line"></span><button class="btn link">Tout confirmer (3)</button></div>
+          <div id="todo"></div>
+          <div class="sec-title" style="margin-top:22px">Réglé <span class="c">44</span><span class="line"></span></div>
+          <div id="done"></div>
+        </div></div>
+      </section>
+
+      <!-- R2 -->
+      <section data-view="r2" class="work" hidden>
+        <div class="acct-head">
+          <div><div class="name">BNC CAD</div><div class="bal num">71 056,01 $<small>au 25 sept.</small></div></div>
+          <div class="kpi"><span class="k">Entrées sept.</span><span class="v ok num">+158 912,40</span></div>
+          <div class="kpi"><span class="k">Sorties sept.</span><span class="v num">−96 877,15</span></div>
+          <div class="kpi"><span class="k">Écart QB</span><span class="v ok num">0,00 $</span></div>
+          <div class="spacer"></div>
+          <div class="search">Rechercher</div><button class="iconbtn">⋯</button>
+        </div>
+        <div class="filters">
+          <button class="chip on">Tout <span class="c">50</span></button>
+          <button class="chip"><span class="st todo"></span>À faire <span class="c">6</span></button>
+          <button class="chip"><span class="st warn"></span>À vérifier <span class="c">3</span></button>
+          <button class="chip"><span class="st ok"></span>Réglé <span class="c">44</span></button>
+          <span style="flex:1"></span>
+          <button class="chip">Balayages MCR masqués <span class="c">11</span></button>
+        </div>
+        <div class="scroll"><div class="ledger">
+          <div class="lg-head"><span></span><span></span><span>Qui</span><span>Catégorie · pièce</span><span class="r">Montant</span><span class="r">Solde</span><span></span></div>
+          <div id="ledger"></div>
+        </div></div>
+      </section>
+
+      <!-- R3 -->
+      <section data-view="r3" class="work" hidden>
+        <div class="acct-head">
+          <div><div class="name">BNC CAD · septembre</div><div class="bal num">71 056,01 $<small>relevé</small></div></div>
+          <div class="spacer"></div>
+          <div class="search">Rechercher</div><button class="iconbtn">⋯</button>
+        </div>
+        <div class="vs-sum">
+          <div class="b"><span class="sub2">Relevé</span><b class="num">71 056,01 $</b></div>
+          <div class="b"><span class="sub2">QuickBooks</span><b class="num">71 056,01 $</b></div>
+          <div class="b eq">= 0,00 $</div>
+        </div>
+        <div class="vs-head"><span>Banque</span><span class="mid">lien</span><span>QuickBooks</span></div>
+        <div class="scroll"><div class="vs-wrap" id="vs"></div></div>
+      </section>
+
+      <!-- R4 -->
+      <section data-view="r4" class="work" hidden>
+        <div class="focus">
+          <aside class="queue">
+            <h4><span>À faire · BNC CAD</span><span>1 / 6</span></h4>
+            <div id="queue"></div>
+          </aside>
+          <div class="stage">
+            <div class="hero">
+              <div class="row1">
+                <span class="av" style="background:#8a4b2a">BD</span>
+                <div><div class="vend" style="font-size:16px">BDC</div><div class="sub2">mercredi 23 septembre · BNC CAD</div></div>
+                <div class="big num">−8 617,96 $</div>
+              </div>
+              <div class="raw">DPA ENTREPRISE · BDC</div>
+            </div>
+            <div class="choices">
+              <button class="choice best"><span class="tag"><span>Proposé</span><span class="kbd">1</span></span><span class="t">Versement de dette BDC</span><span class="sub2">Échéance n° 14 de la cédule · même montant</span></button>
+              <button class="choice"><span class="tag" style="color:var(--ink3)"><span>Autre</span><span class="kbd">2</span></span><span class="t">Dépense</span><span class="sub2">Choisir un compte</span></button>
+              <button class="choice"><span class="tag" style="color:var(--ink3)"><span>Autre</span><span class="kbd">3</span></span><span class="t">Virement</span><span class="sub2">Vers un autre compte</span></button>
+            </div>
+            <div class="split">
+              <div class="l"><span>Capital</span><span class="sub2">2700 · Emprunt BDC</span><span class="amt num">7 912,40 $</span></div>
+              <div class="l"><span>Intérêts</span><span class="sub2">7810 · Intérêts sur dette</span><span class="amt num">705,56 $</span></div>
+              <div class="l"><span class="sub2">Total</span><span></span><span class="amt num">8 617,96 $</span></div>
+            </div>
+            <div class="stage-foot">
+              <button class="btn primary">Confirmer <span class="kbd" style="background:transparent;color:#fff;border-color:rgb(255 255 255 / .5)">↵</span></button>
+              <button class="btn ghost">Voir la cédule</button>
+              <button class="btn link">Passer</button>
+              <div class="keys"><span><span class="kbd">J</span> <span class="kbd">K</span> naviguer</span><span><span class="kbd">E</span> exclure</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </div></div>
+    <div class="tabs-bottom">
+      <button>À comptabiliser <span class="pill">5</span></button>
+      <button class="on">BNC CAD <span class="pill">6</span></button>
+      <button>BNC USD</button><button>BNC Épargne</button>
+      <button>MasterCard BNC <span class="pill">13</span></button>
+      <button>Desjardins CAD <span class="pill">6</span></button>
+      <button>Desjardins USD</button><button>Marge Desjardins <span class="pill">1</span></button>
+      <button>VISA Desj. CAD <span class="pill">1</span></button><button>VISA Desj. USD</button>
+      <button>Venn USD</button><button>Venn CAD</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const LEDES = {
+  r1: 'Ce qui reste à faire en haut, avec la proposition prête ; le reste replié par jour.',
+  r2: 'Le relevé, mais lisible : vrais noms, catégorie, balayages MCR repliés, statut en pastille.',
+  r3: 'Chaque ligne de banque en face de son écriture QuickBooks.',
+  r4: 'Une transaction à la fois, au clavier.',
+}
+const COLORS = { NE: '#c2410c', BD: '#8a4b2a', MC: '#64748b', AR: '#b91c1c', ST: '#635bff', BT: '#0f766e', PT: '#15803d', TL: '#7c3aed', NH: '#0369a1', VQ: '#1d4ed8', SM: '#db2777', DJ: '#16a34a', XX: '#94a3b8' }
+const av = (k, t) => `<span class="av" style="background:${COLORS[k] || COLORS.XX}">${t || k}</span>`
+const fmt = (n) => (n < 0 ? '−' : '+') + Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/ | /g, ' ') + ' $'
+const fmtU = (n) => Math.abs(n).toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).replace(/ | /g, ' ') + ' $'
+
+// À faire (R1/R4)
+const TODO = [
+  { k: 'AR', v: 'Agence du revenu du Canada', d: '22 sept.', raw: 'REMB. IMPOT · CANADA', a: 121215.70, prop: 'Remboursement d’impôt', cat: '1330 · Impôts à recouvrer', doc: 'Avis de cotisation', conf: true },
+  { k: 'BD', v: 'BDC', d: '23 sept.', raw: 'DPA ENTREPRISE', a: -8617.96, prop: 'Versement dette n° 14', cat: 'Capital 7 912,40 · Intérêts 705,56', doc: 'Cédule', conf: true },
+  { k: 'MC', v: 'MasterCard BNC', d: '22 sept.', raw: 'REMB. MCR', a: -41436.00, prop: 'Paiement de carte', cat: 'Virement → MasterCard BNC', conf: true },
+  { k: 'XX', t: 'TR', v: 'Virement Internet', d: '15 sept.', raw: 'TRF CT INTERNET', a: 23.80, flag: 'Aucune écriture QuickBooks', prop: 'Virement de Desjardins CAD ?', cat: 'Même montant le 15 sept.' },
+  { k: 'ST', v: 'Stripe', d: '15 sept.', raw: 'COMPTE DIVERS · DECEMBRE', a: 643.86, flag: 'QuickBooks : 640,86 $', prop: 'Dépôt Stripe po_1Q…', cat: 'Écart 3,00 $' },
+  { k: 'BT', v: 'BTTH Services multiples', d: '16 sept.', raw: 'PMTS ENTREPRISES', a: -103.48, flag: 'Taxes différentes de la facture', prop: 'Entretien ménager', cat: 'Facture 2026-0911', doc: 'PDF' },
+]
+const DONE = [
+  { d: 'jeu. 25 sept.', rows: [{ k: 'NE', v: 'Novo Express', c: 'Transport', a: -106.72 }] },
+  { d: 'lun. 21 sept.', rows: [{ k: 'ST', v: 'Stripe', c: 'Dépôt de ventes', a: 2650.37 }], sweep: 1 },
+  { d: 'ven. 18 sept.', rows: [{ k: 'XX', t: 'BT', v: 'BioTalent Canada', c: 'Facture F-1182 payée', a: 1177.47 }], sweep: 1 },
+  { d: 'jeu. 17 sept.', rows: [{ k: 'NE', v: 'Novo Express', c: 'Transport', a: -163.07 }, { k: 'PT', v: 'Premier Tech', c: 'Facture F-1175 payée', a: 140.27 }], sweep: 1 },
+  { d: 'mer. 16 sept.', rows: [{ k: 'TL', v: 'The Letter Em', c: 'Marketing', a: -6898.50 }], sweep: 1 },
+  { d: 'mar. 15 sept.', rows: [{ k: 'NH', v: 'Nethris', c: 'Paie du 15 sept.', a: -22539.79 }, { k: 'NH', v: 'Nethris', c: 'Frais de paie', a: -47.63 }], sweep: 1 },
+  { d: 'lun. 14 sept.', rows: [{ k: 'ST', v: 'Stripe', c: 'Dépôt de ventes', a: 1756.48 }, { k: 'VQ', v: 'Ville de Québec', c: 'Taxes municipales', a: -4664.11 }], sweep: 1 },
+]
+
+document.getElementById('todo').innerHTML = TODO.map((t) => `
+  <div class="card ${t.flag ? 'warn' : ''}">
+    ${av(t.k, t.t)}
+    <div style="min-width:0"><div class="vend">${t.v}</div><div class="sub2">${t.d} · ${t.raw}</div></div>
+    <div class="prop">
+      ${t.flag ? `<span class="flag">${t.flag}</span>` : ''}
+      <div class="p1"><span class="arrow">→</span><b>${t.prop}</b>${t.doc ? `<span class="doc">${t.doc}</span>` : ''}</div>
+      <div class="sub2" style="padding-left:18px">${t.cat}</div>
+    </div>
+    <div class="amt num amt-c ${t.a > 0 ? 'pos' : ''}">${fmt(t.a)}</div>
+    <div class="acts">${t.conf ? '<button class="btn primary">Confirmer</button>' : '<button class="btn ghost">Vérifier</button>'}<button class="btn link">⋯</button></div>
+  </div>`).join('')
+
+const CHECK = '<svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3 3 7-7"/></svg>'
+document.getElementById('done').innerHTML = DONE.map((g) => `
+  <div class="done-day"><div class="d">${g.d}</div><div>
+    ${g.rows.map((r) => `<div class="done-row"><div class="n">${av(r.k, r.t).replace('class="av"', 'class="av" style="width:20px;height:20px;font-size:9px;border-radius:6px;background:' + (COLORS[r.k] || COLORS.XX) + '"')}<span class="t"><b style="font-weight:600;color:var(--ink)">${r.v}</b> <span class="sub2">· ${r.c}</span></span></div><span></span><span class="amt num ${r.a > 0 ? 'pos' : ''}">${fmt(r.a)}</span>${CHECK}</div>`).join('')}
+    ${g.sweep ? '<div class="done-row"><span class="sweep">Balayage MCR · net 0</span><span></span><span></span><span></span></div>' : ''}
+  </div></div>`).join('')
+
+// R2
+const L = [
+  { day: 'Jeudi 25 septembre', net: -106.72, rows: [{ s: 'ok', k: 'NE', v: 'Novo Express', raw: 'PMTS ENTREPRISES', cat: 'Transport', doc: 'Reçu', a: -106.72, b: 71056.01 }] },
+  { day: 'Mercredi 23 septembre', net: -8617.96, rows: [{ s: 'todo', k: 'BD', v: 'BDC', raw: 'DPA ENTREPRISE', cat: 'Versement dette n° 14', a: -8617.96, b: 71162.73, act: 'Confirmer' }] },
+  { day: 'Mardi 22 septembre', net: 79779.70, rows: [
+    { s: 'recv', k: 'AR', v: 'Agence du revenu du Canada', raw: 'REMB. IMPOT', cat: 'Impôts à recouvrer', doc: 'Avis', a: 121215.70, b: 121216.69, act: 'Confirmer' },
+    { s: 'todo', k: 'MC', v: 'MasterCard BNC', raw: 'REMB. MCR', cat: 'Paiement de carte', a: -41436.00, b: 79780.69, act: 'Confirmer' }] },
+  { day: 'Lundi 21 septembre', net: 0.37, rows: [{ s: 'ok', k: 'ST', v: 'Stripe', raw: 'COMPTE DIVERS', cat: 'Dépôt de ventes', doc: 'Versement', a: 2650.37, b: 2650.99 }], sweep: '−2 650,00' },
+  { day: 'Jeudi 17 septembre', net: -0.80, rows: [
+    { s: 'ok', k: 'NE', v: 'Novo Express', raw: 'PMTS ENTREPRISES', cat: 'Transport', doc: 'Facture', a: -163.07, b: -162.12 },
+    { s: 'ok', k: 'PT', v: 'Premier Tech', raw: 'COMPTES DEBITEURS', cat: 'Facture F-1175', a: 140.27, b: -21.85 }], sweep: '+22,00' },
+  { day: 'Mercredi 16 septembre', net: 0.02, rows: [
+    { s: 'warn', k: 'BT', v: 'BTTH Services multiples', raw: 'PMTS ENTREPRISES', cat: 'Entretien ménager', doc: 'Facture', a: -103.48, b: -102.55, flag: 'Taxes ≠ facture' },
+    { s: 'ok', k: 'TL', v: 'The Letter Em', raw: 'PMTS ENTREPRISES', cat: 'Marketing', doc: 'Facture', a: -6898.50, b: -7001.05 }], sweep: '+7 002,00' },
+  { day: 'Mardi 15 septembre', net: 0.13, rows: [
+    { s: 'ok', k: 'NH', v: 'Nethris', raw: 'DT NETHRIS PAIE', cat: 'Paie du 15 sept.', a: -22539.79, b: -21871.44 },
+    { s: 'ok', k: 'NH', v: 'Nethris', raw: 'DT NETHRIS SERV', cat: 'Frais de paie', doc: 'Facture', a: -47.63, b: -21919.07 },
+    { s: 'warn', k: 'ST', v: 'Stripe', raw: 'COMPTE DIVERS · DECEMBRE', cat: 'Dépôt de ventes', a: 643.86, b: 644.55, flag: 'QB 640,86 $' },
+    { s: 'warn', k: 'XX', t: 'TR', v: 'Virement Internet', raw: 'TRF CT INTERNET', cat: '—', a: 23.80, b: 668.35, flag: 'Pas dans QB' }], sweep: '+21 920,00' },
+]
+document.getElementById('ledger').innerHTML = L.map((g) => `
+  <div class="lg-day">${g.day}<span class="net num">${fmt(g.net)}</span></div>
+  ${g.rows.map((r) => `<div class="lg-row ${r.act || r.flag ? 'need' : ''}">
+    <span class="st ${r.s}"></span>${av(r.k, r.t)}
+    <div class="who"><span class="vend">${r.v}</span><span class="sub2">${r.raw}</span></div>
+    <div class="meta">${r.flag ? `<span class="flag">${r.flag}</span>` : `<span class="cat">${r.cat}</span>${r.doc ? `<span class="doc">${r.doc}</span>` : ''}`}</div>
+    <span class="amt num ${r.a > 0 ? 'pos' : ''}">${fmt(r.a)}</span>
+    <span class="bal num">${fmtU(r.b)}</span>
+    ${r.act ? `<button class="btn primary todo-act">${r.act}</button>` : r.flag ? '<button class="btn ghost todo-act">Vérifier</button>' : '<button class="btn link todo-act hover-act">Ouvrir</button>'}
+  </div>`).join('')}
+  ${g.sweep ? `<div class="lg-row sweep-row"><span></span><span></span><span class="sweep">Balayage MCR · ${g.sweep}</span><span></span><span></span><span></span><span></span></div>` : ''}
+`).join('')
+
+// R3
+const VS = [
+  { d: '25 sept.', k: 'NE', v: 'Novo Express', raw: 'PMTS ENTREPRISES', a: -106.72, q: { t: 'Dépense · Novo Express', s: '5410 Transport · reçu joint' }, l: 'ok' },
+  { d: '23 sept.', k: 'BD', v: 'BDC', raw: 'DPA ENTREPRISE', a: -8617.96, q: { t: 'Versement dette BDC n° 14', s: 'Capital 7 912,40 · Intérêts 705,56', sugg: true }, l: 'sugg' },
+  { d: '22 sept.', k: 'AR', v: 'Agence du revenu', raw: 'REMB. IMPOT', a: 121215.70, q: { t: 'Dépôt · ARC', s: '1330 Impôts à recouvrer', sugg: true }, l: 'sugg' },
+  { d: '22 sept.', k: 'MC', v: 'MasterCard BNC', raw: 'REMB. MCR', a: -41436.00, q: { t: 'Virement → MasterCard BNC', s: 'Paiement du relevé du 14 sept.', sugg: true }, l: 'sugg' },
+  { d: '21 sept.', k: 'ST', v: 'Stripe', raw: 'COMPTE DIVERS', a: 2650.37, q: { t: 'Dépôt Stripe po_1S8…', s: '12 paiements · frais 71,42' }, l: 'ok' },
+  { d: '17 sept.', k: 'PT', v: 'Premier Tech', raw: 'COMPTES DEBITEURS', a: 140.27, q: { t: 'Paiement · facture F-1175', s: 'Premier Tech ltée' }, l: 'ok' },
+  { d: '16 sept.', k: 'TL', v: 'The Letter Em', raw: 'PMTS ENTREPRISES', a: -6898.50, q: { t: 'Dépense · The Letter Em', s: '6120 Marketing · facture jointe' }, l: 'ok' },
+  { d: '15 sept.', k: 'ST', v: 'Stripe', raw: 'DECEMBRE', a: 643.86, q: { t: 'Dépôt Stripe · 640,86 $', s: 'Écart 3,00 $', sugg: true }, l: 'sugg' },
+  { d: '15 sept.', k: 'XX', t: 'TR', v: 'Virement Internet', raw: 'TRF CT INTERNET', a: 23.80, q: null, l: 'none' },
+  { d: null, q: { t: 'Chèque n° 1043 · Fabrication Gagnon', s: '12 sept. · −1 250,00 $' }, l: 'none', ghost: true },
+]
+document.getElementById('vs').innerHTML = VS.map((r) => `
+  <div class="vs-row">
+    ${r.ghost ? '<div class="vs-cell empty"><span>Absent du relevé</span><button class="btn link">Chercher</button></div>' : `<div class="vs-cell"><span class="dt">${r.d}</span><div style="display:flex;gap:10px;align-items:center;min-width:0">${av(r.k, r.t)}<div style="min-width:0"><div class="vend">${r.v}</div><div class="sub2">${r.raw}</div></div></div><span class="amt num ${r.a > 0 ? 'pos' : ''}">${fmt(r.a)}</span></div>`}
+    <div class="vs-link ${r.l}"><span>${r.l === 'ok' ? '✓' : r.l === 'sugg' ? '?' : '+'}</span></div>
+    ${r.q ? `<div class="vs-cell ${r.l === 'ok' ? 'qb' : ''}" style="grid-template-columns:minmax(0,1fr) auto"><div style="min-width:0"><div class="vend" style="font-weight:${r.q.sugg ? 500 : 600}">${r.q.t}</div><div class="sub2">${r.q.s}</div></div>${r.l === 'sugg' ? '<button class="btn primary">Lier</button>' : r.ghost ? '<button class="btn ghost">Ouvrir</button>' : ''}</div>`
+      : '<div class="vs-cell empty"><span>Rien dans QuickBooks</span><button class="btn ghost">Créer</button></div>'}
+  </div>`).join('')
+
+// R4
+document.getElementById('queue').innerHTML = TODO.map((t, i) => `
+  <div class="q ${i === 1 ? 'on' : ''}"><span class="vend" style="font-size:12.5px">${t.v}</span><span class="amt num ${t.a > 0 ? 'pos' : ''}" style="font-size:12.5px">${fmt(t.a)}</span><span class="sub2">${t.d}${t.flag ? ' · <span style="color:var(--amber)">' + t.flag + '</span>' : ' · ' + t.prop}</span></div>`).join('')
+
+// bascule
+const show = (v) => {
+  document.querySelectorAll('.opt').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === v)))
+  document.querySelectorAll('[data-view]').forEach((s) => { s.hidden = s.dataset.view !== v })
+  document.getElementById('lede').textContent = LEDES[v]
+  try { localStorage.setItem('rappro-v4', v) } catch {}
+}
+document.querySelectorAll('.opt').forEach((b) => b.addEventListener('click', () => show(b.dataset.v)))
+let saved = 'r1'; try { saved = localStorage.getItem('rappro-v4') || 'r1' } catch {}
+show(saved)
+document.getElementById('theme').addEventListener('click', (e) => {
+  const dark = document.documentElement.dataset.theme !== 'dark'
+  document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+  e.target.textContent = dark ? 'Jour' : 'Nuit'
+})
+</script>
+</body>
+</html>

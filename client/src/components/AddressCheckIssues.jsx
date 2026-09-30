@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { AlertTriangle, RefreshCw, CheckCircle2, MapPinOff } from 'lucide-react'
 import { Badge } from './Badge.jsx'
 import api from '../lib/api.js'
+import { useToast } from '../contexts/ToastContext.jsx'
 
 // Rendu partagé du verdict du vérificateur d'adresses postales
 // (server/src/services/addressCheck.js) : une pastille de statut + la liste des
@@ -47,12 +48,17 @@ export function AddressCheckIssues({ issues, className = '' }) {
  */
 export function AddressRecheckButton({ adresseId, onChecked, className = '' }) {
   const [busy, setBusy] = useState(false)
+  const { addToast } = useToast()
   if (!adresseId) return null
 
   async function recheck() {
     setBusy(true)
-    try { onChecked?.(await api.adresses.recheck(adresseId)) } catch { /* le verdict reste tel quel */ }
-    finally { setBusy(false) }
+    try {
+      const row = await api.adresses.recheck(adresseId)
+      onChecked?.(row)
+    } catch (err) {
+      addToast({ message: err.message || 'Revérification impossible', type: 'error' })
+    } finally { setBusy(false) }
   }
 
   return (
@@ -208,8 +214,9 @@ export function AddressConfirmPanel({
 
 /** Parse la colonne `check_issues` (JSON en DB) en tableau exploitable. */
 export function parseCheckIssues(raw) {
-  if (Array.isArray(raw)) return raw
-  try { return JSON.parse(raw || '[]') } catch { return [] }
+  let list = raw
+  if (typeof raw === 'string') { try { list = JSON.parse(raw) } catch { list = null } }
+  return Array.isArray(list) ? list : []
 }
 
 export default AddressCheckIssues

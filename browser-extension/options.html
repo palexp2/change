@@ -28,6 +28,11 @@
     <input type="checkbox" id="auto" style="width:auto">
     Envoyer mes sessions automatiquement dès que je me connecte à un portail
   </label>
+  <label style="display:flex;align-items:center;gap:8px;margin-top:10px;font-size:13px;opacity:1">
+    <input type="checkbox" id="allSites" style="width:auto">
+    Repérer tous les portails ouverts, pas seulement ceux déjà branchés
+  </label>
+  <p>Avec cette option, le module envoie aussi la session des portails que l'ERP vient d'apprendre à collecter. Les sites qu'il ne sait pas collecter ne remontent que par leur nom de domaine.</p>
   <button id="save">Enregistrer</button><span id="saved" role="status"></span>
 </body>
 <script type="module" src="options.js"></script>

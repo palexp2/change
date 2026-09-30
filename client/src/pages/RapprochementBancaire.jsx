@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, FileWarning } from 'lucide-react'
+import { FileUp, Table2, Wand2, CheckCheck, Undo2, Link2, Unlink, ExternalLink, RefreshCw, AlertTriangle, MoreHorizontal, BookOpen, Download, Clock, Plus, ArrowLeftRight, Check, X, Landmark, Wallet, FileText, FileWarning, Flag, Bookmark, Send } from 'lucide-react'
 import api from '../lib/api.js'
 import { invalidate } from '../lib/prefetch.js'
 import { Layout } from '../components/Layout.jsx'
@@ -10,6 +10,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
 import { VendorSelect } from '../components/VendorSelect.jsx'
+import { VendorProfileHint } from '../components/VendorProfileHint.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { StatementDropModal } from '../components/StatementDropModal.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
@@ -56,6 +57,8 @@ const GHOST_META = { label: 'Hors relevé', tint: 'row-st-ghost', hint: 'Écritu
 const bucketOf = (r) => (r._ghost ? 'ghost' : (STATUS_META[r.status] ? r.status : 'a_traiter'))
 
 // Ordre de la légende = ordre du travail, pas celui de STATUS_META.
+// Vert posé par le passage automatique (serveur : bankAutoReconcile).
+const AUTO_RECONCILE = { qb_rapproche: 'QuickBooks', ecart_zero: 'écart nul' }
 const LEGEND_ORDER = ['a_traiter', 'facture_recue', 'comptabilise', 'rapproche', 'ignore']
 
 const money = (n, currency = 'CAD') => fmtMoney(n, currency, { fallback: <span className="text-slate-300">—</span> })
@@ -147,6 +150,21 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
     return () => { alive = false }
   }, [txn.id])
 
+  // Dernier recours pour le compte de dépense : la catégorie écrite sur la fiche
+  // fournisseur (« 14000 Pièces ») désigne un numéro de compte — on prend celui qui
+  // le porte. Complète seulement un champ VIDE, et ne touche jamais à une saisie.
+  const vendorCategory = defaults?.vendor_category
+  useEffect(() => {
+    if (!vendorCategory || !accounts.length) return
+    // « 14000 Pièces ou 67000 Fournitures » : deux comptes possibles, on ne choisit pas.
+    const nums = [...new Set(String(vendorCategory).match(/\d{4,6}/g) || [])]
+    if (nums.length !== 1) return
+    const num = nums[0]
+    const hit = accounts.find((a) => String(a.AcctNum || '') === num)
+    if (!hit) return
+    setForm((f) => (f && !f.expense_account_id ? { ...f, expense_account_id: String(hit.Id) } : f))
+  }, [vendorCategory, accounts])
+
   // Taux d'achat du code choisi : c'est lui qui dit quelle part du montant
   // débité est de la taxe. Un aller-retour par code, gardé en mémoire.
   const taxCodeId = form?.tax_code_id
@@ -222,31 +240,77 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         </div>
       )}
 
-      <label className="block">
-        <span className="text-xs text-slate-500">Fournisseur</span>
-        <VendorSelect value={form.vendor} onChange={({ vendor }) => set('vendor')(vendor)} />
-        {from('vendor')}
-      </label>
-
-      {!parts ? (
+      {/* Disposition de QuickBooks (choix de Charles, 2026-09-29) : les champs
+          côte à côte sur une ligne, l'action dessous. */}
+      <div className="grid grid-cols-4 gap-x-3 gap-y-2 items-start">
         <label className="block">
-          <span className="text-xs text-slate-500">Compte de dépense</span>
-          <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
-            options={accounts} getOptionValue={(a) => String(a.Id)}
-            getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
-            placeholder="Choisir un compte" />
-          <div className="flex items-center justify-between">
-            {from('expense_account_id')}
-            <button type="button" className="text-[11px] text-slate-500 hover:text-brand-600 hover:underline"
-              onClick={() => setParts([
-                { expense_account_id: form.expense_account_id, amount: base },
-                { expense_account_id: '', amount: 0 },
-              ])}>
-              Couper en plusieurs comptes
-            </button>
-          </div>
+          {/* La fiche du fournisseur (particularités, compte, taxes, échéance) se lit
+              au survol de la pastille : on ne quitte pas la transaction pour aller
+              la chercher dans /fournisseurs. */}
+          <span className="text-xs text-slate-500">
+            Fournisseur
+            <VendorProfileHint name={form.vendor} accountName={accountName} taxName={taxName} />
+          </span>
+          <VendorSelect value={form.vendor} onChange={({ vendor }) => set('vendor')(vendor)} />
+          {from('vendor')}
         </label>
-      ) : (
+
+        {!parts && (
+          <label className="block">
+            <span className="text-xs text-slate-500">Compte de dépense</span>
+            <SearchableSelect value={form.expense_account_id} onChange={set('expense_account_id')}
+              options={accounts} getOptionValue={(a) => String(a.Id)}
+              getOptionLabel={(a) => `${a.AcctNum ? `${a.AcctNum} · ` : ''}${a.Name}`}
+              placeholder="Choisir un compte" />
+            <div className="flex items-center justify-between">
+              {from('expense_account_id')}
+              <button type="button" className="text-[11px] text-slate-500 hover:text-brand-600 hover:underline"
+                onClick={() => setParts([
+                  { expense_account_id: form.expense_account_id, amount: base },
+                  { expense_account_id: '', amount: 0 },
+                ])}>
+                Diviser
+              </button>
+            </div>
+          </label>
+        )}
+
+        <label className="block">
+          <span className="text-xs text-slate-500">Taxe</span>
+          <SearchableSelect value={form.tax_code_id} onChange={set('tax_code_id')}
+            options={taxCodes} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
+            emptyOption="Aucune taxe" placeholder="Aucune taxe" />
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-slate-500">Type</span>
+          <select className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm bg-white"
+            value={form.qb_type} onChange={(e) => set('qb_type')(e.target.value)}>
+            <option value="purchase">Dépense</option>
+            <option value="bill">Facture fournisseur</option>
+          </select>
+          {from('qb_type')}
+          {form.qb_type === 'bill' && defaults?.due_date && (
+            <span className="text-[11px] text-slate-400">échéance {defaults.due_date}</span>
+          )}
+        </label>
+
+        <label className="block col-span-2">
+          <span className="text-xs text-slate-500">Mémo</span>
+          <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+            value={form.memo} onChange={(e) => set('memo')(e.target.value)} />
+          {from('memo')}
+        </label>
+
+        <label className="block">
+          <span className="text-xs text-slate-500">N° du document</span>
+          <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
+            value={form.doc_number} onChange={(e) => set('doc_number')(e.target.value)} />
+          {from('doc_number')}
+        </label>
+      </div>
+
+      {parts && (
         <div className="space-y-1.5">
           <div className="flex items-center justify-between">
             <span className="text-xs text-slate-500">{defaults?.split?.reason || 'Comptes de dépense'}</span>
@@ -284,55 +348,22 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
         </div>
       )}
 
-      <label className="block">
-        <span className="text-xs text-slate-500">Taxe</span>
-        <SearchableSelect value={form.tax_code_id} onChange={set('tax_code_id')}
-          options={taxCodes} getOptionValue={(t) => String(t.Id)} getOptionLabel={(t) => t.Name}
-          emptyOption="Aucune taxe" placeholder="Aucune taxe" />
+      <div className="text-xs text-slate-500">
         {docTax != null ? (
-          <span className="text-xs text-slate-500">
+          <span>
             {money(taxCad, currency)} de taxe, {money(total - taxCad, currency)} au compte — {draft?.fields?.tax?.source}
           </span>
         ) : (
           <>
-            {rate === undefined && <span className="text-xs text-slate-400">taux…</span>}
+            {rate === undefined && <span className="text-slate-400">taux…</span>}
             {!!rate && (
-              <span className="text-xs text-slate-500">
+              <span>
                 {rate.toFixed(3).replace(/\.?0+$/, '')} % → {money(taxCad, currency)} de taxe, {money(total - taxCad, currency)} au compte
               </span>
             )}
           </>
         )}
-      </label>
-
-      <div className="grid grid-cols-2 gap-2">
-        <label className="block">
-          <span className="text-xs text-slate-500">Type</span>
-          <select className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm bg-white"
-            value={form.qb_type} onChange={(e) => set('qb_type')(e.target.value)}>
-            <option value="purchase">Dépense</option>
-            <option value="bill">Facture fournisseur</option>
-          </select>
-          {from('qb_type')}
-          {form.qb_type === 'bill' && defaults?.due_date && (
-            <span className="text-[11px] text-slate-400">échéance {defaults.due_date}</span>
-          )}
-        </label>
-
-        <label className="block">
-          <span className="text-xs text-slate-500">N° de pièce</span>
-          <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
-            value={form.doc_number} onChange={(e) => set('doc_number')(e.target.value)} />
-          {from('doc_number')}
-        </label>
       </div>
-
-      <label className="block">
-        <span className="text-xs text-slate-500">Mémo</span>
-        <input className="w-full border border-slate-300 rounded-lg px-2 py-1 text-sm"
-          value={form.memo} onChange={(e) => set('memo')(e.target.value)} />
-        {from('memo')}
-      </label>
 
       {h && (() => {
         // Deux choses valent un avertissement : un historique qui se contredit,
@@ -365,15 +396,16 @@ function AddExpenseForm({ txn, currency, onDone, onCancel }) {
 
       {error && <div className="text-xs text-red-600">{error}</div>}
 
-      <div className="flex gap-2">
-        <button type="button" className="px-3 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
+      {/* Comme dans QuickBooks : l'action au bout de la ligne, à droite. */}
+      <div className="flex items-center gap-3">
+        <button type="button" className="ml-auto text-sm text-slate-500 hover:underline" onClick={onCancel}>
+          Annuler
+        </button>
+        <button type="button" className="px-4 py-1.5 text-sm rounded-lg bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
           disabled={busy || !form.vendor
             || (parts ? (Math.abs(rest) > 0.02 || parts.some((p) => !p.expense_account_id)) : !form.expense_account_id)}
           onClick={submit}>
-          {busy ? 'Publication…' : 'Ajouter et publier'}
-        </button>
-        <button type="button" className="px-3 py-1.5 text-sm rounded-lg border border-slate-300 hover:bg-slate-50" onClick={onCancel}>
-          Annuler
+          {busy ? 'Publication…' : 'Ajouter'}
         </button>
       </div>
     </div>
@@ -540,6 +572,94 @@ const PROPOSAL_TITLE = {
   vendor_expense: 'Écriture prête',
 }
 
+// ── Suggestion sur la ligne ────────────────────────────────────────────────
+// Ce qu'il faut pour dire oui ou non sans ouvrir le panneau : quoi, avec qui,
+// et la preuve. Les noms de comptes et de taxes QuickBooks sont chargés une
+// fois, seulement si une ligne en a besoin.
+let qbNamesCache = null
+function useQbNames(needed) {
+  const [names, setNames] = useState(qbNamesCache)
+  useEffect(() => {
+    if (!needed || qbNamesCache) return
+    Promise.all([api.quickbooks.accounts(), api.quickbooks.taxCodes()])
+      .then(([a, t]) => { qbNamesCache = { accounts: a || [], taxCodes: t || [] }; setNames(qbNamesCache) })
+      .catch(() => {})
+  }, [needed])
+  return names
+}
+const nameIn = (list, id) => (list || []).find((o) => String(o.Id) === String(id))?.Name || null
+
+function suggestionText(sg, names, currency) {
+  const p = sg.payload || {}
+  const proof = (sg.evidence || [])
+    .filter((e) => !/^(Paiement émis|Versement attendu|Fournisseur|Compte)$/.test(e.label))
+    .map((e) => (e.detail ? `${e.label} ${e.detail}` : e.label))
+  switch (sg.kind) {
+    case 'payment_clear':
+      return { what: `Paiement émis · ${p.label || ''}`, facts: [p.payment_date && fmtDate(p.payment_date), p.payment_amount != null && money(Math.abs(p.payment_amount), currency)], proof }
+    case 'debt_payment':
+      return { what: `Versement · ${p.debt || 'dette'}`, facts: [], proof }
+    case 'paie_debit':
+      return { what: 'Débit de la paie', facts: [], proof }
+    case 'qb_link':
+      return { what: `QuickBooks · ${p.qb_txn_type || 'écriture'} n° ${p.qb_txn_id}`, facts: [p.date && fmtDate(p.date), p.account_name], proof }
+    case 'vendor_expense': {
+      const acct = nameIn(names?.accounts, p.expense_account_id)
+      const tax = p.tax_code_id === '__none__' ? 'sans taxe' : nameIn(names?.taxCodes, p.tax_code_id)
+      return { what: `Dépense · ${p.vendor || '?'}`, facts: [acct && `→ ${acct}`, tax], proof: [] }
+    }
+    default:
+      return { what: PROPOSAL_TITLE[sg.kind] || sg.kind, facts: [], proof }
+  }
+}
+
+function SuggestionCell({ row, currency, names, onChanged }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const act = (fn) => async (e) => {
+    e.stopPropagation()
+    setBusy(true); setError(null)
+    try { await fn(); invalidate('/bank'); await onChanged() } catch (err) { setError(err.message) } finally { setBusy(false) }
+  }
+  const auto = row.auto_suggestion
+  if (auto && !row.suggestion) {
+    const t = suggestionText(auto, names, currency)
+    return (
+      <span className="flex items-center gap-1.5 min-w-0 text-sm">
+        <span className="truncate">{t.what}</span>
+        <span className="shrink-0 text-[10px] font-bold tracking-wide text-emerald-700 border border-emerald-600 rounded px-1">AUTO</span>
+        <button type="button" disabled={busy} onClick={act(() => api.bank.undoProposal(auto.id))}
+          className="shrink-0 text-xs text-slate-500 underline hover:text-slate-800 disabled:opacity-40">annuler</button>
+        {error && <span className="text-xs text-red-600 truncate" title={error}>{error}</span>}
+      </span>
+    )
+  }
+  const sg = row.suggestion
+  if (!sg) return null
+  const t = suggestionText(sg, names, currency)
+  const details = [...t.facts, ...t.proof].filter(Boolean)
+  const tip = [t.what, ...details.map((d) => (typeof d === 'string' ? d : null)).filter(Boolean),
+    sg.publishes ? 'Crée l\'écriture dans QuickBooks' : null].filter(Boolean).join('\n')
+  return (
+    <span className="flex items-center gap-1.5 min-w-0 text-sm" title={tip} data-testid="row-suggestion">
+      <span className="min-w-0 truncate rounded border border-dashed border-violet-500 px-1.5 text-violet-800 italic">
+        {t.what}
+        {details.map((d, i) => <span key={i} className="not-italic text-slate-500"> · {d}</span>)}
+      </span>
+      {sg.publishes && <span className="shrink-0 text-[10px] font-semibold text-amber-700" title="Crée l'écriture dans QuickBooks">QB</span>}
+      <button type="button" title="Oui" disabled={busy} onClick={act(() => api.bank.acceptProposal(sg.id))}
+        className="shrink-0 p-0.5 rounded border border-slate-300 bg-white text-emerald-700 hover:bg-emerald-50 disabled:opacity-40">
+        <Check size={13} />
+      </button>
+      <button type="button" title="Non — ne reviendra pas" disabled={busy} onClick={act(() => api.bank.refuseProposal(sg.id))}
+        className="shrink-0 p-0.5 rounded border border-slate-300 bg-white text-red-600 hover:bg-red-50 disabled:opacity-40">
+        <X size={13} />
+      </button>
+      {error && <span className="text-xs text-red-600 truncate" title={error}>{error}</span>}
+    </span>
+  )
+}
+
 // L'écriture QuickBooks de la ligne, montrée comme QuickBooks la montre.
 // Confirmer un appariement demandait d'ouvrir QBO dans un autre onglet, de
 // lire l'écriture, de revenir : les trois colonnes qui comptent (compte,
@@ -641,7 +761,7 @@ function QbEntryCard({ txn, currency, onChanged }) {
       <div className="flex flex-wrap items-center gap-2 px-3 py-2 border-t border-slate-200 bg-white">
         {done ? (
           <>
-            <span className="inline-flex items-center gap-1 text-xs text-green-700"><Check size={13} /> Rapprochée</span>
+            <span className="inline-flex items-center gap-1 text-xs text-green-700"><Check size={13} /> Rapprochée{AUTO_RECONCILE[txn.reconcile_method] ? ` · auto (${AUTO_RECONCILE[txn.reconcile_method]})` : ''}</span>
             <button className="text-xs text-slate-500 hover:underline disabled:opacity-50" disabled={busy}
               onClick={() => act(() => api.bank.reconcile([txn.id], true))}>Annuler</button>
           </>
@@ -850,7 +970,9 @@ function VendorPatternForm({ txn, onSaved }) {
 // la facture fournisseur dans un panneau empilé par-dessus.
 function useDossier(txnId) {
   const [dossier, setDossier] = useState(null)
-  const load = useCallback(() => api.bank.dossier(txnId).then(setDossier).catch(() => setDossier(null)), [txnId])
+  const load = useCallback(() => (txnId
+    ? api.bank.dossier(txnId).then(setDossier).catch(() => setDossier(null))
+    : Promise.resolve()), [txnId])
   useEffect(() => { setDossier(null); load() }, [txnId, load])
   return { dossier, reload: load }
 }
@@ -860,6 +982,7 @@ function useDossier(txnId) {
 // pièces jointes) — chargé à la demande pour ne pas alourdir cette page.
 const AchatPanel = lazy(() => import('./AchatsFournisseurs.jsx').then((m) => ({ default: m.AchatModal })))
 const PaiePanel = lazy(() => import('./ComptaDashboard.jsx').then((m) => ({ default: m.PaieComptabilisationCard })))
+const AgaPanel = lazy(() => import('./ComptaDashboard.jsx').then((m) => ({ default: m.AgaRepartitionCard })))
 
 function PanelFallback() {
   return <div className="p-6 text-sm text-slate-400">Chargement…</div>
@@ -920,15 +1043,69 @@ function MatchedDocument({ txn, doc, onChanged, icon = false }) {
 // qui la publie. Plus besoin d'ouvrir /dettes-lt et d'y retrouver l'échéance.
 function DebtCard({ data, onPublished }) {
   const { debt, payment, qb_url: qbUrl } = data
+  const [schedule, setSchedule] = useState(false)
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-3" data-testid="dossier-debt">
       <div className="flex items-center gap-2 mb-2">
         <Landmark size={13} className="text-slate-500 shrink-0" />
         <span className="text-xs font-medium text-slate-700">Versement de dette</span>
         <span className="grow" />
-        <Link to="/dettes-lt" className="text-[11px] text-slate-400 hover:underline">cédule</Link>
+        <button type="button" onClick={() => setSchedule(true)} data-testid="dossier-debt-schedule"
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">
+          <Table2 size={12} /> Cédule
+        </button>
       </div>
       <DebtPaymentPublish debt={debt} payment={{ ...payment, qb_url: qbUrl }} onPublished={onPublished} />
+      {schedule && (
+        <RecordPeekDrawer open peekKey="debt-schedule" width={640} onClose={() => setSchedule(false)}
+          title={debt.label} subtitle="Cédule de remboursement">
+          <DebtSchedule debtId={debt.id} currentId={payment.id} />
+        </RecordPeekDrawer>
+      )}
+    </div>
+  )
+}
+
+// La cédule de la dette, lecture seule, le versement de la ligne surligné.
+function DebtSchedule({ debtId, currentId }) {
+  const [rows, setRows] = useState(null)
+  const [currency, setCurrency] = useState('CAD')
+  const currentRef = useRef(null)
+  useEffect(() => {
+    api.ltDebts.payments(debtId).then(d => { setRows(d.payments || []); setCurrency(d.debt?.currency || 'CAD') }).catch(() => setRows([]))
+  }, [debtId])
+  useEffect(() => { currentRef.current?.scrollIntoView({ block: 'center' }) }, [rows])
+  if (!rows) return <div className="p-4"><PanelFallback /></div>
+  return (
+    <div className="p-4">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-slate-400 border-b border-slate-100">
+            <th className="text-left font-medium px-2 py-2">#</th>
+            <th className="text-left font-medium px-2 py-2">Date</th>
+            <th className="text-right font-medium px-2 py-2">Capital</th>
+            <th className="text-right font-medium px-2 py-2">Intérêt</th>
+            <th className="text-right font-medium px-2 py-2">Total</th>
+            <th className="text-right font-medium px-2 py-2">Solde</th>
+            <th className="px-2 py-2" />
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map(p => (
+            <tr key={p.id} ref={p.id === currentId ? currentRef : null}
+              className={`border-b border-slate-50 ${p.id === currentId ? 'bg-brand-50 font-medium' : ''}`}>
+              <td className="px-2 py-1.5 text-slate-400">{p.seq}</td>
+              <td className="px-2 py-1.5 whitespace-nowrap">{fmtDate(p.payment_date)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{fmtMoney(p.principal, currency)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{fmtMoney(p.interest, currency)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums">{fmtMoney(p.principal + p.interest, currency)}</td>
+              <td className="px-2 py-1.5 text-right tabular-nums text-slate-500">{fmtMoney(p.balance_after, currency)}</td>
+              <td className="px-2 py-1.5 text-center">{p.pushed_at && <Check size={13} className="inline text-emerald-600" />}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <Link to="/dettes-lt" className="block mt-3 text-xs link-record">Ouvrir Dettes à long terme</Link>
     </div>
   )
 }
@@ -1141,13 +1318,13 @@ function ReceiptCard({ txn, receipts, ambiguous, onChanged }) {
     <div className="rounded-lg border border-slate-200 bg-white p-3 space-y-2" data-testid="dossier-receipts">
       <div className="flex items-center gap-2">
         <FileText size={13} className="text-slate-500 shrink-0" />
-        <span className="text-xs font-medium text-slate-700">Pièce</span>
+        <span className="text-xs font-medium text-slate-700">Reçu</span>
         {ambiguous && <span className="text-[11px] text-amber-600">plusieurs se ressemblent — à choisir</span>}
       </div>
       {list.map((d) => (
         <ReceiptRow key={`${d.type}:${d.id}`} d={d} busy={busy === d.id} onLink={link} />
       ))}
-      {!list.length && <div className="text-xs text-slate-400">Aucune pièce ne correspond.</div>}
+      {!list.length && <div className="text-xs text-slate-400">Aucun reçu ne correspond.</div>}
       {unsure && (
         <label className="flex items-center gap-2 text-[11px] text-slate-400">
           Chercher
@@ -1551,9 +1728,64 @@ function useReconcile(account, refreshKey, onChanged) {
   return { summary, qb, qbLoading, qbError, loadQb, busy, runUpdate, msg, onMerged }
 }
 
+// Robot « Rapprocher » de QuickBooks : coche les lignes vertes, lit la
+// Différence, enregistre pour plus tard — ne termine jamais (c'est Charles qui
+// ferme le mois). Le passage dure une à deux minutes : on relit jusqu'à la fin.
+function useQbRobot(accountId, flash) {
+  const [state, setState] = useState({ running: false, last: null })
+  const load = useCallback(async () => {
+    if (!accountId) return
+    const s = await api.bank.qbReconcileLast(accountId).catch(() => null)
+    if (s) setState(s)
+  }, [accountId])
+  useEffect(() => { setState({ running: false, last: null }); load() }, [load])
+  useEffect(() => {
+    if (!state.running) return
+    const t = setInterval(load, 4000)
+    return () => clearInterval(t)
+  }, [state.running, load])
+  const run = async () => {
+    try {
+      await api.bank.qbReconcileRun(accountId)
+      setState((s) => ({ ...s, running: true }))
+    } catch (e) { flash(e.message) }
+  }
+  return { ...state, run }
+}
+
+const withToken = (url) => `${url}?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`
+
+// « QB 0 $ ✓ » / « QB −12,34 $ » : la Différence lue au dernier passage du
+// robot ; la capture en lien, le détail en infobulle.
+function QbRobotPill({ robot, currency }) {
+  const last = robot.last
+  const base = 'text-[11px] px-1.5 py-0.5 rounded-full whitespace-nowrap tabular-nums'
+  if (robot.running) return <span data-testid="qb-robot-pill" className={`${base} bg-slate-100 text-slate-500 animate-pulse`}>QB …</span>
+  if (!last) return null
+  const d = last.difference
+  const zero = last.ok && d != null && Math.abs(d) < 0.01
+  const title = last.ok
+    ? [
+        last.statement_date ? `au ${fmtDate(last.statement_date)}` : null,
+        `${last.checked} cochée(s)`,
+        last.already_checked ? `${last.already_checked} déjà cochée(s)` : null,
+        last.unmatched_boreal.length ? `${last.unmatched_boreal.length} verte(s) absente(s) de QB` : null,
+        last.unmatched_qb.length ? `${last.unmatched_qb.length} écriture(s) QB sans ligne verte` : null,
+        last.saved ? 'enregistré pour plus tard' : 'non enregistré',
+      ].filter(Boolean).join(' · ')
+    : (last.error || 'échec')
+  const label = !last.ok ? (last.needs_session ? 'QB session' : 'QB ⚠')
+    : d == null ? 'QB ?' : zero ? 'QB 0 $ ✓' : <>QB {money(d, currency)}</>
+  const cls = !last.ok || d == null ? 'bg-amber-50 text-amber-700' : zero ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-700'
+  const body = <>{label}{last.ok && !last.saved ? ' !' : ''}</>
+  return last.screenshot_url
+    ? <a href={withToken(last.screenshot_url)} target="_blank" rel="noreferrer" title={title} data-testid="qb-robot-pill" className={`${base} ${cls} hover:underline`}>{body}</a>
+    : <span title={title} data-testid="qb-robot-pill" className={`${base} ${cls}`}>{body}</span>
+}
+
 // Une ligne, trois nombres : le solde du relevé, celui de QuickBooks, et
 // l'écart entre les deux — c'est le seul chiffre qui commande une action.
-function EcartBar({ account, rec }) {
+function EcartBar({ account, rec, robot }) {
   const { summary, qb, qbLoading, qbError, msg } = rec
   if (!account) return null
   const stmt = summary?.statement
@@ -1565,7 +1797,7 @@ function EcartBar({ account, rec }) {
   // Un seul chiffre affiché (2026-09-15) : les deux soldes qui le produisent
   // sont dans l'infobulle — c'est l'écart, et lui seul, qui commande une action.
   const detail = [
-    `Relevé ${stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : '—'}`,
+    `Relevé ${stmt?.printed_balance_signed != null ? money(stmt.printed_balance_signed, currency) : '—'}`,
     `QuickBooks ${bal ? money(bal.qb_as_of, currency) : account.qb_account_id ? '—' : 'non mappé'}`,
     stmt?.date ? `soldes au ${fmtDate(stmt.date)}` : null,
     bal && Math.abs(bal.qb_current - bal.qb_as_of) >= 0.01 ? `solde QuickBooks aujourd'hui ${money(bal.qb_current, currency)}` : null,
@@ -1573,7 +1805,7 @@ function EcartBar({ account, rec }) {
 
   return (
     <div data-testid="reconcile-panel" title={detail}
-      data-statement-balance={stmt?.balance_signed != null ? money(stmt.balance_signed, currency) : ''}
+      data-statement-balance={stmt?.printed_balance_signed != null ? money(stmt.printed_balance_signed, currency) : ''}
       data-qb-balance={bal ? money(bal.qb_as_of, currency) : ''}
       className="flex items-baseline gap-x-1.5 text-xs min-w-0">
       <span className="text-slate-400">Écart</span>
@@ -1581,6 +1813,7 @@ function EcartBar({ account, rec }) {
         className={`text-sm font-semibold tabular-nums ${diff == null ? 'text-slate-300' : ok ? 'text-green-700' : 'text-red-700'}`}>
         {qbLoading ? '…' : diff == null ? '—' : money(diff, currency)}
       </span>
+      {robot && <QbRobotPill robot={robot} currency={currency} />}
       {qbError && <span className="text-[11px] text-amber-700 truncate">QuickBooks indisponible</span>}
       {msg && <span className="text-[11px] text-slate-400 truncate">{msg}</span>}
       <PlaidDuplicates account={account} rec={rec} />
@@ -1668,7 +1901,7 @@ function MenuItem({ icon, label, hint, onClick, disabled, href, testId }) {
   return <button type="button" className={cls} data-testid={testId} disabled={disabled} onClick={onClick}>{body}</button>
 }
 
-function MoreMenu({ onDrop, flash }) {
+function MoreMenu({ onDrop, onRules, flash, robot }) {
   const [open, setOpen] = useState(false)
   const ref = useRef(null)
   const mirror = useMirror(flash)
@@ -1696,6 +1929,10 @@ function MoreMenu({ onDrop, flash }) {
         <div className="absolute right-0 top-9 z-30 w-72 rounded-lg border border-slate-200 bg-white shadow-lg p-1">
           <MenuItem icon={<FileUp size={14} />} label="Déposer un relevé"
             testId="statement-drop" onClick={run(onDrop)} />
+          <MenuItem icon={<Wand2 size={14} />} label="Règles bancaires"
+            testId="reconcile-rules-link" onClick={run(onRules)} />
+          {robot && <MenuItem icon={<CheckCheck size={14} className={robot.running ? 'animate-pulse' : ''} />}
+            label="Préparer dans QuickBooks" testId="qb-robot-run" disabled={robot.running} onClick={run(robot.run)} />}
           <MenuItem icon={<Table2 size={14} className={mirror.busy ? 'animate-pulse' : ''} />}
             label="Recopier dans le classeur" disabled={mirror.busy} onClick={mirror.run} />
           {mirror.url && <MenuItem icon={<ExternalLink size={14} />} label="Ouvrir le classeur" href={mirror.url} />}
@@ -1715,7 +1952,7 @@ function MoreMenu({ onDrop, flash }) {
 // 2026-09-12 : une seule liste continue, comme le fichier, et la légende des
 // couleurs fait le filtre. Un compteur à zéro n'est pas cliquable — sinon la
 // liste se viderait et DataTable afficherait son écran « aucune transaction ».
-function StatusLegend({ counts, value, onChange }) {
+function StatusLegend({ counts, value, onChange, onRequests }) {
   const chip = (key, label, hint, tint, n) => (
     <button key={key} type="button" data-testid={`reconcile-legend-${key}`}
       aria-pressed={value === key} aria-label={`${label} — ${n}`} title={hint}
@@ -1724,7 +1961,8 @@ function StatusLegend({ counts, value, onChange }) {
         ? 'bg-slate-100 ring-1 ring-slate-300 text-slate-900 font-medium'
         : 'text-slate-500 hover:bg-slate-50'}`}>
       <span className={`w-2.5 h-2.5 rounded-[3px] border border-black/10 ${tint}`} />
-      <span className="tabular-nums">{n}</span>
+      <span className="whitespace-nowrap">{label}</span>
+      <span className="tabular-nums text-slate-400">{n}</span>
     </button>
   )
   return (
@@ -1747,6 +1985,25 @@ function StatusLegend({ counts, value, onChange }) {
           <FileWarning size={12} />
           <span className="tabular-nums">{counts.missing}</span> sans facture
         </button>
+      )}
+      {/* Ce que Charles réclame lui-même : le nombre ouvre le panneau, où se
+          prépare le message Slack. */}
+      {counts.requested > 0 && (
+        <span className="ml-2 pl-3 border-l border-slate-200 inline-flex items-center gap-0.5">
+          <button type="button" data-testid="reconcile-legend-requested"
+            aria-pressed={value === 'requested'} title="Factures demandées"
+            onClick={() => onChange(value === 'requested' ? null : 'requested')}
+            className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-xs transition-colors ${value === 'requested'
+              ? 'bg-amber-100 text-amber-900 font-medium'
+              : 'text-amber-700 hover:bg-amber-50'}`}>
+            <Flag size={12} />
+            <span className="tabular-nums">{counts.requested}</span> demandées
+          </button>
+          <button type="button" data-testid="reconcile-requests-open" title="Ouvrir le panneau des factures demandées"
+            onClick={onRequests} className="px-1.5 py-1 rounded-md text-amber-700 hover:bg-amber-50">
+            <Send size={12} />
+          </button>
+        </span>
       )}
       {counts.proposals > 0 && (
         <button type="button" data-testid="reconcile-legend-proposals"
@@ -1911,6 +2168,72 @@ function PublishMatchedButton({ txn, onChanged }) {
 // rouge au crayon (« à réviser », recopié en X dans TRX_Orisha) et le signet
 // orange (où il s'est arrêté — un seul par compte). Discrètes jusqu'au survol,
 // bien visibles une fois posées.
+// Les factures que Charles réclame : la liste, et le message qui part sur
+// Slack. Décocher une ligne la sort de l'envoi — elle reste réclamée.
+function InvoiceRequestsPanel({ onChanged }) {
+  const [rows, setRows] = useState(null)
+  const [message, setMessage] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [done, setDone] = useState(null)
+
+  const apply = (res) => { setRows(res.requests || []); setMessage(res.message || null) }
+  useEffect(() => { api.bank.invoiceRequests().then(apply).catch((e) => setError(e.message)) }, [])
+
+  const act = async (fn) => {
+    setBusy(true); setError(null); setDone(null)
+    try { apply(await fn()) } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+  const send = async () => {
+    setBusy(true); setError(null)
+    try {
+      const res = await api.bank.sendInvoiceRequests()
+      apply(res)
+      setDone(`Envoyé — ${res.count} facture${res.count > 1 ? 's' : ''}`)
+    } catch (e) { setError(e.message) } finally { setBusy(false) }
+  }
+
+  if (error && !rows) return <div className="px-5 py-4 text-sm text-red-600">{error}</div>
+  if (!rows) return <div className="px-5 py-4 text-sm text-slate-400">Chargement…</div>
+  if (!rows.length) return <div className="px-5 py-4 text-sm text-slate-400">Aucune facture demandée.</div>
+
+  const inSend = rows.filter((r) => r.in_send).length
+  return (
+    <div className="flex flex-col h-full">
+      <div className="flex-1 overflow-auto px-5 py-3">
+        {rows.map((r) => (
+          <div key={r.bank_txn_id} className={`flex items-center gap-3 py-2 border-b border-slate-100 ${r.in_send ? '' : 'opacity-50'}`}>
+            <input type="checkbox" checked={!!r.in_send} disabled={busy}
+              aria-label={r.in_send ? "Retirer de l'envoi" : "Remettre dans l'envoi"}
+              onChange={() => act(() => api.bank.setInvoiceRequestInSend(r.bank_txn_id, !r.in_send))}
+              className="w-4 h-4 rounded border-slate-300 text-brand-600" />
+            <div className="min-w-0 flex-1">
+              <div className={`text-sm truncate ${r.in_send ? 'text-slate-800' : 'line-through text-slate-500'}`}>{r.vendor}</div>
+              <div className="text-xs text-slate-400 truncate">
+                {fmtDate(r.txn_date)} · {r.account_name} · {r.age_days} j{r.last_sent_at ? ' · déjà demandée' : ''}
+              </div>
+            </div>
+            <span className="text-sm tabular-nums text-slate-700">{r.amount_label}</span>
+            <button type="button" disabled={busy} title="Retirer de la liste"
+              onClick={() => act(async () => { const res = await api.bank.removeInvoiceRequest(r.bank_txn_id); onChanged?.(); return res })}
+              className="text-slate-300 hover:text-red-600"><X size={14} /></button>
+          </div>
+        ))}
+        {message && <pre className="mt-3 whitespace-pre-wrap text-xs text-slate-600 bg-slate-50 rounded-lg p-3">{message}</pre>}
+      </div>
+      <div className="px-5 py-3 border-t border-slate-200 flex items-center gap-3">
+        <button type="button" disabled={busy || !inSend} onClick={send}
+          data-testid="invoice-requests-send"
+          className="px-3 py-1.5 rounded-md bg-brand-600 text-white text-sm hover:bg-brand-700 disabled:opacity-50">
+          {busy ? 'Envoi…' : `Envoyer ${inSend} facture${inSend > 1 ? 's' : ''}`}
+        </button>
+        {done && <span className="text-xs text-green-700">{done}</span>}
+        {error && <span className="text-xs text-red-600">{error}</span>}
+      </div>
+    </div>
+  )
+}
+
 function RowMarks({ row, bookmarked, onReview, onBookmark }) {
   const [busy, setBusy] = useState(false)
   const red = !!row.review_flag
@@ -1933,10 +2256,24 @@ function RowMarks({ row, bookmarked, onReview, onBookmark }) {
 
 // Les comptes en onglets au pied de la page, comme les feuilles d'un classeur.
 // Le rond rouge compte les lignes que Michel a encore à réviser.
+// Pseudo-compte : tout ce qui n'est pas encore comptabilisé, tous comptes
+// confondus, dans le même tableau (demande de Charles, 2026-09-27).
+const TODO_TAB = '__todo__'
+const TODO_STATUSES = new Set(['a_traiter', 'facture_recue'])
+// Les années closes n'y figurent plus (Charles, 2026-09-27 : « 2025, ça pu rapport »).
+const TODO_SINCE = '2026-01-01'
+
 function AccountTabs({ accounts, accountId, onChange }) {
+  const todo = accounts.reduce((n, a) => n + (a.todo_count || 0), 0)
   return (
     <nav aria-label="Comptes" data-testid="account-tabs"
       className="lg-tabs flex items-stretch overflow-x-auto">
+      <button type="button" data-testid="account-tab-todo" onClick={() => onChange(TODO_TAB)}
+        aria-current={accountId === TODO_TAB ? 'page' : undefined} title="Tous les comptes"
+        className={`lg-tab shrink-0 flex items-center gap-2 px-4 whitespace-nowrap ${accountId === TODO_TAB ? 'lg-tab-on' : ''}`}>
+        À comptabiliser
+        {todo > 0 && <span className="lg-count">{todo}</span>}
+      </button>
       {accounts.map((a) => (
         <button key={a.id} type="button" onClick={() => onChange(a.id)} aria-current={a.id === accountId ? 'page' : undefined}
           title={[a.institution, a.account_number, a.currency].filter(Boolean).join(' · ')}
@@ -1949,12 +2286,49 @@ function AccountTabs({ accounts, accountId, onChange }) {
   )
 }
 
+// Ce que la ligne porte et qui se comptabilise déjà tout seul (dette, paie,
+// assurance collective, pièce ou facture retrouvée) : la ligne dépliée l'ouvre
+// d'emblée, sans passer par le dossier complet (demande de Charles, 2026-09-27).
+function dossierFocus(d) {
+  if (!d) return null
+  if (d.debt && !d.debt.payment?.pushed_at && !d.debt.payment?.qb_txn_id) return { key: 'debt', label: 'Dette' }
+  if (d.paie && !d.paie.booked) return { key: 'paie', label: 'Paie' }
+  if (d.aga) return { key: 'aga', label: 'Assurance' }
+  if (d.invoices?.length) return { key: 'invoices', label: 'Facture' }
+  if (d.receipts?.length) return { key: 'receipts', label: 'Reçu' }
+  return null
+}
+
+function DossierFocus({ txn, currency, focus, dossier, reload, onChanged }) {
+  const after = async () => { await reload(); invalidate('/bank'); await onChanged() }
+  if (focus.key === 'debt') return <DebtCard data={dossier.debt} onPublished={after} />
+  if (focus.key === 'paie' || focus.key === 'aga') {
+    return (
+      <Suspense fallback={<PanelFallback />}>
+        {focus.key === 'paie' ? <PaiePanel paieId={dossier.paie.id} /> : <AgaPanel debit={dossier.aga} />}
+      </Suspense>
+    )
+  }
+  if (focus.key === 'invoices') {
+    return <InvoiceCard txn={txn} invoices={dossier.invoices} ambiguous={dossier.invoices_ambiguous} currency={currency} onChanged={onChanged} />
+  }
+  return <ReceiptCard txn={txn} receipts={dossier.receipts} ambiguous={dossier.receipts_ambiguous} onChanged={onChanged} />
+}
+
 function QbRowExpansion({ txn, currency, next, onChanged, onOpenPanel, collapse }) {
   // Une ligne qui porte une proposition s'ouvre dessus : c'est le geste que la
   // page attend d'abord, avant celui que `next-actions` a calculé.
   const ready = txn.proposal_count > 0
   const [pane, setPane] = useState(ready ? 'ready' : NEXT_META[next?.kind || 'rien'].pane)
-  const [busy, setBusy] = useState(false)
+  // « Exclure » a quitté cette barre (2026-09-29) : on l'y touchait par accident.
+  const { dossier, reload } = useDossier(txn._ghost ? null : txn.id)
+  const focus = dossierFocus(dossier)
+  // Le dossier arrive après le dépliage : s'il porte quelque chose de
+  // comptabilisable, c'est ce volet qui s'ouvre (sauf proposition ou choix fait).
+  const touched = useRef(false)
+  useEffect(() => {
+    if (focus && !ready && !touched.current) setPane('dossier')
+  }, [focus?.key]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (txn._ghost) {
     return <div className="px-4 py-3 text-xs text-slate-500">Écriture QuickBooks sans ligne au relevé.</div>
@@ -1968,8 +2342,11 @@ function QbRowExpansion({ txn, currency, next, onChanged, onOpenPanel, collapse 
     // Réglée mais encore porteuse d'une proposition ouverte : on la montre
     // quand même, sinon elle n'est atteignable que par le panneau latéral.
     return (
-      <div className="px-4 py-3 space-y-3 max-w-3xl">
+      <div className="px-4 py-3 space-y-3 max-w-5xl">
         {ready && <ProposalCards txn={txn} currency={currency} onChanged={proposalDone} />}
+        {!ready && focus && (
+          <DossierFocus txn={txn} currency={currency} focus={focus} dossier={dossier} reload={reload} onChanged={onChanged} />
+        )}
         <div className="flex items-center gap-3 text-xs text-slate-500">
           {txn.matched_id
             ? <span className="flex items-center gap-1.5">{docLink(txn.matched_type, txn.matched_id, txn.matched_label)}<QbLink txn={txn} /></span>
@@ -1978,36 +2355,55 @@ function QbRowExpansion({ txn, currency, next, onChanged, onOpenPanel, collapse 
           <button type="button" className="px-2 py-1 rounded border border-slate-300 hover:bg-white"
             onClick={() => onOpenPanel(txn)}>Ouvrir le dossier</button>
         </div>
+        {!txn.transfer_txn_id && txn.status !== 'ignore' && <RuleFromTxnForm txn={txn} />}
       </div>
     )
   }
 
-  const exclude = async () => {
-    setBusy(true)
-    try { await api.bank.updateTransaction(txn.id, { status: 'ignore' }); invalidate('/bank'); await onChanged() }
-    finally { setBusy(false) }
-  }
+  // Maquette L5 (choix de Charles, 2026-09-29) : la barre de QuickBooks —
+  // trois onglets soulignés, celui que la ligne appelle déjà ouvert.
+  const GESTURES = [
+    { key: 'add', label: 'Catégoriser', show: txn.amount < 0 },
+    { key: 'match', label: 'Trouver une correspondance', show: true },
+    { key: 'transfer', label: 'Enregistrer comme transfert', show: true },
+  ].filter((g) => g.show)
+
+  // La bande verte de QuickBooks : ce que Boréal a déjà trouvé pour cette
+  // ligne, dit avant les onglets (demande de Charles, 2026-09-29).
+  const found = ready
+    ? (txn.proposal_count > 1 ? `${txn.proposal_count} propositions prêtes` : 'Proposition prête')
+    : focus ? `Correspondance trouvée · ${focus.label}`
+      : next?.kind === 'virement' ? 'Virement interne reconnu'
+        : next?.label ? next.label : null
+  const banner = [found, txn.rule_name ? `Règle « ${txn.rule_name} »` : null].filter(Boolean).join(' · ')
 
   const tab = (key, label) => (
-    <button key={key} type="button" onClick={() => setPane(key)} aria-pressed={pane === key}
-      className={`px-2 py-1 text-xs rounded-md ${pane === key ? 'bg-white ring-1 ring-slate-300 text-slate-900 font-medium' : 'text-slate-500 hover:bg-white/60'}`}>
+    <button key={key} type="button" onClick={() => { touched.current = true; setPane(key) }} aria-pressed={pane === key}
+      className={`px-3 py-1.5 text-xs border-b-2 -mb-px ${pane === key
+        ? 'border-brand-600 text-slate-900 font-medium'
+        : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
       {label}
     </button>
   )
 
   return (
-    <div className="px-4 py-3 space-y-3 max-w-3xl">
-      <div className="flex items-center gap-1 flex-wrap">
+    <div className="px-4 py-3 space-y-3 max-w-5xl">
+      {banner && (
+        <div className="flex items-center gap-2 rounded-lg bg-green-50 text-green-800 px-3 py-1.5 text-xs">
+          <CheckCheck size={13} className="shrink-0" /> {banner}
+        </div>
+      )}
+      <div className="flex items-center gap-1 flex-wrap border-b border-slate-200">
         {ready && tab('ready', 'Prêt')}
-        {txn.amount < 0 && tab('add', 'Comptabiliser')}
-        {tab('match', 'Apparier')}
-        {tab('transfer', 'Virement interne')}
-        <button type="button" disabled={busy} onClick={exclude}
-          className="px-2 py-1 text-xs rounded-md text-slate-500 hover:bg-white/60 disabled:opacity-50">Exclure</button>
+        {focus && tab('dossier', focus.label)}
+        {GESTURES.map((g) => tab(g.key, g.label))}
         <button type="button" onClick={() => onOpenPanel(txn)}
           className="ml-auto px-2 py-1 text-xs rounded-md text-slate-500 hover:bg-white/60">Dossier complet</button>
       </div>
 
+      {pane === 'dossier' && focus && (
+        <DossierFocus txn={txn} currency={currency} focus={focus} dossier={dossier} reload={reload} onChanged={onChanged} />
+      )}
       {pane === 'ready' && ready && (
         <ProposalCards txn={txn} currency={currency} onChanged={proposalDone} />
       )}
@@ -2021,6 +2417,10 @@ function QbRowExpansion({ txn, currency, next, onChanged, onOpenPanel, collapse 
       {pane === 'transfer' && (
         <TransferForm txn={txn} currency={currency} onDone={() => { collapse(); onChanged() }} onCancel={collapse} />
       )}
+
+      {/* La règle se crée là où le libellé est sous les yeux, une à la fois —
+          l'atelier, lui, les propose en lot. */}
+      {!txn.transfer_txn_id && <RuleFromTxnForm txn={txn} />}
     </div>
   )
 }
@@ -2050,6 +2450,7 @@ export default function RapprochementBancaire() {
   const [pageDrag, setPageDrag] = useState(false)
   const [notice, setNotice] = useState(null)
   const [rulesOpen, setRulesOpen] = useState(false)
+  const [requestsOpen, setRequestsOpen] = useState(false)
   // null = toute la liste ; sinon une clé de STATUS_META ou 'ghost'.
   const [colorFilter, setColorFilter] = useState(null)
   const account = accounts.find((a) => a.id === accountId) || null
@@ -2062,7 +2463,8 @@ export default function RapprochementBancaire() {
     // réécrire l'URL quand personne n'a rien demandé.
     setAccountIdRaw((prev) => {
       const wanted = new URLSearchParams(window.location.search).get('compte')
-      if (wanted && list.some((a) => a.id === wanted)) return wanted
+      if (wanted === TODO_TAB || (wanted && list.some((a) => a.id === wanted))) return wanted
+      if (prev === TODO_TAB) return prev
       return prev && list.some((a) => a.id === prev) ? prev : (list[0]?.id || null)
     })
   }, [])
@@ -2070,13 +2472,22 @@ export default function RapprochementBancaire() {
   const loadTxns = useCallback(async () => {
     if (!accountId) { setRows([]); setLoading(false); return }
     setLoading(true)
-    try { setRows(await api.bank.transactions(accountId)) } finally { setLoading(false) }
+    try {
+      if (accountId !== TODO_TAB) { setRows(await api.bank.transactions(accountId)); return }
+      const list = await api.bank.accounts()
+      const per = await Promise.all(list.filter((a) => a.todo_count > 0).map(async (a) => (
+        (await api.bank.transactions(a.id))
+          .filter((r) => TODO_STATUSES.has(r.status) && (r.txn_date || '') >= TODO_SINCE)
+          .map((r) => ({ ...r, _acct: { id: a.id, name: a.name, currency: a.currency } }))
+      )))
+      setRows(per.flat().sort((x, y) => String(y.txn_date).localeCompare(String(x.txn_date))))
+    } finally { setLoading(false) }
   }, [accountId])
 
   useEffect(() => { loadAccounts() }, [loadAccounts])
   // URL → état : clic dans le sous-menu alors que la page est déjà ouverte.
   useEffect(() => {
-    if (askedAccount && askedAccount !== accountId && accounts.some((a) => a.id === askedAccount)) {
+    if (askedAccount && askedAccount !== accountId && (askedAccount === TODO_TAB || accounts.some((a) => a.id === askedAccount))) {
       setAccountIdRaw(askedAccount)
     }
   }, [askedAccount, accounts, accountId])
@@ -2103,11 +2514,12 @@ export default function RapprochementBancaire() {
   useEffect(() => {
     if (!accountId) { setNextActions({}); return undefined }
     let alive = true
-    api.bank.nextActions(accountId)
-      .then((m) => { if (alive) setNextActions(m || {}) })
+    const ids = accountId === TODO_TAB ? accounts.filter((a) => a.todo_count > 0).map((a) => a.id) : [accountId]
+    Promise.all(ids.map((id) => api.bank.nextActions(id)))
+      .then((ms) => { if (alive) setNextActions(Object.assign({}, ...ms.map((m) => m || {}))) })
       .catch(() => { if (alive) setNextActions({}) })
     return () => { alive = false }
-  }, [accountId, reconcileKey])
+  }, [accountId, reconcileKey, accountId === TODO_TAB ? accounts : null]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Ouverture du panneau depuis un bouton de ligne : quelle ligne, dans quel
   // mode. `null` = le panneau s'ouvre sur sa vue habituelle.
@@ -2151,10 +2563,13 @@ export default function RapprochementBancaire() {
   // absence d'écriture QuickBooks.
   const flags = useMemo(() => {
     const m = new Map()
-    for (const a of rec.summary?.anomalies || []) if (a.txn_id && !m.has(a.txn_id)) m.set(a.txn_id, a.explanation)
-    for (const g of rec.qb?.missing_in_qb || []) if (g.txn_id && !m.has(g.txn_id)) m.set(g.txn_id, 'Aucune écriture correspondante dans QuickBooks')
+    const short = (a) => a.kind === 'chaine_solde' ? `Solde décalé de ${fmtMoney(a.amount, account?.currency)} · ligne manquante ?`
+      : a.kind === 'doublon' ? 'Doublon ?'
+      : a.explanation
+    for (const a of rec.summary?.anomalies || []) if (a.txn_id && !m.has(a.txn_id)) m.set(a.txn_id, short(a))
+    for (const g of rec.qb?.missing_in_qb || []) if (g.txn_id && !m.has(g.txn_id)) m.set(g.txn_id, 'Absent de QuickBooks')
     return m
-  }, [rec.summary, rec.qb])
+  }, [rec.summary, rec.qb, account?.currency])
 
   // Écritures QuickBooks sans ligne au relevé : des lignes fantômes glissées à
   // leur date, comme une ligne à compléter dans un tableur. Elles ne sont pas
@@ -2190,6 +2605,19 @@ export default function RapprochementBancaire() {
   }, [decorated, ghosts])
 
   const peekRow = allRows.find((r) => r.id === peekOpen.id)
+  // Facture retracée : le clic sur la ligne ouvre le document lui-même (reçu
+  // extrait, payout, facture fournisseur) plutôt que de déplier la ligne.
+  const [achatDoc, setAchatDoc] = useState(null)
+  const openMatchedDocument = (r) => {
+    if (r._ghost || !r.matched_id || r.transfer_txn_id) return false
+    if (r.matched_type === 'achat') {
+      api.achatsFournisseurs.get(r.matched_id).then(setAchatDoc).catch(() => {})
+      return true
+    }
+    if (r.matched_path) { navigate(r.matched_path); return true }
+    return false
+  }
+
   const openTransaction = (r) => {
     if (!r._ghost && r.status === 'facture_recue' && r.matched_type === 'receipt' && r.matched_id) {
       navigate(`/sale-receipts/${r.matched_id}`)
@@ -2200,12 +2628,13 @@ export default function RapprochementBancaire() {
 
   // Compteurs sur TOUTE la liste : ils ne doivent pas bouger quand on filtre.
   const counts = useMemo(() => {
-    const c = { ghost: 0, proposals: 0, missing: 0 }
+    const c = { ghost: 0, proposals: 0, missing: 0, requested: 0 }
     for (const k of LEGEND_ORDER) c[k] = 0
     for (const r of allRows) {
       c[bucketOf(r)] += 1
       if (r.proposal_count) c.proposals += r.proposal_count
       if (r.missing_invoice) c.missing += 1
+      if (r.invoice_requested) c.requested += 1
     }
     return c
   }, [allRows])
@@ -2214,6 +2643,10 @@ export default function RapprochementBancaire() {
     if (!colorFilter) return allRows
     if (colorFilter === 'proposals') return allRows.filter((r) => r.proposal_count > 0)
     // Les plus vieilles d'abord : c'est l'ancienneté qui dit ce qui presse.
+    if (colorFilter === 'requested') {
+      return allRows.filter((r) => r.invoice_requested)
+        .sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)))
+    }
     if (colorFilter === 'missing') {
       return allRows.filter((r) => r.missing_invoice)
         .sort((a, b) => String(a.txn_date).localeCompare(String(b.txn_date)))
@@ -2232,6 +2665,7 @@ export default function RapprochementBancaire() {
   }
 
   const flash = (msg) => { setNotice(msg); setTimeout(() => setNotice(null), 6000) }
+  const robot = useQbRobot(account?.qb_account_id ? accountId : null, flash)
 
   // Glisser un relevé n'importe où sur la page ouvre la fenêtre de dépôt avec
   // le fichier déjà pris en charge — aucun bouton à trouver d'abord. On ne
@@ -2278,137 +2712,115 @@ export default function RapprochementBancaire() {
     try { await api.bank.setReview(row.id, on) } finally { invalidate('/bank'); loadAccounts().catch(() => {}) }
   }, [loadAccounts])
   const setBookmark = useCallback(async (txnId) => {
-    if (!accountId) return
+    if (!accountId || accountId === TODO_TAB) return
     setAccounts((cur) => cur.map((a) => a.id === accountId ? { ...a, bookmark_txn_id: txnId } : a))
     await api.bank.updateAccount(accountId, { bookmark_txn_id: txnId })
     invalidate('/bank')
   }, [accountId])
 
-  // Polices du classeur, chargées seulement quand la page s'ouvre.
-  useEffect(() => {
-    if (document.getElementById('ledger-fonts')) return
-    const l = document.createElement('link')
-    l.id = 'ledger-fonts'; l.rel = 'stylesheet'
-    l.href = 'https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&family=Newsreader:ital,wght@0,400;0,500;0,600;1,400;1,600&display=swap'
-    document.head.appendChild(l)
-  }, [])
-
+  const qbNames = useQbNames(rows.some((r) => r.suggestion?.kind === 'vendor_expense'))
+  // Le relevé porte tous les gestes : la ligne prend la couleur de son statut
+  // (rouge à traiter, bleu facture reçue, jaune comptabilisé, vert rapproché),
+  // comme les cases peintes du fichier TRX_Orisha. Le face à face avec
+  // QuickBooks (maquette R3) est retiré — Charles, 2026-09-29.
   const COLUMNS = useMemo(() => {
-    const num = (v, cls = '') => v == null
+    const num = (v, cls = '', cur = currency) => (v == null
       ? <span className="block text-right text-slate-200">·</span>
-      : <span className={`block text-right tabular-nums ${cls}`}>{money(v, currency)}</span>
-    const RENDERS = {
-      comment: (r) => r._ghost ? '—' : <TransactionComment key={r.id} txn={r} onSave={saveComment} />,
+      : <span className={`block text-right tabular-nums ${cls}`}>{money(v, cur)}</span>)
+    const renderers = {
+      comment: (r) => (r._ghost ? '—' : <TransactionComment key={r.id} txn={r} onSave={saveComment} />),
       txn_date: (r) => (
         <span className="whitespace-nowrap text-slate-500 tabular-nums">
-          {!!r.pending && <Clock size={11} className="inline mr-1 -mt-0.5 text-slate-400" title="En attente à la banque (pas encore posée)" />}
+          {!!r.pending && <span title="En attente à la banque"><Clock size={11} className="inline mr-1 -mt-0.5 text-slate-400" /></span>}
           {r.review_flag ? <span className="lg-pen">{fmtDate(r.txn_date)}</span> : fmtDate(r.txn_date)}
         </span>
       ),
-      // Une seule ligne : la description de la banque, souvent générique, part
-      // en infobulle. Le ⚠ dit sur place ce qui cloche.
       description: (r) => (
         <span className={`block truncate ${r._ghost ? 'italic text-slate-400' : ''}`} title={txnSubLabel(r) || undefined}>
-          {r.proposal_count > 0 && <Wand2 size={12} className="inline mr-1 -mt-0.5 text-brand-600" title={`${r.proposal_count} proposition${r.proposal_count > 1 ? 's' : ''} à confirmer`} />}
-          {r._flag && <AlertTriangle size={12} className="inline mr-1 -mt-0.5 text-amber-500" title={r._flag} />}
+          {r.proposal_count > 0 && (
+            <span title={`${r.proposal_count} proposition${r.proposal_count > 1 ? 's' : ''}`}>
+              <Wand2 size={12} className="inline mr-1 -mt-0.5 text-brand-600" />
+            </span>
+          )}
+          {r._flag && <span title={r._flag}><AlertTriangle size={12} className="inline mr-1 -mt-0.5 text-amber-500" /></span>}
           {r._ghost && <span className="text-slate-400">QuickBooks · </span>}
-          {txnLabel(r)}
+          {r._acct && <span className="mr-1.5 px-1 rounded bg-slate-100 text-[11px] text-slate-500">{r._acct.name}</span>}
+          <span className="lg-lbl">{txnLabel(r)}</span>
+          {txnSubLabel(r) && <span className="lg-sub"> · {txnSubLabel(r)}</span>}
         </span>
       ),
-      // La description de la banque, quand elle dit autre chose que le libellé.
-      bank_description: (r) => txnSubLabel(r)
+      bank_description: (r) => (txnSubLabel(r)
         ? <span className="block truncate text-slate-500" title={txnSubLabel(r)}>{txnSubLabel(r)}</span>
-        : <span className="text-slate-200">·</span>,
-      debit: (r) => num(r._ghost ? (r.amount < 0 ? -r.amount : null) : r.debit, 'text-slate-700'),
-      credit: (r) => num(r._ghost ? (r.amount > 0 ? r.amount : null) : r.credit, 'text-green-700'),
-      amount: (r) => num(r.amount, r.amount < 0 ? 'text-slate-700' : 'text-green-700'),
-      balance: (r) => num(r.balance, 'text-slate-400'),
-      // Fournisseur : reconnu par le document apparié (lien) ou deviné du
-      // libellé (gris, avec la manière dont il a été reconnu en infobulle).
-      vendor: (r) => {
-        if (r.matched_id && r.matched_label) {
-          // Le document n'a plus sa colonne : son bouton vit ici, à côté du nom
-          // qu'il a donné à la ligne, avec le lien vers l'écriture QuickBooks.
-          return (
-            <span className="flex items-center gap-1 min-w-0">
-              <span className="truncate">{docLink(r.matched_type, r.matched_id, r.matched_label)}</span>
-              <MatchedDocument txn={r} doc={null} onChanged={refresh} icon />
-              <QbLink txn={r} />
-            </span>
-          )
-        }
-        if (r.resolved_vendor) {
-          return (
-            <Link to="/fournisseurs" onClick={(e) => e.stopPropagation()}
-              className="block truncate text-slate-500 hover:text-brand-600"
+        : <span className="text-slate-200">·</span>),
+      debit: (r) => num(r._ghost ? (r.amount < 0 ? -r.amount : null) : r.debit, 'text-slate-700', r._acct?.currency || currency),
+      credit: (r) => num(r._ghost ? (r.amount > 0 ? r.amount : null) : r.credit, 'text-green-700', r._acct?.currency || currency),
+      amount: (r) => num(r.amount, r.amount < 0 ? 'text-slate-700' : 'text-green-700', r._acct?.currency || currency),
+      balance: (r) => num(r.balance, 'text-slate-400', r._acct?.currency || currency),
+      vendor: (r) => (r.matched_id && r.matched_label
+        ? (
+          <span className="flex items-center gap-1 min-w-0">
+            <span className="truncate">{docLink(r.matched_type, r.matched_id, r.matched_label)}</span>
+            <MatchedDocument txn={r} doc={null} onChanged={refresh} icon />
+            <QbLink txn={r} />
+          </span>
+        )
+        : r.resolved_vendor
+          ? (
+            <Link to="/fournisseurs" onClick={(e) => e.stopPropagation()} className="block truncate text-slate-500 hover:text-brand-600"
               title={`Reconnu par ${VENDOR_VIA[r.resolved_vendor.via] || r.resolved_vendor.via}`}>
               {r.resolved_vendor.name}
             </Link>
           )
-        }
-        return <span className="text-slate-200">·</span>
-      },
+          : <span className="text-slate-200">·</span>),
       bank_state: (r) => {
-        const st = BANK_STATE_META[r.bank_state]
-        if (!st) return <span className="text-slate-200">·</span>
-        return <span className={`block truncate ${st.cls}`}>{st.label}</span>
+        const m = BANK_STATE_META[r.bank_state]
+        return m ? <span className={`block truncate ${m.cls}`}>{m.label}</span> : <span className="text-slate-200">·</span>
       },
-      match_confidence: (r) => r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—',
+      match_confidence: (r) => (r.match_confidence != null ? `${Math.round(r.match_confidence * 100)} %` : '—'),
     }
-    // Le statut se lit à la couleur pour tous les comptes de cette page.
-    const cols = TABLE_COLUMN_META.bank_transactions
-      .filter((meta) => meta.id !== 'status')
-      .map((meta) => ({ ...meta, render: RENDERS[meta.id] }))
-    // Les deux gestes de « Opérations bancaires », à portée de clic sur la
-    // ligne : le panneau s'ouvre déjà dans le bon formulaire. La colonne est
-    // TOUJOURS là (sa largeur ne saute plus quand on filtre) ; c'est son rendu
-    // qui se tait sur les lignes où il n'y a plus rien à décider. En TÊTE de
-    // ligne : en queue, la colonne sortait de l'écran dès que les colonnes
-    // larges (libellé, document) prenaient toute la place.
-    // Une seule colonne d'action, en tête : elle porte le geste que la ligne
-    // attend. Le clic n'arrête PAS la propagation — il déplie la ligne, qui
-    // s'ouvre déjà sur le bon volet.
-    // Les marques de Michel (rond rouge, signet) : à droite, juste après le
-    // solde (demande de Charles, 2026-09-22). `alwaysVisible` : sans ça, la
-    // liste de colonnes déjà mémorisée par l'utilisateur (vue, pill,
-    // localStorage) masquerait à jamais une colonne ajoutée après coup. Id neuf
-    // (`_marks`, l'ancien `_review` vivait en tête) : absent de la vue
-    // enregistrée, il est inséré après sa voisine déclarée — le solde.
+    // Le statut ne prend plus de colonne : c'est la couleur de la ligne. La
+    // description de la banque suit le libellé, sur la même ligne.
+    const base = TABLE_COLUMN_META.bank_transactions
+      .filter((c) => c.id !== 'status' && c.id !== 'bank_description')
+      .map((c) => ({ ...c, render: renderers[c.id] }))
     const marks = {
-      id: '_marks', label: '', width: 56, alwaysVisible: true,
-      sortable: false, filterable: false, groupable: false,
+      id: '_marks', label: '', width: 56, alwaysVisible: true, sortable: false, filterable: false, groupable: false,
       render: (r) => (r._ghost ? null : (
-        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id}
-          onReview={setReview} onBookmark={setBookmark} />
+        <RowMarks row={r} bookmarked={account?.bookmark_txn_id === r.id} onReview={setReview} onBookmark={setBookmark} />
       )),
     }
-    const at = cols.findIndex((c) => c.id === 'balance')
-    const withMarks = at === -1 ? [...cols, marks] : [...cols.slice(0, at + 1), marks, ...cols.slice(at + 1)]
+    const iBal = base.findIndex((c) => c.id === 'balance')
+    const withMarks = iBal === -1 ? [...base, marks] : [...base.slice(0, iBal + 1), marks, ...base.slice(iBal + 1)]
+    const suggestion = {
+      id: '_suggestion', label: 'Suggestion', width: 440, alwaysVisible: true, sortable: false, filterable: false, groupable: false,
+      render: (r) => (r._ghost ? null : (
+        <SuggestionCell row={r} currency={r._acct?.currency || currency} names={qbNames} onChanged={refresh} />
+      )),
+    }
+    const iDesc = withMarks.findIndex((c) => c.id === 'description')
+    const cols = iDesc === -1 ? [...withMarks, suggestion] : [...withMarks.slice(0, iDesc + 1), suggestion, ...withMarks.slice(iDesc + 1)]
+    // Le geste attendu, en tête de ligne : un clic la déplie sur le bon volet.
     return [{
       id: '_next', label: '', width: 190, sortable: false, filterable: false, groupable: false,
       render: (r) => {
-        if (r._ghost || r.status === 'rapproche' || r.status === 'ignore') return null
+        if (r._ghost || r.status === 'rapproche' || r.status === 'ignore' || r.suggestion || r.auto_suggestion) return null
         const pending = nextActions[r.id]
-        // Déjà dans QuickBooks : plus aucun geste à proposer sur la ligne.
         if (r.qb_txn_id && !pending) return null
         if ((r.matched_id || r.transfer_txn_id) && pending?.kind !== 'comptabiliser') {
           return <span className="text-xs text-slate-400 truncate">{r.matched_label || 'Virement'}</span>
         }
         const n = pending || { kind: 'rien', label: null }
         const meta = NEXT_META[n.kind] || NEXT_META.rien
-        // D'où vient ce qui est proposé : la règle qui a préparé l'écriture,
-        // sinon rien — on ne fait pas dire à la ligne ce qu'on ne sait pas.
         const from = r.rule_name ? `Préparée par la règle « ${r.rule_name} »` : null
         return (
           <span className="flex items-center gap-2 min-w-0">
-            <button type="button" title={from || undefined}
-              className={`shrink-0 text-xs px-2 py-1 rounded-md ${meta.cls}`}>{meta.label}</button>
+            <button type="button" title={from || undefined} className={`shrink-0 text-xs px-2 py-1 rounded-md ${meta.cls}`}>{meta.label}</button>
             {n.label && <span className="truncate text-xs text-slate-500" title={from || n.label}>{n.label}</span>}
           </span>
         )
       },
-    }, ...withMarks]
-  }, [currency, saveComment, refresh, nextActions, account?.bookmark_txn_id, setReview, setBookmark])
+    }, ...cols]
+  }, [currency, saveComment, refresh, nextActions, account?.bookmark_txn_id, setReview, setBookmark, qbNames])
 
   return (
     <Layout>
@@ -2424,30 +2836,26 @@ export default function RapprochementBancaire() {
           table="bank_transactions"
           skin="ledger"
           expandToggle={false}
-          height="calc(100vh - 205px)"
-          manageViews
-          toolbarStart={
-            <span data-testid="account-picker" className="lg-title mr-2 text-2xl italic leading-none whitespace-nowrap">{account?.name || ''}</span>
-          }
+          height="calc(100vh - 165px)"
+          // Le compte n'est nommé qu'une fois : par son onglet, en bas
+          // (maquette T1, 2026-09-27). Les outils du tableau tiennent dans un
+          // seul menu.
+          toolsMenu
           toolbarEnd={
             <div className="flex items-center gap-2 ml-2 min-w-0">
-              <StatusLegend counts={counts} value={colorFilter} onChange={setColorFilter} />
-              <button type="button" data-testid="reconcile-rules-link"
-                title="Règles bancaires — ce qui prépare les écritures"
-                onClick={() => setRulesOpen(true)}
-                className="px-2.5 h-7 inline-flex items-center text-xs rounded-md text-slate-500 hover:bg-slate-50 whitespace-nowrap">
-                Règles
-              </button>
-              <EcartBar account={account} rec={rec} />
+              <StatusLegend counts={counts} value={colorFilter} onChange={setColorFilter} onRequests={() => setRequestsOpen(true)} />
+              <EcartBar account={account} rec={rec} robot={account?.qb_account_id ? robot : null} />
               {/* Le seul bouton d'action de la page : apparier aux documents,
                   vérifier dans QuickBooks, recalculer l'écart. */}
-              <button type="button" data-testid="reconcile-auto-btn"
-                className="inline-flex items-center gap-1.5 px-2.5 h-7 text-xs rounded-md bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50"
-                title="Apparier aux documents de l'ERP, vérifier dans QuickBooks, recalculer l'écart"
-                disabled={rec.busy || !accountId} onClick={rec.runUpdate}>
-                <RefreshCw size={14} className={rec.busy ? 'animate-spin' : ''} /> {rec.busy ? 'Mise à jour…' : 'Mettre à jour'}
-              </button>
-              <MoreMenu onDrop={() => setShowDrop(true)} flash={flash} />
+              {accountId !== TODO_TAB && (
+                <button type="button" data-testid="reconcile-auto-btn" aria-label="Mettre à jour"
+                  className="inline-flex items-center justify-center w-7 h-7 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 hover:text-slate-800 disabled:opacity-50"
+                  title={rec.busy ? 'Mise à jour…' : "Mettre à jour — apparier aux documents, vérifier dans QuickBooks, recalculer l'écart"}
+                  disabled={rec.busy || !accountId} onClick={rec.runUpdate}>
+                  <RefreshCw size={14} className={rec.busy ? 'animate-spin' : ''} />
+                </button>
+              )}
+              <MoreMenu onDrop={() => setShowDrop(true)} onRules={() => setRulesOpen(true)} flash={flash} robot={account?.qb_account_id ? robot : null} />
             </div>
           }
           columns={COLUMNS}
@@ -2507,6 +2915,38 @@ export default function RapprochementBancaire() {
               onClick: async (ids) => { await bulkReal(ids, (real) => api.bank.reconcile(real, true)) },
             },
             {
+              // Les deux marques de Michel, posées sur toute la sélection d'un
+              // coup — elles ne se posaient qu'une ligne à la fois.
+              key: 'review', label: 'À réviser', icon: AlertTriangle, busyLabel: 'Mise à jour…',
+              show: (rows) => rows.some((r) => !r._ghost && !r.review_flag),
+              onClick: async (ids) => {
+                await bulkReal(ids, async (real) => {
+                  for (const id of real) await api.bank.setReview(id, true)
+                })
+                loadAccounts().catch(() => {})
+              },
+            },
+            {
+              // Un seul signet par compte : sur une sélection, il se pose sur la
+              // ligne la plus récente.
+              key: 'bookmark', label: 'Signet', icon: Bookmark, busyLabel: 'Mise à jour…',
+              show: (rows) => accountId !== TODO_TAB && rows.some((r) => !r._ghost),
+              onClick: async (ids) => {
+                const real = allRows.filter((r) => ids.includes(r.id) && !r._ghost)
+                const last = real.sort((a, b) => String(b.txn_date).localeCompare(String(a.txn_date)))[0]
+                if (last) await setBookmark(last.id)
+              },
+            },
+            {
+              // La liste des factures réclamées ne se remplit que d'ici.
+              key: 'invoice-request', label: 'Facture manquante', icon: Flag, busyLabel: 'Ajout…',
+              show: (rows) => rows.some((r) => !r._ghost && !r.invoice_requested),
+              onClick: async (ids) => {
+                await bulkReal(ids, (real) => api.bank.addInvoiceRequests(real))
+                setRequestsOpen(true)
+              },
+            },
+            {
               key: 'ignore', label: 'Ignorer', icon: Unlink, busyLabel: 'Mise à jour…',
               show: (rows) => rows.some((r) => !r._ghost && r.status !== 'ignore'),
               onClick: async (ids) => {
@@ -2525,8 +2965,9 @@ export default function RapprochementBancaire() {
               },
             },
           ]}
+          onRowClick={(r) => (openMatchedDocument(r) ? undefined : false)}
           renderExpanded={(row, { collapse }) => (
-            <QbRowExpansion key={row.id} txn={row} currency={currency} next={nextActions[row.id]}
+            <QbRowExpansion key={row.id} txn={row} currency={row._acct?.currency || currency} next={nextActions[row.id]}
               onChanged={refresh} onOpenPanel={openTransaction} collapse={collapse} />
           )}
           emptyState={{
@@ -2546,9 +2987,26 @@ export default function RapprochementBancaire() {
         {peekRow && <RecordScope id={peekRow.id}>
           {peekRow._ghost
             ? <GhostPeek row={peekRow} currency={currency} />
-            : <TxnPeek key={peekRow.id} txn={peekRow} currency={currency} onChanged={refresh}
+            : <TxnPeek key={peekRow.id} txn={peekRow} currency={peekRow._acct?.currency || currency} onChanged={refresh}
                 initialMode={peekOpen.forId === peekRow.id ? peekOpen.mode : null} />}
         </RecordScope>}
+      </RecordPeekDrawer>
+
+      {achatDoc && (
+        <RecordPeekDrawer open onClose={() => setAchatDoc(null)} peekKey="achats" width={640}
+          title={achatDoc.vendor || 'Facture fournisseur'}
+          subtitle={[achatDoc.vendor_invoice_number, achatDoc.invoice_date].filter(Boolean).join(' · ')}>
+          <div className="px-5 py-4">
+            <Suspense fallback={<PanelFallback />}>
+              <AchatPanel achat={achatDoc} onClose={() => setAchatDoc(null)} onSaved={async () => { invalidate('/bank'); await refresh() }} />
+            </Suspense>
+          </div>
+        </RecordPeekDrawer>
+      )}
+
+      <RecordPeekDrawer open={requestsOpen} onClose={() => setRequestsOpen(false)} peekKey="invoice-requests"
+        title="Factures demandées" subtitle="Décocher sort du message, pas de la liste" width={460}>
+        {requestsOpen && <InvoiceRequestsPanel onChanged={refresh} />}
       </RecordPeekDrawer>
 
       <RecordPeekDrawer open={rulesOpen} onClose={() => setRulesOpen(false)} peekKey="bank-rules"

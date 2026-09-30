@@ -54,7 +54,7 @@ export function collectExpenseLines() {
   const out = []
   const qbTxns = new Set()
   const qbRows = db.prepare(`
-    SELECT id, type, date_achat, vendor, reference, quickbooks_id, lines
+    SELECT id, type, date_achat, vendor, reference, quickbooks_id, lines, currency, exchange_rate
     FROM achats_fournisseurs WHERE lines LIKE '%LIA-%'
   `).all()
   for (const r of qbRows) {
@@ -68,11 +68,12 @@ export function collectExpenseLines() {
         source: 'qb', txn_key: `qb:${r.type}:${r.quickbooks_id || r.id}`, record_id: r.id, quickbooks_id: r.quickbooks_id,
         date: day(r.date_achat), printed_order_date: null, vendor: r.vendor, reference: r.reference,
         line: i + 1, lia_ref: ref, purchase_id: null, amount: l?.amount ?? null, description: l?.description || '',
+        currency: r.currency || 'CAD', rate: Number(r.exchange_rate) || null,
       })
     })
   }
   const receipts = db.prepare(`
-    SELECT id, receipt_number, receipt_date, order_date, company, quickbooks_id, items
+    SELECT id, receipt_number, receipt_date, order_date, company, quickbooks_id, items, currency, fx_converted_to
     FROM sale_receipts
     WHERE deleted_at IS NULL AND COALESCE(total, 0) <> 0
       AND (items LIKE '%purchase_id%' OR items LIKE '%LIA-%')
@@ -88,6 +89,8 @@ export function collectExpenseLines() {
         source: 'erp', txn_key: `erp:${r.id}`, record_id: r.id, quickbooks_id: r.quickbooks_id,
         date: day(r.receipt_date), printed_order_date: day(r.order_date), vendor: r.company, reference: r.receipt_number,
         line: i + 1, lia_ref: ref, purchase_id: it?.purchase_id || null, amount: it?.total ?? null, description: it?.description || '',
+        // Montants convertis : ils sont exprimés dans `fx_converted_to`.
+        currency: r.fx_converted_to || r.currency || 'CAD', rate: null,
       })
     })
   }
@@ -168,4 +171,61 @@ export function auditPurchaseLinks() {
   alreadyReceived.sort((a, b) => String(b.date).localeCompare(String(a.date)))
   doubles.sort((a, b) => String(b.purchase.lia_ref).localeCompare(String(a.purchase.lia_ref), 'fr', { numeric: true }))
   return { scanned: lines.length, alreadyReceived, doubles, unknown }
+}
+
+// Montant CAD d'une ligne : QuickBooks donne le taux de la transaction ; un reçu ERP
+// en devise non convertie n'en a pas → null (le prix payé reste alors inconnu).
+function amountCad(l) {
+  const a = Number(l.amount)
+  if (!Number.isFinite(a)) return null
+  if (String(l.currency || 'CAD').toUpperCase() === 'CAD') return a
+  return l.rate ? a * l.rate : null
+}
+
+const AIRTABLE_EXPENSE_LINES_TABLE = 'tblVBiMusdVyU9hSW'
+
+/**
+ * Lignes de dépense (factures fournisseurs) reliées à chaque achat, et prix unitaire
+ * payé qui en découle : « Override prix unitaire payé » s'il est rempli (comme la
+ * formule Airtable), sinon Σ montants CAD avant taxes / quantité commandée.
+ * Les liens Airtable (« Dépense Line item ») que l'ERP ne voit pas sont rendus en repli.
+ *
+ * @param {{ ids?: string[] }} opts — sans ids : tous les achats
+ * @returns {Object<string, {lines: Array, airtable_links: Array<string>, paid_total_cad: number|null, unit_price_paid_cad: number|null}>}
+ */
+export function expenseLinesByPurchase({ ids = null } = {}) {
+  const idx = purchasesIndex()
+  const wanted = ids ? new Set(ids) : null
+  const byId = new Map()
+  for (const l of collectExpenseLines()) {
+    const p = resolve(l, idx)
+    if (!p || (wanted && !wanted.has(p.id))) continue
+    if (!byId.has(p.id)) byId.set(p.id, [])
+    byId.get(p.id).push({
+      source: l.source, record_id: l.record_id, reference: l.reference, date: l.date, vendor: l.vendor,
+      line: l.line, description: l.description, amount: l.amount, currency: l.currency, amount_cad: amountCad(l),
+    })
+  }
+  const base = db.prepare(`SELECT base_id FROM airtable_module_config WHERE module = 'achats'`).get()?.base_id || null
+  const rows = db.prepare(`
+    SELECT id, quantite_commande, override_prix_unitaire_paye_cad, depense_line_item FROM purchases
+  `).all()
+  const out = {}
+  for (const r of rows) {
+    if (wanted && !wanted.has(r.id)) continue
+    const lines = byId.get(r.id) || []
+    let at = []
+    try { at = JSON.parse(r.depense_line_item || '[]') } catch {}
+    const airtable = base && Array.isArray(at) ? at.map(rec => `https://airtable.com/${base}/${AIRTABLE_EXPENSE_LINES_TABLE}/${rec}`) : []
+    if (!lines.length && !airtable.length) continue
+    const cad = lines.map(l => l.amount_cad)
+    const total = lines.length && cad.every(v => v != null) ? Math.round(cad.reduce((s, v) => s + v, 0) * 100) / 100 : null
+    const qty = Number(r.quantite_commande)
+    const override = Number(r.override_prix_unitaire_paye_cad)
+    const unit = r.override_prix_unitaire_paye_cad != null && r.override_prix_unitaire_paye_cad !== '' && Number.isFinite(override)
+      ? override
+      : (total != null && qty > 0 ? Math.round((total / qty) * 10000) / 10000 : null)
+    out[r.id] = { lines, airtable_links: lines.length ? [] : airtable, paid_total_cad: total, unit_price_paid_cad: unit }
+  }
+  return out
 }

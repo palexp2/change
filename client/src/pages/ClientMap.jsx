@@ -6,7 +6,7 @@
 // qui doivent briller, pas les routes.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Map as MapIcon, Crosshair, Loader2, Sprout, Satellite } from 'lucide-react'
+import { Map as MapIcon, Crosshair, Sprout, Satellite } from 'lucide-react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import api from '../lib/api.js'
@@ -14,6 +14,7 @@ import { IMAGERY_TILES, IMAGERY_ATTRIB } from '../components/SatelliteView.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // Fond sombre servi sans clé ni compte (Esri World Dark Gray). CartoDB, l'autre
 // candidat évident, tamponne désormais « API KEY REQUIRED » sur chaque tuile.
@@ -209,12 +210,12 @@ export default function ClientMap() {
             <button onClick={refreshLeads} disabled={leading} data-testid="map-leads"
               title="Relire l'annuaire public des serres"
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg disabled:opacity-50">
-              {leading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sprout className="w-4 h-4" />}
+              {leading ? <ThinkingOrb size={16} ink /> : <Sprout className="w-4 h-4" />}
               Annuaire
             </button>
             <button onClick={locate} disabled={locating} data-testid="map-locate"
               className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg disabled:opacity-50">
-              {locating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Crosshair className="w-4 h-4" />}
+              {locating ? <ThinkingOrb size={16} ink /> : <Crosshair className="w-4 h-4" />}
               Situer
             </button>
           </div>

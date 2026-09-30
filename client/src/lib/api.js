@@ -33,6 +33,7 @@ function rawRequest(method, path, body, signal) {
         markOffline(`gateway-${res.status}`)
         const err = new Error(`HTTP ${res.status}`)
         err.status = res.status
+        err.gateway = true
         throw err
       }
       // JSON applicatif → fallthrough vers le traitement d'erreur normal.
@@ -110,9 +111,17 @@ function invalidateForPath(path) {
 const IDEMPOTENT = new Set(['GET', 'PUT', 'PATCH', 'DELETE'])
 const isNetworkError = err => err instanceof TypeError && err?.name !== 'AbortError'
 
-function withNetworkRetry(method, path, body) {
+// Passerelle en erreur (nginx 502/503/504 : serveur qui redémarre) → reprises
+// en silence, espacées, avant de montrer une erreur. Idempotent seulement.
+const GATEWAY_RETRY_MS = [500, 1000, 2000]
+
+function withNetworkRetry(method, path, body, attempt = 0) {
   return rawRequest(method, path, body).catch(err => {
-    if (!isNetworkError(err)) throw err
+    if (err?.gateway && IDEMPOTENT.has(method) && attempt < GATEWAY_RETRY_MS.length) {
+      return new Promise(r => setTimeout(r, GATEWAY_RETRY_MS[attempt]))
+        .then(() => withNetworkRetry(method, path, body, attempt + 1))
+    }
+    if (!isNetworkError(err) || attempt > 0) throw err
     return rawRequest(method, path, body)
   })
 }
@@ -200,6 +209,11 @@ export async function apiBlobNamed(path) {
 export const api = {
   // Jauges IA de la barre de gauche (tous les utilisateurs) : caches serveur seulement.
   aiUsage: () => getFresh('/ai-usage'),
+  // Coûts des API d'IA payées à l'usage, par jour (Paramètres → Coûts IA, admin).
+  aiCosts: {
+    get: () => getFresh('/ai-usage/costs'),
+    setOpenAiAdminKey: (api_key) => put('/ai-usage/openai-admin-key', { api_key }),
+  },
   // Auth
   auth: {
     login: (email, password) => post('/auth/login', { email, password }),
@@ -219,6 +233,10 @@ export const api = {
     list: (params = {}) => get('/companies?' + new URLSearchParams(params)),
     lookup: () => get('/companies/lookup'),
     duplicates: (params = {}) => get('/companies/duplicates?' + new URLSearchParams(params)),
+    duplicateGroups: () => get('/companies/duplicate-groups'),
+    mergePreview: (keep, drops) => get('/companies/merge-preview?' + new URLSearchParams({ keep, drop: drops.join(',') })),
+    merge: (data) => post('/companies/merge', data),
+    dismissDuplicates: (ids) => post('/companies/duplicate-dismissals', { ids }),
     get: (id) => get(`/companies/${id}`),
     create: (data) => post('/companies', data),
     update: (id, data) => put(`/companies/${id}`, data),
@@ -321,12 +339,12 @@ export const api = {
     generateBonLivraison: (id) => post(`/orders/${id}/bon-livraison`, {}),
     // lang : 'fr' | 'en' pour forcer la langue des documents ; sans valeur, le
     // serveur prend celle du contact de l'adresse de livraison.
-    generateInstallationDocsBlob: async (id, lang) => {
+    generateInstallationDocsBlob: async (id, lang, shipmentId) => {
       const token = localStorage.getItem('erp_token')
       const headers = { 'Content-Type': 'application/json' }
       if (token) headers['Authorization'] = `Bearer ${token}`
       const res = await fetch(`${BASE}/orders/${id}/generate-installation-docs`, {
-        method: 'POST', headers, body: JSON.stringify(lang ? { lang } : {}),
+        method: 'POST', headers, body: JSON.stringify({ ...(lang && { lang }), ...(shipmentId && { shipment_id: shipmentId }) }),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))
@@ -385,13 +403,12 @@ export const api = {
     updateGoal: (data) => put('/dashboard/goal', data),
     subscriptionEvents: (params = {}) => get('/dashboard/subscription-events?' + new URLSearchParams(params)),
     topProducts: (params = {}) => get('/dashboard/top-products?' + new URLSearchParams(params)),
-    balanceSheet: (params = {}) => get('/dashboard/balance-sheet?' + new URLSearchParams(params)),
     bankAccounts: (params = {}) => get('/dashboard/bank-accounts?' + new URLSearchParams(params)),
+    overviewBalances: (params = {}) => getFresh('/dashboard/overview-balances?' + new URLSearchParams(params)),
     bankAccountsHistory: (params = {}) => get('/dashboard/bank-accounts/history?' + new URLSearchParams(params)),
     revenueByMonth: (params = {}) => get('/dashboard/revenue-by-month?' + new URLSearchParams(params)),
     incomeStatement: (params = {}) => get('/dashboard/income-statement?' + new URLSearchParams(params)),
     productivity: (params = {}) => get('/dashboard/productivity?' + new URLSearchParams(params)),
-    deferredRevenue: () => get('/dashboard/deferred-revenue'),
     agingReceivables: () => get('/dashboard/aging-receivables'),
   },
 
@@ -727,6 +744,7 @@ export const api = {
   purchases: {
     list: (params = {}) => get('/purchases?' + new URLSearchParams(params)),
     get: (id) => get(`/purchases/${id}`),
+    expenseLines: (ids) => get('/purchases/expense-lines' + (ids ? `?ids=${encodeURIComponent(ids)}` : '')),
     create: (data) => post('/purchases', data),
     update: (id, data) => patch(`/purchases/${id}`, data),
     delete: (id) => del(`/purchases/${id}`),
@@ -806,6 +824,7 @@ export const api = {
     get: (id) => get(`/projets/factures/${id}`),
     update: (id, data) => patch(`/projets/factures/${id}`, data),
     delete: (id) => del(`/projets/factures/${id}`),
+    void: (id) => post(`/projets/factures/${id}/void`, {}),
     recognizeRevenue: (id, opts = {}) => post(`/projets/factures/${id}/recognize-revenue`, opts),
     qbState: (id) => get(`/projets/factures/${id}/qb-state`),
     discounts: (id) => get(`/projets/factures/${id}/discounts`),
@@ -843,6 +862,8 @@ export const api = {
     // sur l'article, et rend la phrase à afficher (étagère d'analyse ou de
     // reconditionnement).
     receiveScan: (id, data) => post(`/retours/${id}/receive-scan`, data),
+    // Réception des articles cochés : { item_ids, received_by, received_at }.
+    receiveItems: (id, data) => post(`/retours/${id}/receive`, data),
     context: (id, addressId) => get(`/retours/${id}/return-context${addressId ? `?address_id=${addressId}` : ''}`),
     getRates: (id, data) => post(`/retours/${id}/return-rates`, data),
     createLabel: (id, data) => post(`/retours/${id}/return-label`, data),
@@ -913,8 +934,11 @@ export const api = {
     delete: (id) => del(`/discovery-forms/${id}`),
     equipmentPreview: (id) => get(`/discovery-forms/${id}/equipment-preview`),
     saveAddresses: (id, data) => patch(`/discovery-forms/${id}/addresses`, data),
+    saveProject: (id, project_id) => patch(`/discovery-forms/${id}/project`, { project_id }),
     saveOptions: (id, form_options) => patch(`/discovery-forms/${id}/options`, { form_options }),
     saveVerification: (id, verification) => patch(`/discovery-forms/${id}/verification`, { verification }),
+    saveNotes: (id, technical_notes) => patch(`/discovery-forms/${id}/notes`, { technical_notes }),
+    saveAnswers: (id, body) => patch(`/discovery-forms/${id}/answers`, body),
     createOrder: (id) => post(`/discovery-forms/${id}/create-order`, {}),
     // Accès public au formulaire via short token (sans auth) — utilisé par la page client.
     getByToken: (token) => fetch(`/erp/api/customer/post-payment/by-token/${encodeURIComponent(token)}`).then(r => r.json()),
@@ -966,6 +990,8 @@ export const api = {
 
   timesheets: {
     list: (params = {}) => get('/timesheets?' + new URLSearchParams(params)),
+    users: () => get('/timesheets/users'),
+    periodTotals: (params = {}) => get('/timesheets/period-totals?' + new URLSearchParams(params)),
     getDay: (params = {}) => get('/timesheets/day?' + new URLSearchParams(params)),
     createDay: (data) => post('/timesheets/day', data),
     updateDay: (id, data) => patch(`/timesheets/day/${id}`, data),
@@ -996,6 +1022,7 @@ export const api = {
     list: (params = {}) => get('/paies?' + new URLSearchParams(params)),
     get: (id) => get(`/paies/${id}`),
     create: (data) => post('/paies', data),
+    createNext: () => post('/paies/next', {}),
     update: (id, data) => patch(`/paies/${id}`, data),
     delete: (id) => del(`/paies/${id}`),
     items: (params = {}) => get('/paies/items/list?' + new URLSearchParams(params)),
@@ -1033,6 +1060,12 @@ export const api = {
     create: (data) => post('/fournitures', data),
     update: (id, data) => patch(`/fournitures/${id}`, data),
     delete: (id) => del(`/fournitures/${id}`),
+    uploadImage: (id, file) => {
+      const fd = new FormData()
+      fd.append('file', file)
+      return uploadRequest(`/fournitures/${id}/image`, fd)
+    },
+    deleteImage: (id) => del(`/fournitures/${id}/image`),
     sync: () => post('/fournitures/sync', {}),
   },
 
@@ -1122,6 +1155,8 @@ export const api = {
       // Modèles dérivés de l'historique : « refaire le même paiement » d'un clic.
       templates: () => get('/treasury/payments/templates'),
       openBills: () => get('/treasury/payments/open-bills'),
+      // La loupe : paiements émis ET factures fournisseurs (tous statuts).
+      search: (q) => get('/treasury/payments/search?' + new URLSearchParams({ q })),
       create: (data) => post('/treasury/payments', data),
       update: (id, data) => put(`/treasury/payments/${id}`, data),
       setCleared: (id, cleared) => post(`/treasury/payments/${id}/cleared`, { cleared }),
@@ -1234,6 +1269,11 @@ export const api = {
     updateAll: (accountId) => post(`/bank/accounts/${accountId}/update-all`, {}),
     qbAudit: (accountId, sinceDays = null) => post(`/bank/accounts/${accountId}/qb-audit`, { sinceDays }),
     qbAccounts: () => get('/bank/qb-accounts'),
+    // Robot « Rapprocher » : coche les lignes vertes dans QuickBooks, enregistre
+    // pour plus tard (jamais « Terminer »). POST lance, GET relit le résultat.
+    qbReconcileRun: (accountId) => post(`/bank/accounts/${accountId}/qb-reconcile`, {}),
+    qbReconcileLast: (accountId) => getFresh(`/bank/accounts/${accountId}/qb-reconcile`),
+    monthClose: () => getFresh('/bank/month-close'),
     suggestions: (txnId) => get(`/bank/transactions/${txnId}/suggestions`),
     // Vue QuickBooks : le geste qu'attend chaque ligne du compte (virement,
     // appariement, publication), en un seul appel.
@@ -1242,6 +1282,13 @@ export const api = {
     publishMatched: (txnId) => post(`/bank/transactions/${txnId}/publish-matched`, {}),
     // « X » : envoyer la ligne à la relecture de Michel (recopié au classeur).
     setReview: (txnId, on) => post(`/bank/transactions/${txnId}/review`, { on }),
+    // « Facture manquante » : la liste que Charles réclame à la main, et son
+    // message Slack. `inSend` sort une facture de l'envoi sans la retirer.
+    invoiceRequests: () => getFresh('/bank/invoice-requests'),
+    addInvoiceRequests: (txnIds) => post('/bank/invoice-requests', { txn_ids: txnIds }),
+    removeInvoiceRequest: (txnId) => del(`/bank/invoice-requests/${txnId}`),
+    setInvoiceRequestInSend: (txnId, inSend) => patch(`/bank/invoice-requests/${txnId}`, { in_send: inSend }),
+    sendInvoiceRequests: () => post('/bank/invoice-requests/send', {}),
     // Encaissement client : chercher soi-même la facture quand la détection
     // n'a pas tranché.
     invoiceSearch: (txnId, q) => get(`/bank/transactions/${txnId}/invoice-search?q=${encodeURIComponent(q)}`),
@@ -1270,6 +1317,7 @@ export const api = {
     txnProposals: (txnId) => getFresh(`/bank/transactions/${txnId}/proposals`),
     acceptProposal: (id) => post(`/bank/proposals/${id}/accept`, {}),
     refuseProposal: (id, note) => post(`/bank/proposals/${id}/refuse`, note ? { note } : {}),
+    undoProposal: (id) => post(`/bank/proposals/${id}/undo`, {}),
     acceptProposals: (ids) => post('/bank/proposals/accept', { ids }),
     // Toutes les propositions d'un coup, pour l'écran dédié.
     proposals: (params = {}) => getFresh('/bank/proposals?' + new URLSearchParams(params)),
@@ -1416,6 +1464,8 @@ export const api = {
     sendDraftsNow: () => post('/instagram/drafts/send-now', {}),
     holdDrafts: () => post('/instagram/drafts/hold-all', {}),
     updateDraft: (id, data) => patch(`/instagram/drafts/${id}`, data),
+    saveManualDraft: (prospectId, text) => post('/instagram/drafts/manual', { prospect_id: prospectId, text }),
+    checkSent: prospectId => post(`/instagram/prospects/${prospectId}/check-sent`, {}),
   },
   ltDebts: {
     list: () => get('/lt-debts'),
@@ -1520,6 +1570,7 @@ export const api = {
     // Pont de session : le module de navigateur appelle ces routes lui-même, l'ERP
     // n'a besoin que de savoir où en est chaque portail.
     bridgeTargets: () => get('/scrapers/session-bridge/targets'),
+    dismissSighting: (domain) => post('/scrapers/session-bridge/sightings/dismiss', { domain }),
     // Lien direct : le dépôt n'existe que sur le serveur, le module s'y télécharge.
     bridgeModuleUrl: () =>
       `/erp/api/scrapers/session-bridge/module?token=${encodeURIComponent(localStorage.getItem('erp_token') || '')}`,
@@ -1537,6 +1588,9 @@ export const api = {
 
   vendorProfiles: {
     list: () => get('/vendor-profiles'),
+    // Fiche d'un fournisseur par son nom — la bulle du champ « Fournisseur » de
+    // /rapprochement. Renvoie { data: null } si le fournisseur n'a pas de fiche.
+    lookup: (name) => get(`/vendor-profiles/lookup?name=${encodeURIComponent(name)}`),
     create: (data) => post('/vendor-profiles', data),
     update: (id, data) => patch(`/vendor-profiles/${id}`, data),
     delete: (id) => del(`/vendor-profiles/${id}`),
@@ -1570,6 +1624,7 @@ export const api = {
       const blob = await res.blob()
       return { blob, filename }
     },
+    rename: (entityType, entityId, attId, fileName) => patch(`/attachments/${entityType}/${entityId}/${attId}`, { file_name: fileName }),
     delete: (entityType, entityId, attId) => del(`/attachments/${entityType}/${entityId}/${attId}`),
   },
 
@@ -1673,12 +1728,14 @@ export const api = {
       list: (params = {}) => get('/documents/soumissions?' + new URLSearchParams(params)),
       get: (id) => get(`/documents/soumissions/${id}`),
       create: (data) => post('/documents/soumissions', data),
+      preview: (data) => post('/documents/soumissions/preview', data),
       update: (id, data) => put(`/documents/soumissions/${id}`, data),
       delete: (id) => del(`/documents/soumissions/${id}`),
       duplicate: (id) => post(`/documents/soumissions/${id}/duplicate`),
-      convertToOrder: (id) => post(`/documents/soumissions/${id}/convert-to-order`, {}),
       pdfUrl: (id) => `${BASE}/documents/soumissions/${id}/pdf`,
       pdfBlob: (id) => apiBlob(`/documents/soumissions/${id}/pdf`),
+      emailDraft: (id) => getFresh(`/documents/soumissions/${id}/email`),
+      sendEmail: (id, data) => post(`/documents/soumissions/${id}/send-email`, data),
     },
   },
 
@@ -1727,6 +1784,10 @@ export const api = {
     advanceQueue:  ()          => post('/travaux/prompts/advance', {}),
     // Pause de la file : rien de nouveau ne démarre, l'exécution en cours va au bout.
     getQueuePause: ()          => getFresh('/travaux/queue/pause'),
+    // Lignes de code de Boréal (fichiers suivis par git, lignes non vides).
+    codeStats:     ()          => getFresh('/travaux/code-stats'),
+    // Utilisation CPU de la machine (%, tous cœurs).
+    cpu:           ()          => getFresh('/travaux/cpu'),
     setQueuePaused:(paused, reason) => post('/travaux/queue/pause', { paused, reason }),
     listMessages:  (id)        => getFresh(`/travaux/prompts/${id}/messages`),
     // placement : 'front' (défaut) = la tâche repart tout de suite ; 'back' = elle

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { X, BookOpen, Plus, ShoppingCart, ExternalLink } from 'lucide-react'
+import { X, BookOpen, Plus, ShoppingCart, ExternalLink, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { useListData } from '../lib/useListData.js'
@@ -17,6 +17,7 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { fmtDate, localISODate } from '../lib/formatDate.js'
 import { fmtCad, formatBytes } from '../utils/formatters.js'
 import Spinner from '../components/Spinner.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 const NO_TAX = '__none__'
 
@@ -156,7 +157,7 @@ export function AchatModal({ achat, initialType, onClose, onSaved }) {
       <div className="flex items-center justify-between">
         {error && <p className="text-red-600 text-sm">{error}</p>}
         {isEdit && saving && (
-          <span className="ml-auto inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" title="Sauvegarde…" />
+          <ThinkingOrb size={12} className="ml-auto" />
         )}
       </div>
 
@@ -290,6 +291,8 @@ export function AchatModal({ achat, initialType, onClose, onSaved }) {
       {achat?.id && achat?.quickbooks_id && (
         <QBAttachmentsSection achatId={achat.id} />
       )}
+
+      {achat?.source_receipt_id && <SourceDocumentSection receiptId={achat.source_receipt_id} />}
 
       <div className="flex justify-end gap-2 pt-2">
         <button type="button" onClick={onClose} className="btn-secondary">{isEdit ? 'Fermer' : 'Annuler'}</button>
@@ -523,6 +526,51 @@ function AchatAccountingSection({ achat, form, setForm, onSaved }) {
             </div>
           )}
         </>
+      )}
+    </div>
+  )
+}
+
+// Document extrait (/sale-receipts) qui a généré cet achat : aperçu + lien vers sa fiche.
+function SourceDocumentSection({ receiptId }) {
+  const [file, setFile] = useState(null)
+  const [failed, setFailed] = useState(false)
+
+  useEffect(() => {
+    let url = null
+    let cancelled = false
+    setFile(null)
+    setFailed(false)
+    api.saleReceipts.fileBlob(receiptId)
+      .then(blob => {
+        if (cancelled) return
+        url = URL.createObjectURL(blob)
+        setFile({ url, isImage: (blob.type || '').startsWith('image/') })
+      })
+      .catch(() => { if (!cancelled) setFailed(true) })
+    return () => { cancelled = true; if (url) URL.revokeObjectURL(url) }
+  }, [receiptId])
+
+  return (
+    <div className="border rounded-lg p-3 bg-slate-50" data-testid="achat-source-document">
+      <div className="flex items-center justify-between mb-2">
+        <Link to={`/sale-receipts/${receiptId}`} className="inline-flex items-center gap-1 font-medium text-sm link-record">
+          <FileText size={14} /> Document source
+        </Link>
+        {file && (
+          <a href={file.url} target="_blank" rel="noreferrer" className="text-slate-400 hover:text-brand-600" title="Ouvrir">
+            <ExternalLink size={14} />
+          </a>
+        )}
+      </div>
+      {failed ? (
+        <p className="text-xs text-slate-400">Fichier introuvable.</p>
+      ) : !file ? (
+        <p className="text-xs text-slate-400"><Spinner size="xs" /></p>
+      ) : file.isImage ? (
+        <img src={file.url} alt="Document source" className="max-w-full max-h-[240px] object-contain rounded shadow mx-auto" />
+      ) : (
+        <iframe src={file.url} title="Document source" className="w-full h-[240px] rounded shadow bg-white" />
       )}
     </div>
   )

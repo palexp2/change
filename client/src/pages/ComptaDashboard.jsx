@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, Fragment } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, RefreshCw, Landmark, ShieldAlert, ShieldCheck, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, List, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, AlertTriangle } from 'lucide-react'
+import { Plus, RefreshCw, Landmark, ShieldAlert, ShieldCheck, CheckCircle2, HeartHandshake, Receipt, ExternalLink, Paperclip, Wallet, List, CalendarDays, ChevronLeft, ChevronRight, ChevronDown, AlertTriangle, FlaskConical } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
@@ -9,6 +9,7 @@ import { fmtDate, fmtDateTime, fmtDayShort, localISODate } from '../lib/formatDa
 import { fmtMoney, formatRelativeTime, parseAmountInput } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAutosave } from '../lib/useAutosave.js'
+import { nextRecurringStatements } from '../lib/treasuryRecurringAmounts.js'
 import { MissingReceiptsSection } from './VendorSubscriptions.jsx'
 import Spinner from '../components/Spinner.jsx'
 
@@ -359,16 +360,11 @@ function AttnRow({ label, tone = 'text-slate-600', testId, children }) {
 // n'est plus tenu à jour et ses écarts n'appellent aucune décision (Charles,
 // 12 septembre 2026). La projection vit sur la banque, les factures, les
 // paiements émis et les sorties récurrentes.
-function AttentionPanel({ proj, learning, recurring, onChanged }) {
+function AttentionPanel({ proj, learning, needsAmount, onChanged }) {
   const late = proj?.late_events || []
   const excluded = proj?.inflows?.excluded || []
   const counted = proj?.inflows?.counted || []
   const learned = proj?.learned || []
-  // Montant périmé mais estimé depuis l'historique : la sortie EST projetée, il
-  // n'y a donc rien à saisir en urgence.
-  const estimatedIds = new Set(learned.filter(l => l.estimated).map(l => l.id))
-  const needsAmount = (recurring || []).filter(r => r.active
-    && (!(Number(r.amount) > 0) || r.amount_stale) && !estimatedIds.has(r.id))
   // Propositions écartées par l'utilisateur : gardées localement, elles ne
   // doivent pas revenir le harceler à chaque ouverture de page.
   const [ignored, setIgnored] = useState(() => {
@@ -658,7 +654,16 @@ export function TreasuryProjectionSection() {
     api.treasury.recurring.list().then(setRecurring).catch(() => {})
     api.treasury.learning.get().then(setLearning).catch(() => {})
   }, [])
-  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    load()
+    const refresh = () => { if (document.visibilityState === 'visible') load() }
+    const interval = window.setInterval(refresh, 60_000)
+    document.addEventListener('visibilitychange', refresh)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', refresh)
+    }
+  }, [load])
 
   async function noteBalance() {
     const n = Number(balanceInput.replace(/\s/g, '').replace(',', '.'))
@@ -701,10 +706,12 @@ export function TreasuryProjectionSection() {
   const beyondDays = awEndDate ? eventDays.filter(d => d.date > awEndDate) : []
   const visibleDays = showBeyond ? eventDays : withinDays
   const learnedById = new Map((proj?.learned || []).map(l => [l.id, l]))
+  const statementsById = nextRecurringStatements(proj)
   // « À saisir » ne compte que ce qui manque VRAIMENT : une récurrente dont le
   // montant est estimé depuis le relevé est déjà projetée.
   const needsAmount = recurring.filter(r => r.active
-    && (!(Number(r.amount) > 0) || r.amount_stale) && !learnedById.get(r.id)?.estimated)
+    && (!(Number(r.amount) > 0) || r.amount_stale)
+    && !statementsById.has(r.id) && !learnedById.has(r.id))
   // Point de tension : le premier passage sous le seuil, ou le négatif s'il y en a.
   const low = proj?.first_negative || proj?.first_below_threshold || null
 
@@ -849,7 +856,7 @@ export function TreasuryProjectionSection() {
               )}
             </div>
 
-            <AttentionPanel proj={proj} learning={learning} recurring={recurring}
+            <AttentionPanel proj={proj} learning={learning} needsAmount={needsAmount}
               onChanged={load} onSynced={load} />
 
             <div className="min-w-0">
@@ -874,11 +881,13 @@ export function TreasuryProjectionSection() {
                   <tbody>
                     {visibleDays.map(d => {
                       const beyond = awEndDate && d.date > awEndDate
-                      const weekday = new Date(`${d.date}T12:00:00`).toLocaleDateString('fr-CA', { weekday: 'short' })
+                      const dt = new Date(`${d.date}T12:00:00`)
+                      const weekday = dt.toLocaleDateString('fr-CA', { weekday: 'short' })
+                      const dayMonth = `${dt.getDate()} ${dt.toLocaleDateString('fr-CA', { month: 'long' })}`
                       return (
                         <tr key={d.date} className={`border-b border-slate-50 last:border-0 align-top hover:bg-slate-50/60 ${beyond ? 'opacity-50' : ''}`}>
-                          <td className="py-2 pl-3 pr-2 whitespace-nowrap text-slate-500 w-32">
-                            <span className="text-slate-400 mr-1">{weekday.replace('.', '')}</span>{fmtDate(d.date)}
+                          <td className="py-2 pl-3 pr-2 whitespace-nowrap text-slate-500 w-36">
+                            <span className="text-slate-400 mr-1">{weekday.replace('.', '')}</span>{dayMonth}
                           </td>
                           <td className="py-2 px-2">{d.events.map((e, i) => renderEvent(e, d.date, i))}</td>
                           <td className={`py-2 pl-2 pr-3 text-right tabular-nums font-semibold whitespace-nowrap w-28 ${d.balance < 0 ? 'text-rose-600' : d.balance < proj.threshold ? 'text-amber-600' : 'text-slate-700'}`}>
@@ -927,6 +936,7 @@ export function TreasuryProjectionSection() {
                 <div className="border-t border-slate-100 divide-y divide-slate-100">
                   {recurring.map(r => {
                     const lrn = learnedById.get(r.id)
+                    const statement = statementsById.get(r.id)
                     return (
                       <button key={r.id} onClick={() => setEditing(r)}
                         className={`w-full text-left px-3 py-2 flex items-center justify-between gap-3 hover:bg-slate-50 ${r.active ? '' : 'opacity-50'}`}>
@@ -942,7 +952,11 @@ export function TreasuryProjectionSection() {
                           </span>
                         </span>
                         <span className="shrink-0 text-sm tabular-nums font-medium text-slate-700">
-                          {lrn
+                          {statement
+                            ? <span title={`${statement.source === 'releve' ? 'Relevé' : 'Achats de la carte'} du ${fmtDate(statement.to)} · paiement le ${fmtDate(statement.date)}${statement.closed ? '' : ' · estimation, période en cours'}`}>
+                              {fmtCad(statement.amount, 2)}
+                            </span>
+                            : lrn
                             // Montant projeté = celui du relevé ; la saisie reste
                             // visible en infobulle pour ne rien cacher.
                             ? <span title={`Observé au compte (${lrn.n} occurrences) · saisi ${fmtCad(lrn.from, 2)}`}>
@@ -1427,9 +1441,11 @@ export function PaieComptabilisationCard({ paieId: pinnedPaieId = null }) {
 // publication de la DÉPENSE QB (Purchase Cash sur la banque, fournisseur Groupe
 // Financier AGA, Exonéré) — au patron des comptabilisations historiques, pas une
 // écriture de journal.
-function AgaRepartitionCard() {
-  const [amount, setAmount] = useState('')
-  const [txnDate, setTxnDate] = useState(() => localISODate())
+// `debit` ({ id, amount, txn_date }) : la ligne de relevé d'où la carte est
+// ouverte (rapprochement) — elle remplace la recherche du prélèvement du mois.
+export function AgaRepartitionCard({ debit = null }) {
+  const [amount, setAmount] = useState(debit ? String(debit.amount) : '')
+  const [txnDate, setTxnDate] = useState(() => debit?.txn_date || localISODate())
   // Le prélèvement mensuel au relevé BNC (2 737,95 $ depuis avril 2026, mais
   // il change quand un employé assuré entre ou sort) : proposé, jamais imposé.
   const [bankDebit, setBankDebit] = useState(null)
@@ -1453,6 +1469,7 @@ function AgaRepartitionCard() {
 
   // Prélèvement du mois pas encore comptabilisé : montant et date proposés.
   useEffect(() => {
+    if (debit) { setBankDebit({ match: debit }); loadPreview(String(debit.amount)); return }
     api.paies.agaBankDebit().then(d => {
       setBankDebit(d)
       if (!d?.match || d.match.pending) return
@@ -2009,6 +2026,14 @@ export default function ComptaDashboard() {
               <RefreshCw size={11} /> Géré depuis la page Abonnements fournisseurs.
             </p>
           </Card>
+        </div>
+
+        {/* Entrée cachée vers Tests – Antoine : en bas au centre, à peine visible. */}
+        <div className="mt-10 flex justify-center">
+          <Link to="/tests-antoine" aria-label="Tests – Antoine" title="Tests – Antoine"
+            className="inline-flex p-1 text-slate-200 opacity-30 hover:opacity-100 hover:text-slate-500">
+            <FlaskConical size={10} />
+          </Link>
         </div>
       </div>
     </Layout>

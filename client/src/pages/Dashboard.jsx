@@ -1,19 +1,19 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useRef, Fragment } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { ArrowRight, SlidersHorizontal, X, Check, Target, Trophy, GripVertical, ChevronDown, EyeOff } from 'lucide-react'
+import { ArrowRight, SlidersHorizontal, X, Check, Target, GripVertical, ChevronDown, EyeOff } from 'lucide-react'
 import api from '../lib/api.js'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { useAuth } from '../lib/auth.jsx'
-import { GeoClientsMap } from '../components/GeoClientsMap.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementEventsTable } from '../components/AbonnementEventsTable.jsx'
 import { ResizeHandle } from '../components/ResizeHandle.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { DashboardOverview } from '../components/DashboardOverview.jsx'
+import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { fmtMoney as fmtMoneyBase, fmtNumber as fmtNumberBase } from '../utils/formatters.js'
 
 // Onglet « Vue globale » — la planche dense façon Power BI. Ce n'est pas une
@@ -29,14 +29,9 @@ const WIDGET_DEFS = [
   { id: 'section_projects_created', label: 'Projets créés par mois',   group: 'Graphiques',    slug: 'projets-crees' },
   { id: 'section_closing',       label: 'Taux de closing',       group: 'Graphiques',    slug: 'taux-de-closing' },
   { id: 'section_shipments',     label: 'Livraisons par semaine', group: 'Graphiques',    slug: 'livraisons' },
-  { id: 'section_shipping_costs', label: 'Coûts d\'expédition',    group: 'Graphiques',    slug: 'couts-expedition' },
-  { id: 'section_geo_map',       label: 'Carte des clients',     group: 'Graphiques',    slug: 'carte-clients' },
-  { id: 'section_top_products', label: 'Meilleurs vendeurs',     group: 'Graphiques',    slug: 'meilleurs-vendeurs' },
   { id: 'section_productivity',  label: 'Productivité',           group: 'Opérations',    slug: 'productivite' },
   { id: 'section_inventory_valuation', label: 'Valeur de l\'inventaire', group: 'Inventaire', slug: 'valeur-inventaire' },
   { id: 'section_bank_accounts', label: 'Trésorerie & soldes bancaires', group: 'Comptabilité', slug: 'soldes-bancaires' },
-  { id: 'section_deferred_revenue', label: 'Revenus perçus d\'avance', group: 'Comptabilité', slug: 'revenus-percus-avance' },
-  { id: 'section_balance_sheet', label: 'Bilan QuickBooks',         group: 'Comptabilité', slug: 'bilan' },
   // « Billets par mois » et « Billets par semaine » : retirés avec la date, le
   // statut et la durée d'un billet (migration 040).
 ]
@@ -675,11 +670,11 @@ function ClosingRateChart({ data, onMonthClick }) {
   )
 }
 
-function ShipmentsWeeklyChart({ data }) {
+function ShipmentsWeeklyChart({ data, costs }) {
   const navigate = useNavigate()
   const [tooltip, setTooltip] = useState(null)
 
-  if (!data || data.length === 0) {
+  if (!data?.length && !costs?.length) {
     return (
       <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
         Pas encore de données d'envois
@@ -687,24 +682,25 @@ function ShipmentsWeeklyChart({ data }) {
     )
   }
 
-  // Build last 16 weeks grid (all weeks, even empty ones)
+  // 16 dernières semaines (toutes, même vides) : colis + coût d'expédition
   const weeks = []
   for (let i = 15; i >= 0; i--) {
     const d = new Date()
-    // go back i weeks from current Monday
     const day = d.getDay()
     const monday = new Date(d)
     monday.setDate(d.getDate() - ((day + 6) % 7) - i * 7)
     monday.setHours(0, 0, 0, 0)
     const key = monday.toISOString().slice(0, 10)
-    const found = data.find(r => r.week_start === key)
-    weeks.push({ key, date: monday, count: found?.count || 0 })
+    const count = (data || []).find(r => r.week_start === key)?.count || 0
+    const cost = (costs || []).find(r => r.week_start === key)?.amount || 0
+    weeks.push({ key, date: monday, count, cost })
   }
 
   const maxCount = Math.max(...weeks.map(w => w.count), 1)
+  const maxCost = Math.max(...weeks.map(w => w.cost), 1)
 
   const W = 600, H = 160
-  const padL = 28, padR = 8, padT = 12, padB = 28
+  const padL = 28, padR = 36, padT = 12, padB = 28
   const chartW = W - padL - padR
   const chartH = H - padT - padB
   const n = weeks.length
@@ -712,8 +708,11 @@ function ShipmentsWeeklyChart({ data }) {
 
   function xCenter(i) { return padL + (i + 0.5) * (chartW / n) }
   function barHeight(count) { return (count / maxCount) * chartH }
+  function yCost(v) { return padT + chartH - (v / maxCost) * chartH }
 
+  const fmtK = v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`
   const gridCounts = [0, Math.round(maxCount / 2), maxCount].filter((v, i, a) => a.indexOf(v) === i)
+  const costPath = weeks.map((w, i) => `${i ? 'L' : 'M'}${xCenter(i)},${yCost(w.cost)}`).join(' ')
 
   return (
     <div className="relative w-full">
@@ -737,6 +736,9 @@ function ShipmentsWeeklyChart({ data }) {
             </g>
           )
         })}
+        {[0, maxCost / 2, maxCost].map(v => (
+          <text key={v} x={W - padR + 4} y={yCost(v) + 3.5} textAnchor="start" fontSize="9" fill="#d97706">{fmtK(v)}$</text>
+        ))}
         {weeks.map((w, i) => {
           const bh = barHeight(w.count)
           const x = xCenter(i) - barW / 2
@@ -748,7 +750,7 @@ function ShipmentsWeeklyChart({ data }) {
             <g key={w.key}
               style={{ cursor: w.count > 0 ? 'pointer' : 'default' }}
               onClick={() => w.count > 0 && navigate(`/envois?week=${w.key}`)}
-              onMouseEnter={() => setTooltip({ i, x: xCenter(i), y: bh > 0 ? y : padT + chartH - 20, w })}
+              onMouseEnter={() => setTooltip({ i, x: xCenter(i), y: Math.min(bh > 0 ? y : padT + chartH - 20, yCost(w.cost)), w })}
               onMouseLeave={() => setTooltip(null)}
             >
               {/* invisible hit area */}
@@ -768,152 +770,33 @@ function ShipmentsWeeklyChart({ data }) {
             </g>
           )
         })}
+        <path d={costPath} fill="none" stroke="#f59e0b" strokeWidth={2} strokeLinejoin="round" pointerEvents="none" />
+        {weeks.map((w, i) => (
+          <circle key={w.key} cx={xCenter(i)} cy={yCost(w.cost)} r={tooltip?.i === i ? 3.5 : 2.5} fill="#f59e0b" pointerEvents="none" />
+        ))}
         {tooltip && (() => {
           const tx = Math.min(Math.max(tooltip.x, 60), W - 60)
-          const ty = Math.max(tooltip.y - 8, padT + 4)
+          const ty = Math.max(tooltip.y - 22, padT + 4)
           const label = tooltip.w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
           return (
             <g pointerEvents="none">
-              <rect x={tx - 44} y={ty - 14} width={88} height={34} rx="5" fill="#1e293b" opacity="0.92" />
+              <rect x={tx - 48} y={ty - 14} width={96} height={46} rx="5" fill="#1e293b" opacity="0.92" />
               <text x={tx} y={ty + 1} textAnchor="middle" fontSize="11" fontWeight="bold" fill="white">
                 {tooltip.w.count} colis
               </text>
-              <text x={tx} y={ty + 14} textAnchor="middle" fontSize="9" fill="#94a3b8">
+              <text x={tx} y={ty + 14} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#fbbf24">
+                {fmtCad(tooltip.w.cost)}
+              </text>
+              <text x={tx} y={ty + 26} textAnchor="middle" fontSize="9" fill="#94a3b8">
                 Sem. du {label}
               </text>
             </g>
           )
         })()}
       </svg>
-      <p className="text-xs text-slate-400 text-right mt-1">Cliquer sur une barre pour voir les envois</p>
-    </div>
-  )
-}
-
-function ShippingCostChart({ data }) {
-  const [tooltip, setTooltip] = useState(null)
-  const navigate = useNavigate()
-
-  if (!data || data.length === 0) {
-    return (
-      <div className="flex items-center justify-center h-40 text-slate-300 text-sm">
-        Pas encore de données d'expédition
-      </div>
-    )
-  }
-
-  // Build last 4 weeks grid (28 jours)
-  const weeks = []
-  for (let i = 3; i >= 0; i--) {
-    const d = new Date()
-    const day = d.getDay()
-    const monday = new Date(d)
-    monday.setDate(d.getDate() - ((day + 6) % 7) - i * 7)
-    monday.setHours(0, 0, 0, 0)
-    const key = monday.toISOString().slice(0, 10)
-    const found = data.find(r => r.week_start === key)
-    weeks.push({ key, date: monday, amount: found?.amount || 0 })
-  }
-
-  const maxVal = Math.max(...weeks.map(w => w.amount), 1)
-
-  const W = 700, H = 220
-  const padL = 50, padR = 16, padT = 16, padB = 36
-  const chartW = W - padL - padR
-  const chartH = H - padT - padB
-  const n = weeks.length
-  const barW = Math.max(Math.floor(chartW / n) - 24, 24)
-
-  function xCenter(i) { return padL + (i + 0.5) * (chartW / n) }
-  function yPos(v) { return padT + chartH - (v / maxVal) * chartH }
-
-  const fmtK = v => v >= 1000 ? `${(v / 1000).toFixed(1)}k` : `${Math.round(v)}`
-
-  // Grid lines
-  const gridStep = maxVal > 2000 ? 500 : maxVal > 1000 ? 250 : maxVal > 400 ? 100 : 50
-  const gridLines = []
-  for (let v = 0; v <= maxVal; v += gridStep) gridLines.push(v)
-
-  return (
-    <div>
-      <div className="relative">
-        <svg viewBox={`0 0 ${W} ${H}`} className="w-full" style={{ height: 200 }}>
-          <defs>
-            <linearGradient id="shippingBarGrad" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#f59e0b" stopOpacity="0.85" />
-              <stop offset="100%" stopColor="#f59e0b" stopOpacity="0.4" />
-            </linearGradient>
-            <linearGradient id="shippingBarGradHover" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="#d97706" stopOpacity="1" />
-              <stop offset="100%" stopColor="#d97706" stopOpacity="0.6" />
-            </linearGradient>
-          </defs>
-
-          {/* Grid */}
-          {gridLines.map(v => {
-            const y = yPos(v)
-            return (
-              <g key={v}>
-                <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#f1f5f9" strokeWidth={1} />
-                <text x={padL - 4} y={y + 3.5} textAnchor="end" fontSize="9" fill="#94a3b8">{fmtK(v)}$</text>
-              </g>
-            )
-          })}
-
-          {/* Bars */}
-          {weeks.map((w, i) => {
-            const bh = w.amount > 0 ? Math.max((w.amount / maxVal) * chartH, 2) : 0
-            const x = xCenter(i) - barW / 2
-            const y = padT + chartH - bh
-            const isHovered = tooltip?.i === i
-            const label = w.date.toLocaleDateString('fr-CA', { weekday: 'short', day: 'numeric', month: 'short' })
-            const windowStart = new Date(w.date); windowStart.setDate(w.date.getDate() - 27)
-            const fromIso = windowStart.toISOString().slice(0, 10)
-            const toIso = w.date.toISOString().slice(0, 10)
-            const handleClick = () => navigate(`/fournisseurs/achats?from=${fromIso}&to=${toIso}&account=Expédition`)
-            return (
-              <g key={w.key}
-                onMouseEnter={() => setTooltip({ i, x: xCenter(i), y, w })}
-                onMouseLeave={() => setTooltip(null)}
-                onClick={handleClick}
-                style={{ cursor: 'pointer' }}
-                data-testid={`shipping-bar-${i}`}
-              >
-                <rect x={padL + i * (chartW / n)} y={0} width={chartW / n} height={H} fill="transparent" />
-                {bh > 0 && (
-                  <rect x={x} y={y} width={barW} height={bh} rx="3"
-                    fill={isHovered ? 'url(#shippingBarGradHover)' : 'url(#shippingBarGrad)'} />
-                )}
-                {bh > 0 && (
-                  <text x={xCenter(i)} y={y - 6} textAnchor="middle" fontSize="11" fontWeight="600" className="fill-slate-600">
-                    {fmtCad(w.amount)}
-                  </text>
-                )}
-                <text x={xCenter(i)} y={H - 6} textAnchor="middle" fontSize="10" fill="#64748b">
-                  {label}
-                </text>
-              </g>
-            )
-          })}
-
-          {/* Tooltip */}
-          {tooltip && (() => {
-            const tx = Math.min(Math.max(tooltip.x, 70), W - 70)
-            const ty = Math.max(tooltip.y - 8, padT + 4)
-            const label = tooltip.w.date.toLocaleDateString('fr-CA', { month: 'short', day: 'numeric' })
-            return (
-              <g pointerEvents="none">
-                <rect x={tx - 56} y={ty - 14} width={112} height={34} rx="5" fill="#1e293b" opacity="0.93" />
-                <text x={tx} y={ty + 1} textAnchor="middle" fontSize="11" fontWeight="bold" fill="#fbbf24">
-                  {fmtCad(tooltip.w.amount)}
-                </text>
-                <text x={tx} y={ty + 14} textAnchor="middle" fontSize="9" fill="#94a3b8">
-                  28j au {label}
-                </text>
-              </g>
-            )
-          })()}
-        </svg>
+      <div className="flex items-center justify-end gap-3 text-xs text-slate-400 mt-1">
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm bg-[#21B14B]" />Colis</span>
+        <span className="flex items-center gap-1"><span className="inline-block w-3 h-0.5 bg-[#f59e0b]" />Coût</span>
       </div>
     </div>
   )
@@ -1730,70 +1613,12 @@ function SubscriptionEventsPanel({ data }) {
   )
 }
 
-// ============================================================
-// Top Products — best sellers panel (by revenue or quantity)
-// ============================================================
-
 function fmtCadCompact(n) {
   if (n == null) return '—'
   return fmtMoneyBase(n, 'CAD', Math.abs(n) >= 1000 ? { maximumFractionDigits: 0 } : {})
 }
 
 const fmtNumber = n => fmtNumberBase(n, { nullIsZero: true })
-
-function dateToYmd(d) { return d.toISOString().slice(0, 10) }
-function ymdToDate(s) { return new Date(s + 'T00:00:00Z') }
-
-function DateRangeSlider({ minDate, maxDate, from, to, onChange }) {
-  const min = ymdToDate(minDate).getTime()
-  const max = ymdToDate(maxDate).getTime()
-  const totalDays = Math.max(1, Math.round((max - min) / 86400000))
-  const fromDays = Math.max(0, Math.min(totalDays, Math.round((ymdToDate(from).getTime() - min) / 86400000)))
-  const toDays   = Math.max(0, Math.min(totalDays, Math.round((ymdToDate(to).getTime()   - min) / 86400000)))
-  const lowPct = (fromDays / totalDays) * 100
-  const highPct = (toDays / totalDays) * 100
-  const daysToYmd = days => dateToYmd(new Date(min + days * 86400000))
-
-  const handleLow = e => {
-    const v = Math.min(parseInt(e.target.value), toDays - 1)
-    onChange({ from: daysToYmd(v), to })
-  }
-  const handleHigh = e => {
-    const v = Math.max(parseInt(e.target.value), fromDays + 1)
-    onChange({ from, to: daysToYmd(v) })
-  }
-
-  return (
-    <div className="relative h-10 select-none" data-testid="dashboard-top-products-slider">
-      <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-1.5 bg-slate-200 rounded-full" />
-      <div
-        className="absolute top-1/2 -translate-y-1/2 h-1.5 bg-brand-500 rounded-full"
-        style={{ left: `${lowPct}%`, right: `${100 - highPct}%` }}
-      />
-      <input
-        type="range" min={0} max={totalDays} step={1}
-        value={fromDays} onChange={handleLow}
-        aria-label="Date de début"
-        className="range-slider-thumb absolute inset-0 w-full h-full"
-      />
-      <input
-        type="range" min={0} max={totalDays} step={1}
-        value={toDays} onChange={handleHigh}
-        aria-label="Date de fin"
-        className="range-slider-thumb absolute inset-0 w-full h-full"
-      />
-    </div>
-  )
-}
-
-const PRESETS = [
-  { id: '30d',  label: '30 j',  days: 30 },
-  { id: '90d',  label: '90 j',  days: 90 },
-  { id: '6m',   label: '6 mois', days: 182 },
-  { id: '1y',   label: '1 an',   days: 365 },
-  { id: '2y',   label: '2 ans',  days: 730 },
-  { id: 'all',  label: 'Tout',   days: null },
-]
 
 const fmtMoney = (n, currency) => fmtMoneyBase(n, currency, { fallback: '' })
 
@@ -1936,372 +1761,6 @@ export function BankAccountsPanel() {
             </table>
           </div>
         </div>
-      )}
-    </div>
-  )
-}
-
-export function DeferredRevenuePanel() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-
-  const load = () => {
-    setLoading(true)
-    setError(null)
-    api.dashboard.deferredRevenue()
-      .then(r => { setData(r); setLoading(false) })
-      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
-  }
-
-  useEffect(() => { load() }, [])
-
-  if (loading && !data) {
-    return <div className="h-24 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
-  }
-  if (error) {
-    return (
-      <div className="text-sm text-rose-600">
-        Impossible de charger les revenus perçus d'avance : {error}
-        <button onClick={load} className="ml-2 underline">Réessayer</button>
-      </div>
-    )
-  }
-
-  const items = data?.items || []
-
-  return (
-    <div data-testid="dashboard-deferred-revenue">
-      <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-4">
-        <p className="text-xs text-slate-500 mb-0.5">Encaissé, en attente d'expédition (compte 23900)</p>
-        <p className="text-2xl font-semibold tabular-nums text-slate-900" data-testid="deferred-revenue-total">
-          {fmtMoney(data?.total_cad || 0, 'CAD')}
-        </p>
-        {data?.unconverted > 0 && (
-          <p className="text-xs text-amber-600 mt-1">
-            {data.unconverted} facture(s) en devise étrangère sans écriture 23900 — non incluses dans le total.
-          </p>
-        )}
-      </div>
-      {!items.length ? (
-        <div className="text-sm text-slate-500">Aucune vente encaissée en attente d'expédition. 🎉</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-xs text-slate-500">
-                <th className="py-1.5 px-3 font-medium">Encaissée le</th>
-                <th className="py-1.5 px-3 font-medium">Client</th>
-                <th className="py-1.5 px-3 font-medium">Facture</th>
-                <th className="py-1.5 pl-3 pr-2 font-medium text-right">Montant</th>
-                <th className="py-1.5 px-3 font-medium">Écriture 23900</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map(i => (
-                <tr key={i.id} className="border-b border-slate-100 text-slate-600">
-                  <td className="py-1.5 px-3 whitespace-nowrap">{fmtDate(i.paid_at)}</td>
-                  <td className="py-1.5 px-3">
-                    {i.company_id
-                      ? <Link to={`/companies/${i.company_id}`} className="link-record">{i.company_name || '—'}</Link>
-                      : (i.company_name || '—')}
-                  </td>
-                  <td className="py-1.5 px-3">
-                    <Link to={`/factures/${i.id}`} className="link-record">{i.document_number || i.id.slice(0, 8)}</Link>
-                  </td>
-                  <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-                    {fmtMoney(i.amount_native, i.currency)}
-                    {i.currency !== 'CAD' && i.amount_cad != null && (
-                      <span className="text-xs text-slate-400 ml-1.5">≈ {fmtMoney(i.amount_cad, 'CAD')}</span>
-                    )}
-                  </td>
-                  <td className="py-1.5 px-3">
-                    {i.deferred_posted
-                      ? <span className="inline-flex items-center rounded-full bg-emerald-50 text-emerald-700 px-2 py-0.5 text-xs">Posée</span>
-                      : <span className="inline-flex items-center rounded-full bg-slate-100 text-slate-500 px-2 py-0.5 text-xs">En attente du dépôt</span>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <div className="flex justify-end mt-2">
-        <button onClick={load} className="text-xs link-record">Rafraîchir</button>
-      </div>
-    </div>
-  )
-}
-
-function BalanceSheetRow({ node, currency, expanded, onToggle }) {
-  const isSection = node.kind === 'section'
-  const isOpen = expanded[node.id] !== false // sections ouvertes par défaut
-  const hasChildren = isSection && node.children && node.children.length > 0
-  const padding = 12 + node.depth * 16
-  const rowClass = isSection
-    ? (node.depth === 0 ? 'font-semibold text-slate-900 bg-slate-50' : 'font-medium text-slate-800')
-    : 'text-slate-600'
-  return (
-    <>
-      <tr className={`border-b border-slate-100 ${rowClass}`}>
-        <td className="py-1.5 pr-3" style={{ paddingLeft: padding }}>
-          {hasChildren ? (
-            <button
-              type="button"
-              onClick={() => onToggle(node.id)}
-              className="text-slate-400 hover:text-slate-700 -ml-4 mr-1 align-middle"
-              aria-label={isOpen ? 'Replier' : 'Déplier'}
-            >
-              <ChevronDown size={12} className={`inline transition-transform ${isOpen ? '' : '-rotate-90'}`} />
-            </button>
-          ) : null}
-          {node.label}
-        </td>
-        <td className="py-1.5 pl-3 pr-2 text-right tabular-nums whitespace-nowrap">
-          {node.total !== null ? fmtMoney(node.total, currency) : ''}
-        </td>
-      </tr>
-      {hasChildren && isOpen && node.children.map(child => (
-        <BalanceSheetRow key={child.id} node={child} currency={currency} expanded={expanded} onToggle={onToggle} />
-      ))}
-    </>
-  )
-}
-
-function BalanceSheetPanel() {
-  const [data, setData] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState(null)
-  const [expanded, setExpanded] = useState({})
-
-  const load = (opts = {}) => {
-    setLoading(true)
-    setError(null)
-    api.dashboard.balanceSheet(opts)
-      .then(r => { setData(r); setLoading(false) })
-      .catch(e => { setError(e?.message || 'Erreur'); setLoading(false) })
-  }
-
-  useEffect(() => { load() }, [])
-
-  const toggle = id => setExpanded(prev => ({ ...prev, [id]: prev[id] === false ? true : false }))
-
-  if (loading && !data) {
-    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Chargement du bilan…</div>
-  }
-  if (error) {
-    return (
-      <div className="text-sm text-rose-600">
-        Impossible de charger le bilan QuickBooks : {error}
-        <button onClick={load} className="ml-2 underline">Réessayer</button>
-      </div>
-    )
-  }
-  if (!data?.rows?.length) {
-    return <div className="text-sm text-slate-500">Aucune donnée renvoyée par QuickBooks.</div>
-  }
-
-  return (
-    <div data-testid="dashboard-balance-sheet">
-      <div className="flex items-center justify-between mb-3 text-xs text-slate-500">
-        <span>Au {data.as_of ? fmtDate(data.as_of) : '—'} · Devise {data.currency}</span>
-        <button onClick={() => load({ refresh: true })} className="link-record">Rafraîchir</button>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <tbody>
-            {data.rows.map(node => (
-              <BalanceSheetRow key={node.id} node={node} currency={data.currency} expanded={expanded} onToggle={toggle} />
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  )
-}
-
-function TopProductsPanel() {
-  const [range, setRange] = useState({ from: null, to: null, min: null, max: null })
-  const [products, setProducts] = useState([])
-  const [loading, setLoading] = useState(true)
-  const [metric, setMetric] = useState('amount') // 'amount' | 'quantity'
-  const [topN, setTopN] = useState(15)
-  const [activePreset, setActivePreset] = useState('1y')
-
-  // First load: fetch min/max bounds (no filter), then default to last 1 year
-  useEffect(() => {
-    let alive = true
-    api.dashboard.topProducts({}).then(r => {
-      if (!alive) return
-      const max = r.range?.max_date || dateToYmd(new Date())
-      const min = r.range?.min_date || dateToYmd(new Date(Date.now() - 365 * 86400000))
-      const oneYearAgo = dateToYmd(new Date(Date.now() - 365 * 86400000))
-      const from = oneYearAgo < min ? min : oneYearAgo
-      setRange({ from, to: max, min, max })
-      // Re-filter for the default 1y window
-      api.dashboard.topProducts({ from, to: max }).then(rr => {
-        if (!alive) return
-        setProducts(rr.products || [])
-        setLoading(false)
-      })
-    }).catch(() => { if (alive) setLoading(false) })
-    return () => { alive = false }
-  }, [])
-
-  // When range changes, refetch
-  useEffect(() => {
-    if (!range.from || !range.to) return
-    setLoading(true)
-    let alive = true
-    api.dashboard.topProducts({ from: range.from, to: range.to }).then(r => {
-      if (!alive) return
-      setProducts(r.products || [])
-      setLoading(false)
-    }).catch(() => { if (alive) setLoading(false) })
-    return () => { alive = false }
-  }, [range.from, range.to])
-
-  const applyPreset = id => {
-    setActivePreset(id)
-    if (id === 'all') {
-      setRange(r => ({ ...r, from: r.min, to: r.max }))
-      return
-    }
-    const preset = PRESETS.find(p => p.id === id)
-    if (!preset?.days) return
-    const to = range.max || dateToYmd(new Date())
-    const fromDate = new Date(ymdToDate(to).getTime() - preset.days * 86400000)
-    const from = dateToYmd(fromDate)
-    const min = range.min
-    setRange(r => ({ ...r, from: min && from < min ? min : from, to }))
-  }
-
-  const sorted = [...products].sort((a, b) => (
-    metric === 'amount' ? (b.amount_cad - a.amount_cad) : (b.quantity - a.quantity)
-  ))
-  const top = sorted.slice(0, topN)
-  const maxValue = top.length ? (metric === 'amount' ? top[0].amount_cad : top[0].quantity) : 0
-  const totals = products.reduce((acc, p) => ({
-    amount: acc.amount + (p.amount_cad || 0),
-    qty: acc.qty + (p.quantity || 0),
-  }), { amount: 0, qty: 0 })
-
-  if (!range.from || !range.to) {
-    return <div className="h-32 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
-  }
-
-  return (
-    <div data-testid="dashboard-top-products">
-      {/* Controls row: metric toggle + presets */}
-      <div className="flex flex-wrap items-center gap-3 mb-4">
-        <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
-          <button
-            onClick={() => setMetric('amount')}
-            className={`px-3 py-1 text-xs rounded-md transition-colors ${metric === 'amount' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            data-testid="dashboard-top-products-metric-amount"
-          >
-            Par revenus
-          </button>
-          <button
-            onClick={() => setMetric('quantity')}
-            className={`px-3 py-1 text-xs rounded-md transition-colors ${metric === 'quantity' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-            data-testid="dashboard-top-products-metric-quantity"
-          >
-            Par quantité
-          </button>
-        </div>
-
-        <div className="inline-flex rounded-lg border border-slate-200 p-0.5 bg-slate-50">
-          {PRESETS.map(p => (
-            <button
-              key={p.id}
-              onClick={() => applyPreset(p.id)}
-              className={`px-2 py-1 text-xs rounded-md transition-colors ${activePreset === p.id ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-              data-testid={`dashboard-top-products-preset-${p.id}`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="ml-auto flex items-center gap-2 text-xs text-slate-500">
-          <label className="text-slate-500">Top</label>
-          <select
-            value={topN}
-            onChange={e => setTopN(parseInt(e.target.value))}
-            className="rounded-md border border-slate-200 bg-white px-2 py-1 text-xs"
-          >
-            <option value={5}>5</option>
-            <option value={10}>10</option>
-            <option value={15}>15</option>
-            <option value={25}>25</option>
-            <option value={50}>50</option>
-          </select>
-        </div>
-      </div>
-
-      {/* Date range slider */}
-      <div className="mb-2">
-        <div className="flex items-center justify-between text-xs text-slate-600 mb-1">
-          <span className="tabular-nums" data-testid="dashboard-top-products-from">Du {fmtDate(range.from)}</span>
-          <span className="tabular-nums" data-testid="dashboard-top-products-to">au {fmtDate(range.to)}</span>
-        </div>
-        <DateRangeSlider
-          minDate={range.min} maxDate={range.max}
-          from={range.from} to={range.to}
-          onChange={({ from, to }) => { setActivePreset(null); setRange(r => ({ ...r, from, to })) }}
-        />
-      </div>
-
-      {/* Totals */}
-      <div className="text-xs text-slate-500 mb-3">
-        {fmtNumber(products.length)} produits sur la période · revenus totaux{' '}
-        <span className="font-medium text-slate-700">{fmtCadCompact(totals.amount)}</span>{' '}
-        · {fmtNumber(totals.qty)} unités vendues
-      </div>
-
-      {/* Bar list */}
-      {loading && top.length === 0 ? (
-        <div className="h-32 flex items-center justify-center text-slate-400 text-sm"><Spinner size="xs" label="Chargement…" /></div>
-      ) : top.length === 0 ? (
-        <div className="h-32 flex items-center justify-center text-slate-400 text-sm">Aucun item vendu sur cette période.</div>
-      ) : (
-        <ul className="space-y-1.5" data-testid="dashboard-top-products-list">
-          {top.map((p, i) => {
-            const value = metric === 'amount' ? p.amount_cad : p.quantity
-            const pct = maxValue > 0 ? (value / maxValue) * 100 : 0
-            const name = p.name_fr || p.name_en || (p.product_id ? '(produit non lié)' : 'Items non liés')
-            const Wrapper = p.product_id
-              ? ({ children }) => <Link to={`/products/${p.product_id}`} className="block">{children}</Link>
-              : ({ children }) => <div>{children}</div>
-            return (
-              <Wrapper key={p.product_id || `unlinked-${i}`}>
-                <li className="group flex items-center gap-3 py-2 px-2 rounded-md hover:bg-slate-50 transition-colors">
-                  <span className="text-xs font-mono text-slate-400 w-7 text-right tabular-nums">#{i + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-sm text-slate-800 truncate" title={name}>{name}</span>
-                      <span className="text-sm font-medium text-slate-900 tabular-nums whitespace-nowrap">
-                        {metric === 'amount' ? fmtCadCompact(p.amount_cad) : `${fmtNumber(p.quantity)} u.`}
-                      </span>
-                    </div>
-                    <div className="mt-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                      <div className="h-full bg-brand-500 transition-all" style={{ width: `${pct}%` }} />
-                    </div>
-                    <div className="mt-0.5 flex justify-between text-[10px] text-slate-400">
-                      <span>{p.sku ? `SKU ${p.sku}` : ''}</span>
-                      <span>
-                        {metric === 'amount'
-                          ? `${fmtNumber(p.quantity)} u. · ${p.invoice_count} facture${p.invoice_count > 1 ? 's' : ''}`
-                          : `${fmtCadCompact(p.amount_cad)} · ${p.invoice_count} facture${p.invoice_count > 1 ? 's' : ''}`}
-                      </span>
-                    </div>
-                  </div>
-                </li>
-              </Wrapper>
-            )
-          })}
-        </ul>
       )}
     </div>
   )
@@ -2467,6 +1926,22 @@ export default function Dashboard() {
     refresh()
   }, [])
 
+  // Entreprise d'un mouvement corrigée (fiche abonnement, collègue) → panneau.
+  useRealtimeChannel('subscription_events:list', (msg) => {
+    if (msg.type !== 'subscription_event:updated') return
+    const { id, company_id, company_name } = msg.payload
+    setSubscriptionEvents(prev => prev && {
+      ...prev,
+      months: prev.months.map(m => ({
+        ...m,
+        categories: Object.fromEntries(Object.entries(m.categories).map(([cat, c]) => [cat, {
+          ...c,
+          items: c.items?.map(it => it.event_id === id ? { ...it, company_id, company_name } : it),
+        }])),
+      })),
+    })
+  })
+
   // Scrolle vers une section, la déplie si repliée, et la met en surbrillance
   // brièvement. Réutilisé par le deep-link (URL) et la table des matières.
   function scrollToSection(targetId) {
@@ -2601,16 +2076,6 @@ export default function Dashboard() {
         <SubscriptionEventsPanel data={subscriptionEvents} />
       </CollapsibleCard>
     ),
-    section_top_products: (
-      <CollapsibleCard
-        {...cardProps('section_top_products', { testId: 'section-top-products' })}
-        title="Meilleurs vendeurs"
-        description="Items vendus sur factures Stripe payées · classement par revenus (CAD) ou quantité · USD converti au taux BoC du jour"
-        leadingIcon={<Trophy size={18} className="text-amber-500" />}
-      >
-        <TopProductsPanel />
-      </CollapsibleCard>
-    ),
     section_replacement_rate: (
       <CollapsibleCard
         {...cardProps('section_replacement_rate')}
@@ -2663,32 +2128,14 @@ export default function Dashboard() {
       <CollapsibleCard
         {...cardProps('section_shipments')}
         title="Livraisons par semaine"
-        description="Colis envoyés — 16 dernières semaines"
+        description="Colis envoyés et coût d'expédition (compte 65000) — 16 dernières semaines"
         action={
           <Link to="/envois" className="text-brand-600 text-sm flex items-center gap-1 hover:underline">
             Voir tous <ArrowRight size={14} />
           </Link>
         }
       >
-        <ShipmentsWeeklyChart data={data?.weeklyShipments} />
-      </CollapsibleCard>
-    ),
-    section_shipping_costs: (
-      <CollapsibleCard
-        {...cardProps('section_shipping_costs')}
-        title="Coûts d'expédition"
-        description="Compte 65000 « Expédition, livraison et poste » — somme des 28 jours précédant chaque lundi"
-      >
-        <ShippingCostChart data={data?.weeklyShippingCosts} />
-      </CollapsibleCard>
-    ),
-    section_geo_map: (
-      <CollapsibleCard
-        {...cardProps('section_geo_map')}
-        title="Clients par région"
-        description="Basé sur la première adresse de livraison — cliquer pour filtrer"
-      >
-        <GeoClientsMap geoData={data?.geoClients || []} unplacedCount={data?.geoClientsUnplaced || 0} />
+        <ShipmentsWeeklyChart data={data?.weeklyShipments} costs={data?.weeklyShippingCostsByWeek} />
       </CollapsibleCard>
     ),
     section_bank_accounts: (
@@ -2698,24 +2145,6 @@ export default function Dashboard() {
         description="Trésorerie nette (banques − cartes et marges de crédit, converti en CAD) par rapport à la limite de marge de 360 000 $ — source QuickBooks (CurrentBalance)"
       >
         <BankAccountsPanel />
-      </CollapsibleCard>
-    ),
-    section_deferred_revenue: (
-      <CollapsibleCard
-        {...cardProps('section_deferred_revenue', { testId: 'section-deferred-revenue' })}
-        title="Revenus perçus d'avance"
-        description="Ventes encaissées (hors abonnements) dont l'expédition n'a pas encore été créée — les fonds restent au compte 23900 jusqu'au constat de la vente"
-      >
-        <DeferredRevenuePanel />
-      </CollapsibleCard>
-    ),
-    section_balance_sheet: (
-      <CollapsibleCard
-        {...cardProps('section_balance_sheet', { testId: 'section-balance-sheet' })}
-        title="Bilan QuickBooks"
-        description="Rapport BalanceSheet temps réel — méthode Accrual · cliquer sur une section pour la replier"
-      >
-        <BalanceSheetPanel />
       </CollapsibleCard>
     ),
   }
@@ -2752,8 +2181,8 @@ export default function Dashboard() {
             défaut) et la planche dense « Vue globale ». */}
         <div className="mb-5 flex items-center gap-1 border-b border-slate-200" role="tablist" data-testid="dashboard-tabs">
           {[
-            { to: '/dashboard', label: 'Sections', active: !isOverview, testId: 'dashboard-tab-sections' },
             { to: `/dashboard/${OVERVIEW_SLUG}`, label: 'Vue globale', active: isOverview, testId: 'dashboard-tab-overview' },
+            { to: '/dashboard', label: 'Sections', active: !isOverview, testId: 'dashboard-tab-sections' },
           ].map(t => (
             <Link
               key={t.to}

@@ -6,7 +6,7 @@ import helmet from 'helmet'
 import path from 'path'
 import crypto from 'crypto'
 import { fileURLToPath } from 'url'
-import dotenv from 'dotenv'
+import { loadEnv } from './config/loadEnv.js'
 
 // Validate critical secrets early (throws if JWT_SECRET missing)
 import './config/secrets.js'
@@ -109,6 +109,7 @@ import instagramRouter from './routes/instagram.js'
 import stripeInvoicesRouter from './routes/stripe-invoices.js'
 import stripeSubscriptionsRouter from './routes/stripe-subscriptions.js'
 import customerPayRouter from './routes/customer-pay.js'
+import { SOUMISSION_ASSETS_DIR } from './services/soumissionPdf.js'
 import customerPostPaymentRouter from './routes/customer-post-payment.js'
 import discoveryFormsRouter from './routes/discovery-forms.js'
 import { retryPendingDiscoveryOrders } from './services/discoveryOrderAirtable.js'
@@ -150,8 +151,11 @@ import { pullDelta as hsPullDelta, retryFailedPushes as hsRetryFailedPushes } fr
 import { drainRachatRetryQueue } from './services/subscriptionEvents.js'
 import { isHubSpotConfigured } from './connectors/hubspot.js'
 import db from './db/database.js'
+import { installAiFetchMeter } from './services/aiCostMeter.js'
 
-dotenv.config()
+loadEnv()
+// Chaque appel texte à OpenAI / Gemini laisse ses jetons (Paramètres → Coûts IA).
+installAiFetchMeter()
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -165,6 +169,19 @@ const STARTED_AT = new Date().toISOString()
 
 app.disable('x-powered-by')
 app.set('trust proxy', 1) // behind nginx — needed for correct req.ip
+
+// Requêtes en cours : à l'arrêt on cesse d'accepter (nginx bascule alors sur
+// l'autre exemplaire) et on laisse finir celles déjà reçues avant de sortir.
+let inFlight = 0
+app.use((req, res, next) => {
+  inFlight++
+  let done = false
+  const end = () => { if (!done) { done = true; inFlight-- } }
+  res.on('finish', end)
+  res.on('close', end)
+  next()
+})
+
 
 app.use(helmet({
   // CSP désactivé pour l'instant : à activer après audit des sources externes
@@ -274,6 +291,8 @@ app.use('/api/recordings', requireAuth, express.static(uploadsPath('calls')))
 app.use('/api/bons-livraison', requireAuth, express.static(uploadsPath('bons-livraison')))
 // Serve product images
 app.use('/api/product-images', express.static(uploadsPath('products')))
+// Images et polices du gabarit PDF des soumissions (aperçu en direct).
+app.use('/api/soumission-assets', express.static(SOUMISSION_ASSETS_DIR, { maxAge: '7d' }))
 // Serve product installation/replacement PDFs (cached copies of lien_pdf_*)
 app.use('/api/product-docs', express.static(uploadsPath('products', 'docs')))
 // Airtable image mirror requires a session; other private attachments use download routers.
@@ -566,9 +585,16 @@ app.use((err, req, res, _next) => {
   res.status(err.status || 500).json({ error: err.message || 'Internal server error' })
 })
 
+// Relais de redémarrage (scripts/restart.sh) : un second exemplaire, sur un
+// autre port, que nginx sert en « backup » pendant que le principal redémarre.
+// Il ne sert QUE le HTTP et le temps réel : aucun planificateur, watcher, cron
+// ni file de l'agent — sinon tout tournerait en double le temps de la bascule.
+const IS_STANDBY = process.env.ERP_ROLE === 'standby'
+
 const server = app.listen(PORT, () => {
-  console.log(`ERP Server running on http://localhost:${PORT}`)
+  console.log(`ERP Server running on http://localhost:${PORT}${IS_STANDBY ? ' (relais de redémarrage)' : ''}`)
   createRealtimeServer(server)
+  if (IS_STANDBY) return
   initTaskRunner()
   // File de travaux : réconcilie un item fauché par le redémarrage et relance la
   // file. Après initTaskRunner, qui a déjà repris ou clos l'exécution en cours.
@@ -1014,6 +1040,14 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('relevés de carte:', e.message))
   })
 
+  // Relevés PDF du Drive → rapprochement préparé dans QuickBooks, compte par
+  // compte, le jour où chaque relevé arrive (jamais « Terminer »).
+  cron.schedule('40 6 * * *', () => {
+    import('./services/bankStatementDriveWatch.js')
+      .then(({ watchDriveStatements }) => watchDriveStatements())
+      .catch(e => console.error('relevés du Drive:', e.message))
+  })
+
   // Alerte trésorerie BNC : vérification quotidienne du solde projeté à 7h30
   // locale (le service court-circuite si sys_treasury_alert est inactive).
   cron.schedule('30 7 * * *', () => {
@@ -1127,14 +1161,15 @@ const server = app.listen(PORT, () => {
     .then(({ watchFileEdits }) => watchFileEdits())
     .catch(e => console.error('trx sheet watch:', e.message))
 
-  // Une banque qui se tait ne fait aucun bruit : ni erreur, ni écran rouge,
-  // juste plus de transactions. Trois passages par jour suffisent à s'en
-  // apercevoir sans harceler l'API. Coupe-circuit dans le service.
+  // Un solde qui ne se relit plus ne fait aucun bruit : le dernier montant
+  // connu reste affiché comme s'il était d'aujourd'hui, et la projection de
+  // trésorerie s'appuie dessus. Trois passages par jour. Coupe-circuit dans le
+  // service.
   cron.schedule('0 11,17,23 * * *', () => {
     if (!isSystemAutomationActive('sys_plaid_silence_alert')) return
-    import('./services/plaidSilenceAlert.js')
-      .then(({ checkPlaidSilence }) => checkPlaidSilence({ trigger: 'cron' }))
-      .catch(e => console.error('plaid silence alert:', e.message))
+    import('./services/plaidBalanceAlert.js')
+      .then(({ checkBalanceFreshness }) => checkBalanceFreshness({ trigger: 'cron' }))
+      .catch(e => console.error('plaid balance alert:', e.message))
   })
 
   // Lecture Plaid planifiée — FILET derrière le webhook, qui était jusqu'ici le
@@ -1350,16 +1385,9 @@ const server = app.listen(PORT, () => {
       .catch(e => console.error('session health cron:', e.message))
   })
 
-  // Prospects Instagram : liste hebdo à Philippe, lundi 7h30 heure de Montréal
-  // — soit après la lecture des commentaires ci-dessus, pour que la liste soit
-  // complète. Même double passage : 11h30 et 12h30 UTC valent 7h30 à Montréal
-  // en heure d'été puis en heure d'hiver. Les MINUTES viennent du cron seul :
-  // send_hour ne porte que l'heure, et c'est elle que le service vérifie.
-  cron.schedule('30 11,12 * * 1', () => {
-    import('./services/instagramProspects.js')
-      .then(({ runWeeklyProspectDigest }) => runWeeklyProspectDigest({ trigger: 'cron lundi matin' }))
-      .catch(e => console.error('instagram prospects hebdo cron:', e.message))
-  })
+  // Prospects Instagram : la liste hebdo à Philippe n'a plus d'horaire. Elle
+  // part seulement après la reconnexion Instagram du samedi, une fois la
+  // lecture réussie (services/instagramRefresh.js) — jamais de liste partielle.
 
   // Suggestions de chantiers ET d'intégrations (page Travaux) : passage quotidien
   // à 7 h (Montréal). Gardé par l'automation système sys_work_suggestions —
@@ -1382,7 +1410,24 @@ const server = app.listen(PORT, () => {
 })
 
 // Kill Claude process on shutdown so pm2 restart doesn't leave orphans
-process.on('SIGINT',  () => { shutdownScriptRuntime(); shutdownTaskRunner(); process.exit(0) })
-process.on('SIGTERM', () => { shutdownScriptRuntime(); shutdownTaskRunner(); process.exit(0) })
+// Arrêt en douceur : plus de nouvelles connexions (nginx passe à l'autre
+// exemplaire), puis sortie dès que les requêtes en cours sont finies. Plafond
+// sous le kill_timeout de pm2 (1,6 s par défaut, 12 s pour le relais).
+const DRAIN_MAX_MS = Number(process.env.DRAIN_MAX_MS) || 1400
+let shuttingDown = false
+function shutdown() {
+  if (shuttingDown) return
+  shuttingDown = true
+  shutdownScriptRuntime(); shutdownTaskRunner()
+  server.close()
+  const t0 = Date.now()
+  const check = () => {
+    if (inFlight <= 0 || Date.now() - t0 >= DRAIN_MAX_MS) process.exit(0)
+    setTimeout(check, 50)
+  }
+  check()
+}
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
 
 export default app

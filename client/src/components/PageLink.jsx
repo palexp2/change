@@ -67,14 +67,15 @@ const COMPONENT_TO_ROUTE = (() => {
 })()
 
 // Repli quand la tâche n'a pas de contexte de signalement (suggestions venues de
-// /travaux ou de l'agent autonome, pas d'un clic FeedbackFab sur une page) : on
-// cherche dans le rapport de l'agent les fichiers de page modifiés et on les
-// résout vers leur route. On n'affiche le lien que si une seule page distincte
-// est concernée — sinon la section ciblée est ambiguë.
-function derivePageFromAgentResult(agentResult) {
-  if (!agentResult) return null
-  const components = new Set()
-  for (const m of agentResult.matchAll(/client\/src\/pages\/(\w+)\.jsx/g)) components.add(m[1])
+// /travaux ou de l'agent autonome, pas d'un clic FeedbackFab sur une page) : les
+// pages citées par le rapport d'implémentation. Le serveur les extrait désormais
+// lui-même (`agent_pages`) — envoyer le rapport entier pesait 1,5 Mo par
+// chargement de la file. `agent_result` reste accepté si un appelant l'a encore.
+function derivePageFromAgentResult(task) {
+  const components = task?.agent_pages ? new Set(task.agent_pages) : new Set()
+  if (!components.size && task?.agent_result) {
+    for (const m of String(task.agent_result).matchAll(/client\/src\/pages\/(\w+)\.jsx/g)) components.add(m[1])
+  }
   const routes = new Set()
   for (const c of components) {
     const route = COMPONENT_TO_ROUTE[c]
@@ -91,7 +92,7 @@ export function PageLink({ task }) {
   if (!task) return null
   const page = routeFromContext(task.context)
     || routeFromContext(embeddedContext(task))
-    || derivePageFromAgentResult(task.agent_result)
+    || derivePageFromAgentResult(task)
   if (!page) return null
   return (
     <Link
@@ -108,4 +109,9 @@ export function PageLink({ task }) {
   )
 }
 
-export { isAppWideContext, contextPage }
+// Page d'où la demande a été faite (route, sans l'élément ciblé), ou ''.
+function requestPage(task) {
+  return routeFromContext(task?.context) || routeFromContext(embeddedContext(task || {})) || ''
+}
+
+export { isAppWideContext, contextPage, requestPage }

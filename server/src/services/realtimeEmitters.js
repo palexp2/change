@@ -132,6 +132,20 @@ export function emitFacture(verb, id, actorUserId = null) {
 }
 
 /**
+ * Abonnement écrit (édition, webhook Stripe, sync polling). Même forme de ligne
+ * que GET /api/projets/abonnements/:id — la fiche ouverte la fusionne telle
+ * quelle pour suivre statut, montant, dates et entreprise.
+ */
+export function emitSubscription(verb, id, actorUserId = null) {
+  const row = db.prepare(
+    `SELECT s.*, co.name as company_name
+     FROM subscriptions s LEFT JOIN companies co ON s.company_id = co.id
+     WHERE s.id = ?`
+  ).get(id)
+  emitEntity('subscription', verb, id, row, actorUserId)
+}
+
+/**
  * Les paiements/remboursements d'une facture ont changé (saisie, suppression,
  * écriture QB posée, refund Stripe). Charge utile minimale : la fiche facture
  * recharge sa section Paiements. Le solde voyage séparément via emitFacture.

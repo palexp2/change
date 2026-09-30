@@ -2,7 +2,7 @@
 // Tests purs : scoreDoc ne touche pas la base, tout est dans `doc` et `ctx`.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { scoreDoc, convertAmount, confidenceFromScore, parseOrigAmount, signCompatible } from './bankReceiptMatch.js'
+import { scoreDoc, convertAmount, confidenceFromScore, parseOrigAmount, signCompatible, demoteOtherPeriods } from './bankReceiptMatch.js'
 
 const TXN = { amount: -250.75, txn_date: '2026-09-10', description: 'ACHAT DKC*DIGI-KEY CORP', details: null, reference: null }
 
@@ -152,4 +152,33 @@ test('remboursement d’impôt : montant exact + libellé gouvernemental = certi
   assert.ok(r.reasons.includes('libellé gouvernemental au relevé'))
   assert.equal(r.nameHit, true)
   assert.ok(r.score >= 85, `score ${r.score}`)
+})
+
+// ── Abonnement mensuel : la facture du bon mois ──────────────────────────────
+// Cas CapCut : trois factures identiques à un mois d'écart se neutralisaient au
+// sommet, donc rien n'était jamais « sûr » et la ligne restait à traiter.
+const abonnement = (date, over = {}) => ({
+  type: 'receipt', id: date, company: 'ByteDance', total: 32.18,
+  date, order_date: null, due_date: null, taken: false, score: 100, reasons: [], ...over,
+})
+
+test('abonnement : les factures des autres mois reculent', () => {
+  const list = [abonnement('2026-09-28'), abonnement('2026-08-28'), abonnement('2026-07-28')]
+  demoteOtherPeriods(list, '2026-09-28')
+  assert.equal(list[0].score, 100)
+  assert.equal(list[1].score, 75)
+  assert.equal(list[2].score, 75)
+  assert.ok(list[1].reasons.includes('une autre facture du même fournisseur colle mieux à la date'))
+})
+
+test('abonnement : une pièce déjà liée ne déclasse pas celle qui reste libre', () => {
+  const list = [abonnement('2026-09-28', { taken: true }), abonnement('2026-08-28')]
+  demoteOtherPeriods(list, '2026-09-27')
+  assert.equal(list[1].score, 100)
+})
+
+test('abonnement : un fournisseur différent au même montant n’est pas touché', () => {
+  const list = [abonnement('2026-09-28'), abonnement('2026-08-28', { company: 'Anthropic' })]
+  demoteOtherPeriods(list, '2026-09-28')
+  assert.equal(list[1].score, 100)
 })

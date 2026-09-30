@@ -18,6 +18,7 @@
 // Le verdict s'écrit sur `qb_txn_id` / `qb_match_*`, l'une des deux preuves
 // retenues par deriveStatus() pour peindre une ligne en « comptabilisé ».
 import db from '../db/database.js'
+import { detectClosedFromLedger } from './bankMonthClose.js'
 import { refreshStatuses } from './bankReconciliation.js'
 import {
   buildLedgerIndex, searchAccount, persistMatches, verifyConversions, MATCH_LABELS,
@@ -29,6 +30,7 @@ import { COLOR_MEANS_IN_QB } from './bankTrxSheet.js'
 import { logSync } from './syncLog.js'
 import { isSystemAutomationActive, logSystemRun } from './systemAutomations.js'
 import { shiftDate, daysBetween as dayDiff } from '../utils/datetime.js'
+import { parseAutoReconcile, reconcileFromQbCleared, reconcileIfBalanced } from './bankAutoReconcile.js'
 
 export const QB_VERIFY_AUTOMATION_ID = 'sys_bank_qb_verify'
 
@@ -59,6 +61,10 @@ export const QB_VERIFY_DEFAULT_CONFIG = {
   // ces écarts avec QuickBooks ne seront plus corrigés, les signaler chaque
   // nuit n'aide personne (Charles, 2026-09-19).
   deep_since: '2026-06-01',
+  // Passage automatique au vert (services/bankAutoReconcile.js) :
+  // qb_rapproche = déjà rapprochée dans QuickBooks · ecart_zero = écart nul.
+  // Vider = couper.
+  auto_reconcile: 'qb_rapproche,ecart_zero',
 }
 
 export function qbVerifyConfig() {
@@ -69,6 +75,8 @@ export function qbVerifyConfig() {
   for (const k of Object.keys(QB_VERIFY_DEFAULT_CONFIG)) {
     if (cfg[k] != null && String(cfg[k]).trim() !== '') merged[k] = String(cfg[k]).trim()
   }
+  // Vide = coupé : ici une chaîne vide est un choix, pas un oubli.
+  if (cfg.auto_reconcile != null && String(cfg.auto_reconcile).trim() === '') merged.auto_reconcile = ''
   return merged
 }
 
@@ -197,7 +205,7 @@ function clearStaleLinks(unmatchedBank) {
 
 // ── Vérification d'un compte contre l'index ──────────────────────────────────
 
-async function verifyOneAccount(account, index, { from, to, graceDays, autoMethods, clearStale }) {
+async function verifyOneAccount(account, index, { from, to, graceDays, autoMethods, clearStale, autoReconcile = new Set() }) {
   const todayIso = new Date().toISOString().slice(0, 10)
   const cutoff = shiftDate(todayIso, -graceDays)
 
@@ -243,6 +251,15 @@ async function verifyOneAccount(account, index, { from, to, graceDays, autoMetho
   // tombée hors fenêtre ferait effacer un lien parfaitement valide.
   const cleared = clearStale ? clearStaleLinks(unmatchedBank) : 0
   refreshStatuses(account.id)
+  let reconciled = 0
+  if (autoReconcile.has('qb_rapproche')) {
+    try { reconciled += reconcileFromQbCleared(matches, txnById) } catch (e) { console.error('autoReconcile(qb):', e.message) }
+  }
+  if (autoReconcile.has('ecart_zero')) {
+    try { reconciled += await reconcileIfBalanced(account.id) } catch (e) { console.error('autoReconcile(ecart):', e.message) }
+  }
+
+  try { detectClosedFromLedger(account.id, index.byAccount.get(account.id)) } catch (e) { console.error('monthClose:', e.message) }
 
   const { anomalies, toBook, gaps, uncleared } = deriveFindings(account, {
     bankTxns, matches, unmatchedBank, unmatchedQb, txnById, from, cutoff, todayIso,
@@ -252,7 +269,7 @@ async function verifyOneAccount(account, index, { from, to, graceDays, autoMetho
   for (const [, m] of matches) methods[m.method] = (methods[m.method] || 0) + 1
   return {
     account_id: account.id, account_name: account.name,
-    scanned: bankTxns.length, matched: matches.size, linked, proposed, cleared,
+    scanned: bankTxns.length, matched: matches.size, linked, proposed, cleared, reconciled,
     ledger_count: (index.byAccount.get(account.id) || []).length,
     qb_uncleared: uncleared,
     anomalies, to_book: toBook, gaps, methods,
@@ -382,6 +399,7 @@ export async function verifyAccounts(accounts, {
   const cfg = qbVerifyConfig()
   const graceDays = Number(cfg.grace_days) || 4
   const autoMethods = parseAutoMethods(cfg.auto_apply_methods)
+  const autoReconcile = parseAutoReconcile(cfg.auto_reconcile)
   const todayIso = new Date().toISOString().slice(0, 10)
 
   let start = from || shiftDate(todayIso, -Math.max(MIN_WINDOW_DAYS, Number(cfg.window_days) || ROLLING_WINDOW_DAYS))
@@ -414,7 +432,7 @@ export async function verifyAccounts(accounts, {
   for (const account of accounts) {
     const t0 = Date.now()
     try {
-      const out = await verifyOneAccount(account, index, { from: start, to: end, graceDays, autoMethods, clearStale })
+      const out = await verifyOneAccount(account, index, { from: start, to: end, graceDays, autoMethods, clearStale, autoReconcile })
       logSync('bank:qb-verify', trigger === 'planifie' ? 'scheduled' : 'manual',
         { status: 'success', modified: out.linked, durationMs: Date.now() - t0 })
       results.push(out)
@@ -433,10 +451,11 @@ export async function verifyAccounts(accounts, {
     ledger_ms: index.buildMs ?? null,
     accounts: results,
     linked, proposed, cleared: results.reduce((s, r) => s + (r.cleared || 0), 0),
+    reconciled: results.reduce((s, r) => s + (r.reconciled || 0), 0),
     anomalies, anomalies_total: anomalies.length,
     to_book: results.flatMap((r) => r.to_book || []),
     gaps: results.flatMap((r) => r.gaps || []),
-    summary: `${results.length} compte(s) · ${linked} lien(s) posé(s) · ${proposed} proposition(s) · ${anomalies.length} anomalie(s)`
+    summary: `${results.length} compte(s) · ${linked} lien(s) posé(s) · ${proposed} proposition(s) · ${results.reduce((s, r) => s + (r.reconciled || 0), 0)} rapprochée(s) · ${anomalies.length} anomalie(s)`
       + (index.buildMs != null ? ` · grand livre ${Math.round(index.buildMs / 100) / 10} s` : ''),
   }
 }

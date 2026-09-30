@@ -8,6 +8,7 @@ import { writeBackRecord } from '../services/airtableWriteback.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
 import { readRelation } from '../services/customFieldsView.js'
 import { parsePage } from '../utils/pagination.js'
+import { nextPaiePeriod } from '../services/paieSchedule.js'
 
 function myEmployeeId(userId) {
   const row = db.prepare('SELECT employee_id FROM users WHERE id = ?').get(userId)
@@ -97,6 +98,12 @@ const ALLOWED = [
   'includes_expense_reimb', 'includes_paid_leave', 'includes_holiday_hours',
   'includes_sales_commissions',
 ]
+
+// Inclusions par défaut d'une paie créée sans historique.
+const EMPTY_INCLUDES = {
+  includes_hourly: 1, includes_mileage: 0, includes_expense_reimb: 1,
+  includes_paid_leave: 0, includes_holiday_hours: 0, includes_sales_commissions: 0,
+}
 
 router.get('/', (req, res) => {
   const { q } = req.query
@@ -190,17 +197,17 @@ const last2HoursStmt = db.prepare(`
   )
 `)
 
-router.post('/', ensureHR, (req, res) => {
-  if (!req.body.period_end) return res.status(400).json({ error: 'Fin de période requise' })
-  const holidayError = validateNbHolidayDays(req.body)
-  if (holidayError) return res.status(400).json({ error: holidayError })
+// Crée la paie et ses lignes (une par employé actif), importe les feuilles de
+// temps et pousse le tout à Airtable. Partagé par la création manuelle et la
+// création directe de la paie suivante.
+function createPaie(body, userId) {
   const id = newRecordId()
-  const cols = ['id', ...ALLOWED.filter(k => k in req.body)]
-  const vals = [id, ...ALLOWED.filter(k => k in req.body).map(k => req.body[k] ?? null)]
+  const cols = ['id', ...ALLOWED.filter(k => k in body)]
+  const vals = [id, ...ALLOWED.filter(k => k in body).map(k => body[k] ?? null)]
   const placeholders = cols.map(() => '?').join(',')
 
-  const nbHolidays = Number(req.body.nb_holiday_days) || 0
-  const startDate = req.body.period_end || null
+  const nbHolidays = Number(body.nb_holiday_days) || 0
+  const startDate = body.period_end || null
 
   const insertItem = db.prepare(`
     INSERT INTO paie_items (
@@ -256,7 +263,7 @@ router.post('/', ensureHR, (req, res) => {
   }
 
   const paie = db.prepare(`SELECT * FROM ${readRelation('paies')} WHERE id=?`).get(id)
-  emitEntity('paie', 'created', id, buildPaieListRow(id), req.user?.id)
+  emitEntity('paie', 'created', id, buildPaieListRow(id), userId)
 
   // Push à Airtable en fire-and-forget (ne pas bloquer la réponse)
   writeBackRecord('paies', id).catch(e => console.error('Paie write-back error:', e.message))
@@ -265,7 +272,39 @@ router.post('/', ensureHR, (req, res) => {
     writeBackRecord('paie_items', item.id).catch(e => console.error('Paie item write-back error:', e.message))
   }
 
-  res.status(201).json({ ...paie, items_created: itemIds, timesheet_import: importResult })
+  return { ...paie, items_created: itemIds, timesheet_import: importResult }
+}
+
+router.post('/', ensureHR, (req, res) => {
+  if (!req.body.period_end) return res.status(400).json({ error: 'Fin de période requise' })
+  const holidayError = validateNbHolidayDays(req.body)
+  if (holidayError) return res.status(400).json({ error: holidayError })
+  res.status(201).json(createPaie(req.body, req.user?.id))
+})
+
+// POST /api/paies/next — crée directement la paie suivante : 14 jours après la
+// dernière fin de période (samedi), fériés du Québec + 26 décembre comptés,
+// inclusions reprises de la dernière paie.
+router.post('/next', ensureHR, (req, res) => {
+  const last = db.prepare(`
+    SELECT * FROM paies WHERE period_end IS NOT NULL ORDER BY period_end DESC LIMIT 1
+  `).get()
+  const next = nextPaiePeriod(last?.period_end || null)
+  const dup = db.prepare('SELECT id FROM paies WHERE period_end = ?').get(next.period_end)
+  if (dup) return res.status(409).json({ error: `Une paie existe déjà pour le ${next.period_end}` })
+  const INCLUDES = ['includes_hourly', 'includes_mileage', 'includes_expense_reimb',
+    'includes_paid_leave', 'includes_holiday_hours', 'includes_sales_commissions']
+  const body = {
+    period_start: next.period_start,
+    period_end: next.period_end,
+    status: 'Non débuté',
+    nb_holiday_days: next.nb_holiday_days,
+    timesheets_deadline: next.timesheets_deadline,
+    timesheets_sent: 0,
+  }
+  for (const k of INCLUDES) body[k] = last ? (last[k] ?? EMPTY_INCLUDES[k]) : EMPTY_INCLUDES[k]
+  if (next.nb_holiday_days > 0) body.includes_holiday_hours = 1
+  res.status(201).json({ ...createPaie(body, req.user?.id), holidays: next.holidays })
 })
 
 // POST /api/paies/:id/import-timesheets — resynchronisation manuelle (admin/rh)
@@ -307,7 +346,12 @@ router.patch('/:id', ensureHR, (req, res) => {
 router.delete('/:id', ensureHR, (req, res) => {
   const existing = db.prepare('SELECT id FROM paies WHERE id=?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
-  db.prepare('DELETE FROM paies WHERE id=?').run(req.params.id)
+  // Les lignes partent avec la paie : orphelines (FK en SET NULL), elles
+  // restaient comptées dans la banque de vacances.
+  db.transaction(() => {
+    db.prepare('DELETE FROM paie_items WHERE paie_id=?').run(req.params.id)
+    db.prepare('DELETE FROM paies WHERE id=?').run(req.params.id)
+  })()
   emitEntity('paie', 'deleted', req.params.id, { id: req.params.id }, req.user?.id)
   res.json({ ok: true })
 })

@@ -86,22 +86,10 @@ describe('Travaux — utilisation Claude, pause de la file, arrêt après une t�
     assert.match(text, /Semaine/, 'le plafond hebdomadaire doit être visible')
     // La note qui corrige la lecture fausse « j'ai un quota par jour ».
     assert.match(text, /Pas de limite par jour/, 'la note sur l\'absence de limite journalière doit être là')
-    assert.match(text, /reste \d+ %|\d+ jetons/, 'ni % restant ni jetons affichés')
+    assert.match(text, /utilisé \d+ %|\d+ jetons/, 'ni % utilisé ni jetons affichés')
 
-    // Le troisième plafond (hebdo d'un modèle) ne s'affiche que si le forfait en a un :
-    // on croise avec l'API plutôt que d'exiger sa présence en dur.
-    const scoped = await page.evaluate(async () => {
-      const token = localStorage.getItem('erp_token')
-      const r = await fetch('/erp/api/agent/usage', { headers: { Authorization: `Bearer ${token}` } })
-      return (await r.json()).weekScoped
-    })
-    const scopedShown = await page.locator('[data-testid="usage-strip-scoped"]').count()
-    if (scoped) {
-      assert.equal(scopedShown, 1, 'le plafond hebdomadaire du modèle doit être affiché quand il existe')
-      assert.match(text, new RegExp(`Semaine ${scoped.label}`), 'le nom du modèle plafonné doit être visible')
-    } else {
-      assert.equal(scopedShown, 0, 'aucun plafond de modèle à afficher quand l\'API n\'en donne pas')
-    }
+    // Le plafond propre à un modèle (Fable) n'est plus affiché : l'agent tourne sur Opus.
+    assert.equal(await page.locator('[data-testid="usage-strip-scoped"]').count(), 0)
 
     // Heure de réinitialisation : relatif + jour et heure exacts (« dans 51 min (mar. 14:40) »).
     const sessionLine = await page.locator('[data-testid="usage-strip-session"]').innerText()
@@ -131,12 +119,7 @@ describe('Travaux — utilisation Claude, pause de la file, arrêt après une t�
     assert.doesNotMatch(text, /Aucune limite journalière/i, 'la note sur le quota journalier ne doit plus être affichée')
     assert.doesNotMatch(text, /crédit de dépassement/i, 'la note sur les crédits de dépassement ne doit plus être affichée')
 
-    const scoped = await page.evaluate(async () => {
-      const token = localStorage.getItem('erp_token')
-      const r = await fetch('/erp/api/agent/usage', { headers: { Authorization: `Bearer ${token}` } })
-      return (await r.json()).weekScoped
-    })
-    if (scoped) assert.match(text, new RegExp(`Semaine ${scoped.label}`, 'i'), 'le plafond du modèle doit apparaître')
+    assert.doesNotMatch(text, /Semaine Fable/i, 'plus de jauge Fable')
   })
 
   test('pause puis reprise de la file — le serveur suit, la file repart d\'où elle était', async () => {

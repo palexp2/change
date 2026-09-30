@@ -36,6 +36,7 @@ export function linkedVennAccounts() {
 // ne doit jamais être écrasé par une relecture.
 export function upsertVennTransaction(accountId, txn) {
   const key = vennDedupKey(txn.venn_transaction_id)
+  if (!Number(txn.amount)) return { inserted: 0, updated: 0 } // 0 $ : rien à rapprocher
   const inserted = db.prepare(`
     INSERT OR IGNORE INTO bank_transactions
       (id, account_id, txn_date, description, details, reference, amount, dedup_key,

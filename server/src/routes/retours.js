@@ -583,4 +583,38 @@ router.post('/:id/receive-scan', (req, res) => {
   })
 })
 
+// POST /api/retours/:id/receive — réception d'articles cochés dans le tableau
+// de la fiche (pendant manuel du pistolet). Pose la même date et le même
+// réceptionniste sur chaque article choisi ; un article déjà reçu est
+// réécrit — la case cochée est un geste explicite (correction comprise).
+router.post('/:id/receive', (req, res) => {
+  const ret = db.prepare('SELECT id FROM returns WHERE id = ?').get(req.params.id)
+  if (!ret) return res.status(404).json({ error: 'Retour introuvable' })
+
+  const ids = Array.isArray(req.body.item_ids) ? req.body.item_ids.map(String).filter(Boolean) : []
+  if (!ids.length) return res.status(400).json({ error: 'item_ids requis' })
+  const receivedBy = String(req.body.received_by || '').trim()
+  const receivedAt = String(req.body.received_at || '').trim()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(receivedAt)) return res.status(400).json({ error: 'received_at attendu en AAAA-MM-JJ' })
+
+  // Même garde que le scan : colonnes en « Bidirectionnel » sinon refus.
+  const refused = refusedAirtablePullKeys('return_items', { received_at: receivedAt, received_by: receivedBy })
+  if (refused.length) return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+
+  const inReturn = db.prepare(
+    `SELECT id FROM return_items WHERE return_id = ? AND id IN (${ids.map(() => '?').join(',')})`
+  ).all(req.params.id, ...ids).map(r => r.id)
+  if (!inReturn.length) return res.status(400).json({ error: 'Aucun article de ce retour' })
+
+  const update = db.prepare('UPDATE return_items SET received_at = ?, received_by = ? WHERE id = ?')
+  db.transaction(() => { for (const itemId of inReturn) update.run(receivedAt, receivedBy || null, itemId) })()
+
+  const readUpdated = db.prepare(`SELECT * FROM ${readRelation('return_items')} WHERE id = ?`)
+  for (const itemId of inReturn) {
+    traceRetourPush(writeBackRecord('retour_items', itemId, ['received_at', 'received_by']), itemId)
+    emitEntity('return_item', 'updated', itemId, readUpdated.get(itemId), req.user?.id)
+  }
+  res.json({ received: inReturn, received_at: receivedAt, received_by: receivedBy || null })
+})
+
 export default router

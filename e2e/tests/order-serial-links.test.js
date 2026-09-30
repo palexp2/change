@@ -32,7 +32,11 @@ describe('Commande — sélection des liens de série', () => {
   async function setup(t, fail = false) {
     const ctx = await browser.newContext({ viewport: { width: 1500, height: 1000 } })
     t.after(() => ctx.close())
-    await ctx.routeWebSocket('**/ws**', () => {})
+    await ctx.routeWebSocket('**/ws**', socket => {
+      socket.onMessage(message => {
+        if (JSON.parse(message).type === 'auth') socket.send(JSON.stringify({ type: 'auth:success' }))
+      })
+    })
     const page = await ctx.newPage()
     page.setDefaultTimeout(8000)
     const mutations = [], errors = []
@@ -41,15 +45,17 @@ describe('Commande — sélection des liens de série', () => {
     const item = {
       id: 'line', product_name: 'Produit', qty: 2, fulfilled_qty: 2, serials: [],
       de_serie: JSON.stringify(keys),
-      de_serie_serials: keys.map((key, i) => ({ id: String(i + 1), airtable_id: key, serial: `BL410${i}` })),
+      de_serie_serials: keys.map((key, i) => ({ id: String(i + 1), airtable_id: key, serial: i === 0 ? 'ML144' : 'BL4101' })),
     }
-    const order = { id: 'serial-demo', order_number: 123, status: 'En cours', items: [item], shipments: [] }
+    const order = { id: 'borthHVqVYEmWMyfd', order_number: 123, status: 'En cours', items: [item], shipments: [] }
     const token = `test.${Buffer.from(JSON.stringify({ id: 'test', name: 'Test', role: 'admin' })).toString('base64')}.test`
     await ctx.addInitScript(token => localStorage.setItem('erp_token', token), token)
     await page.route('**/api/**', async route => {
       const req = route.request(), endpoint = new URL(req.url()).pathname.replace(/^\/erp\/api/, '')
+      if (endpoint === '/auth/users') return route.fulfill({ json: [] })
+      if (endpoint === '/auth/me') return route.fulfill({ json: { id: 'test', name: 'Test', role: 'admin' } })
       if (endpoint.startsWith('/telemetry/')) return route.fulfill({ json: { ok: true } })
-      if (req.method() === 'PATCH' && endpoint === '/orders/serial-demo/items/line') {
+      if (req.method() === 'PATCH' && endpoint === '/orders/borthHVqVYEmWMyfd/items/line') {
         const body = req.postDataJSON()
         mutations.push(body)
         if (fail) return route.fulfill({ status: 400, json: { error: 'Dissociation refusée' } })
@@ -58,59 +64,56 @@ describe('Commande — sélection des liens de série', () => {
         return route.fulfill({ json: item })
       }
       if (req.method() !== 'GET') return route.fulfill({ json: { ok: true } })
-      if (endpoint === '/orders/serial-demo') return route.fulfill({ json: order })
-      if (endpoint === '/serials/1') return route.fulfill({ json: { id: '1', serial: 'BL4100' } })
+      if (endpoint === '/orders/borthHVqVYEmWMyfd') return route.fulfill({ json: order })
+      if (endpoint === '/serials/1') return route.fulfill({ json: { id: '1', serial: 'ML144' } })
       if (endpoint.startsWith('/bootstrap')) return route.fulfill({ json: { tables: {}, snapshot_ts: new Date().toISOString() } })
       if (endpoint.startsWith('/views/')) return route.fulfill({ json: { config: { visible_columns: ['product_id', 'de_serie'], default_sort: [] }, pills: [], dynamicFields: [] } })
       if (endpoint.includes('/preferences')) return route.fulfill({ json: {} })
       return route.fulfill({ json: { data: [], total: 0 } })
     })
-    await page.goto(`${base}/orders/serial-demo`)
+    await page.goto(`${base}/orders/borthHVqVYEmWMyfd`)
     const cell = page.locator('[data-grid-cell="line|de_serie"]')
-    await cell.getByText('BL4100', { exact: true }).waitFor()
+    await cell.getByText('ML144', { exact: true }).waitFor().catch(async error => {
+      throw new Error(`${error.message}\nURL: ${page.url()}\n${errors.join('\n')}\n${(await page.locator('body').innerText()).slice(0, 3000)}`)
+    })
     return { page, cell, mutations, errors }
   }
 
-  // Vrai clic aux coordonnées du lien : son premier état neutralise les
-  // pointeurs, donc locator.click() attendrait indéfiniment qu'il soit actif.
-  async function clickLabel(page, cell, label) {
-    const box = await cell.getByText(label, { exact: true }).boundingBox()
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-  }
-
-  test('premier clic : sélection et X ; second clic : panneau de la série', async t => {
-    const { page, cell, errors } = await setup(t)
+  test('un clic sur le numéro ouvre sa fiche latérale sans modifier les liens', async t => {
+    const { page, cell, mutations, errors } = await setup(t)
     assert.equal(await cell.getByRole('button', { name: 'Dissocier', exact: true }).count(), 0)
-    await clickLabel(page, cell, 'BL4100')
-    await cell.getByTestId('link-chip-remove-rec00000000000001').waitFor()
-    assert.match(await cell.getAttribute('class'), /ring-brand-500/)
-    assert.match(page.url(), /\/orders\/serial-demo$/)
-    assert.equal(await cell.getByTestId('link-chip-add').count(), 0)
-    await clickLabel(page, cell, 'BL4100')
+    await cell.getByRole('link', { name: 'ML144', exact: true }).click()
     await page.waitForURL('**/serials/1')
+    await page.getByTestId('serial-fields').waitFor()
+    await page.getByTestId('record-peek-title').getByText('ML144', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('record-peek-drawer').count(), 1)
+    assert.deepEqual(mutations, [])
+    await page.getByTestId('record-peek-close').last().click()
+    await page.waitForURL('**/orders/borthHVqVYEmWMyfd')
+    await cell.getByRole('link', { name: 'ML144', exact: true }).waitFor()
     assert.deepEqual(errors, [])
   })
 
   test('le X retire uniquement le lien choisi et le changement survit au rechargement', async t => {
     const { page, cell, mutations, errors } = await setup(t)
-    await clickLabel(page, cell, 'BL4100')
+    await cell.click({ position: { x: 5, y: 12 } })
     await cell.getByTestId('link-chip-remove-rec00000000000001').click()
-    await cell.getByText('BL4100', { exact: true }).waitFor({ state: 'hidden' })
+    await cell.getByText('ML144', { exact: true }).waitFor({ state: 'hidden' })
     assert.deepEqual(mutations, [{ de_serie: '["rec00000000000002"]' }])
-    assert.match(page.url(), /\/orders\/serial-demo$/)
+    assert.match(page.url(), /\/orders\/borthHVqVYEmWMyfd$/)
     await page.reload()
     await cell.getByText('BL4101', { exact: true }).waitFor()
-    assert.equal(await cell.getByText('BL4100', { exact: true }).count(), 0)
+    assert.equal(await cell.getByText('ML144', { exact: true }).count(), 0)
     assert.deepEqual(errors, [])
   })
 
   test('une erreur conserve le lien et affiche la raison du refus', async t => {
     const { page, cell, errors } = await setup(t, true)
-    await clickLabel(page, cell, 'BL4100')
+    await cell.click({ position: { x: 5, y: 12 } })
     await cell.getByTestId('link-chip-remove-rec00000000000001').click()
     await page.getByText('Dissociation refusée', { exact: true }).waitFor()
-    assert.equal(await cell.getByText('BL4100', { exact: true }).count(), 1)
-    assert.match(page.url(), /\/orders\/serial-demo$/)
+    assert.equal(await cell.getByText('ML144', { exact: true }).count(), 1)
+    assert.match(page.url(), /\/orders\/borthHVqVYEmWMyfd$/)
     assert.deepEqual(errors, [])
   })
 })

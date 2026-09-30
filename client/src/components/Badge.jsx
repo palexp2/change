@@ -1,4 +1,5 @@
-import { AlertCircle, CheckCircle, Clock, RefreshCw } from 'lucide-react'
+import { AlertCircle, CheckCircle, Clock } from 'lucide-react'
+import ThinkingOrb from './ThinkingOrb'
 
 export function Badge({ children, color = 'gray', size = 'sm', className = '' }) {
   const colors = {
@@ -96,6 +97,19 @@ export const STRIPE_PAYOUT_STATUS_COLORS = {
   paid: 'green', pending: 'yellow', in_transit: 'blue', canceled: 'gray', failed: 'red',
 }
 
+// Statuts Stripe d'un abonnement et de ses factures → libellé + couleur.
+export const SUBSCRIPTION_STATUS = {
+  active: { label: 'Actif', color: 'green' },
+  trialing: { label: 'Essai', color: 'blue' },
+  past_due: { label: 'En retard', color: 'yellow' },
+  canceled: { label: 'Annulé', color: 'red' },
+}
+export const STRIPE_INVOICE_STATUS = {
+  paid: { label: 'Payée', color: 'green' },
+  open: { label: 'Ouverte', color: 'yellow' },
+  draft: { label: 'Brouillon', color: 'gray' },
+}
+
 export const INTERACTION_TYPE_LABELS = { call: 'Appel', email: 'Courriel', sms: 'SMS', meeting: 'Réunion', note: 'Note' }
 
 export const AUTOMATION_ACTION_LABELS = { slack: 'Slack', email: 'Email', task: 'Tâche', script: 'Script' }
@@ -103,7 +117,7 @@ export const AUTOMATION_ACTION_LABELS = { slack: 'Slack', email: 'Email', task: 
 // Badge de statut de traitement d'un reçu de vente (liste + fiche détail).
 export function ReceiptStatusBadge({ status }) {
   if (status === 'done')       return <span className="inline-flex items-center gap-1 text-xs text-green-700 bg-green-100 px-2 py-0.5 rounded-full"><CheckCircle size={10} /> Complété</span>
-  if (status === 'processing') return <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full"><RefreshCw size={10} className="animate-spin" /> En cours</span>
+  if (status === 'processing') return <span className="inline-flex items-center gap-1 text-xs text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full"><ThinkingOrb state="working" size={11} ink /> En cours</span>
   if (status === 'error')      return <span className="inline-flex items-center gap-1 text-xs text-red-700 bg-red-100 px-2 py-0.5 rounded-full"><AlertCircle size={10} /> Erreur</span>
   return <span className="inline-flex items-center gap-1 text-xs text-gray-600 bg-gray-100 px-2 py-0.5 rounded-full"><Clock size={10} /> En attente</span>
 }

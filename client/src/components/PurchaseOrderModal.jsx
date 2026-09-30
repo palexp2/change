@@ -8,6 +8,7 @@ import EmailComposerModal from './EmailComposerModal.jsx'
 import { textToHtml } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
 import TableThumb, { TABLE_THUMB_CLASS } from './TableThumb.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 const inp = 'w-full border border-slate-200 rounded-lg px-3 py-1.5 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white'
 
@@ -193,7 +194,7 @@ export function PurchaseOrderModal({ productId, isOpen, onClose }) {
     <Modal isOpen={isOpen} onClose={onClose} title="Bon de commande" size="xl">
       {loading || !po ? (
         <div className="flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-600" />
+          <ThinkingOrb size={40} />
         </div>
       ) : sent ? (
         <div className="space-y-4 text-center py-8">

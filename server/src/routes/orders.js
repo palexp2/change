@@ -24,6 +24,7 @@ import {
 } from '../services/shipmentAirtableLink.js';
 import { parsePositiveInt, parseNonNegativeInt, validateNumericFields } from '../utils/validateNumbers.js';
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
+import { applyOrderItemDefaults } from '../services/orderItemDefaults.js';
 import { shippedCostSql, refreezeOrderShippedCosts, pieceUnitCostSql } from '../services/shippedCost.js';
 import { logSystemRun } from '../services/systemAutomations.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
@@ -313,7 +314,7 @@ router.get('/:id', (req, res) => {
   const items = db.prepare(
     `SELECT oi.*, pr.name_fr as product_name, pr.name_en as product_name_en, pr.sku, pr.image_url as product_image, pr.stock_qty as product_stock, pr.location as product_location, pr.type as product_type,
      ${SHELF_HINT_SQL}
-     FROM order_items oi
+     FROM ${readRelation('order_items')} oi
      LEFT JOIN products pr ON oi.product_id = pr.id
      WHERE oi.order_id = ?
      ORDER BY oi.sort_order, oi.created_at`
@@ -495,6 +496,7 @@ router.post('/', (req, res) => {
          VALUES (?, ?, ?, ?, ?, ?)`
       ).run(itemId, id, item.product_id || null, item.qty || 1,
         item.item_type || 'Facturable', item.notes || null);
+      applyOrderItemDefaults(itemId);
     }
   });
   run();
@@ -742,9 +744,10 @@ router.post('/:id/items', (req, res) => {
   db.prepare(
     `INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes) VALUES (?, ?, ?, ?, ?, ?)`
   ).run(itemId, req.params.id, product_id || null, qty || 1, item_type || 'Facturable', notes || null);
+  applyOrderItemDefaults(itemId);
 
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id);
-  const newItem = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId);
+  const newItem = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId);
   emitOrderItem('created', req.params.id, newItem, req.user?.id);
   res.status(201).json(newItem);
 });
@@ -774,7 +777,15 @@ router.patch('/:id/items/:itemId', (req, res) => {
       parseNonNegativeInt(req.body.fulfilled_qty) === null) {
     return res.status(400).json({ error: 'fulfilled_qty must be an integer >= 0' });
   }
-  const allowed = ['product_id', 'qty', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id'];
+  // Champs personnalisés éditables (ex. « Type de document ») : la cellule du
+  // tableau Articles les propose en édition, il faut donc les accepter ici.
+  // « # de série » garde sa voie dédiée (dissociation seulement, plus bas).
+  if (refusedAirtablePullKeys('order_items', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+  const customCols = getWritableCustomColumns('order_items').map(c => c.column_name).filter(c => c !== 'de_serie');
+  for (const c of customCols) if (c in req.body) req.body[c] = bindable(req.body[c]);
+  const allowed = ['product_id', 'qty', 'item_type', 'notes', 'replaced_serial', 'fulfillment_status', 'fulfilled_qty', 'shipment_id', ...customCols];
   const currentItem = db.prepare('SELECT * FROM order_items WHERE id=? AND order_id=?').get(req.params.itemId, req.params.id);
   if (!currentItem) return res.status(404).json({ error: 'Article introuvable' });
   const nextItem = { ...currentItem, ...Object.fromEntries(allowed.filter(k => k in req.body).map(k => [k, req.body[k]])) };
@@ -829,7 +840,7 @@ router.patch('/:id/items/:itemId', (req, res) => {
   }
 
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
-  const item = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(req.params.itemId);
+  const item = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(req.params.itemId);
   // Inclure serials dans la réponse (et l'événement realtime) pour que le
   // client mette à jour ses badges sans refetch — le merge côté UI applique
   // `serials: []` quand on vient de détacher.
@@ -895,7 +906,7 @@ router.post('/:id/items/:itemId/unpick', (req, res) => {
   })();
   if (result.error) return res.status(result.status).json({ error: result.error });
 
-  const item = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(req.params.itemId);
+  const item = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(req.params.itemId);
   item.serials = db.prepare('SELECT * FROM serial_numbers WHERE order_item_id = ? ORDER BY serial').all(item.id);
   emitOrderItem('updated', req.params.id, item, req.user?.id);
   if (serialMode) pushSerialOrderItem(serial_id);
@@ -913,8 +924,11 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   const newId = newRecordId();
   db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes, sort_order) VALUES (?,?,?,?,?,?,?)')
     .run(newId, req.params.id, item.product_id, item.qty, item.item_type, item.notes, (item.sort_order || 0) + 1);
+  // La copie garde le type de document de l'original, sinon prend le défaut.
+  if ('cf_type_de_document' in item) db.prepare('UPDATE order_items SET cf_type_de_document=? WHERE id=?').run(item.cf_type_de_document, newId);
+  applyOrderItemDefaults(newId);
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
-  const dup = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(newId);
+  const dup = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(newId);
   emitOrderItem('created', req.params.id, dup, req.user?.id);
   res.status(201).json(dup);
 });
@@ -945,6 +959,22 @@ const SERIAL_PICKABLE_STATUSES = ['Disponible - Vente', 'Disponible - Location']
 // d'adresse : l'adresse (1–255) doit être unique par entreprise, sur ce qui est
 // déjà installé chez elle comme sur ce qui part dans la commande en cours.
 const SERIAL_AT_CLIENT_STATUSES = ['Opérationnel - Vendu', 'Opérationnel - Loué']
+
+// Une série revenue en stock garde souvent le lien vers la ligne de sa dernière
+// commande (déjà envoyée) : ce lien est un vestige, pas une réservation. Seule
+// une ligne encore ouverte (commande non envoyée, ligne pas expédiée) retient
+// la série.
+function serialHeldByOpenLine(serial) {
+  if (!serial.order_item_id) return false
+  const held = db.prepare(
+    `SELECT oi.fulfillment_status, oi.shipment_id, o.status, o.deleted_at
+       FROM order_items oi JOIN orders o ON o.id = oi.order_id
+      WHERE oi.id = ?`
+  ).get(serial.order_item_id)
+  if (!held || held.deleted_at || held.shipment_id) return false
+  if (held.fulfillment_status === 'Envoyé') return false
+  return !['Envoyé', "Envoyé aujourd'hui"].includes(held.status)
+}
 
 // Ligne à servir pour un produit donné : la première non pleine, dans l'ordre
 // d'affichage. Une commande peut porter le même produit sur plusieurs lignes
@@ -1036,7 +1066,7 @@ router.post('/:id/scan', (req, res) => {
       // Une série déjà liée reste sur sa ligne ; la rescanner ne compte pas
       // un second exemplaire et ne la déplace jamais vers la ligne suivante.
       const linkedItem = serial.order_item_id ? lines.find(l => l.id === serial.order_item_id) : null
-      if (serial.order_item_id && !linkedItem) return res.status(409).json({ error: 'Ce numéro de série est déjà lié à un autre article ou envoi.' })
+      if (!linkedItem && serialHeldByOpenLine(serial)) return res.status(409).json({ error: 'Ce numéro de série est déjà lié à un autre article ou envoi.' })
       const item = linkedItem || openItem
       if (!lines.length) return res.json({ type: 'serial', action: 'not_in_order', serial })
       if (!item) return res.json({ type: 'serial', action: 'lines_full', serial })
@@ -1085,6 +1115,7 @@ router.post('/:id/scan', (req, res) => {
       const itemId = newRecordId()
       db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type) VALUES (?, ?, ?, 1, ?)')
         .run(itemId, req.params.id, serial.product_id || null, 'Facturable')
+      applyOrderItemDefaults(itemId)
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
       action = 'added'
     }
@@ -1111,6 +1142,7 @@ router.post('/:id/scan', (req, res) => {
       const itemId = newRecordId()
       db.prepare('INSERT INTO order_items (id, order_id, product_id, qty, item_type) VALUES (?, ?, ?, 1, ?)')
         .run(itemId, req.params.id, product.id, 'Facturable')
+      applyOrderItemDefaults(itemId)
       item = db.prepare('SELECT oi.*, pr.name_fr as product_name FROM order_items oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?').get(itemId)
       action = 'added'
     }
@@ -1136,17 +1168,27 @@ router.post('/:id/generate-installation-docs', async (req, res) => {
   const order = db.prepare('SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL').get(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found' });
 
-  const items = db.prepare(`
+  // Depuis une fiche Envoi : seulement les articles de cet envoi (repli sur
+  // toute la commande s'il n'en a aucun, comme la fiche), langue de SON adresse.
+  const shipmentId = req.body?.shipment_id ?? req.query?.shipment_id;
+  const shipment = shipmentId
+    ? db.prepare('SELECT id, address_id FROM shipments WHERE id = ? AND order_id = ? AND deleted_at IS NULL').get(shipmentId, order.id)
+    : null;
+  if (shipmentId && !shipment) return res.status(404).json({ error: 'Envoi introuvable pour cette commande' });
+
+  const itemsSql = (where) => `
     SELECT oi.id, oi.item_type, oi.product_id, p.name_fr as product_name, p.sku,
       p.lien_pdf_installation_fr_local, p.lien_pdf_installation_en_local,
       p.lien_pdf_remplacement_fr_local, p.lien_pdf_remplacement_en_local
     FROM order_items oi
     LEFT JOIN products p ON oi.product_id = p.id
-    WHERE oi.order_id = ?
+    WHERE ${where}
     ORDER BY oi.created_at
-  `).all(req.params.id);
+  `;
+  let items = shipment ? db.prepare(itemsSql('oi.shipment_id = ?')).all(shipment.id) : [];
+  if (items.length === 0) items = db.prepare(itemsSql('oi.order_id = ?')).all(req.params.id);
 
-  const resolved = resolveInstallationDocsLang(order);
+  const resolved = resolveInstallationDocsLang(shipment?.address_id ? { ...order, address_id: shipment.address_id } : order);
   const override = normalizeDocsLang(req.body?.lang ?? req.query?.lang);
   const lang = override || resolved.lang;
   const langSource = override ? 'override' : resolved.source;

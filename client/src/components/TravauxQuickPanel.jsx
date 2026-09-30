@@ -16,7 +16,7 @@
 import { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import {
-  ListOrdered, X, Plus, Loader2, HelpCircle, Crosshair, MousePointerClick,
+  ListOrdered, X, Plus, HelpCircle, Crosshair, MousePointerClick,
   ArrowRight, AlertTriangle, PauseCircle,
 } from 'lucide-react'
 import api from '../lib/api.js'
@@ -24,9 +24,10 @@ import { useAuth } from '../lib/auth.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import {
   inputCls, btnPrimary,
-  isAsking, firstLine, StatusPill, QuestionChoices, ReplyBox, PlacementToggle, useTravauxPrompts,
+  isAsking, isScheduled, firstLine, StatusPill, QuestionChoices, ReplyBox, PlacementToggle, useTravauxPrompts,
 } from '../lib/travauxQueue.jsx'
 import { useElementPicker, buildPageContext, currentRecordLabel, PickerBanner } from '../lib/pageContext.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 // Le panneau dépose dans la file de l'Espace finance (/travaux) — la même que le
 // FAB « Modifier le système », dont c'est désormais la seule destination.
@@ -256,7 +257,7 @@ function QuickPanel({ onClose, data, load }) {
               </div>
               <div className="flex items-center gap-2 mt-2 flex-wrap">
                 <button className={btnPrimary} data-testid="travaux-quick-submit" onClick={submit} disabled={sending || !text.trim()}>
-                  {sending ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Ajouter à la file
+                  {sending ? <ThinkingOrb size={14} ink /> : <Plus size={14} />} Ajouter à la file
                 </button>
                 {/* Début ou fin de la file — même bouton que la page /travaux et
                     que le FAB (lib/travauxQueue.jsx). */}
@@ -370,11 +371,12 @@ export function TravauxQuickProvider({ children }) {
   }, [open])
 
   const askingCount = useMemo(() => (data.prompts || []).filter(isAsking).length, [data.prompts])
+  // Les départs différés (« Programmé ») ne comptent pas : rien ne partira avant leur heure.
   const activeCount = useMemo(
-    () => (data.prompts || []).filter(p => ['running', 'queued'].includes(p.status) && !isAsking(p)).length,
+    () => (data.prompts || []).filter(p => ['running', 'queued'].includes(p.status) && !isAsking(p) && !isScheduled(p)).length,
     [data.prompts])
 
-  // Ce que Claude traite réellement (pas ce qui attend son tour) : pastille des jauges IA du rail.
+  // Ce que Claude traite réellement (pas ce qui attend son tour) : détail de la pastille des jauges IA du rail.
   const runningCount = useMemo(
     () => (data.prompts || []).filter(p => p.status === 'running' && p.run_state === 'executing').length,
     [data.prompts])

@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Transactions — refonte</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cinzel:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f2ecdf; --bg2: #ece6da; --surface: #f9f6ef; --surface2: #ebe4d6;
+  --border: #dcd3c1; --border2: #cdc5b7; --ink: #1d2a40; --ink2: #3d4757; --ink3: #626470; --ink5: #7b7572;
+  --gold: #75561d; --pnl: #1f2b40; --pnl-ink: #f1e8d4; --pnl-gold: #e2bf76;
+  --st-green: #dcebd3; --st-yellow: #f3e7b5; --st-blue: #dbe6f1; --st-gray: #e6e1d6; --st-red: #b3261e;
+  --dot-green: #4f8a3c; --dot-yellow: #c49a14; --dot-blue: #3f78b5; --dot-gray: #9a9384;
+  --neg: #8f2a23; --flag: #e2711d;
+}
+:root[data-mode="nuit"] {
+  --bg: #18222f; --bg2: #141c27; --surface: #1d293d; --surface2: #233148;
+  --border: #414f6a; --border2: #56637c; --ink: #e4e2dc; --ink2: #cfccc4; --ink3: #aaa79f; --ink5: #827f79;
+  --gold: #d8d2c2; --pnl: #141c29; --pnl-ink: #e4e2dc; --pnl-gold: #d8d2c2;
+  --st-green: #22321f; --st-yellow: #3a3218; --st-blue: #1d2b3c; --st-gray: #262a31; --st-red: #ff7a6e;
+  --dot-green: #7fbf68; --dot-yellow: #e0b93f; --dot-blue: #79a9e0; --dot-gray: #8d8a84;
+  --neg: #ff9d92; --flag: #f08a3c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg2); color: var(--ink); font: 13px/1.35 Inter, system-ui, sans-serif; padding: 20px 16px 40px; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+
+.page-head { display: flex; align-items: center; gap: 18px; max-width: 1320px; margin: 0 auto 14px; flex-wrap: wrap; }
+.page-head h1 { font: 500 18px Cinzel, Georgia, serif; letter-spacing: .12em; color: var(--gold); margin: 0; }
+.opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.opt { padding: 6px 12px; border: 1px solid var(--border2); border-radius: 999px; background: var(--surface); font-weight: 500; }
+.opt b { font-family: Cinzel, serif; color: var(--gold); margin-right: 6px; }
+.opt[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.opt[aria-pressed="true"] b { color: inherit; opacity: .7; }
+.mode { margin-left: auto; }
+.sub { max-width: 1320px; margin: 0 auto 12px; color: var(--ink3); }
+
+/* écran */
+.screen { max-width: 1320px; height: 760px; margin: 0 auto; display: flex; border: 1px solid var(--border2); border-radius: 12px; overflow: hidden; background: var(--bg); box-shadow: 0 18px 40px rgb(0 0 0 / .12); }
+.rail { width: 46px; flex: none; background: var(--pnl); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 16px; }
+.rail i { width: 18px; height: 18px; border: 1.5px solid color-mix(in srgb, var(--pnl-gold) 60%, transparent); border-radius: 5px; display: block; }
+.rail i.on { border-color: var(--pnl-gold); background: color-mix(in srgb, var(--pnl-gold) 18%, transparent); }
+.rail i.logo { border-radius: 50%; border-color: var(--pnl-gold); background: var(--pnl-gold); width: 14px; height: 14px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.hub { display: flex; gap: 22px; padding: 0 20px; height: 42px; align-items: stretch; border-bottom: 1px solid var(--border); flex: none; }
+.hub a { display: flex; align-items: center; color: var(--ink3); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; }
+.hub a.on { color: var(--gold); border-bottom-color: var(--gold); }
+
+.body { flex: 1; min-height: 0; display: flex; }
+.work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; flex: none; flex-wrap: wrap; }
+.search { width: 200px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); display: flex; align-items: center; padding: 0 10px; color: var(--ink5); gap: 6px; }
+.search::before { content: ''; width: 10px; height: 10px; border: 1.5px solid var(--ink5); border-radius: 50%; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid transparent; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.chip:hover { background: var(--surface2); }
+.chip[aria-pressed="true"] { background: var(--surface); border-color: var(--border2); color: var(--ink); font-weight: 600; }
+.chip .d { width: 9px; height: 9px; border-radius: 50%; }
+.chip .n { color: var(--ink5); font-weight: 500; }
+.chip.warn { color: var(--gold); }
+.spacer { flex: 1; }
+.meta { color: var(--ink5); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.meta b { color: var(--ink); font-weight: 600; }
+.meta .bad { color: var(--neg); font-weight: 600; }
+.icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); display: inline-grid; place-items: center; color: var(--ink2); position: relative; }
+.icon-btn:hover { border-color: var(--border2); }
+.menu { position: absolute; right: 0; top: 34px; z-index: 5; background: var(--surface); border: 1px solid var(--border2); border-radius: 10px; padding: 6px; min-width: 190px; box-shadow: 0 14px 30px rgb(0 0 0 / .18); display: none; text-align: left; }
+.menu.open { display: block; }
+.menu div { padding: 7px 10px; border-radius: 6px; color: var(--ink2); }
+.menu div:hover { background: var(--surface2); }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+
+.title-acct { font: 600 17px Cinzel, Georgia, serif; letter-spacing: .06em; color: var(--gold); white-space: nowrap; }
+
+/* tableau */
+.grid { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font: 500 10.5px Cinzel, Georgia, serif; letter-spacing: .14em; color: var(--ink5); padding: 9px 10px; border-bottom: 1px solid var(--border2); }
+th.num, td.num { text-align: right; }
+tbody tr { cursor: pointer; }
+tbody td { padding: 0 10px; height: 40px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+tr.st-rapproche td { background: var(--st-green); }
+tr.st-comptabilise td { background: var(--st-yellow); }
+tr.st-facture_recue td { background: var(--st-blue); }
+tr.st-ignore td { background: var(--st-gray); color: var(--ink5); }
+tr.st-a_traiter td { background: var(--surface); }
+tr.st-a_traiter td:first-child { box-shadow: inset 3px 0 0 var(--st-red); }
+tr.flag td:first-child { box-shadow: inset 3px 0 0 var(--flag); }
+tbody tr:hover td { filter: brightness(.97); }
+:root[data-mode="nuit"] tbody tr:hover td { filter: brightness(1.12); }
+td.date { color: var(--ink3); font-variant-numeric: tabular-nums; }
+td.lib .l1 { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+td.lib .l2 { font-size: 11.5px; color: var(--ink5); overflow: hidden; text-overflow: ellipsis; }
+td.lib .acct { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; background: var(--surface2); color: var(--ink3); font-size: 11px; font-weight: 500; }
+td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
+td.num.neg { color: var(--neg); }
+td.bal { color: var(--ink5); font-weight: 400; }
+.sug { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.sug span { overflow: hidden; text-overflow: ellipsis; color: var(--ink2); }
+.sug em { font-style: normal; font-weight: 600; color: var(--gold); }
+.sug button { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border2); background: var(--surface); flex: none; display: grid; place-items: center; font-size: 12px; }
+.sug button.ok { color: var(--dot-green); }
+.sug button.no { color: var(--st-red); }
+
+tr.exp td { background: var(--surface); height: auto; padding: 12px 16px 14px 46px; white-space: normal; cursor: default; box-shadow: inset 3px 0 0 var(--gold); }
+.expbox { display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border2); border-radius: 8px; overflow: hidden; }
+.seg button { padding: 6px 12px; }
+.seg button.on { background: var(--ink); color: var(--bg); }
+.fld { display: flex; flex-direction: column; gap: 3px; }
+.fld label { font: 500 10px Cinzel, serif; letter-spacing: .14em; color: var(--ink5); }
+.fld div { height: 30px; min-width: 150px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); padding: 0 10px; display: flex; align-items: center; }
+.primary { height: 30px; padding: 0 16px; border-radius: 8px; background: var(--ink); color: var(--bg); font-weight: 600; }
+
+/* T1 onglets en bas */
+.tabs-bottom { flex: none; display: flex; align-items: stretch; height: 40px; border-top: 1px solid var(--border2); background: var(--bg2); overflow-x: auto; padding-left: 10px; }
+.tabs-bottom button { padding: 0 14px; display: flex; align-items: center; gap: 7px; color: var(--ink3); white-space: nowrap; border-right: 1px solid var(--border); }
+.tabs-bottom button.on { background: var(--bg); color: var(--ink); font-weight: 600; box-shadow: inset 0 2px 0 var(--gold); }
+.tabs-bottom .sep { width: 10px; }
+.cnt { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--st-red); color: #fff; font-size: 10.5px; font-weight: 700; display: inline-grid; place-items: center; }
+:root[data-mode="nuit"] .cnt { color: #1a1010; }
+
+/* T2 rail de comptes */
+.acct-rail { width: 220px; flex: none; border-right: 1px solid var(--border); background: var(--bg2); overflow-y: auto; padding: 10px 8px; }
+.acct-rail h4 { margin: 12px 8px 4px; font: 500 10px Cinzel, serif; letter-spacing: .18em; color: var(--ink5); }
+.acct-rail button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; text-align: left; color: var(--ink2); }
+.acct-rail button:hover { background: var(--surface2); }
+.acct-rail button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--gold); }
+.acct-rail button .cur { font-size: 10.5px; color: var(--ink5); margin-left: auto; }
+.acct-rail button .cnt { margin-left: 4px; }
+.acct-rail .todo { font-weight: 600; color: var(--ink); }
+
+/* T3 cartes en haut */
+.cards { flex: none; display: flex; gap: 8px; padding: 12px 16px 2px; overflow-x: auto; }
+.card { flex: none; width: 150px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); text-align: left; position: relative; }
+.card .nm { font-weight: 600; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .sb { font-size: 11.5px; color: var(--ink5); margin-top: 2px; }
+.card .cnt { position: absolute; top: 8px; right: 8px; }
+.card.on { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+.card.on .nm { color: var(--ink); }
+.card.todo { background: var(--ink); border-color: var(--ink); }
+.card.todo .nm, .card.todo .sb { color: var(--bg); }
+.card.todo.on { box-shadow: 0 0 0 2px var(--pnl-gold); }
+
+.empty { padding: 60px; text-align: center; color: var(--ink5); font: 500 13px Cinzel, serif; letter-spacing: .14em; }
+@media (max-width: 760px) { .acct-rail { width: 150px; } .search { width: 130px; } }
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>Transactions</h1>
+  <div class="opts" id="opts"></div>
+  <button class="opt mode" id="mode">Nuit</button>
+</div>
+<div class="sub" id="sub"></div>
+<div class="screen">
+  <div class="rail"><i class="logo"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i></div>
+  <div class="main">
+    <nav class="hub"><a class="on">Transactions</a><a>Rapprochement</a><a>Propositions</a><a>Paiements émis</a><a>Règles</a><a>Extraction de données</a></nav>
+    <div class="body" id="body"></div>
+  </div>
+</div>
+
+<script>
+const OPTS = [
+  ['T1', 'Onglets en bas', 'Les comptes restent en bas ; une seule barre en haut.'],
+  ['T2', 'Colonne de comptes', 'Les comptes à gauche, toujours visibles.'],
+  ['T3', 'Cartes en haut', 'Les comptes en cartes au-dessus du tableau.'],
+]
+const ACCTS = [
+  { n: 'BNC CAD', c: 'CAD', g: 'Banque', bal: '71 056,01 $' },
+  { n: 'BNC USD', c: 'USD', g: 'Banque' },
+  { n: 'BNC Épargne', c: 'CAD', g: 'Banque' },
+  { n: 'Desjardins CAD', c: 'CAD', g: 'Banque' },
+  { n: 'Desjardins USD', c: 'USD', g: 'Banque' },
+  { n: 'Marge Desjardins', c: 'CAD', g: 'Banque' },
+  { n: 'MasterCard BNC', c: 'CAD', g: 'Cartes' },
+  { n: 'VISA Desjardins CAD', c: 'CAD', g: 'Cartes' },
+  { n: 'VISA Desjardins USD', c: 'USD', g: 'Cartes' },
+  { n: 'Venn CAD', c: 'CAD', g: 'Venn' },
+  { n: 'Venn USD', c: 'USD', g: 'Venn' },
+]
+// [date, libellé, description, montant, solde, statut, suggestion, drapeau]
+const S = { r: 'rapproche', c: 'comptabilise', f: 'facture_recue', a: 'a_traiter', i: 'ignore' }
+const ROWS = {
+  'BNC CAD': [
+    ['2026-09-25', 'NOVO EXPRESS', 'PMTS ENTREPRISES', -106.72, 71056.01, 'r'],
+    ['2026-09-23', 'BDC', 'DPA ENTREPRISE', -8617.96, 71162.73, 'a', ['Versement', 'Prêt BDC · échéance 23 sept.'], 1],
+    ['2026-09-22', 'REMB. MCR', '', -41436, 79780.69, 'c', 0, 1],
+    ['2026-09-22', 'CANADA', 'REMB. IMPOT', 121215.7, 121216.69, 'f', ['Dépôt', 'Agence du revenu du Canada'], 1],
+    ['2026-09-21', 'STRIPE', 'COMPTE DIVERS', 2650.37, 2650.99, 'r'],
+    ['2026-09-21', 'REMB. MCR', '', -2650, 0.99, 'r'],
+    ['2026-09-18', 'BIOTALENT CANAD', 'COMPTES DEBITEURS', 1177.47, 1177.62, 'r'],
+    ['2026-09-18', 'REMB. MCR', '', -1177, 0.62, 'r'],
+    ['2026-09-17', 'NOVO EXPRESS', 'PMTS ENTREPRISES', -163.07, -162.12, 'r'],
+    ['2026-09-17', 'PREMIER TECH', 'COMPTES DEBITEURS', 140.27, -21.85, 'r'],
+    ['2026-09-17', 'DEBOURSE MCR', '', 22, 0.15, 'r'],
+    ['2026-09-16', 'BTTH SERVICES MULTIP', 'PMTS ENTREPRISES', -103.48, -102.55, 'r', 0, 1],
+    ['2026-09-16', 'THE LETTER EM', 'PMTS ENTREPRISES', -6898.5, -7001.05, 'r'],
+    ['2026-09-15', 'TRF CT INTERNET', '', -1500, -102.55, 'i'],
+    ['2026-09-15', 'DT NETHRIS PAIE', 'COMPTE DIVERS', -21480.33, 1397.45, 'r'],
+    ['2026-09-15', 'DT NETHRIS SERV', 'COMPTE DIVERS', -94.28, 22877.78, 'r'],
+    ['2026-09-14', 'STRIPE', 'COMPTE DIVERS', 1540.12, 22972.06, 'r'],
+    ['2026-09-14', 'VILLE DE QUEBEC', 'COMPTE DIVERS', -412.6, 21431.94, 'r'],
+  ],
+  'MasterCard BNC': [
+    ['2026-09-25', 'PREMIER FARNELL', 'MISSISSAUGA ON', -1273.64, null, 'a', ['Dépense', 'Premier Farnell · Pièces']],
+    ['2026-09-24', 'PROVO LTD', 'WOODBRIDGE ON', -204.1, null, 'f', ['Facture reçue', 'Provo · 204,10 $']],
+    ['2026-09-24', 'OPENAI', 'SAN FRANCISCO CA', -30.37, null, 'a', ['Dépense', 'OpenAI · Logiciels']],
+    ['2026-09-23', 'PREMIER FARNELL', 'MISSISSAUGA ON', -298.02, null, 'a', ['Dépense', 'Premier Farnell · Pièces']],
+    ['2026-09-23', 'AMAZON.CA', 'TORONTO ON', -8.4, null, 'a'],
+    ['2026-09-22', 'BELL CANADA (CR)', 'VERDUN QC', -103.42, null, 'a', ['Dépense', 'Bell Canada · Télécom']],
+    ['2026-09-18', 'PREMIER FARNELL', 'MISSISSAUGA ON', -298.02, null, 'a', ['Dépense', 'Premier Farnell · Pièces']],
+    ['2026-09-17', 'DIGIKEY', 'THIEF RIVER FALLS MN', -842.19, null, 'c'],
+    ['2026-09-16', 'GOOGLE *SERVICES', 'HALIFAX NS', -2, null, 'r'],
+    ['2026-09-15', 'ADOBE', 'OTTAWA ON', -32.18, null, 'r'],
+    ['2026-09-12', 'SHOPIFY', 'OTTAWA ON', -39, null, 'r'],
+  ],
+  'BNC USD': [['2026-09-25', 'VISA DESJ US', '', -645.2, null, 'a', ['Virement', 'Vers VISA Desjardins USD']]],
+  'Marge Desjardins': [['2024-11-01', 'Remb. automatique', 'de EOP', 1909.26, null, 'a']],
+  'VISA Desjardins USD': [
+    ['2026-09-24', 'VOTRE PAIEMENT - MERCI', '', 645.2, null, 'a', ['Virement', 'De BNC USD']],
+    ['2026-08-03', 'GUILLAUME LAMBERT', '', 0, null, 'a'],
+  ],
+  'Venn USD': [['2026-09-19', 'AWS', 'SEATTLE WA', -118.44, null, 'a', ['Dépense', 'Amazon Web Services · Hébergement']]],
+  'Venn CAD': [['2026-09-20', 'FIGMA', 'SAN FRANCISCO CA', -24.15, null, 'a', ['Dépense', 'Figma · Logiciels']]],
+}
+const TODO = '__todo__'
+const todoRows = () => Object.entries(ROWS).flatMap(([a, rs]) => rs.filter(r => r[5] === 'a' || r[5] === 'f').map(r => { const x = [...r]; x.length = 8; x[8] = a; return x })).sort((x, y) => y[0].localeCompare(x[0]))
+const count = (a) => (ROWS[a] || []).filter(r => r[5] === 'a' || r[5] === 'f').length
+const TOTAL = ACCTS.reduce((s, a) => s + count(a.n), 0)
+
+const st = { opt: 'T1', acct: 'BNC CAD', filter: null, open: null, menu: false, kind: {} }
+const fmt = (v, c) => v == null ? '' : v.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (c === 'USD' ? ' $ US' : ' $')
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const cur = (n) => (ACCTS.find(a => a.n === n) || {}).c
+
+const FILL = ROWS['BNC CAD'].filter(r => r[5] === 'r').map(r => [r[0], r[1], r[2], r[3], null, 'r'])
+function rowsNow() { if (st.acct === TODO) return todoRows(); const own = ROWS[st.acct] || []; return own.length > 3 ? own : own.concat(FILL).sort((x, y) => y[0].localeCompare(x[0])) }
+
+function chips() {
+  const rs = rowsNow()
+  const n = (k) => rs.filter(r => r[5] === k).length
+  const L = [['a', 'À traiter', 'var(--st-red)'], ['f', 'Facture reçue', 'var(--dot-blue)'], ['c', 'Comptabilisé', 'var(--dot-yellow)'], ['r', 'Rapproché', 'var(--dot-green)'], ['i', 'Ignoré', 'var(--dot-gray)']]
+  return `<div class="chips">${L.filter(([k]) => n(k) || st.acct !== TODO).map(([k, t, c]) =>
+    `<button class="chip" data-f="${k}" aria-pressed="${st.filter === k}"><i class="d" style="background:${c}"></i>${t} <span class="n">${n(k)}</span></button>`).join('')}</div>`
+}
+
+function moreMenu() {
+  return `<button class="icon-btn" data-menu title="Plus">⋯<div class="menu ${st.menu ? 'open' : ''}">
+    <div>Champs</div><div>Filtrer</div><div>Trier</div><div>Grouper</div><div>Couleur</div><hr><div>Configurer les champs</div><div>Règles</div><div>Vues</div></div></button>`
+}
+
+function refreshBtn() {
+  return st.acct === TODO ? '' : `<button class="icon-btn" title="Mettre à jour · il y a 2 h">↻</button>`
+}
+
+function meta() {
+  if (st.acct === TODO) return `<span class="meta"><b>${TOTAL}</b> à comptabiliser</span>`
+  const a = ACCTS.find(x => x.n === st.acct)
+  const bal = a.bal ? `<b>${a.bal}</b>` : ''
+  const ecart = st.acct === 'BNC CAD' ? ` · écart <span class="bad">112 597,74 $</span>` : ''
+  return `<span class="meta">${bal}${ecart}</span>`
+}
+
+function table() {
+  const rs = rowsNow().filter(r => !st.filter || r[5] === st.filter)
+  if (!rs.length) return `<div class="grid"><div class="empty">Rien à comptabiliser</div></div>`
+  const todo = st.acct === TODO
+  const hasBal = !todo && rs.some(r => r[4] != null)
+  const head = `<tr><th style="width:98px">Date</th><th style="width:30%">Libellé</th><th>Suggestion</th><th class="num" style="width:130px">Montant</th>${hasBal ? '<th class="num" style="width:130px">Solde</th>' : ''}</tr>`
+  const body = rs.map((r, i) => {
+    const [d, l, desc, amt, bal, s, sug, flag, acct] = r
+    const c = cur(acct || st.acct)
+    const id = (acct || st.acct) + i
+    const tag = todo ? `<span class="acct">${esc(acct)}</span>` : ''
+    const sg = sug ? `<span class="sug"><span><em>${sug[0]}</em> · ${esc(sug[1])}</span><button class="ok" title="Accepter">✓</button><button class="no" title="Refuser">✕</button></span>` : ''
+    const tr = `<tr class="st-${S[s]}${flag ? ' flag' : ''}" data-row="${id}">
+      <td class="date">${d.slice(5).replace('-', '·')}</td>
+      <td class="lib"><div class="l1">${esc(l)}${tag}</div>${desc ? `<div class="l2">${esc(desc)}</div>` : ''}</td>
+      <td>${sg}</td>
+      <td class="num ${amt < 0 ? 'neg' : ''}">${fmt(amt, c)}</td>
+      ${hasBal ? `<td class="num bal">${fmt(bal, c)}</td>` : ''}</tr>`
+    if (st.open !== id) return tr
+    const k = st.kind[id] || (sug && ['Dépense', 'Virement'].includes(sug[0]) ? sug[0] : 'Dépense')
+    const vers = k === 'Virement' ? 'VISA Desjardins USD' : k === 'Apparier' ? 'Facture Provo · 204,10 $' : (sug ? sug[1].split(' · ')[0] : 'Choisir…')
+    const exp = `<tr class="exp"><td colspan="${hasBal ? 5 : 4}"><div class="expbox">
+      <div class="seg">${['Dépense', 'Virement', 'Apparier'].map(x => `<button data-kind="${x}" data-id="${id}" class="${x === k ? 'on' : ''}">${x}</button>`).join('')}</div>
+      <div class="fld"><label>${k === 'Apparier' ? 'Avec' : k === 'Virement' ? 'Vers' : 'Fournisseur'}</label><div>${esc(vers)}</div></div>
+      ${k === 'Dépense' ? `<div class="fld"><label>Compte</label><div>${sug ? esc(sug[1].split(' · ')[1] || '') : ''}</div></div>` : ''}
+      <div class="fld"><label>Date</label><div>${d}</div></div>
+      <div class="fld" style="flex:1"><label>Mémo</label><div>${esc(l.toLowerCase().replace(/\b\w/g, m => m.toUpperCase()))}</div></div>
+      <button class="primary">Comptabiliser</button></div></td></tr>`
+    return tr + exp
+  }).join('')
+  return `<div class="grid"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`
+}
+
+function bar(withTitle) {
+  const title = withTitle ? `<span class="title-acct">${st.acct === TODO ? 'À comptabiliser' : esc(st.acct)}</span>` : ''
+  return `<div class="bar">${title}<div class="search">Rechercher</div>${chips()}<span class="spacer"></span>${meta()}${refreshBtn()}${moreMenu()}</div>`
+}
+
+function renderT1() {
+  const tabs = [`<button data-acct="${TODO}" class="${st.acct === TODO ? 'on' : ''}">À comptabiliser <span class="cnt">${TOTAL}</span></button><span class="sep"></span>`]
+    .concat(ACCTS.map(a => `<button data-acct="${a.n}" class="${st.acct === a.n ? 'on' : ''}">${esc(a.n)}${count(a.n) ? ` <span class="cnt">${count(a.n)}</span>` : ''}</button>`))
+  return `<div class="work">${bar(false)}${table()}<div class="tabs-bottom">${tabs.join('')}</div></div>`
+}
+
+function renderT2() {
+  const groups = [...new Set(ACCTS.map(a => a.g))]
+  const rail = `<aside class="acct-rail">
+    <button data-acct="${TODO}" class="todo ${st.acct === TODO ? 'on' : ''}">À comptabiliser <span class="cnt" style="margin-left:auto">${TOTAL}</span></button>
+    ${groups.map(g => `<h4>${g}</h4>` + ACCTS.filter(a => a.g === g).map(a =>
+      `<button data-acct="${a.n}" class="${st.acct === a.n ? 'on' : ''}">${esc(a.n)}<span class="cur">${count(a.n) ? '' : a.c}</span>${count(a.n) ? `<span class="cnt" style="margin-left:auto">${count(a.n)}</span>` : ''}</button>`).join('')).join('')}
+  </aside>`
+  return `${rail}<div class="work">${bar(false)}${table()}</div>`
+}
+
+function renderT3() {
+  const cards = [`<button class="card todo ${st.acct === TODO ? 'on' : ''}" data-acct="${TODO}"><div class="nm">À comptabiliser</div><div class="sb">Tous les comptes</div><span class="cnt">${TOTAL}</span></button>`]
+    .concat(ACCTS.map(a => `<button class="card ${st.acct === a.n ? 'on' : ''}" data-acct="${a.n}"><div class="nm">${esc(a.n)}</div><div class="sb">${a.bal || a.c}</div>${count(a.n) ? `<span class="cnt">${count(a.n)}</span>` : ''}</button>`))
+  return `<div class="work"><div class="cards">${cards.join('')}</div>${bar(false)}${table()}</div>`
+}
+
+function render() {
+  document.getElementById('opts').innerHTML = OPTS.map(([k, t]) => `<button class="opt" data-opt="${k}" aria-pressed="${st.opt === k}"><b>${k}</b>${t}</button>`).join('')
+  document.getElementById('sub').textContent = OPTS.find(o => o[0] === st.opt)[2]
+  document.getElementById('body').innerHTML = { T1: renderT1, T2: renderT2, T3: renderT3 }[st.opt]()
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-opt],[data-acct],[data-f],[data-menu],[data-kind],[data-row],.sug button,.menu')
+  if (!t) { if (st.menu) { st.menu = false; render() } return }
+  if (t.classList.contains('menu')) return
+  if (t.dataset.opt) { st.opt = t.dataset.opt; st.open = null }
+  else if (t.dataset.acct) { st.acct = t.dataset.acct; st.filter = null; st.open = null }
+  else if (t.dataset.f) { st.filter = st.filter === t.dataset.f ? null : t.dataset.f; st.open = null }
+  else if ('menu' in t.dataset) { st.menu = !st.menu }
+  else if (t.dataset.kind) { st.kind[t.dataset.id] = t.dataset.kind }
+  else if (t.matches('.sug button')) { const tr = t.closest('tr'); tr.style.transition = 'opacity .3s'; tr.style.opacity = '.25'; return }
+  else if (t.dataset.row) { st.open = st.open === t.dataset.row ? null : t.dataset.row }
+  if (!t.dataset.menu && !('menu' in t.dataset)) st.menu = false
+  render()
+})
+document.getElementById('mode').addEventListener('click', (e) => {
+  const nuit = document.documentElement.dataset.mode === 'nuit'
+  document.documentElement.dataset.mode = nuit ? '' : 'nuit'
+  e.currentTarget.textContent = nuit ? 'Nuit' : 'Jour'
+})
+render()
+</script>
+</body>
+</html>

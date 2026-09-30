@@ -9,7 +9,8 @@ import { logSync } from '../services/syncLog.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
-import { describeLinkedPurchases } from '../services/purchaseLinkAudit.js'
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
+import { describeLinkedPurchases, expenseLinesByPurchase } from '../services/purchaseLinkAudit.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -95,6 +96,13 @@ router.get('/lia-links', (req, res) => {
   res.json(describeLinkedPurchases({ refs, expenseDate: date, excludeTxnKey: req.query.txn ? String(req.query.txn) : null }))
 })
 
+// Lignes de dépense (factures fournisseurs) reliées à chaque achat + prix unitaire
+// payé qui en découle. `?ids=a,b` restreint ; sans ids : tous les achats reliés.
+router.get('/expense-lines', (req, res) => {
+  const ids = req.query.ids ? String(req.query.ids).split(',').map(s => s.trim()).filter(Boolean) : null
+  res.json(expenseLinesByPurchase({ ids }))
+})
+
 router.get('/:id', (req, res) => {
   const purchase = db.prepare(`${SELECT_PURCHASE} WHERE p.id = ?`).get(req.params.id)
   if (!purchase) return res.status(404).json({ error: 'Not found' })
@@ -112,8 +120,23 @@ router.patch('/:id', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
   const body = req.body || {}
+  // Champs personnalisés : seuls ceux que l'ERP écrit (règle unique de
+  // customFieldWritability) ; un champ Airtable en import seul → 400 explicite.
+  if (refusedAirtablePullKeys('purchases', body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
+  }
+  const customCols = getWritableCustomColumns('purchases').map(c => c.column_name)
+  // Réception complète : refusée tant qu'aucune facture n'est liée à l'achat
+  // (l'effacer reste permis).
+  const received = body.cf_date_de_reception_complete
+  if (received != null && received !== '') {
+    const info = expenseLinesByPurchase({ ids: [req.params.id] })[req.params.id]
+    if (!info?.lines?.length && !info?.airtable_links?.length) {
+      return res.status(400).json({ error: "Liez d'abord la facture avant d'inscrire la date de réception complète" })
+    }
+  }
   const { setClause, values, cols: changedColumns } = buildPartialUpdate(body, {
-    allowed: [...PATCHABLE_FIELDS],
+    allowed: [...PATCHABLE_FIELDS, ...customCols],
   })
   if (!setClause) return res.status(400).json({ error: 'Aucun champ modifiable fourni' })
 

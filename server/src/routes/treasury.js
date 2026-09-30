@@ -13,7 +13,7 @@ import {
 import {
   listPayments, getPayment, createPayment, setCleared, autoClearFromBank,
   validatePayment, PAYMENT_FIELDS, PAYMENT_METHODS,
-  vendorPaymentHints, learnPaymentNote, paymentTemplates, openBills,
+  vendorPaymentHints, learnPaymentNote, paymentTemplates, openBills, searchPayments,
   enrichInvoiceDatesFromQb,
 } from '../services/treasuryPayments.js'
 
@@ -218,6 +218,25 @@ router.get('/payments/templates', (req, res) => {
 // Factures fournisseurs encore à payer : on en choisit une dans /paiements-emis
 // et le formulaire se pré-remplit (fournisseur, montant, n° de facture) avec le
 // lien achat_id — la facture sort alors de la liste et de la projection en double.
+// La loupe de /paiements-emis : cherche dans les paiements ET dans les factures
+// fournisseurs (tous statuts). Une facture réglée ailleurs ne figure dans aucune
+// des deux listes de la page — sans elle, la recherche ne la retrouverait pas.
+router.get('/payments/search', (req, res) => {
+  const out = searchPayments(req.query.q, { limit: req.query.limit })
+  const billPaymentConfig = getBillPaymentConfig()
+  res.json({
+    ...out,
+    payments: out.payments.map(p => ({
+      ...p,
+      qb_billpayment_applies: billPaymentApplies(p, { config: billPaymentConfig }),
+      qb_url: p.qb_txn_id && p.qb_txn_type ? qbEntityUrl(p.qb_txn_type, p.qb_txn_id) : null,
+      bill_qb_url: p.achat_qb_id ? qbEntityUrl('bill', p.achat_qb_id) : null,
+      qb_billpayment_url: p.qb_billpayment_id ? qbEntityUrl('billpayment', p.qb_billpayment_id) : null,
+    })),
+    bills: out.bills.map(b => ({ ...b, qb_url: b.quickbooks_id ? qbEntityUrl('bill', b.quickbooks_id) : null })),
+  })
+})
+
 router.get('/payments/open-bills', (req, res) => {
   res.json(openBills({ limit: req.query.limit }))
 })

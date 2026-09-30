@@ -7,14 +7,13 @@
 // Claude du précédent via --resume. À la fin de chaque item, un recap part dans le
 // DM Slack perso : c'est ce qui permet de ne plus surveiller le terminal.
 //
-// La file est éclatée en EXEC_LANES sous-files parallèles (colonne `exec_lane`,
-// migration 020) et chaque file n'avance qu'un item à la fois. La file d'un item
-// est choisie à la création selon son heure de départ : « maintenant » → la file la
-// moins chargée (les demandes déposées coup sur coup partent donc EN MÊME TEMPS),
-// « ce soir 19 h » → toujours la file du soir (les travaux programmés s'enchaînent
-// dans UNE seule file). Il y a donc jusqu'à EXEC_LANES chantiers en cours
-// — ils partagent le même arbre de travail, sans isolation (choix assumé, voir
-// taskRunner.js).
+// UNE seule file (demande de Pap, 2026-09-29) servie par EXEC_LANES postes : dès
+// qu'un poste se libère, il prend le PREMIER item de la file, quel qu'il soit. Plus
+// d'item rangé d'avance dans une sous-file qui attendrait un poste occupé pendant
+// que l'autre chôme. `exec_lane` ne dit plus que le poste où un item TOURNE
+// (attribué par le runner au démarrage). Les départs programmés (« ce soir 19 h »)
+// s'enchaînent toujours un à la fois. Les chantiers partagent le même arbre de
+// travail, sans isolation (choix assumé, voir taskRunner.js).
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { broadcastAll } from './realtime.js'
@@ -24,7 +23,7 @@ import {
   updatePendingAgentTask, cancelPendingAgentTask, sendSteeringMessage,
 } from './taskRunner.js'
 import { heuristicTitle, refineTitle, refineProjectTitle } from './promptTitle.js'
-import { classifyPreset, provisionalPreset, PRESET_KEYS } from './promptPreset.js'
+import { autoPresetFrom, classifyPreset, provisionalPreset, PRESET_KEYS } from './promptPreset.js'
 import { KNOWN_MODELS } from './agentModel.js'
 
 
@@ -42,46 +41,6 @@ const MAX_PARALLEL_QUESTION_PROMPTS = getMaxParallelQuestions()
 // Files d'implémentation parallèles — la source de vérité est le runner, qui tient
 // un poste par file.
 const EXEC_LANES = getExecLaneCount()
-
-/** File d'un item, bornée : hors intervalle (ou NULL héritée) → file 0. */
-function laneOfRow(row) {
-  const n = Number(row?.exec_lane)
-  return Number.isInteger(n) && n >= 0 && n < EXEC_LANES ? n : 0
-}
-// File du soir : TOUS les départs programmés y vont, donc ils s'enchaînent l'un
-// après l'autre au lieu de saturer tous les postes à 19 h.
-export const SCHEDULED_LANE = 0
-
-/**
- * Pure : file retenue pour un item, d'après la charge de chaque file.
- * - départ programmé → toujours la même file (une seule file le soir) ;
- * - départ immédiat → la file la moins chargée, donc deux demandes déposées coup
- *   sur coup partent en même temps sur deux postes différents.
- */
-export function pickLane({ startAt = null, loads = [] } = {}) {
-  if (startAt) return SCHEDULED_LANE
-  let best = 0
-  for (let lane = 1; lane < EXEC_LANES; lane++) {
-    if ((loads[lane] ?? 0) < (loads[best] ?? 0)) best = lane
-  }
-  return best
-}
-
-/** Charge par file : items qui disputent un poste et n'ont pas fini. */
-function laneLoads(excludeId = null) {
-  const loads = new Array(EXEC_LANES).fill(0)
-  const rows = db.prepare(`${SELECT} AND status IN ('queued','running') AND ${EXEC_LANE_WHERE}`).all()
-  for (const row of rows) {
-    if (excludeId && row.id === excludeId) continue
-    loads[laneOfRow(row)] += 1
-  }
-  return loads
-}
-
-/** File d'un nouvel item (ou d'un item dont l'heure de départ vient de changer). */
-function laneFor(startAt, excludeId = null) {
-  return pickLane({ startAt, loads: laneLoads(excludeId) })
-}
 
 /**
  * Vrai si l'item passe par la voie lecture seule (questions, parallèles et hors
@@ -140,15 +99,24 @@ const SELECT = `
   SELECT *, (SELECT name FROM users WHERE id = work_prompts.created_by) AS created_by_name
   FROM work_prompts WHERE deleted_at IS NULL`
 
-// Deux files distinctes sur la même table : celle de l'Espace finance et celle de
-// la section Agent. Chaque page ne voit que la sienne ; l'exécuteur est partagé.
+// `space` ne dit plus que la section d'où l'item a été lancé : la file est unique,
+// son ordre (position) est commun à toutes les sections.
 export const PROMPT_SPACES = ['finance', 'agent']
 
-export function listPrompts({ space = null } = {}) {
+export function listPrompts({ space = null, activeOnly = false } = {}) {
   // Un item qui attend une réponse passe devant la file : c'est le seul état où RIEN
   // n'avance sans l'utilisateur. Il serait sinon rangé dans l'historique (terminé /
   // bloqué), là où on ne regarde plus.
   const where = space ? ` AND p.space=?` : ''
+  // `activeOnly` : le filtre de la file vivante descend dans le SQL. Il était fait en
+  // JS après avoir lu les ~900 lignes d'historique (texte des demandes compris) —
+  // 30 ms de boucle d'événements bloquée, à chaque sondage de la pastille, depuis
+  // toutes les pages de l'ERP. Le `pending_question IS NOT NULL` est volontairement
+  // large : l'appelant affine encore (une question vide ne compte pas).
+  const live = activeOnly
+    ? ` AND (p.status IN ('running','queued','paused')
+            OR (p.status IN ('done','blocked') AND p.pending_question IS NOT NULL))`
+    : ''
   // La nature de la suggestion d'origine voyage avec l'item : la file la signale
   // d'une pastille (« Claude · Intégration »), il n'y a donc plus de raison
   // d'aller la relire dans l'onglet Suggestions.
@@ -157,7 +125,7 @@ export function listPrompts({ space = null } = {}) {
     FROM work_prompts p
     LEFT JOIN work_suggestions s ON s.id = p.suggestion_id
     LEFT JOIN users u ON u.id = p.created_by
-    WHERE p.deleted_at IS NULL${where} ORDER BY
+    WHERE p.deleted_at IS NULL${where}${live} ORDER BY
     CASE WHEN p.pending_question IS NOT NULL AND p.status NOT IN ('running','cancelled') THEN 0
          ELSE CASE p.status WHEN 'running' THEN 1 WHEN 'queued' THEN 2 WHEN 'paused' THEN 3 ELSE 4 END END,
     p.position, p.created_at`).all(...(space ? [space] : []))
@@ -167,10 +135,9 @@ export function getPrompt(id) {
   return db.prepare(`${SELECT} AND id=?`).get(id) || null
 }
 
-// Les positions vivent PAR FILE : chaque page réordonne la sienne sans bousculer
-// l'autre. Entre files, l'ordonnanceur départage par position puis created_at.
-function nextPosition(space) {
-  const row = db.prepare(`SELECT MAX(position) AS m FROM work_prompts WHERE deleted_at IS NULL AND space=?`).get(space)
+// Une seule file : les positions sont communes à toutes les sections.
+function nextPosition() {
+  const row = db.prepare(`SELECT MAX(position) AS m FROM work_prompts WHERE deleted_at IS NULL`).get()
   return (row?.m ?? 0) + 1
 }
 
@@ -186,8 +153,8 @@ function nextPosition(space) {
 // repris en file (reclaimPending) sans que sa position n'ait bougé — deux items
 // à la même position, départagés ensuite par created_at : le plus récent (souvent
 // une suggestion tout juste intégrée) perd le tri et semble ne jamais avancer.
-function frontPosition(space) {
-  const row = db.prepare(`SELECT MIN(position) AS m FROM work_prompts WHERE deleted_at IS NULL AND status IN ('queued','running') AND space=?`).get(space)
+function frontPosition() {
+  const row = db.prepare(`SELECT MIN(position) AS m FROM work_prompts WHERE deleted_at IS NULL AND status IN ('queued','running')`).get()
   return (row?.m ?? 1) - 1
 }
 
@@ -206,7 +173,8 @@ function pinnedModel(model) {
  * (taskRunner résout le modèle réellement utilisable au démarrage).
  */
 function specForRow(row) {
-  const spec = presetFor(row.preset)
+  // Auto ne part jamais sur haiku, même pour un item classé « rapide » avant la règle.
+  const spec = presetFor(row.preset_auto ? autoPresetFrom(row.preset) : row.preset)
   const pinned = pinnedModel(row.model)
   return pinned ? { ...spec, model: pinned } : spec
 }
@@ -239,18 +207,14 @@ export function createPrompt({
   // mais l'ordonnanceur ne le prendra pas avant l'heure.
   const startAt = futureStart(start_at)
   db.prepare(`
-    INSERT INTO work_prompts (id, title, prompt, status, position, same_context, mode, preset, suggestion_id, created_by, title_auto, preset_auto, space, model, exec_lane, start_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(id, label, text, initial, priority ? frontPosition(inSpace) : nextPosition(inSpace), same_context ? 1 : 0,
+    INSERT INTO work_prompts (id, title, prompt, status, position, same_context, mode, preset, suggestion_id, created_by, title_auto, preset_auto, space, model, start_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+  `).run(id, label, text, initial, priority ? frontPosition() : nextPosition(), same_context ? 1 : 0,
     cleanMode, chosen, suggestion_id, created_by,
     given ? 0 : 1, autoPreset && preset === 'auto' ? 1 : 0, inSpace,
     // Modèle épinglé à la demande (sélecteur de la fenêtre « Modifier le système ») ;
     // NULL = on suit le modèle du préréglage.
     pinnedModel(model),
-    // File choisie selon l'heure de départ : immédiat = la file la moins chargée
-    // (les demandes du moment partent ensemble), programmé = la file du soir
-    // (elles s'enchaînent).
-    laneFor(startAt),
     startAt)
   broadcast()
   if (!given) scheduleTitleRefine(id, text, label)
@@ -462,12 +426,6 @@ export function updatePrompt(id, patch) {
       sets.push('start_at=?')
       vals.push(at)
       rearmWake = true
-      // La file suit l'heure : programmé → la file unique du soir, remis en immédiat
-      // → la file la moins chargée. Jamais sur un item déjà parti (il occupe son poste).
-      if (row.status !== 'running' && !isQuestionLane(row)) {
-        sets.push('exec_lane=?')
-        vals.push(laneFor(at, id))
-      }
       continue
     }
     sets.push(`${k}=?`)
@@ -547,15 +505,8 @@ export function reorderPrompts(ids) {
  * encore en file : les items déjà remis à l'ordonnanceur mais pas démarrés lui
  * sont repris — sans ça ils partaient quand même avant, et « premier » mentait.
  * Ils repartiront par le chemin normal, derrière celui-ci. Puis l'item est remis
- * tout de suite à l'ordonnanceur (qui sert premier arrivé) : son rang 1 tient
- * même face à l'autre espace, l'exécuteur étant partagé. File en pause ou agent
+ * tout de suite à l'ordonnanceur (qui sert premier arrivé). File en pause ou agent
  * désactivé : simple repositionnement, rien n'est confié au runner.
- *
- * Avec plusieurs files parallèles, « premier » impose aussi de CHANGER de file quand
- * celle de l'item est occupée par un chantier réellement en cours : sinon la carte
- * s'affichait « 1re » tout en attendant la fin d'un long travail alors qu'un autre
- * poste était libre. La file d'origine était tirée au sort, la remplacer par une
- * autre au hasard parmi les libres ne trahit donc rien.
  */
 export function moveToFront(id) {
   let target = getPrompt(id)
@@ -568,39 +519,17 @@ export function moveToFront(id) {
       reclaimPending(row) // no-op si l'exécution a réellement commencé
     }
   } else {
-    const lane = frontLane(target)
-    if (lane !== laneOfRow(target)) {
-      db.prepare(`UPDATE work_prompts SET exec_lane=? WHERE id=?`).run(lane, id)
-    }
-    // Seuls les items de SA file le concurrencent désormais.
-    for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND exec_lane=? AND ${EXEC_LANE_WHERE}`).all(id, lane)) {
+    for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND ${EXEC_LANE_WHERE}`).all(id)) {
       reclaimPending(row) // no-op si l'exécution a réellement commencé
     }
   }
   // start_at=NULL : « passer en premier » veut dire partir maintenant — un départ
   // différé encore en attente serait la contradiction exacte de ce clic.
   db.prepare(`UPDATE work_prompts SET position=?, status='queued', start_at=NULL, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`)
-    .run(frontPosition(target.space), id)
+    .run(frontPosition(), id)
   broadcast()
-  if (getSettings().enabled && !isQueuePaused(specForRow(getPrompt(id)).model)) return startPrompt(getPrompt(id)).prompt
+  if (getSettings().enabled && !isQueuePaused()) return startPrompt(getPrompt(id)).prompt
   return getPrompt(id)
-}
-
-/**
- * File visée par un « Passer en premier » : celle de l'item si aucun chantier n'y
- * tourne vraiment, sinon la première file libre. Les items simplement « remis à
- * l'ordonnanceur » (pas démarrés) ne comptent pas comme occupation : l'appelant les
- * reprend juste après.
- */
-function frontLane(target) {
-  const own = laneOfRow(target)
-  const busy = new Set()
-  for (const row of db.prepare(`${SELECT} AND status='running' AND id!=? AND ${EXEC_LANE_WHERE}`).all(target.id)) {
-    if (!isPending(row)) busy.add(laneOfRow(row))
-  }
-  if (!busy.has(own)) return own
-  for (let lane = 0; lane < EXEC_LANES; lane++) if (!busy.has(lane)) return lane
-  return own
 }
 
 // ─── Ordonnancement ───────────────────────────────────────────────────────────
@@ -641,6 +570,28 @@ export function resumeQueue() {
 }
 
 /**
+ * Pure : items à démarrer, pris dans la file unique (`pending` = items en file ou
+ * déjà partis, triés par position), pour `free` postes libres.
+ * - départ programmé : un seul à la fois, et jamais avant son heure ;
+ * - « même contexte » : attend que tout ce qui le précède soit fini.
+ * Un item retenu par l'une de ces règles ne bloque pas ceux de derrière.
+ */
+export function pickNextImplementations(pending, { free, eligible = () => true, now = Date.now() } = {}) {
+  const due = row => !row.start_at || Date.parse(row.start_at) <= now
+  let scheduledBusy = pending.some(r => r.status === 'running' && r.start_at)
+  const picked = []
+  for (const [i, row] of pending.entries()) {
+    if (picked.length >= free) break
+    if (row.status !== 'queued' || !eligible(row) || !due(row)) continue
+    if (row.start_at && scheduledBusy) continue
+    if (row.same_context && pending.slice(0, i).some(p => p.status === 'running' || due(p))) continue
+    picked.push(row)
+    if (row.start_at) scheduledBusy = true
+  }
+  return picked
+}
+
+/**
  * Démarre le prochain item si rien ne tourne. Retourne { started, reason } :
  * `reason` explique une non-exécution ('busy' | 'agent-disabled' | 'queue-paused' |
  * 'empty') pour que la page puisse le dire clairement au lieu de laisser croire à un
@@ -665,16 +616,13 @@ export function advanceQueue() {
   // 2. Pause posée à la main (ou par un item « arrêter après celle-ci ») : la
   // réconciliation ci-dessus a quand même tourné — un item fauché par un redémarrage
   // ne doit pas rester « en cours » pour l'éternité juste parce que la file dort.
-  if (isQueuePaused('codex')) return { started: null, startedCount: 0, reason: 'queue-paused' }
-  // A Claude quota pause leaves Codex eligible. Manual pauses still stop everyone.
-  const eligible = row => !isQueuePaused(specForRow(row).model)
+  if (isQueuePaused()) return { started: null, startedCount: 0, reason: 'queue-paused' }
 
   if (!getSettings().enabled) return { started: null, startedCount: 0, reason: 'agent-disabled' }
 
   const runningRows = db.prepare(`${SELECT} AND status='running'`).all()
   const runningQuestions = runningRows.filter(isQuestionLane).length
-  // Files déjà occupées : elles n'accueillent rien de plus, les autres avancent.
-  const busyLanes = new Set(runningRows.filter(r => !isQuestionLane(r)).map(laneOfRow))
+  const runningImpl = runningRows.filter(r => !isQuestionLane(r))
 
   const started = []
 
@@ -683,23 +631,21 @@ export function advanceQueue() {
   // il doit reprendre la session de son prédécesseur, donc attendre son tour.
   const slots = MAX_PARALLEL_QUESTION_PROMPTS - runningQuestions
   if (slots > 0) {
-    const questions = db.prepare(`${SELECT} AND status='queued' AND mode='question' AND same_context=0 AND ${DUE_WHERE} ORDER BY position, created_at`).all().filter(eligible).slice(0, slots)
+    const questions = db.prepare(`${SELECT} AND status='queued' AND mode='question' AND same_context=0 AND ${DUE_WHERE} ORDER BY position, created_at`).all().slice(0, slots)
     for (const q of questions) started.push(startPrompt(q))
   }
 
-  // 3. Implémentation : UN item par file d'exécution, donc jusqu'à EXEC_LANES
-  // chantiers de front. Chaque file est servie indépendamment — une file occupée par
-  // un long chantier ne retient pas les trois autres.
-  // Les positions vivent PAR ESPACE (finance / agent) : comparer les positions brutes
-  // entre espaces n'aurait aucun sens. On prend donc, pour la file visée, le prochain
-  // candidat de CHAQUE espace selon son propre ordre, puis premier arrivé premier servi.
-  for (let lane = 0; lane < EXEC_LANES; lane++) {
-    if (busyLanes.has(lane)) continue
-    const next = PROMPT_SPACES
-      .map(sp => db.prepare(`${SELECT} AND status IN ('queued','running') AND space=? AND exec_lane=? AND ${EXEC_LANE_WHERE} AND ${DUE_WHERE} ORDER BY position, created_at`).all(sp, lane).find(eligible))
-      .filter(Boolean)
-      .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)))[0]
-    if (next) started.push(startPrompt(next))
+  // 3. Implémentation : UNE file, EXEC_LANES postes. Chaque poste libre prend le
+  // premier item éligible de la file — ordre commun à toutes les sections.
+  // Deux exceptions, qui ne bloquent pas ceux de derrière :
+  // - départ programmé : un seul à la fois (les travaux du soir s'enchaînent au lieu
+  //   de saturer tous les postes à 19 h) ;
+  // - « même contexte » : attend que tout ce qui le précède soit fini, sinon il
+  //   partirait sans la session de son prédécesseur.
+  const free = EXEC_LANES - runningImpl.length
+  if (free > 0) {
+    const pending = db.prepare(`${SELECT} AND status IN ('queued','running') AND ${EXEC_LANE_WHERE} ORDER BY position, created_at`).all()
+    for (const row of pickNextImplementations(pending, { free })) started.push(startPrompt(row))
   }
 
   if (!started.length) {
@@ -717,25 +663,21 @@ export function advanceQueue() {
  * avec la voie parallèle, une question terminée entre-temps volerait le contexte.
  */
 function sessionOfPrevious(row) {
-  // Scopé au même espace ET à la même file d'exécution : un item « même contexte »
-  // de l'espace Agent ne doit jamais reprendre la session d'un item de l'espace
-  // finance (et inversement), ni celle d'un chantier d'une autre file — qui
-  // n'était même pas son prédécesseur.
   const prev = db.prepare(`
     SELECT session_id, model, preset, agent_task_id FROM work_prompts
-    WHERE deleted_at IS NULL AND session_id IS NOT NULL AND space = ? AND exec_lane = ?
+    WHERE deleted_at IS NULL AND session_id IS NOT NULL
       AND (position < ? OR (position = ? AND created_at < ?))
     ORDER BY position DESC, created_at DESC LIMIT 1
-  `).get(row.space, laneOfRow(row), row.position, row.position, row.created_at)
-  if (prev && !sessionMatchesModel(prev, specForRow(row).model)) return null
+  `).get(row.position, row.position, row.created_at)
+  if (prev && !sessionMatchesModel(prev)) return null
   return prev?.session_id || null
 }
 
-function sessionMatchesModel(row, model) {
+function sessionMatchesModel(row) {
   const previousTask = row.agent_task_id ? findAgentTask(row.agent_task_id) : null
   const previousModel = previousTask?.run_model || previousTask?.model || row.model
-  // Older sessions without a recorded provider were Claude sessions.
-  return (previousModel === 'codex') === (model === 'codex')
+  // Une ancienne session Codex n'est pas reprenable par Claude.
+  return previousModel !== 'codex'
 }
 
 function startPrompt(row, { forceFresh = false } = {}) {
@@ -746,7 +688,7 @@ function startPrompt(row, { forceFresh = false } = {}) {
   // est reprise quand elle existe encore.
   const followUp = !!row.follow_up
   const resume = forceFresh ? null
-    : followUp ? (sessionMatchesModel(row, model) ? row.session_id || null : null)
+    : followUp ? (sessionMatchesModel(row) ? row.session_id || null : null)
       : row.same_context ? sessionOfPrevious(row) : null
   const task = enqueueAgentTask({
     title: row.title,
@@ -757,7 +699,6 @@ function startPrompt(row, { forceFresh = false } = {}) {
     author: followUp ? 'File de travaux (suite)' : 'File de travaux',
     work_prompt_id: row.id,
     resume_session_id: resume,
-    exec_lane: laneOfRow(row),
   })
   db.prepare(`
     UPDATE work_prompts
@@ -898,31 +839,22 @@ export function replyToPrompt(id, { text, userId = null, placement = 'front' }) 
  * rattrapage d'un message de steering arrivé trop tard pour être lu en direct.
  */
 function relaunchWithThread(row) {
-  const messages = listMessages(row.id)
-  const { model, effort } = specForRow(row)
-  const task = enqueueAgentTask({
-    title: row.title,
-    description: briefFor(row, { followUp: true, messages }),
-    kind: 'queue',
-    mode: row.mode,
-    model, effort,
-    author: 'File de travaux (suite)',
-    work_prompt_id: row.id,
-    resume_session_id: sessionMatchesModel(row, model) ? row.session_id || null : null,
-    exec_lane: laneOfRow(row),
-  })
-  // follow_up=1 : si cette exécution est fauchée avant d'avoir travaillé (quota,
-  // reprise de session impossible), le redémarrage saura qu'il doit repartir du
-  // FIL, pas du prompt d'origine. Consommé à la fin de l'exécution (finishPrompt).
+  // follow_up=1 : le départ est une SUITE — startPrompt reconstruit le brief depuis
+  // le fil et reprend la session de l'item. Si l'exécution est fauchée avant d'avoir
+  // travaillé (quota, reprise impossible), le redémarrage repartira aussi du FIL.
+  // Consommé à la fin de l'exécution (finishPrompt).
   db.prepare(`
     UPDATE work_prompts
-    SET status='running', agent_task_id=?, started_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+    SET status='queued', agent_task_id=NULL, started_at=NULL,
         completed_at=NULL, pending_question=NULL, follow_up=1,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
     WHERE id=?
-  `).run(task.id, row.id)
-  broadcast()
-  return { prompt: getPrompt(row.id), task }
+  `).run(row.id)
+  // Même chemin que « Passer en premier » : un poste libre s'il y en a un, sinon
+  // l'item attend EN TÊTE que l'un des chantiers en cours finisse — il ne démarre
+  // jamais par-dessus eux (le serveur n'en porte pas plus). File en pause : il reste
+  // simplement premier en file.
+  return { prompt: moveToFront(row.id) }
 }
 
 /**
@@ -938,7 +870,7 @@ function requeueWithThread(row) {
         agent_task_id=NULL, started_at=NULL, completed_at=NULL, pending_question=NULL,
         updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
     WHERE id=?
-  `).run(nextPosition(row.space), row.id)
+  `).run(nextPosition(), row.id)
   broadcast()
   // File vide et poste libre → l'item repart tout de suite ; sinon il attend son tour.
   advanceQueue()

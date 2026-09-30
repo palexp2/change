@@ -2,7 +2,14 @@
 // (classifyPreset) n'est PAS testé ici — il spawnerait un vrai subprocess Claude.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { provisionalPreset, sanitizePresetAnswer, PRESET_KEYS } from './promptPreset.js'
+import { autoPresetFrom, provisionalPreset, sanitizePresetAnswer, PRESET_KEYS } from './promptPreset.js'
+
+test('autoPresetFrom : Auto ne retient jamais « rapide » (haiku)', () => {
+  assert.equal(autoPresetFrom('fast'), 'standard')
+  assert.equal(autoPresetFrom('standard'), 'standard')
+  assert.equal(autoPresetFrom('deep'), 'deep')
+  assert.equal(autoPresetFrom(null), null)
+})
 
 test('provisionalPreset : prudent en attendant le verdict', () => {
   assert.equal(provisionalPreset('implement'), 'deep')

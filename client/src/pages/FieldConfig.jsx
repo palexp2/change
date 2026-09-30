@@ -347,6 +347,7 @@ function FieldRow({
                   direction={dynDirection || 'pull'}
                   configurable
                   mapped
+                  noPush={!!mapAt.direction_no_push}
                   onChange={onDynDirection}
                 />
               </span>

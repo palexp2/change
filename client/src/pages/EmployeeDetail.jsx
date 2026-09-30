@@ -1,11 +1,13 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useAuth } from '../lib/auth.jsx'
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Plus, Trash2, AlertTriangle } from 'lucide-react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { Trash2, Palmtree, MoreHorizontal } from 'lucide-react'
 import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
-import { vacationBalance } from '../lib/vacationBalance.js'
-import Spinner from '../components/Spinner.jsx'
+import { fmtMoney } from '../utils/formatters.js'
+import { RecordOps } from '../lib/recordOps.js'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { DataTable } from '../components/DataTable.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -51,6 +53,7 @@ const SECTIONS = [
       { key: 'last_raise_date',  label: 'Dernière augmentation', type: 'date' },
       { key: 'active',         label: 'Actif',          type: 'checkbox' },
       { key: 'is_salesperson', label: 'Vendeur',        type: 'checkbox' },
+      { key: 'commission_rate', label: 'Commission (%)', type: 'number', step: '0.25' },
       { key: 'is_consultant',  label: 'Consultant',     type: 'checkbox' },
       { key: 'office_key',     label: 'Clef du bureau', type: 'checkbox' },
     ],
@@ -77,18 +80,18 @@ const BOOL_KEYS = new Set(['active', 'is_salesperson', 'is_consultant', 'office_
 
 // Colonnes que la fiche affiche DÉJÀ : la carte des champs personnalisés ne doit
 // pas les répéter. Depuis que les champs de la table sont tous des champs
-// personnalisés, `vacation_days_per_year` (le seul dont la définition n'est pas
-// importée d'Airtable) s'y serait invité — il est saisi juste au-dessus, dans le
-// bloc « Vacances ».
+// personnalisés, `vacation_pct` (définition propre à l'ERP) s'y serait invité —
+// il est saisi juste au-dessus, dans le bloc « Vacances ». `vacation_days_per_year`
+// (ancien droit en jours, remplacé par le %) reste caché.
 // Champs de la fiche, à plat : les sections de SECTIONS ne servent plus qu'à
 // fixer l'ordre de départ. L'ordre réel, et les champs qu'on garde, se règlent
 // depuis la fiche (bouton « Personnaliser les champs »).
 const ALL_FIELDS = SECTIONS.flatMap(s => s.fields)
 
-// Rendu AILLEURS que dans la carte de champs : l'allocation de vacances est
-// saisie dans le bloc « Vacances ». Sans ça elle reviendrait en double dans la
-// liste des champs de la table.
-const TAKEN_ELSEWHERE = ['vacation_days_per_year']
+// Rendu AILLEURS que dans la carte de champs : le % de vacances est saisi dans
+// le bloc « Vacances ». Sans ça il reviendrait en double dans la liste des
+// champs de la table.
+const TAKEN_ELSEWHERE = ['vacation_pct', 'vacation_days_per_year', 'vacation_ref_date', 'vacation_ref_balance']
 
 function normalize(raw) {
   const out = { ...raw }
@@ -264,8 +267,11 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
         <div className="space-y-6">
           {isHR && <VacationsSection
             employeeId={id}
-            allowance={form.vacation_days_per_year}
-            onAllowanceChange={v => change('vacation_days_per_year', v)}
+            pct={form.vacation_pct}
+            onPctChange={v => change('vacation_pct', v)}
+            refDate={form.vacation_ref_date}
+            refBalance={form.vacation_ref_balance}
+            onChange={change}
           />}
 
           {/* Carte de champs commune : une seule liste, réordonnable depuis la
@@ -296,14 +302,17 @@ export default function EmployeeDetail({ recordId: id, onClose }) {
   )
 }
 
-function VacationsSection({ employeeId, allowance, onAllowanceChange }) {
+// Vacances de l'employé : DataTable manipulable (cf. lib/recordOps.js) — clic
+// droit = dupliquer/supprimer, « + » sous la dernière ligne = nouvelle période,
+// cellules éditables en mode tableur. « Type » est dérivé de `paid` (1/0).
+const PAID = 'Congé payé'
+const UNPAID = 'Sans solde'
+const VACATION_COLUMNS = TABLE_COLUMN_META.employee_vacations.map(meta => ({ ...meta, editable: true }))
+
+function VacationsSection({ employeeId, pct, onPctChange, refDate, refBalance, onChange }) {
   const { addToast } = useToast()
-  const confirm = useConfirm()
   const [rows, setRows] = useState([])
   const [loading, setLoading] = useState(true)
-  const [savingIds, setSavingIds] = useState(() => new Set())
-  const timers = useRef({})
-  const pending = useRef({})
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -318,199 +327,172 @@ function VacationsSection({ employeeId, allowance, onAllowanceChange }) {
   }, [employeeId, addToast])
 
   useEffect(() => { load() }, [load])
-  useEffect(() => () => { for (const t of Object.values(timers.current)) clearTimeout(t) }, [])
 
   // Realtime: filtre sur l'employé courant (le canal global est partagé entre toutes les fiches).
   useEntityListRealtime('vacation', setRows, { predicate: (p) => !p?.employee_id || p.employee_id === employeeId })
 
-  function markSaving(id, on) {
-    setSavingIds(prev => {
-      const next = new Set(prev)
-      if (on) next.add(id); else next.delete(id)
-      return next
-    })
-  }
+  const tableRows = useMemo(
+    () => rows.map(r => ({ ...r, paid_type: r.paid ? PAID : UNPAID })),
+    [rows],
+  )
 
-  async function flush(id) {
-    const patch = pending.current[id]
-    if (!patch || !Object.keys(patch).length) return
-    pending.current[id] = {}
-    markSaving(id, true)
-    try {
-      const updated = await api.vacations.update(id, patch)
-      setRows(rs => rs.map(r => r.id === id ? updated : r))
-    } catch (err) {
-      addToast({ message: err.message, type: 'error' })
-    } finally {
-      markSaving(id, false)
-    }
-  }
-
-  function change(id, key, val) {
-    setRows(rs => rs.map(r => r.id === id ? { ...r, [key]: val } : r))
-    pending.current[id] = { ...(pending.current[id] || {}), [key]: val }
-    clearTimeout(timers.current[id])
-    timers.current[id] = setTimeout(() => flush(id), 400)
-  }
-
-  async function addVacation() {
-    try {
+  const vacationOps = useMemo(() => new RecordOps({
+    labels: {
+      add: 'Ajouter des vacances',
+      duplicate: 'Dupliquer',
+      delete: 'Supprimer',
+      duplicated: 'Vacances dupliquées',
+      deleted: 'Vacances supprimées',
+    },
+    create: async () => {
       const today = localISODate()
+      const created = await api.vacations.create({ employee_id: employeeId, start_date: today, end_date: today, paid: 1 })
+      setRows(rs => (rs.some(r => r.id === created.id) ? rs : [...rs, created]))
+      return created
+    },
+    duplicate: async (row) => {
       const created = await api.vacations.create({
-        employee_id: employeeId,
-        start_date: today,
-        end_date: today,
-        paid: 1,
+        employee_id: employeeId, start_date: row.start_date, end_date: row.end_date, paid: row.paid ? 1 : 0, notes: row.notes,
       })
-      setRows(rs => [created, ...rs])
-    } catch (err) {
-      addToast({ message: err.message, type: 'error' })
-    }
-  }
-
-  async function removeVacation(row) {
-    const label = row.start_date ? `du ${row.start_date}${row.end_date ? ` au ${row.end_date}` : ''}` : 'cette période'
-    if (!(await confirm(`Supprimer les vacances ${label} ?`))) return
-    try {
+      setRows(rs => {
+        if (rs.some(r => r.id === created.id)) return rs
+        const idx = rs.findIndex(r => r.id === row.id)
+        const next = [...rs]
+        next.splice(idx === -1 ? next.length : idx + 1, 0, created)
+        return next
+      })
+      return created
+    },
+    remove: async (row) => {
       await api.vacations.delete(row.id)
       setRows(rs => rs.filter(r => r.id !== row.id))
+    },
+    deleteConfirm: row => `Supprimer les vacances ${row.start_date ? `du ${row.start_date}${row.end_date ? ` au ${row.end_date}` : ''}` : 'de cette période'} ?`,
+  }), [employeeId])
+
+  async function handleCellEdit(row, col, value) {
+    const patch = col.field === 'paid_type'
+      ? { paid: value === UNPAID ? 0 : 1 }
+      : { [col.field]: value === '' ? null : value }
+    setRows(rs => rs.map(r => (r.id === row.id ? { ...r, ...patch } : r)))
+    try {
+      const updated = await api.vacations.update(row.id, patch)
+      setRows(rs => rs.map(r => (r.id === row.id ? updated : r)))
     } catch (err) {
       addToast({ message: err.message, type: 'error' })
+      load()
     }
   }
 
-  const year = new Date().getFullYear()
-  const bal = vacationBalance(rows, allowance, year)
+  // Banque de vacances en $ : [montant de référence] + Σ brut des paies
+  // (postérieures à la date de référence, s'il y en a une) × % − paies de
+  // vacances versées. Le % a changé dans le passé sans historique : le point de
+  // référence fixe la banque à une date connue. Le serveur donne les sommes ;
+  // le % et le montant de référence sont appliqués ici pour réagir à la frappe.
+  const [sums, setSums] = useState(null)
+  useEffect(() => {
+    api.vacations.balance({ employee_id: employeeId, since: refDate || '' }).then(setSums).catch(() => setSums(null))
+  }, [employeeId, refDate])
+  const base = refDate ? (Number(refBalance) || 0) : 0
+  const accrued = sums ? Math.round(sums.gross * (Number(pct) || 0)) / 100 : null
+  const balance = sums ? Math.round((base + accrued - sums.paid_out) * 100) / 100 : null
+  const refInp = 'border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white tabular-nums'
+  const [refOpen, setRefOpen] = useState(false)
+  const refMenuRef = useRef(null)
+  useEffect(() => {
+    if (!refOpen) return
+    const onDown = e => { if (!refMenuRef.current?.contains(e.target)) setRefOpen(false) }
+    const onKey = e => { if (e.key === 'Escape') setRefOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [refOpen])
 
   return (
     <div className="card p-5">
-      <div className="flex items-center justify-between mb-4">
-        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Vacances</div>
-        <button
-          onClick={addVacation}
-          className="text-xs text-brand-600 hover:text-brand-700 flex items-center gap-1 font-medium"
-          data-testid="add-vacation"
-        >
-          <Plus size={14} /> Ajouter
-        </button>
-      </div>
+      <h3 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-4">Vacances</h3>
 
-      {/* Solde de vacances payées — droit annuel, jours pris, restants, avertissement de dépassement. */}
       <div className="mb-4 rounded-lg border border-slate-200 bg-slate-50 p-3" data-testid="vacation-balance">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <label className="flex items-center gap-2 text-sm text-slate-600">
-            <span className="text-xs font-medium text-slate-400 uppercase tracking-wide">Droit annuel</span>
             <input
               type="number"
               step="0.5"
               min="0"
               className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm text-slate-900 focus:outline-none focus:border-brand-400 bg-white tabular-nums"
-              value={allowance ?? ''}
-              onChange={e => onAllowanceChange(e.target.value === '' ? null : parseFloat(e.target.value))}
-              data-testid="vacation-allowance"
+              value={pct ?? ''}
+              onChange={e => onPctChange(e.target.value === '' ? null : parseFloat(e.target.value))}
+              data-testid="vacation-pct"
             />
-            <span className="text-xs text-slate-400">j / an</span>
+            <span className="text-xs text-slate-400">%</span>
           </label>
-          <div className="flex items-center gap-4 text-sm tabular-nums">
-            <span className="text-slate-500">Pris <span className="font-semibold text-slate-900" data-testid="vacation-used">{bal.used_days}</span> j</span>
-            <span className="text-slate-300">·</span>
-            <span className="text-slate-500">
-              Restants{' '}
-              <span
-                className={`font-semibold ${bal.over_limit ? 'text-red-600' : bal.remaining === 0 ? 'text-slate-400' : 'text-emerald-600'}`}
-                data-testid="vacation-remaining"
-              >
-                {bal.remaining}
-              </span>{' '}
-              j
-            </span>
-            <span className="text-xs text-slate-400">({year})</span>
+          {sums && (
+            <div className="flex items-center gap-4 text-sm tabular-nums">
+              <span className="text-slate-500">
+                Banque{' '}
+                <span
+                  className={`font-semibold ${balance < 0 ? 'text-red-600' : balance === 0 ? 'text-slate-400' : 'text-emerald-600'}`}
+                  data-testid="vacation-bank"
+                >
+                  {fmtMoney(balance)}
+                </span>
+              </span>
+              <span className="text-slate-300">·</span>
+              <span className="text-xs text-slate-400" data-testid="vacation-bank-detail">
+                {refDate && <>{fmtMoney(base)} </>}+{fmtMoney(accrued)} − {fmtMoney(sums.paid_out)}
+              </span>
+            </div>
+          )}
+          {/* Point de référence : saisi une fois, rangé dans un sous-menu. */}
+          <div className="relative ml-auto" ref={refMenuRef}>
+            <button
+              type="button"
+              className="p-1 rounded text-slate-400 hover:text-slate-600 hover:bg-slate-200"
+              title="Référence"
+              onClick={() => setRefOpen(o => !o)}
+              data-testid="vacation-ref-toggle"
+            >
+              <MoreHorizontal size={16} />
+            </button>
+            {refOpen && (
+              <div className="absolute right-0 top-full mt-1 z-20 rounded-lg border border-slate-200 bg-white p-3 shadow-lg">
+                <label className="flex items-center gap-2 text-sm text-slate-600 whitespace-nowrap" title="Banque connue à cette date">
+                  <span className="text-xs text-slate-400">Réf.</span>
+                  <input
+                    type="date"
+                    className={refInp}
+                    value={refDate ?? ''}
+                    onChange={e => onChange('vacation_ref_date', e.target.value || null)}
+                    data-testid="vacation-ref-date"
+                  />
+                  <input
+                    type="number"
+                    step="0.01"
+                    className={`w-28 ${refInp}`}
+                    value={refBalance ?? ''}
+                    onChange={e => onChange('vacation_ref_balance', e.target.value === '' ? null : parseFloat(e.target.value))}
+                    data-testid="vacation-ref-balance"
+                  />
+                  <span className="text-xs text-slate-400">$</span>
+                </label>
+              </div>
+            )}
           </div>
         </div>
-        {bal.over_limit && (
-          <div className="mt-2 flex items-center gap-1.5 text-xs font-medium text-red-600" data-testid="vacation-overage">
-            <AlertTriangle size={13} />
-            Dépassement de {Math.abs(bal.remaining)} jour{Math.abs(bal.remaining) > 1 ? 's' : ''} sur le droit annuel.
-          </div>
-        )}
       </div>
 
-      {loading ? (
-        <div className="text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>
-      ) : rows.length === 0 ? (
-        <div className="text-sm text-slate-400 italic">Aucune vacance enregistrée.</div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm" data-testid="vacations-table">
-            <thead>
-              <tr className="text-xs font-medium text-slate-400 uppercase tracking-wide">
-                <th className="text-left pb-2 pr-3 font-medium">Du</th>
-                <th className="text-left pb-2 pr-3 font-medium">Au</th>
-                <th className="text-left pb-2 pr-3 font-medium">Type</th>
-                <th className="text-left pb-2 pr-3 font-medium">Notes</th>
-                <th className="pb-2 w-10"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map(row => (
-                <tr key={row.id} data-vacation-id={row.id} className="border-t border-slate-100">
-                  <td className="py-2 pr-3">
-                    <input
-                      type="date"
-                      className={inp}
-                      value={row.start_date || ''}
-                      onChange={e => change(row.id, 'start_date', e.target.value)}
-                      data-testid="vacation-start"
-                    />
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input
-                      type="date"
-                      className={inp}
-                      value={row.end_date || ''}
-                      onChange={e => change(row.id, 'end_date', e.target.value)}
-                      data-testid="vacation-end"
-                    />
-                  </td>
-                  <td className="py-2 pr-3 min-w-[9rem]">
-                    <select
-                      className={inp}
-                      value={row.paid ? '1' : '0'}
-                      onChange={e => change(row.id, 'paid', e.target.value === '1' ? 1 : 0)}
-                      data-testid="vacation-paid"
-                    >
-                      <option value="1">Congé payé</option>
-                      <option value="0">Sans solde</option>
-                    </select>
-                  </td>
-                  <td className="py-2 pr-3">
-                    <input
-                      type="text"
-                      className={inp}
-                      value={row.notes || ''}
-                      onChange={e => change(row.id, 'notes', e.target.value)}
-                      data-testid="vacation-notes"
-                    />
-                  </td>
-                  <td className="py-2 text-right">
-                    <div className="flex items-center gap-2 justify-end">
-                      <span className={`text-xs transition-opacity ${savingIds.has(row.id) ? 'opacity-100 text-slate-400' : 'opacity-0'}`}>…</span>
-                      <button
-                        onClick={() => removeVacation(row)}
-                        className="p-1 text-slate-400 hover:text-red-600"
-                        title="Supprimer"
-                        data-testid="vacation-delete"
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      <DataTable
+        table="employee_vacations"
+        columns={VACATION_COLUMNS}
+        data={tableRows}
+        loading={loading}
+        height="auto"
+        onCellEdit={handleCellEdit}
+        dateCellPicker
+        selectBadges
+        recordOps={vacationOps}
+        emptyState={{ icon: Palmtree, title: 'Aucune vacance' }}
+      />
     </div>
   )
 }

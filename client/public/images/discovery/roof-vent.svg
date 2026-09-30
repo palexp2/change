@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling-r">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+
+  <!-- Sol -->
+  <line x1="40" y1="252" x2="600" y2="252" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round"/>
+
+  <!-- Serre vue de bout -->
+  <path d="M170 252V160C170 100 240 70 320 70C360 70 397.5 77.5 425 92.5C452.5 107.5 470 130 470 160V252Z" fill="#eef8f9"/>
+  <path d="M170 252V160C170 100 240 70 320 70" fill="none" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M425 92.5C452.5 107.5 470 130 470 160V252" fill="none" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <g fill="none" stroke="#b9e2e4" stroke-width="2.4" stroke-linecap="round">
+    <path d="M245 252V112M320 252V100"/>
+  </g>
+
+  <!-- Ouverture laissée par le toit relevé -->
+  <path d="M320 70C360 70 397.5 77.5 425 92.5" fill="none" stroke="#cbd5e1" stroke-width="2.6" stroke-dasharray="7 9" stroke-linecap="round"/>
+
+  <!-- Crémaillère et moteur qui poussent le toit -->
+  <path d="M395 50V150" fill="none" stroke="#94a3b8" stroke-width="4" stroke-linecap="round"/>
+  <rect x="379" y="150" width="32" height="24" rx="5" fill="#fff" stroke="#94a3b8" stroke-width="3.4"/>
+
+  <!-- Toit ouvrant, relevé depuis le faîte -->
+  <path d="M320 70C360 70 397.5 77.5 425 92.5" transform="rotate(-25 320 70)" fill="none" stroke="#7ecdd0" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="320" cy="70" r="6" fill="#fff" stroke="#7ecdd0" stroke-width="4"/>
+
+  <!-- Sens d'ouverture -->
+  <path d="M452 92Q476 70 452 50" fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round"/>
+  <path d="M447 62L451 49L464 52" fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g>
+    <use href="#seedling-r" transform="translate(215 250) scale(1.5)"/>
+    <use href="#seedling-r" transform="translate(280 250) scale(1.5)"/>
+    <use href="#seedling-r" transform="translate(345 250) scale(1.5)"/>
+    <use href="#seedling-r" transform="translate(430 250) scale(1.5)"/>
+  </g>
+
+  <rect x="0" y="268" width="640" height="8" rx="4" fill="#22a34a"/>
+</svg>

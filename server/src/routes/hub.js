@@ -13,7 +13,6 @@ const SERVICES = [
   { id: 'erp',          name: 'ERP',                    port: 3004, url: '/erp/',         description: 'Gestion complète : ventes, compta, projets, RH' },
   { id: 'troubleshoot', name: 'Troubleshoot',           port: 3002, url: '/troubleshoot/',description: 'Diagnostic et dépannage' },
   { id: 'chatbot',      name: 'Chatbot support',        port: 3005, url: '/chatbot/',     description: 'RAG support serres (admin + widget client)' },
-  { id: 'circle',       name: 'Circle Analytics',       port: 3006, url: '/circle/',      description: 'Statistiques de la communauté Circle : croissance, rétention, engagement' },
   { id: 'ftp',          name: 'FTP Cube ACR',           port: 2121, url: null,            description: 'Réception des enregistrements d’appels (port 2121)' },
   { id: 'billing',      name: 'Portail facturation',    port: 4003, url: null,            description: 'Portail Stripe (session créée à la demande)' },
 ];

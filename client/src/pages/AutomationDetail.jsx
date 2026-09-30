@@ -13,6 +13,7 @@ import { AUTOMATION_ACTION_LABELS as ACTION_TYPE_LABELS } from '../components/Ba
 // Alias : cette page a déjà un composant local `Field` (paramètres d'action).
 import { Field as TableField } from '../components/Field.jsx'
 import Spinner from '../components/Spinner.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // Mirrors MANUAL_RUNNERS in server/src/services/systemAutomations.js. Keep in sync.
 const SYSTEM_MANUAL_RUNNABLE = new Set(['sys_installation_followup', 'sys_ctb_programmation_paiement', 'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder', 'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push'])
@@ -797,7 +798,7 @@ export default function AutomationDetail() {
                     className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5"
                     data-testid="run-date-rule-btn">
                     {runningDateRule
-                      ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution…</>
+                      ? <><ThinkingOrb size={12} ink className="text-white" /> Exécution…</>
                       : <><Play size={13} /> Lancer maintenant</>}
                   </button>
                 )}
@@ -834,7 +835,7 @@ export default function AutomationDetail() {
                   data-testid="manual-dry-run"
                   className="px-3 py-1.5 text-sm border border-brand-300 text-brand-700 rounded-lg hover:bg-brand-50 disabled:opacity-50 flex items-center gap-1.5">
                   {manualRunning === 'dryRun'
-                    ? <><div className="w-3 h-3 border-2 border-brand-700 border-t-transparent rounded-full animate-spin" /> {id === CTB_AUTOMATION_ID ? 'Test...' : 'Simulation...'}</>
+                    ? <><ThinkingOrb size={12} /> {id === CTB_AUTOMATION_ID ? 'Test...' : 'Simulation...'}</>
                     : <><FlaskConical size={14} /> {id === CTB_AUTOMATION_ID ? 'Tester la connexion' : 'Simuler (dry-run)'}</>}
                 </button>
                 {id !== CTB_AUTOMATION_ID && (
@@ -842,7 +843,7 @@ export default function AutomationDetail() {
                   title={!active ? 'Activez l\'automation avant de pouvoir la lancer manuellement' : ''}
                   className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">
                   {manualRunning === 'live'
-                    ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution...</>
+                    ? <><ThinkingOrb size={12} ink className="text-white" /> Exécution...</>
                     : <><Play size={14} /> Lancer maintenant</>}
                 </button>
                 )}
@@ -869,7 +870,7 @@ export default function AutomationDetail() {
                 <button onClick={handleTestEmail} disabled={testSending}
                   className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 flex items-center gap-1.5">
                   {testSending
-                    ? <><div className="w-3 h-3 border-2 border-gray-500 border-t-transparent rounded-full animate-spin" /> Envoi...</>
+                    ? <><ThinkingOrb size={12} ink className="text-gray-500" /> Envoi...</>
                     : <><Mail size={14} /> Envoyer test</>}
                 </button>
               </div>
@@ -914,7 +915,7 @@ export default function AutomationDetail() {
               <button onClick={handleTest} disabled={testRunning}
                 className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">
                 {testRunning ? (
-                  <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Exécution...</>
+                  <><ThinkingOrb size={12} ink className="text-white" /> Exécution...</>
                 ) : (
                   <><Play size={14} /> Exécuter</>
                 )}
@@ -1409,7 +1410,7 @@ function RetryQueuePanel({ items, maxAttempts, loading, retryingId, onRefresh, o
                   className="ml-auto px-2.5 py-1 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5"
                   data-testid="retry-now-btn">
                   {retryingId === item.id
-                    ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Retry…</>
+                    ? <><ThinkingOrb size={12} ink className="text-white" /> Retry…</>
                     : <><RefreshCw size={12} /> Retenter maintenant</>}
                 </button>
               </div>
@@ -1464,7 +1465,7 @@ function DeferredQueuePanel({ data, loading, draining, onRefresh, onDrain }) {
               className="px-2.5 py-1 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5"
               data-testid="deferred-drain-btn">
               {draining
-                ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Drain…</>
+                ? <><ThinkingOrb size={12} ink className="text-white" /> Drain…</>
                 : <><Play size={12} /> Drainer maintenant</>}
             </button>
           )}

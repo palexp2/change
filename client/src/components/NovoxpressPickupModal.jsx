@@ -4,6 +4,7 @@ import api from '../lib/api.js'
 import { localISODate } from '../lib/formatDate.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 export const PICKUP_LOCATIONS = [
   { value: 'OutsideDoor', label: 'Porte extérieure' },
@@ -140,7 +141,7 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
           {!diagnostic?.available && (
             <button onClick={handleDiagnose} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5" type="button">
               {diagLoading
-                ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~30 s)</>
+                ? <><ThinkingOrb size={14} ink className="text-slate-500" /> Diagnostic en cours… (~30 s)</>
                 : <><Stethoscope size={14} /> Diagnostiquer en dev</>}
             </button>
           )}
@@ -150,7 +151,7 @@ export default function NovoxpressPickupModal({ envoi, defaultWeight, onClose, o
         <button onClick={onClose} className="btn-secondary">Annuler</button>
         <button onClick={handleSchedulePickup} disabled={loading || !pickupDate} className="btn-primary flex items-center gap-1.5">
           {loading
-            ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Envoi…</>
+            ? <><ThinkingOrb size={16} ink className="text-white" /> Envoi…</>
             : <><CheckCircle size={14} /> Confirmer le ramassage</>
           }
         </button>

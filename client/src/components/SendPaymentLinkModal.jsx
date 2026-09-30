@@ -6,16 +6,22 @@ import { useToast } from '../contexts/ToastContext.jsx'
 import { useUndoSend } from './UndoSendProvider.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import Spinner from './Spinner.jsx'
+import { isValidEmailList } from '../lib/emailHtml.js'
+
+const inputCls = 'w-full text-sm rounded-lg border border-slate-200 bg-white px-3 py-2 hover:border-slate-300 focus:outline-none focus:ring-2 focus:ring-brand-400'
 
 // Modale d'envoi du lien de paiement (pending_invoice).
 // Charge les défauts via /email-defaults, laisse l'utilisateur éditer
 // destinataire / sujet / message, puis appelle stripeInvoices.send.
-export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent }) {
+// `withCopies` : affiche l'expéditeur et ajoute les champs Cc / Cci.
+export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent, withCopies = false }) {
   const { addToast } = useToast()
   const scheduleSend = useUndoSend()
   const [loading, setLoading] = useState(false)
   const [defaults, setDefaults] = useState(null)
   const [to, setTo] = useState('')
+  const [cc, setCc] = useState('')
+  const [bcc, setBcc] = useState('')
   const [subject, setSubject] = useState('')
   const [message, setMessage] = useState('')
   const [recipientPickerOpen, setRecipientPickerOpen] = useState(false)
@@ -30,6 +36,8 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
       .then(d => {
         setDefaults(d)
         setTo(d.defaults?.to || '')
+        setCc('')
+        setBcc('')
         setSubject(d.defaults?.subject || '')
         setMessage(d.defaults?.message || '')
       })
@@ -69,6 +77,10 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
     const cleanTo = String(to || '').trim()
     if (!cleanTo) { setError('Adresse courriel requise'); return }
     if (!/.+@.+\..+/.test(cleanTo)) { setError('Adresse courriel invalide'); return }
+    const cleanCc = withCopies ? String(cc || '').trim() : ''
+    if (cleanCc && !isValidEmailList(cleanCc)) { setError('Adresse en Cc invalide'); return }
+    const cleanBcc = withCopies ? String(bcc || '').trim() : ''
+    if (cleanBcc && !isValidEmailList(cleanBcc)) { setError('Adresse en Cci invalide'); return }
 
     const subj = subject?.trim() || undefined
     const msg = message?.trim() || undefined
@@ -80,6 +92,8 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
         try {
           const r = await api.stripeInvoices.send(pendingInvoiceId, {
             to: cleanTo,
+            cc: cleanCc || undefined,
+            bcc: cleanBcc || undefined,
             subject: subj,
             message: msg,
           })
@@ -101,6 +115,15 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
         <div className="py-10 text-center text-red-600">{error || 'Impossible de charger les valeurs par défaut'}</div>
       ) : (
         <div className="space-y-4">
+          {withCopies && (
+            <div>
+              <label className="label">De</label>
+              <div className="text-sm text-slate-700 py-1" data-testid="payment-link-from">
+                {defaults.from || <span className="text-red-600">Aucun compte Gmail connecté</span>}
+              </div>
+            </div>
+          )}
+
           {/* Destinataire */}
           <div>
             <label className="label">Destinataire</label>
@@ -163,6 +186,19 @@ export function SendPaymentLinkModal({ pendingInvoiceId, isOpen, onClose, onSent
               )}
             </div>
           </div>
+
+          {withCopies && (
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="label" htmlFor="payment-link-cc">Cc</label>
+                <input id="payment-link-cc" type="text" value={cc} onChange={e => setCc(e.target.value)} className={inputCls} />
+              </div>
+              <div>
+                <label className="label" htmlFor="payment-link-bcc">Cci</label>
+                <input id="payment-link-bcc" type="text" value={bcc} onChange={e => setBcc(e.target.value)} className={inputCls} />
+              </div>
+            </div>
+          )}
 
           {/* Objet */}
           <div>

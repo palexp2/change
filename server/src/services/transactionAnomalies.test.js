@@ -503,8 +503,18 @@ test('écriture supprimée dans QB → qb_entry_missing, avec le remplacement s\
   assert.equal(row.severity, 'medium')
   assert.match(row.message, /17888/)
 
-  // L'écriture réapparaît (ou l'appel réussit) → anomalie résolue.
-  await verifyPublishedQbLinks({ fetchEntity: async () => ({ Id: '17887' }) })
+  // Lien déjà constaté mort → plus redemandé à QB (le journal s'en remplissait).
+  let calls = 0
+  // …y compris après le scan local, qui ne doit pas refermer cette alerte.
+  syncReceiptAnomalies('bell')
+  const again = await verifyPublishedQbLinks({ fetchEntity: async () => { calls++; return null } })
+  assert.equal(calls, 0)
+  assert.equal(again.missing, 1)
+
+  // Reçu rattaché au remplacement → anomalie résolue, nouvel Id vérifié.
+  db.prepare(`UPDATE sale_receipts SET quickbooks_id='17999' WHERE id='bell'`).run()
+  await verifyPublishedQbLinks({ fetchEntity: async () => { calls++; return { Id: '17999' } } })
+  assert.equal(calls, 1)
   assert.equal(db.prepare(`SELECT status FROM transaction_anomalies WHERE kind='qb_entry_missing'`).get().status, 'resolved')
 })
 

@@ -39,7 +39,8 @@ export function receptionShelf(returnReason) {
 
 /** La phrase affichée au réceptionniste après un scan. */
 export function receptionInstruction(returnReason, person) {
-  const who = String(person || '').trim()
+  // Un utilisateur Boréal arrive en nom complet : on salue par le prénom.
+  const who = String(person || '').trim().split(/\s+/)[0]
   const salut = who ? `Bonjour ${who}, ` : ''
   const parts = INSTRUCTIONS_PAR_RAISON[String(returnReason || '').trim()]
   if (!parts) return `${salut}article reçu. Étagère à déterminer.`

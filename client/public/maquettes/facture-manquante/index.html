@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Factures manquantes — maquettes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f6f7f5; --surface: #ffffff; --surface2: #f1f3f0; --hover: #f7f9f6;
+  --border: #e5e8e3; --border2: #d6dbd3;
+  --ink: #16201a; --ink2: #3a463e; --ink3: #6b766e; --ink4: #9aa39c;
+  --brand: #1f6b3a; --brand-soft: #e6f1e9; --brand-ink: #185a30;
+  --amber: #b76e00; --amber-soft: #fdf3e1;
+  --red: #b3261e; --red-soft: #fbe9e6; --ribbon: #e2711d;
+  --green-soft: #e4f1e7; --yellow-soft: #fdf4dd; --blue-soft: #e6eff8; --gray-soft: #eceeeb;
+  --shadow: 0 1px 2px rgb(16 24 20 / .05), 0 8px 24px rgb(16 24 20 / .06);
+}
+:root[data-theme="dark"] {
+  --bg: #111613; --surface: #181e1a; --surface2: #1f2622; --hover: #1c231f;
+  --border: #2a332d; --border2: #36413a;
+  --ink: #e9eee9; --ink2: #c7d0c9; --ink3: #93a097; --ink4: #6c786f;
+  --brand: #5fbf82; --brand-soft: #1d3326; --brand-ink: #8fd6a8;
+  --amber: #f0b04a; --amber-soft: #33291a;
+  --red: #ff7a6e; --red-soft: #3a2220; --ribbon: #f08a3c;
+  --green-soft: #1b3024; --yellow-soft: #322a17; --blue-soft: #1b2634; --gray-soft: #222924;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 Inter, system-ui, sans-serif; padding: 20px 16px 56px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+.num { font-variant-numeric: tabular-nums; }
+.wrap { max-width: 1240px; margin: 0 auto; }
+.top { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-bottom: 10px; }
+.top h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.tabs { display: flex; gap: 4px; }
+.tabs button { padding: 6px 12px; border-radius: 999px; color: var(--ink3); font-weight: 500; }
+.tabs button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+.theme { margin-left: auto; color: var(--ink3); font-size: 12px; border: 1px solid var(--border2); border-radius: 999px; padding: 5px 11px; background: var(--surface); }
+.opts { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.opt { padding: 6px 12px; border: 1px solid var(--border2); border-radius: 999px; background: var(--surface); font-weight: 500; color: var(--ink2); }
+.opt b { color: var(--brand); margin-right: 5px; }
+.opt[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.opt[aria-pressed="true"] b { color: inherit; opacity: .6; }
+.lede { color: var(--ink3); margin-bottom: 12px; }
+
+.screen { position: relative; border: 1px solid var(--border2); border-radius: 14px; background: var(--surface); box-shadow: var(--shadow); }
+.hub { display: flex; gap: 24px; padding: 0 16px; height: 42px; align-items: center; border-bottom: 1px solid var(--border); }
+.hub a { color: var(--ink3); text-decoration: none; font-weight: 500; display: flex; align-items: center; height: 100%; border-bottom: 2px solid transparent; }
+.hub a.on { color: var(--brand-ink); border-bottom-color: var(--brand); }
+.bar { display: flex; align-items: center; gap: 8px; padding: 7px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 7px; color: var(--ink3); font-size: 12px; }
+.chip i { width: 10px; height: 10px; border-radius: 3px; border: 1px solid rgb(0 0 0 / .1); font-style: normal; display: block; }
+.chip.amber { color: var(--amber); }
+.chip.amber[data-on] { background: var(--amber-soft); font-weight: 600; }
+.chip.brand { color: var(--brand-ink); }
+.spacer { flex: 1; }
+.tool { width: 26px; height: 26px; border: 1px solid var(--border2); border-radius: 7px; color: var(--ink3); display: grid; place-items: center; background: var(--surface); }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 10.5px; font-weight: 500; letter-spacing: .14em; text-transform: uppercase; color: var(--ink4); padding: 8px 10px; background: var(--surface2); border-bottom: 1px solid var(--border2); }
+td { padding: 9px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr.green td { background: var(--green-soft); }
+tr.yellow td { background: var(--yellow-soft); }
+tr.blue td { background: var(--blue-soft); }
+tr.sel td { box-shadow: inset 2px 0 0 var(--brand); }
+.lbl { font-weight: 600; }
+.sub { color: var(--ink4); font-size: 12px; }
+.amt { text-align: right; font-weight: 500; }
+.ck { width: 14px; height: 14px; border: 1px solid var(--border2); border-radius: 3px; display: inline-block; vertical-align: -2px; }
+.ck.on { background: var(--brand); border-color: var(--brand); position: relative; }
+.ck.on::after { content: '✓'; color: #fff; font-size: 10px; position: absolute; inset: 0; display: grid; place-items: center; }
+.pen { width: 14px; height: 14px; border: 2px solid var(--red); border-radius: 50%; display: inline-block; }
+.pen.on { background: var(--red); }
+.ribbon { width: 13px; height: 20px; background: var(--ribbon); display: inline-block; clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%); }
+.want { display: inline-flex; align-items: center; gap: 5px; padding: 2px 7px; border-radius: 6px; background: var(--amber-soft); color: var(--amber); font-size: 11px; font-weight: 600; }
+.marks { display: flex; align-items: center; justify-content: center; gap: 8px; }
+
+/* barre de sélection */
+.selbar { display: flex; align-items: center; gap: 8px; padding: 8px 14px; background: var(--brand-soft); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.selbar .n { color: var(--brand-ink); font-weight: 500; }
+.btn { padding: 5px 11px; border-radius: 8px; border: 1px solid var(--border2); background: var(--surface); color: var(--ink2); font-weight: 500; display: inline-flex; align-items: center; gap: 6px; }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+.btn.warn { background: var(--surface); border-color: var(--amber); color: var(--amber); }
+.link { color: var(--ink3); font-size: 12px; }
+.sep { width: 1px; height: 20px; background: var(--border2); margin: 0 2px; }
+.float { position: absolute; left: 50%; bottom: 54px; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 999px; background: var(--ink); color: var(--bg); box-shadow: 0 10px 30px rgb(0 0 0 / .25); }
+.float .btn { background: rgb(255 255 255 / .1); border-color: rgb(255 255 255 / .18); color: var(--bg); }
+.float .btn.primary { background: var(--brand); border-color: var(--brand); color: #fff; }
+.iconbtn { width: 28px; height: 28px; border-radius: 8px; border: 1px solid rgb(255 255 255 / .18); display: grid; place-items: center; }
+.menu { position: absolute; right: 18px; top: 92px; width: 240px; background: var(--surface); border: 1px solid var(--border2); border-radius: 12px; box-shadow: var(--shadow); padding: 5px; z-index: 5; }
+.menu div { padding: 7px 10px; border-radius: 8px; display: flex; align-items: center; gap: 9px; color: var(--ink2); }
+.menu div:hover { background: var(--hover); }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 6px; }
+
+/* onglets de comptes */
+.acct { display: flex; align-items: stretch; height: 38px; background: var(--surface2); border-top: 1px solid var(--border2); border-radius: 0 0 13px 13px; overflow: hidden; }
+.acct button { padding: 0 14px; color: var(--ink3); border-right: 1px solid var(--border); display: flex; align-items: center; gap: 7px; }
+.acct button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: inset 0 2px 0 var(--brand); }
+.count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--red); color: #fff; font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; justify-content: center; }
+.count.amber { background: var(--ribbon); }
+
+/* panneau latéral */
+.panel { position: absolute; top: 0; right: 0; bottom: 0; width: 400px; background: var(--surface); border-left: 1px solid var(--border2); box-shadow: -14px 0 40px rgb(16 24 20 / .1); border-radius: 0 14px 14px 0; display: flex; flex-direction: column; z-index: 4; }
+.panel header { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.panel h3 { margin: 0; font-size: 14px; }
+.panel .body { padding: 8px 16px; overflow: auto; flex: 1; }
+.panel .row.off { opacity: .45; }
+.panel .row.off .lbl { text-decoration: line-through; }
+.panel .row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+.panel .row .g { flex: 1; min-width: 0; }
+.panel footer { padding: 12px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 10px; }
+.draft { background: var(--surface2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; color: var(--ink2); white-space: pre-wrap; font-size: 12px; margin: 10px 0 0; }
+
+/* Slack */
+.slack { max-width: 640px; border: 1px solid var(--border2); border-radius: 12px; background: var(--surface); padding: 14px 16px; box-shadow: var(--shadow); }
+.slack .hd { display: flex; align-items: center; gap: 9px; margin-bottom: 8px; }
+.slack .av { width: 30px; height: 30px; border-radius: 7px; background: var(--brand); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 12px; }
+.slack .who { font-weight: 700; }
+.slack .when { color: var(--ink4); font-size: 11px; }
+.slack .msg { color: var(--ink); line-height: 1.55; white-space: pre-wrap; }
+.slack .msg b { font-weight: 600; }
+.slack table { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.slack th { background: var(--surface2); text-transform: none; letter-spacing: 0; font-size: 11px; padding: 6px 9px; }
+.slack td { padding: 6px 9px; }
+.chan { color: var(--ink4); font-size: 12px; margin-bottom: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <h1>Factures manquantes</h1>
+    <div class="tabs" id="tabs"></div>
+    <button class="theme" id="theme">Nuit</button>
+  </div>
+  <div class="opts" id="opts"></div>
+  <div class="lede" id="lede"></div>
+  <div id="stage"></div>
+</div>
+
+<script>
+const ROWS = [
+  { d: '26 sept.', l: 'PAIEMENT HYDRO-QUEBEC', s: 'Hydro-Québec · Électricité', a: '-412,18', st: 'green' },
+  { d: '25 sept.', l: 'CHQ #4471 DIGI-KEY CORP MN', s: 'Chèque · Pièces électroniques', a: '-1 284,56', st: '', sel: true },
+  { d: '22 sept.', l: 'WWW.CANADIANTIRE.CA', s: 'Achat en ligne', a: '-212,34', st: '', sel: true },
+  { d: '19 sept.', l: 'PREMIER FARNELL', s: 'Achat en ligne', a: '-89,10', st: '', sel: true },
+  { d: '18 sept.', l: 'CPC SCP', s: 'Postes Canada', a: '-46,72', st: '', want: true },
+  { d: '17 sept.', l: 'DEPOT SERRES BELLEVUE', s: 'Dépôt · FAC-2291', a: '+3 450,00', st: 'yellow' },
+  { d: '16 sept.', l: 'VIREMENT MCR 0913', s: 'Virement entre comptes', a: '-8 000,00', st: 'blue' },
+]
+const nsel = ROWS.filter(r => r.sel).length
+
+function toolbar(extra) {
+  return `<div class="bar">
+    <span class="chip"><i style="background:var(--surface)"></i>À traiter <b class="num">18</b></span>
+    <span class="chip"><i style="background:var(--green-soft)"></i>Rapproché <b class="num">204</b></span>
+    <span class="chip"><i style="background:var(--yellow-soft)"></i>Comptabilisé <b class="num">31</b></span>
+    <span class="chip amber">⚠ <span class="num">6</span> sans facture</span>
+    ${extra || ''}
+    <span class="spacer"></span>
+    <span class="chip">Écart <b class="num">0,00 $</b></span>
+    <span class="tool">⟳</span><span class="tool">⋯</span>
+  </div>`
+}
+function table() {
+  return `<table>
+    <thead><tr>
+      <th style="width:34px"></th><th style="width:78px">Date</th><th>Libellé</th>
+      <th style="width:120px;text-align:right">Montant</th><th style="width:150px">Lien</th><th style="width:60px"></th>
+    </tr></thead>
+    <tbody>${ROWS.map(r => `<tr class="${r.st}${r.sel ? ' sel' : ''}">
+      <td><span class="ck${r.sel ? ' on' : ''}"></span></td>
+      <td class="num">${r.d}</td>
+      <td><span class="lbl">${r.l}</span> <span class="sub">· ${r.s}</span></td>
+      <td class="amt num">${r.a} $</td>
+      <td>${r.want ? '<span class="want">⚑ demandée</span>' : r.st === 'green' ? '<span class="sub">Dépense ✓</span>' : r.st === 'yellow' ? '<span class="sub">FAC-2291</span>' : r.st === 'blue' ? '<span class="sub">MasterCard BNC</span>' : '<button class="btn">Catégoriser</button>'}</td>
+      <td><div class="marks"><span class="pen"></span>${r.d === '19 sept.' ? '<span class="ribbon"></span>' : '<span style="width:13px"></span>'}</div></td>
+    </tr>`).join('')}</tbody>
+  </table>`
+}
+const accts = `<div class="acct">
+  <button class="on">À comptabiliser <span class="count">18</span></button>
+  <button>BNC CAD <span class="count">3</span></button>
+  <button>BNC USD</button>
+  <button>BNC Épargne</button>
+  <button>MasterCard BNC <span class="count">2</span></button>
+  <button>VISA Desjardins CAD</button>
+</div>`
+const hub = `<div class="hub"><a href="#" class="on">Transactions</a><a href="#">Écritures</a><a href="#">Règles</a><a href="#">Factures</a></div>`
+
+const SELBAR = `<div class="selbar">
+  <span class="n">${nsel} sélectionnées</span>
+  <button class="link">Désélectionner</button>
+  <span class="spacer"></span>
+  <button class="btn primary">✓ Confirmer</button>
+  <button class="btn"><span class="pen"></span> À réviser</button>
+  <button class="btn"><span class="ribbon" style="height:14px"></span> Signet</button>
+  <button class="btn warn">⚑ Facture manquante</button>
+  <button class="btn">Ignorer</button>
+</div>`
+
+// Payé par = le compte, nommé comme dans les onglets du bas.
+const WANTED = [
+  { d: '25 sept.', v: 'DigiKey', a: '1 284,56 $', c: 'BNC CAD', age: 'il y a 12 jours', on: true },
+  { d: '22 sept.', v: 'Canadian Tire', a: '212,34 $', c: 'MasterCard BNC', age: 'il y a 15 jours', on: true },
+  { d: '19 sept.', v: 'Premier Farnell', a: '89,10 $', c: 'BNC CAD', age: 'il y a 18 jours', on: false },
+  { d: '18 sept.', v: 'Postes Canada', a: '46,72 $', c: 'MasterCard BNC', age: 'il y a 19 jours', on: true },
+]
+const sent = () => WANTED.filter(w => w.on)
+
+function panel() {
+  const n = sent().length
+  return `<div class="panel">
+    <header>
+      <h3>Factures demandées</h3>
+      <span class="sub">4 demandées · ${n} dans l’envoi</span>
+    </header>
+    <div class="body">
+      ${WANTED.map((w, i) => `<div class="row${w.on ? '' : ' off'}">
+        <button class="ck${w.on ? ' on' : ''}" data-w="${i}" title="${w.on ? 'Retirer de l’envoi' : 'Remettre dans l’envoi'}"></button>
+        <span class="g"><span class="lbl">${w.v}</span><br /><span class="sub">${w.d} · ${w.c} · ${w.age}</span></span>
+        <span class="num">${w.a}</span>
+      </div>`).join('')}
+      <div class="draft">${msg()}</div>
+    </div>
+    <footer>
+      <button class="btn primary">Envoyer ${n} facture${n > 1 ? 's' : ''} sur Slack</button>
+      <span class="sub">#information-importante</span>
+    </footer>
+  </div>`
+}
+function total() {
+  const t = sent().reduce((s, w) => s + parseFloat(w.a.replace(/[^\d,]/g, '').replace(',', '.')), 0)
+  return t.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' $'
+}
+function msg() {
+  const rows = sent()
+  return `Je cherche ${rows.length} facture${rows.length > 1 ? 's' : ''} (${total()}) pour fermer septembre.\n`
+    + rows.map(w => `${w.d} · ${w.v} · ${w.a} · ${w.c}`).join('\n')
+}
+function slack() {
+  const rows = sent()
+  return `<div class="chan">#information-importante</div>
+  <div class="slack">
+    <div class="hd"><span class="av">CB</span><span><span class="who">Charles Bureau</span> <span class="when">14:32</span></span></div>
+    <div class="msg">Je cherche <b>${rows.length} facture${rows.length > 1 ? 's' : ''}</b> (${total()}) pour fermer septembre.</div>
+    <table><thead><tr><th>Date</th><th>Fournisseur</th><th style="text-align:right">Montant</th><th>Payé par</th></tr></thead><tbody>
+      ${rows.map(w => `<tr><td class="num">${w.d}</td><td>${w.v}</td><td class="num" style="text-align:right">${w.a}</td><td class="sub">${w.c}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="msg" style="margin-top:8px">Si vous en avez une, répondez ici ou envoyez-la à factures@orisha.io — merci !</div>
+  </div>`
+}
+
+const VIEWS = {
+  ecran: () => `<div class="screen">${hub}${toolbar('<span class="chip amber" data-on>⚑ <span class="num">4</span> demandées</span>')}${SELBAR}${table()}${accts}${panel()}</div>`,
+  message: () => slack(),
+}
+const TABS = [
+  ['ecran', 'L’écran', 'Décoche une facture dans le panneau : elle sort de l’envoi, pas de la liste.'],
+  ['message', 'Le message', 'Ce qui part dans #information-importante.'],
+]
+let cur = 'ecran'
+const tabsEl = document.getElementById('tabs'), optsEl = document.getElementById('opts'),
+      ledeEl = document.getElementById('lede'), stageEl = document.getElementById('stage')
+function render() {
+  tabsEl.innerHTML = TABS.map(([k, n]) => `<button data-k="${k}" aria-pressed="${k === cur}">${n}</button>`).join('')
+  optsEl.innerHTML = ''
+  ledeEl.textContent = (TABS.find(t => t[0] === cur) || [])[2] || ''
+  stageEl.innerHTML = VIEWS[cur]()
+  tabsEl.querySelectorAll('button').forEach(b => b.onclick = () => { cur = b.dataset.k; render() })
+  stageEl.querySelectorAll('[data-w]').forEach(b => b.onclick = () => { WANTED[+b.dataset.w].on = !WANTED[+b.dataset.w].on; render() })
+}
+document.getElementById('theme').onclick = (e) => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark')
+  e.target.textContent = dark ? 'Nuit' : 'Jour'
+}
+render()
+</script>
+</body>
+</html>

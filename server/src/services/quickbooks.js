@@ -431,6 +431,26 @@ function extractLines(qbLines) {
   return lines.length ? JSON.stringify(lines) : null
 }
 
+// Paiement émis correspondant à une facture soldée dans QuickBooks : la date
+// est celle de l'écriture de paiement là-bas (souvent postérieure à aujourd'hui
+// pour un paiement programmé), et son id est noté pour ne jamais la republier.
+async function recordQbBillPayment(achatId, qbBill) {
+  try {
+    const { syncFromQbPaidBill } = await import('./treasuryPayments.js')
+    const achat = db.prepare('SELECT * FROM achats_fournisseurs WHERE id = ?').get(achatId)
+    if (!achat) return
+    const link = (qbBill.LinkedTxn || []).find(t => String(t.TxnType || '').startsWith('BillPayment'))
+    let paymentDate = null
+    if (link?.TxnId) {
+      const bp = (await qbGet(`/billpayment/${link.TxnId}`).catch(() => null))?.BillPayment
+      paymentDate = bp?.TxnDate || null
+    }
+    syncFromQbPaidBill(achat, { paymentDate, qbBillPaymentId: link?.TxnId || null })
+  } catch (e) {
+    console.warn(`recordQbBillPayment ${achatId}: ${e.message}`)
+  }
+}
+
 function mapBillStatus(bill) {
   const balance = bill.Balance ?? bill.TotalAmt ?? 0
   const total   = bill.TotalAmt ?? 0
@@ -541,7 +561,7 @@ export async function importFromQB({ incremental = false, trigger = 'manual' } =
       const exchangeRate = Number(bill.ExchangeRate) > 0 ? Number(bill.ExchangeRate) : 1
 
       const existing = db.prepare(
-        "SELECT id FROM achats_fournisseurs WHERE quickbooks_id=? AND type='bill'"
+        "SELECT id, status FROM achats_fournisseurs WHERE quickbooks_id=? AND type='bill'"
       ).get(qbId)
 
       if (existing) {
@@ -552,6 +572,11 @@ export async function importFromQB({ incremental = false, trigger = 'manual' } =
           WHERE id=?
         `).run(vendor, vendorCompanyId, dateFact, dueDate, total, amountPaid, status, docNum, notes, lines, currency, exchangeRate, existing.id)
         updated++
+        // Payée dans QuickBooks : le paiement émis doit exister ici aussi,
+        // sinon la facture quitte la liste « à payer » sans rien laisser.
+        if (status === 'Payée' && existing.status !== 'Payée') {
+          await recordQbBillPayment(existing.id, bill)
+        }
       } else {
         db.prepare(`
           INSERT INTO achats_fournisseurs
@@ -810,6 +835,21 @@ export function resolveFxDirection(recCurrency, txnCurrency, vendorName) {
 // aucun montant fourni ou écart nul ; error non-null si le montant est invalide ou
 // l'écart trop grand pour des frais de conversion plausibles (garde-fou anti-typo —
 // les écarts observés sur l'historique AWS vont de 0,5 % à 3,5 % du total).
+// Montant CAD réellement débité pour une facture USD : saisi au formulaire,
+// sinon lu sur la ligne de relevé (compte CAD) liée au reçu.
+export function fxChargedAmount(rec, params = {}) {
+  const typed = Number(params.bankChargedTotal)
+  if (typed > 0) return round2(typed)
+  const t = db.prepare(`
+    SELECT t.amount FROM bank_transactions t JOIN bank_accounts a ON a.id = t.account_id
+    WHERE t.matched_type = 'receipt' AND t.matched_id = ? AND t.deleted_at IS NULL
+      AND UPPER(COALESCE(a.currency, 'CAD')) = 'CAD'
+    ORDER BY t.txn_date DESC LIMIT 1
+  `).get(String(rec.id))
+  const amt = Math.abs(Number(t?.amount) || 0)
+  return amt > 0 ? round2(amt) : null
+}
+
 export function computeConversionFee(bankChargedTotal, invoiceTotal) {
   if (bankChargedTotal === undefined || bankChargedTotal === null || bankChargedTotal === '') {
     return { fee: 0, error: null }
@@ -918,6 +958,113 @@ export function buildReceiptLines(items, targetHt, { lineDetail, fallbackDescrip
   return [mkLine(round2(targetHt), joined || fallbackDescription || 'Reçu')]
 }
 
+// Publie un document d'argent reçu comme Deposit QB : le compte bancaire
+// (paymentAccountId) est débité du total, le compte choisi (expenseAccountId —
+// revenu, crédit d'impôt à recevoir…) est crédité. Aucune taxe.
+async function pushReceiptAsDeposit(rec, params) {
+  const receiptId = rec.id
+  const creditAccountId = params.expenseAccountId
+  if (!creditAccountId) throw fieldError('Compte à créditer non spécifié', 'expense_account')
+  const bankAccountId = params.paymentAccountId
+  if (!bankAccountId) throw fieldError('Compte bancaire non spécifié', 'payment_account')
+  // Un remboursement peut être extrait en négatif (-121 215,70 $ de l'ARC) : c'est le montant reçu qui compte.
+  const amount = round2(Math.abs(Number(rec.total) || 0))
+  if (!(amount > 0)) throw fieldError('Montant du dépôt invalide', 'total')
+
+  let acct
+  try {
+    acct = (await qbGet(`/account/${bankAccountId}`))?.Account
+  } catch (e) {
+    throw fieldError(`Impossible de lire le compte QB #${bankAccountId} (${e.message}) — dépôt annulé`, 'payment_account')
+  }
+  if (acct?.AccountType && acct.AccountType !== 'Bank') {
+    throw fieldError(`Un dépôt doit viser un compte bancaire — « ${acct.Name || bankAccountId} » est de type ${acct.AccountType}.`, 'payment_account')
+  }
+
+  const bankLine = db.prepare(`
+    SELECT txn_date FROM bank_transactions
+    WHERE matched_type='receipt' AND matched_id=? AND deleted_at IS NULL
+    ORDER BY txn_date LIMIT 1
+  `).get(String(receiptId))
+  const txnDate = bankLine?.txn_date || rec.receipt_date || new Date().toISOString().slice(0, 10)
+
+  const currency = (acct?.CurrencyRef?.value || 'CAD').toUpperCase()
+  let currencyFields = {}
+  if (currency !== 'CAD') {
+    const rate = currency === 'USD' ? await getUsdCadRate(txnDate) : null
+    if (!rate) throw new Error(`Taux ${currency}→CAD indisponible pour ${txnDate}. Réessayer plus tard.`)
+    currencyFields = { CurrencyRef: { value: currency }, ExchangeRate: rate }
+  }
+
+  let vendorId = params.vendorId || null
+  if (!vendorId && params.newVendorName) vendorId = await findOrCreateVendor(params.newVendorName, currency)
+  const detail = { AccountRef: { value: String(creditAccountId) } }
+  if (vendorId) detail.Entity = { value: String(vendorId), type: 'Vendor' }
+
+  let items = []
+  try { items = JSON.parse(rec.items || '[]') } catch {}
+  // Une ligne QB par ligne du document, chacune vers SON compte (crédit d'impôt →
+  // créance, « Intérêt sur remboursement » → revenus d'intérêts). Lignes qui ne
+  // retombent pas sur le total → une seule ligne au compte du document.
+  const parts = items
+    .map(it => ({ amount: round2(Math.abs(Number(it?.total) || 0)), description: (it?.description || '').trim(), accountId: it?.expense_account_id || null }))
+    .filter(p => p.amount > 0)
+  const partsSum = round2(parts.reduce((t, p) => t + p.amount, 0))
+  const mkLine = (amt, desc, acctId) => ({
+    Amount: amt,
+    DetailType: 'DepositLineDetail',
+    DepositLineDetail: { ...detail, AccountRef: { value: String(acctId || creditAccountId) } },
+    Description: (desc || rec.company || 'Dépôt').slice(0, 4000),
+  })
+  const depositLines = parts.length && Math.abs(partsSum - amount) < 0.01
+    ? parts.map(p => mkLine(p.amount, p.description, p.accountId))
+    : [mkLine(amount, parts.map(p => p.description).filter(Boolean).join(' · '), null)]
+  const deposit = {
+    DepositToAccountRef: { value: String(bankAccountId) },
+    TxnDate: txnDate,
+    Line: depositLines,
+    ...currencyFields,
+  }
+  const note = [rec.company, rec.receipt_number ? `no ${rec.receipt_number}` : null].filter(Boolean).join(' — ')
+  if (note) deposit.PrivateNote = note.slice(0, 4000)
+  const result = await qbPost('/deposit', deposit)
+  const qbId = result.Deposit.Id
+
+  db.prepare(`
+    UPDATE sale_receipts
+    SET quickbooks_id=?, quickbooks_type='deposit', expense_account_id=?, payment_account_id=?,
+        vendor_id=?, transaction_type=COALESCE(?, transaction_type),
+        updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id=?
+  `).run(qbId, creditAccountId, bankAccountId, vendorId || null, params.transactionType || null, receiptId)
+
+  try {
+    const uploadsDir = uploadsPath('receipts')
+    let extraPages = []
+    try { extraPages = JSON.parse(rec.extra_pages || '[]') } catch {}
+    const pages = [{ filename: rec.filename, file_type: rec.file_type, original_name: rec.original_name }, ...extraPages]
+    for (let i = 0; i < pages.length; i++) {
+      const pg = pages[i]
+      if (!pg?.filename) continue
+      const filePath = join(uploadsDir, pg.filename)
+      if (!existsSync(filePath)) continue
+      const ext = (pg.file_type || extname(pg.filename) || '').toLowerCase()
+      let baseName = (pg.original_name || pg.filename || `receipt${ext}`).replace(/[/\\]/g, '_')
+      if (pages.length > 1) {
+        const dot = baseName.lastIndexOf('.')
+        baseName = dot > 0 ? `${baseName.slice(0, dot)}-p${i + 1}${baseName.slice(dot)}` : `${baseName}-p${i + 1}`
+      }
+      await qbUploadAttachment({
+        entityType: 'Deposit', entityId: qbId, fileBuffer: readFileSync(filePath),
+        fileName: baseName, contentType: SALE_RECEIPT_MIME[ext] || 'application/octet-stream',
+      })
+    }
+  } catch (e) {
+    console.error(`pushReceiptAsDeposit: attachement QB échoué pour ${receiptId}:`, e.message)
+  }
+  return qbId
+}
+
 export async function pushSaleReceiptToQB(receiptId, params = {}) {
   const rec = db.prepare('SELECT * FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(receiptId)
   if (!rec) throw new Error('Reçu introuvable')
@@ -941,6 +1088,10 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
       console.warn(`Anomaly gate ${receiptId}: ${e.message}`)
     }
   }
+
+  // Argent REÇU (crédit d'impôt, subvention, remboursement…) : dépôt bancaire QB,
+  // voie à part — pas de fournisseur obligatoire ni de taxes.
+  if (params.type === 'deposit') return pushReceiptAsDeposit(rec, params)
 
   // 'purchase' = dépense payée, 'bill' = facture à payer, 'cc_credit' = crédit sur
   // carte de crédit (note de crédit fournisseur remboursée sur la carte). Côté API QB,
@@ -1106,19 +1257,37 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
     )
   }
   let fxNote = null
+  let fxConvertedFromBank = false
   if (recCurrency !== txnCurrency) {
     const { error: fxError } = resolveFxDirection(recCurrency, txnCurrency, vendorDisplayName || rec.company)
     if (fxError) throw fieldError(fxError, 'currency')
     const usdCad = await getUsdCadRate(txnDate)
-    if (!usdCad) throw new Error(`Taux USD→CAD indisponible pour ${txnDate} (Banque du Canada) — impossible de convertir le reçu ${recCurrency} en ${txnCurrency}. Réessayer plus tard.`)
-    const factor = usdCad // seul sens autorisé : USD → CAD
+    // Facture USD chez un fournisseur CAD (OpenAI/ChatGPT…) payée d'un compte
+    // CAD : le taux exact est celui du débit (montant débité ÷ total facture),
+    // appliqué à chaque composante — une CONVERSION, jamais une ligne « Frais
+    // de conversion ». Le débit vient du champ « Montant passé à la banque »,
+    // sinon de la ligne de relevé CAD liée au reçu. À défaut : Banque du Canada.
     const origTotal = totalAmt
-    totalAmt = round2(totalAmt * factor)
+    const charged = fxChargedAmount(rec, params)
+    if (charged && usdCad && Math.abs(charged / origTotal / usdCad - 1) > 0.1) {
+      throw fieldError(`Débit de ${charged.toFixed(2)} ${txnCurrency} incohérent avec la facture de ${origTotal.toFixed(2)} ${recCurrency} (taux ${round2(charged / origTotal)} contre ${usdCad} à la Banque du Canada).`, 'bank_charged_total')
+    }
+    if (!charged && !usdCad) throw new Error(`Taux USD→CAD indisponible pour ${txnDate} (Banque du Canada) — impossible de convertir le reçu ${recCurrency} en ${txnCurrency}. Réessayer plus tard.`)
+    const factor = charged ? charged / origTotal : usdCad // seul sens autorisé : USD → CAD
+    totalAmt = charged ? round2(charged) : round2(totalAmt * factor)
     subtotalAmt = round2(subtotalAmt * factor)
     tpsAmt = round2(tpsAmt * factor)
     tvqAmt = round2(tvqAmt * factor)
     otherAmt = round2(otherAmt * factor)
-    fxNote = `Converti : ${origTotal.toFixed(2)} ${recCurrency} → ${totalAmt.toFixed(2)} ${txnCurrency} @ ${usdCad} (Banque du Canada, ${txnDate})`
+    if (charged) {
+      // Résidu d'arrondi sur le sous-total, jamais sur les taxes.
+      const residual = round2(totalAmt - subtotalAmt - tpsAmt - tvqAmt - otherAmt)
+      if (Math.abs(residual) <= 0.05) subtotalAmt = round2(subtotalAmt + residual)
+    }
+    fxConvertedFromBank = !!charged
+    fxNote = charged
+      ? `Converti : ${origTotal.toFixed(2)} ${recCurrency} → ${totalAmt.toFixed(2)} ${txnCurrency} @ ${Math.round(factor * 1e6) / 1e6} (débit bancaire)`
+      : `Converti : ${origTotal.toFixed(2)} ${recCurrency} → ${totalAmt.toFixed(2)} ${txnCurrency} @ ${usdCad} (Banque du Canada, ${txnDate})`
   }
   const totalTax = tpsAmt + tvqAmt + otherAmt
 
@@ -1236,7 +1405,8 @@ export async function pushSaleReceiptToQB(receiptId, params = {}) {
   // le total de la transaction QB = montant bancaire. Les taxes restent celles de la
   // facture PDF (l'écart n'est pas taxé). params.bankChargedTotal est exprimé dans la
   // devise de la TRANSACTION (celle du compte de paiement / fournisseur QB).
-  const conversionFee = computeConversionFee(params.bankChargedTotal, totalAmt)
+  // Débit déjà absorbé par la conversion USD → CAD : aucun frais à ajouter.
+  const conversionFee = computeConversionFee(fxConvertedFromBank ? null : params.bankChargedTotal, totalAmt)
   if (conversionFee.error) throw fieldError(conversionFee.error, 'bank_charged_total')
   if (conversionFee.fee !== 0) {
     if (type === 'bill') {

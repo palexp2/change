@@ -1,9 +1,10 @@
 import { useState, useMemo } from 'react'
-import { ExternalLink, Loader2 } from 'lucide-react'
+import { ExternalLink } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
 import api from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
+import ThinkingOrb from './ThinkingOrb'
 
 // Modale d'export vers une liste statique HubSpot, soit à partir d'une vue
 // filtrée de contacts, soit d'une liste d'emails collée en texte libre
@@ -210,7 +211,7 @@ export function HubSpotExportModal({ isOpen, onClose, filteredContacts }) {
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={handleClose} className="btn-secondary" disabled={submitting}>Annuler</button>
             <button type="submit" className="btn-primary" disabled={submitting || emails.length === 0}>
-              {submitting ? <><Loader2 size={14} className="animate-spin" /> Création…</> : 'Créer la liste HubSpot'}
+              {submitting ? <><ThinkingOrb size={14} ink /> Création…</> : 'Créer la liste HubSpot'}
             </button>
           </div>
         </form>

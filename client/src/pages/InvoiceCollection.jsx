@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Plus, Play, RefreshCw, Trash2, KeyRound, ShieldAlert, Camera, ChevronDown, ChevronRight, Cookie, Target, Link2, Wand2 } from 'lucide-react'
+import { Plus, Play, RefreshCw, Trash2, KeyRound, ShieldAlert, Camera, ChevronDown, ChevronRight, Cookie, Target, Link2, Wand2, X } from 'lucide-react'
 import api from '../lib/api.js'
 import { Modal } from '../components/Modal.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
@@ -124,6 +124,32 @@ function RequestScraperButton({ vendor }) {
     >
       <Wand2 size={12} />
     </button>
+  )
+}
+
+// Portails vus ouverts dans le navigateur, qu'aucun collecteur ne couvre : le
+// module n'en remonte que le nom de domaine. C'est la file « à brancher »,
+// remplie toute seule par l'usage plutôt que par la mémoire de quelqu'un.
+function SightingsPanel({ sightings, onChanged }) {
+  if (!sightings?.length) return null
+  return (
+    <div className="mb-4 rounded-xl border border-slate-200 bg-white">
+      <div className="px-3 pt-2.5 pb-1 text-[11px] font-medium text-slate-500">
+        Portails ouverts dans ton navigateur, sans collecteur
+      </div>
+      <div className="px-3 pb-3 flex flex-wrap gap-1.5">
+        {sightings.map(s => (
+          <span key={s.domain} className="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-lg border border-slate-200 bg-white text-slate-600">
+            {s.domain}
+            <RequestScraperButton vendor={s.domain} />
+            <button onClick={() => api.scrapers.dismissSighting(s.domain).then(onChanged)}
+              title="Écarter ce portail" className="shrink-0 p-0.5 text-slate-300 hover:text-slate-600">
+              <X size={11} />
+            </button>
+          </span>
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -429,7 +455,13 @@ function AccountCard({ account, onChanged }) {
           <div className="flex items-center gap-2">
             <span className="font-medium text-sm text-slate-800 truncate">{account.label}</span>
             {account.running ? <Badge status="running" /> : account.last_status && <Badge status={account.last_status} />}
-            {account.session_required && !account.has_session && (
+            {!account.has_password && !account.has_session ? (
+              /* Portail ajouté tout seul, pas encore branché : rien n'a encore
+                 été saisi ni envoyé, et la tournée l'ignore en attendant. */
+              <span className="px-1.5 py-0.5 text-[11px] font-medium rounded border bg-slate-50 text-slate-600 border-slate-300">
+                À brancher
+              </span>
+            ) : account.session_required && !account.has_session && (
               <span className="px-1.5 py-0.5 text-[11px] font-medium rounded border bg-amber-50 text-amber-800 border-amber-300">
                 Session à envoyer
               </span>
@@ -578,6 +610,8 @@ export function InvoiceCollectionPanel() {
       )}
 
       <NeedsPanel needs={needs} accounts={data?.accounts} />
+
+      <SightingsPanel sightings={data?.sightings} onChanged={load} />
 
       {pendingAccounts.length > 0 && (
         <div className="space-y-2 mb-4">

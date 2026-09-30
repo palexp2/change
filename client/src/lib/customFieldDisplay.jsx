@@ -15,6 +15,7 @@ import { Badge } from '../components/Badge.jsx'
 import { RatingStars } from '../components/RatingStars.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import api from './api.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // Helpers de rendu partagés pour les champs personnalisés (custom fields).
 // Centralise le formatage « currency » et « url » pour qu'il soit identique
@@ -1041,6 +1042,9 @@ export function customFieldToColumn(f) {
     ...((isAirtableLinkField(f) || f.record_link)
       ? {
         linkMulti: isAirtableLinkField(f),
+        // Un seul lien permis (`link_single`) : la valeur reste un tableau JSON,
+        // mais choisir remplace — même règle que le picker de la fiche.
+        linkSingle: !!f.record_link_single,
         linkTarget: f.record_link_target || null,
         linkIdentity: f.record_link_identity || null,
         // Filtre du champ : la liste de candidats de l'éditeur de cellule est
@@ -1174,7 +1178,7 @@ export function ButtonFieldCell({ field, row }) {
       className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded-md border transition-colors disabled:opacity-60 ${cls}`}
     >
       {running
-        ? <span className="inline-block w-3 h-3 border border-current border-t-transparent rounded-full animate-spin" />
+        ? <ThinkingOrb size={12} ink />
         : <Zap size={12} />}
       <span className="truncate">{label}</span>
     </button>
@@ -1251,7 +1255,7 @@ export function renderCustomFieldValue(field, value, row, { detail = false, link
   }
   if (field.type === 'single_select') {
     const choices = parseSelectChoices(field)
-    return <ChoiceBadge color={colorForChoice(choices, value)}>{value}</ChoiceBadge>
+    return <ChoiceBadge color={colorForChoice(choices, value)} className="single-select-label">{value}</ChoiceBadge>
   }
   if (field.type === 'date' || field.result_type === 'date') {
     return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(field))}</span>

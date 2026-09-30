@@ -6,6 +6,8 @@ import { diffSnapshots, enrichItemsWithErpProductId } from '../services/subscrip
 import { qbGet, onQbMutation } from '../connectors/quickbooks.js';
 import { round2 } from '../utils/money.js'
 import { shippedCostSql, pieceUnitCostSql } from '../services/shippedCost.js'
+import { fetchLiveItemBalances, listItems as listPlaidItems } from '../connectors/plaid.js'
+import { loadOverviewBalances } from '../services/overviewBalances.js'
 
 const router = Router();
 router.use(requireAuth);
@@ -142,45 +144,7 @@ router.get('/', (req, res) => {
   // `tickets.created_at` et `tickets.duration_minutes` (migration 040). Un
   // billet n'a plus de date propre — il n'y a plus rien à bucketer.
 
-  // Geo clients — customers only, using the FIRST shipping address registered
-  // (earliest adresses.created_at) per company. Excludes soft-deleted companies.
-  const geoClients = safe('geoClients', () => db.prepare(`
-    WITH ranked AS (
-      SELECT ct.company_id, a.province, a.country,
-        ROW_NUMBER() OVER (
-          PARTITION BY ct.company_id
-          ORDER BY a.created_at ASC, a.id ASC
-        ) AS rn
-      FROM adresses a
-      JOIN contacts ct ON ct.id = a.contact_id
-      WHERE a.address_type = 'Livraison'
-        AND a.province IS NOT NULL AND a.province != ''
-        AND ct.company_id IS NOT NULL
-    )
-    SELECT r.province, r.country, COUNT(*) AS count
-    FROM ranked r
-    JOIN companies co ON co.id = r.company_id
-    WHERE r.rn = 1
-      AND co.deleted_at IS NULL
-      AND co.lifecycle_phase = 'Customer'
-    GROUP BY r.province, r.country
-    ORDER BY count DESC
-  `).all(), []);
-
-  // Customers with no usable shipping address province (cannot be placed on the map)
-  const geoClientsUnplaced = safe('geoClients', () => db.prepare(`
-    SELECT COUNT(*) AS count
-    FROM companies c
-    WHERE c.deleted_at IS NULL
-      AND c.lifecycle_phase = 'Customer'
-      AND c.id NOT IN (
-        SELECT ct.company_id FROM adresses a
-        JOIN contacts ct ON ct.id = a.contact_id
-        WHERE a.address_type = 'Livraison'
-          AND a.province IS NOT NULL AND a.province != ''
-          AND ct.company_id IS NOT NULL
-      )
-  `).get().count, 0);
+  // « Clients par région » : section retirée du tableau de bord (2026-09-29).
 
   // Weekly profitability — last 16 weeks, fully-shipped orders ('Envoyé')
   // Excludes orders that are 100% replacement (no Facturable items)
@@ -455,6 +419,20 @@ router.get('/', (req, res) => {
     });
   }
 
+  // Coût d'expédition par semaine (lundi → dimanche), même découpage que
+  // weeklyShipments : superposé aux colis dans « Livraisons par semaine ».
+  const shippingByWeek = {};
+  for (const [date, amt] of Object.entries(shippingByDate)) {
+    const d = new Date(String(date).slice(0, 10) + 'T00:00:00Z');
+    if (Number.isNaN(d.getTime())) continue;
+    d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7));
+    const key = d.toISOString().slice(0, 10);
+    shippingByWeek[key] = (shippingByWeek[key] || 0) + amt;
+  }
+  const weeklyShippingCostsByWeek = Object.entries(shippingByWeek)
+    .map(([week_start, amount]) => ({ week_start, amount: Math.round(amount * 100) / 100 }))
+    .sort((a, b) => a.week_start.localeCompare(b.week_start));
+
   // Replacement line items detail — last 12 months
   const replacementItems = safe('replacementRate', () => db.prepare(`
     WITH shipped_orders AS (
@@ -513,12 +491,11 @@ router.get('/', (req, res) => {
     closingByMonth,
     projectsCreatedByMonth,
     weeklyShipments,
-    geoClients,
-    geoClientsUnplaced,
     weeklyProfitability,
     recentShippedOrders,
     replacementRate: { parkValue, last28: replacementLast28, byMonth: replacementByMonth, items: replacementItems },
     weeklyShippingCosts,
+    weeklyShippingCostsByWeek,
     projectGoal: {
       target: goalTarget,
       current: goalCurrentCount,
@@ -1581,127 +1558,6 @@ router.get('/top-products', async (req, res) => {
   })
 })
 
-// GET /api/dashboard/balance-sheet
-// Récupère le rapport BalanceSheet QuickBooks (à la date du jour, méthode Accrual)
-// et renvoie une structure aplatie prête à afficher en arborescence côté client.
-//
-// QB Reports renvoie un arbre Rows.Row[] où chaque Row a :
-//   - type: 'Section' (groupe avec sous-rows + Summary) ou 'Data' (compte feuille)
-//   - Header.ColData[]   (libellé du groupe)
-//   - Rows.Row[]         (sous-rangs)
-//   - Summary.ColData[]  (totaux de groupe)
-//   - ColData[]          (ligne de données : [{value:libellé,id:acctId},{value:montant}])
-// Permanent cache keyed by as_of. Invalidated on any QB write via onQbMutation
-// below, and on `?refresh=1` (manual refresh button). Humans editing QB
-// directly in the QB UI won't trigger invalidation — use ?refresh=1 then.
-const balanceSheetCache = new Map()
-onQbMutation(() => balanceSheetCache.clear())
-
-router.get('/balance-sheet', async (req, res) => {
-  try {
-    const params = new URLSearchParams({ accounting_method: 'Accrual' })
-    if (req.query.as_of) params.set('end_date', String(req.query.as_of))
-    const cacheKey = params.toString()
-    if (!req.query.refresh) {
-      const hit = balanceSheetCache.get(cacheKey)
-      if (hit) return res.json(hit)
-    }
-    const data = await qbGet(`/reports/BalanceSheet?${params}`)
-    const report = data?.Report || data
-
-    let nodeIdSeq = 0
-    function walkRows(rows, depth) {
-      const out = []
-      for (const row of (rows?.Row || [])) {
-        if (row.type === 'Section') {
-          const label = row.Header?.ColData?.[0]?.value || ''
-          const total = row.Summary?.ColData?.[1]?.value ?? null
-          const node = {
-            id: `n${nodeIdSeq++}`,
-            kind: 'section',
-            label,
-            total: total !== null && total !== '' ? Number(total) : null,
-            depth,
-            children: walkRows(row.Rows, depth + 1),
-          }
-          out.push(node)
-        } else {
-          const cols = row.ColData || []
-          out.push({
-            id: `n${nodeIdSeq++}`,
-            kind: 'data',
-            label: cols[0]?.value || '',
-            account_id: cols[0]?.id || null,
-            total: cols[1]?.value !== undefined && cols[1]?.value !== '' ? Number(cols[1].value) : null,
-            depth,
-          })
-        }
-      }
-      return out
-    }
-
-    const rows = walkRows(report?.Rows, 0)
-    const payload = {
-      currency: report?.Header?.Currency || 'CAD',
-      as_of: report?.Header?.EndPeriod || null,
-      generated_at: report?.Header?.Time || new Date().toISOString(),
-      rows,
-    }
-    balanceSheetCache.set(cacheKey, payload)
-    res.json(payload)
-  } catch (e) {
-    console.error('[dashboard/balance-sheet]', e)
-    res.status(502).json({ error: e.message || 'Erreur QuickBooks' })
-  }
-})
-
-// GET /api/dashboard/deferred-revenue
-// Revenus perçus d'avance (compte 23900) : factures de commande encaissées
-// (paid_at) dont le revenu n'a pas encore été constaté à l'expédition
-// (revenue_recognized_at NULL). Remplace la table manuelle « Revenus perçus
-// d'avance » du fichier CTB - Suivi. Abonnements exclus (kind='order' —
-// politique : constat à la création du premier envoi, ventes unitaires only).
-router.get('/deferred-revenue', (req, res) => {
-  const rows = db.prepare(`
-    SELECT f.id, f.document_number, f.paid_at, f.document_date,
-           f.paid_amount, f.total_amount, f.currency,
-           f.deferred_revenue_at, f.deferred_revenue_amount_cad,
-           f.company_id, c.name AS company_name, f.order_id
-    FROM factures f
-    LEFT JOIN companies c ON c.id = f.company_id
-    WHERE f.kind = 'order'
-      AND f.paid_at IS NOT NULL
-      AND f.revenue_recognized_at IS NULL
-      AND COALESCE(f.status, '') = 'Payé'
-    ORDER BY f.paid_at DESC
-  `).all()
-
-  const items = rows.map(r => {
-    const native = (Number(r.paid_amount) || 0) > 0 ? Number(r.paid_amount) : (Number(r.total_amount) || 0)
-    // CAD : montant de l'écriture 23900 si posée, sinon le montant encaissé
-    // (déjà en CAD quand currency=CAD ; pour l'USD sans écriture, inconnu → null).
-    const amountCad = r.deferred_revenue_amount_cad != null
-      ? Number(r.deferred_revenue_amount_cad)
-      : (r.currency === 'CAD' ? native : null)
-    return {
-      id: r.id,
-      document_number: r.document_number,
-      paid_at: r.paid_at,
-      company_id: r.company_id,
-      company_name: r.company_name,
-      order_id: r.order_id,
-      amount_native: Math.round(native * 100) / 100,
-      currency: r.currency || 'CAD',
-      amount_cad: amountCad != null ? Math.round(amountCad * 100) / 100 : null,
-      deferred_posted: r.deferred_revenue_at != null, // écriture Cr 23900 posée au dépôt du payout
-    }
-  })
-
-  const total_cad = Math.round(items.reduce((s, i) => s + (i.amount_cad || 0), 0) * 100) / 100
-  const unconverted = items.filter(i => i.amount_cad == null).length
-  res.json({ generated_at: new Date().toISOString(), items, total_cad, unconverted })
-})
-
 // GET /api/dashboard/bank-accounts
 // Soldes du jour des comptes bancaires et cartes de crédit depuis QuickBooks.
 // QB expose le solde courant de chaque compte via le champ CurrentBalance.
@@ -1722,6 +1578,26 @@ const CREDIT_LINE_LIMIT = 360000
 // Même définition pour le solde du jour et pour l'historique mensuel, sinon les
 // deux chiffres ne parleraient pas du même périmètre.
 const QB_CASH_ACCOUNTS_QUERY = "SELECT * FROM Account WHERE AccountType IN ('Bank', 'Credit Card') AND Active = true MAXRESULTS 300"
+
+// Lecture réservée au bloc des quatre comptes de la vue globale.
+router.get('/overview-balances', async (req, res) => {
+  try {
+    const accounts = await loadOverviewBalances({
+      accounts: db.prepare(`SELECT name, currency, qb_account_id, plaid_item_id, plaid_account_id
+        FROM bank_accounts WHERE deleted_at IS NULL AND active = 1`).all(),
+      items: listPlaidItems(),
+      fetchBalances: id => fetchLiveItemBalances(id, { refresh: req.query.refresh === 'true' }),
+      fetchQbAccounts: async () => {
+        const data = await qbGet(`/query?${new URLSearchParams({ query: QB_CASH_ACCOUNTS_QUERY })}`)
+        return data.QueryResponse?.Account || []
+      },
+    })
+    res.set('Cache-Control', 'no-store').json({ accounts })
+  } catch (e) {
+    console.error('[dashboard/overview-balances]', e.message)
+    res.status(502).json({ error: 'Soldes indisponibles' })
+  }
+})
 
 router.get('/bank-accounts', async (req, res) => {
   try {

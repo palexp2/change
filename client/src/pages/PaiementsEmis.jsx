@@ -1196,6 +1196,62 @@ function PageMenu({ items }) {
   )
 }
 
+// Résultat de la loupe : les paiements trouvés, puis les factures — y compris
+// celles déjà réglées, qui ne figurent nulle part ailleurs sur la page.
+function SearchResults({ found, busy, accounts, particByKey, onChanged, onReuse, onPick }) {
+  const payments = found?.payments || []
+  const bills = found?.bills || []
+  if (busy && !found) return <p className="py-6 text-sm text-slate-400"><Spinner size="xs" label="Recherche…" /></p>
+  if (!payments.length && !bills.length) return <p className="py-6 text-sm text-slate-400">Rien trouvé.</p>
+  return (
+    <div data-testid="payments-search-results">
+      {!!payments.length && (
+        <div className="space-y-1 mb-5">
+          {payments.map(p => (
+            <PaymentRow key={p.id} p={p} accounts={accounts} onChanged={onChanged} onReuse={onReuse}
+              particularites={particByKey.get(vendorKey(p.label))} />
+          ))}
+        </div>
+      )}
+      {!!bills.length && (
+        <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50/70 border-b border-slate-100 text-xs font-semibold text-slate-600">
+            Factures
+          </div>
+          {bills.map(b => {
+            const due = b.due_date || b.date_achat
+            const paid = b.status === 'Payée'
+            return (
+              <div key={b.id} data-testid={`search-bill-${b.id}`}
+                className="px-3 py-2 border-t border-slate-100 flex items-center gap-3 text-sm">
+                <Link to={`/fournisseurs/achats?id=${b.id}`} className="truncate font-medium text-slate-700 hover:text-brand-700">
+                  {b.vendor || 'Sans fournisseur'}
+                </Link>
+                <span className="truncate text-[11px] text-slate-400">{b.vendor_invoice_number || b.bill_number || 'sans n°'}</span>
+                <span className="ml-auto shrink-0 text-[11px] text-slate-400">{due ? fmtDay(due) : ''}</span>
+                <span className="shrink-0 tabular-nums text-slate-700">{fmtCad(b.total_cad, b.currency)}</span>
+                <span className={`shrink-0 text-[11px] px-1.5 py-0.5 rounded ${paid ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                  {b.status}
+                </span>
+                {!paid && !b.payment_id && (
+                  <button type="button" onClick={() => onPick(b)} data-testid={`search-bill-pay-${b.id}`}
+                    className="shrink-0 text-[11px] px-2 py-0.5 rounded border border-slate-300 hover:bg-slate-50">
+                    Payer
+                  </button>
+                )}
+                {b.qb_url && (
+                  <a href={b.qb_url} target="_blank" rel="noreferrer" title="Ouvrir dans QuickBooks"
+                    className="shrink-0 text-slate-300 hover:text-brand-600"><ExternalLink size={13} /></a>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function PaiementsEmis() {
   const { addToast } = useToast()
   // Plus d'onglets : une seule page, un seul fil. La légende pose un filtre
@@ -1438,6 +1494,25 @@ export default function PaiementsEmis() {
 
   const bal = schedule?.balance || null
 
+  // La loupe : on cherche dans les paiements ET dans les factures, sinon une
+  // facture réglée ailleurs (dans QuickBooks) reste introuvable — elle ne
+  // figure ni dans le fil ni dans « à payer ».
+  const [q, setQ] = useState('')
+  const [found, setFound] = useState(null)
+  const [searching, setSearching] = useState(false)
+  useEffect(() => {
+    const needle = q.trim()
+    if (needle.length < 2) { setFound(null); setSearching(false); return }
+    setSearching(true)
+    const t = setTimeout(() => {
+      api.treasury.payments.search(needle)
+        .then(setFound).catch(() => setFound({ payments: [], bills: [] }))
+        .finally(() => setSearching(false))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [q])
+  const searchOn = q.trim().length >= 2
+
   return (
     <Layout>
       <div className="max-w-7xl mx-auto px-6 py-6">
@@ -1450,6 +1525,19 @@ export default function PaiementsEmis() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <span className="relative">
+              <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={q} onChange={e => setQ(e.target.value)} data-testid="payments-search"
+                aria-label="Chercher un paiement ou une facture"
+                title="Fournisseur, n° de facture, référence ou montant — cherche aussi dans les factures déjà payées"
+                className="w-44 focus:w-64 transition-[width] pl-8 pr-7 py-1.5 text-sm bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-brand-500" />
+              {!!q && (
+                <button type="button" onClick={() => setQ('')} aria-label="Effacer"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600">
+                  <X size={13} />
+                </button>
+              )}
+            </span>
             <button onClick={() => setFormOpen(o => !o)} data-testid="payment-new-toggle" aria-expanded={formOpen}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-brand-600 hover:bg-brand-700 rounded-lg">
               <Plus size={15} /> Nouveau paiement
@@ -1530,6 +1618,11 @@ export default function PaiementsEmis() {
 
         <div className="flex flex-col lg:flex-row items-start gap-4">
           <div className="flex-1 min-w-0 w-full">
+            {searchOn ? (
+              <SearchResults found={found} busy={searching} accounts={accounts} particByKey={particByKey}
+                onChanged={() => { load(); loadSchedule(); loadBills() }} onReuse={reuse} onPick={pickBill} />
+            ) : (
+            <>
             {/* Le futur du fil : les factures qu'on décide de payer. Cocher une
                 ligne crée le paiement émis — il apparaît alors sous le repère
                 « aujourd'hui », dans le même fil. */}
@@ -1571,6 +1664,8 @@ export default function PaiementsEmis() {
                   {loading && <p className="py-6 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></p>}
                 </div>
               </>
+            )}
+            </>
             )}
           </div>
 

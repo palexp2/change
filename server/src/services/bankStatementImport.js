@@ -24,7 +24,7 @@ import sharp from 'sharp'
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { logSync } from './syncLog.js'
-import { parseStatementTable, importTransactions, autoMatchAccount, applyStatesFromRows } from './bankReconciliation.js'
+import { parseStatementTable, importTransactions, autoMatchAccount, applyStatesFromRows, findSupersededPending, promoteSupersededPending } from './bankReconciliation.js'
 import { planImportFromCounts, existingSignatureCounts, statementInvertsSign } from './bankTrxSheet.js'
 import { shiftDate } from '../utils/datetime.js'
 
@@ -192,6 +192,8 @@ RÈGLES IMPÉRATIVES :
   Certains relevés de carte impriment les achats en positif et les paiements avec un « CR » ou un signe moins : c'est la NATURE de l'opération qui décide, pas le signe.
 - Exactement UN des deux ("debit" ou "credit") est rempli par ligne, l'autre est null. Les deux valeurs sont POSITIVES.
 - Recopie TOUTES les lignes de mouvement, dans l'ordre du document, sans en sauter ni en inventer. N'inclus PAS les totaux, sous-totaux, reports, en-têtes de section ni les paiements programmés à venir.
+- UN SEUL COMPTE PAR LECTURE. Un relevé peut regrouper PLUSIEURS comptes (Desjardins : un même folio liste le compte à opérations « EOP », les épargnes « ET »/« CS », la marge de crédit « MC »…, chacun dans sa section avec son propre « Solde reporté » et sa propre colonne Solde). Ne lis que le compte visé (repère COMPTE VISÉ s'il est donné, sinon le premier compte à opérations) : ses lignes, SON solde reporté en "opening_balance", SON dernier solde en "closing_balance". Les lignes des autres sections n'appartiennent pas à ce compte — ne les recopie jamais, même quand elles semblent être l'autre côté d'un virement.
+- Un relevé SANS AUCUN MOUVEMENT (« Aucune transaction », ou un sommaire où paiements et achats valent 0) est un relevé valide : "rows": [], avec les soldes imprimés et la période (sur une carte, la date du relevé est "period_end").
 - Dates : toujours YYYY-MM-DD. Si le relevé n'imprime pas l'année, déduis-la de la période du relevé ; ne produis jamais une date dans le futur.
 - Montants : nombres purs, point décimal, sans symbole ni séparateur de milliers.
 - "opening_balance" / "closing_balance" : les soldes imprimés (solde précédent / solde final ; pour une carte, le solde DÛ). Mets null si le document ne les imprime pas — ne les calcule pas.
@@ -278,9 +280,10 @@ export function buildBalanceCorrection(check) {
 
 // Lit le relevé, et fait recommencer le modèle tant que l'arithmétique ne
 // retombe pas (2 passes de rattrapage). On garde la meilleure tentative.
-function userContentWithHint(pages, dateHint) {
+function userContentWithHint(pages, dateHint, accountHint = null) {
   const content = userContent(pages)
   const today = new Date().toISOString().slice(0, 10)
+  if (accountHint) content.unshift({ type: 'text', text: accountHintText(accountHint) })
   content.unshift({
     type: 'text',
     text: dateHint
@@ -290,8 +293,16 @@ function userContentWithHint(pages, dateHint) {
   return content
 }
 
-export async function extractStatement(pages, { call = callOpenAI, maxRetries = 2, dateHint = null } = {}) {
-  const content = userContentWithHint(pages, dateHint)
+// Le compte auquel le fichier est destiné (dossier Drive, choix de l'aperçu) :
+// c'est lui qui départage les sections d'un relevé à plusieurs comptes.
+export function accountHintText(account) {
+  const kind = account.kind === 'card' ? 'carte de crédit' : 'compte bancaire'
+  const hints = String(account.statement_hints || '').trim()
+  return `COMPTE VISÉ — ce fichier est le relevé du compte « ${account.name} » (${kind}, ${account.currency || 'devise inconnue'})${hints ? `, reconnu sur ses relevés par : ${hints}` : ''}. Si le document présente plusieurs comptes, ne lis QUE celui-là. Ce repère ne dicte rien d'autre : "currency" et les soldes restent ceux IMPRIMÉS sur le document, même s'ils ne ressemblent pas à ce compte.`
+}
+
+export async function extractStatement(pages, { call = callOpenAI, maxRetries = 2, dateHint = null, accountHint = null } = {}) {
+  const content = userContentWithHint(pages, dateHint, accountHint)
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content },
@@ -301,7 +312,8 @@ export async function extractStatement(pages, { call = callOpenAI, maxRetries = 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     const extracted = await call(messages)
     const rows = normalizeExtracted(extracted).rows
-    const check = checkBalance(rows, extracted.opening_balance, extracted.closing_balance, { kind: extracted.kind })
+    const isolated = isolateAccountChain(rows, extracted.opening_balance, extracted.closing_balance)
+    const check = checkBalance(isolated?.rows || rows, extracted.opening_balance, extracted.closing_balance, { kind: extracted.kind })
     if (!best || betterCheck(check, bestCheck)) { best = extracted; bestCheck = check }
     if (check.ok || check.method !== 'soldes') break
     if (attempt === maxRetries) break
@@ -315,10 +327,10 @@ export async function extractStatement(pages, { call = callOpenAI, maxRetries = 
 // le solde d'ouverture des relevés de carte ne vient pas du document mais du
 // relevé précédent (inferOpeningBalance), donc la boucle d'extraction, elle,
 // n'avait rien à contrôler. On renvoie la réponse et l'écart chiffré.
-export async function refineWithBalance(pages, extracted, check, { call = callOpenAI, dateHint = null } = {}) {
+export async function refineWithBalance(pages, extracted, check, { call = callOpenAI, dateHint = null, accountHint = null } = {}) {
   const messages = [
     { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: userContentWithHint(pages, dateHint) },
+    { role: 'user', content: userContentWithHint(pages, dateHint, accountHint) },
     { role: 'assistant', content: JSON.stringify(extracted) },
     { role: 'user', content: buildBalanceCorrection(check) },
   ]
@@ -411,6 +423,72 @@ export function checkBalance(rows, opening, closing, { kind = null } = {}) {
   }
   return { method: 'aucun', ok: null, sum, rowCount }
 }
+
+// Un relevé Desjardins liste plusieurs comptes sur le même folio (EOP, ET, CS,
+// MC…). Si le modèle a recopié les lignes d'une autre section, la colonne
+// Solde les trahit : elles forment leur propre chaîne, qui ne part pas du solde
+// d'ouverture. On ne garde la chaîne qui va de l'ouverture à la fermeture que
+// si elle est UNIQUE et que tout le reste est lui-même chaîné — sinon on ne
+// touche à rien et l'écart reste affiché.
+export function isolateAccountChain(rows, opening, closing) {
+  const o = numOrNull(opening)
+  const c = numOrNull(closing)
+  if (o == null || c == null || rows.length < 2) return null
+  if (Math.abs(round2(o + rows.reduce((s, r) => s + r.amount, 0) - c)) <= 0.01) return null
+  if (rows.some((r) => r.balance == null)) return null
+  const segments = [[rows[0]]]
+  for (let i = 1; i < rows.length; i++) {
+    const prev = rows[i - 1]
+    if (Math.abs(round2(prev.balance + rows[i].amount - rows[i].balance)) <= 0.01) segments.at(-1).push(rows[i])
+    else segments.push([rows[i]])
+  }
+  const fits = segments.filter((s) => Math.abs(round2(o + s[0].amount - s[0].balance)) <= 0.01
+    && Math.abs(round2(s.at(-1).balance - c)) <= 0.01)
+  if (fits.length !== 1) return null
+  return { rows: fits[0], dropped: rows.length - fits[0].length }
+}
+
+// Le relevé contredit le compte auquel on l'attribue : autre devise, ou « aucun
+// mouvement » alors que l'ERP connaît un autre solde. Un tel relevé ne doit pas
+// passer pour vérifié — le robot QuickBooks rapprocherait le mauvais chiffre.
+export const ACCOUNT_MISMATCH = 'Relevé d’un autre compte ?'
+
+export function accountMismatch(account, { currency = null, rowCount = 0, closing = null, knownBalance = null } = {}) {
+  if (!account) return null
+  const cur = String(currency || '').toUpperCase()
+  if (cur && account.currency && cur !== String(account.currency).toUpperCase()) {
+    return `${ACCOUNT_MISMATCH} Relevé en ${cur}, compte « ${account.name} » en ${account.currency}`
+  }
+  const c = numOrNull(closing)
+  const k = numOrNull(knownBalance?.balance)
+  if (!rowCount && c != null && k != null) {
+    // Une carte peut porter sa dette signée d'un côté ou de l'autre.
+    const differs = account.kind === 'card' ? Math.abs(Math.abs(k) - Math.abs(c)) > 0.01 : Math.abs(k - c) > 0.01
+    if (differs) {
+      return `${ACCOUNT_MISMATCH} Aucun mouvement au relevé (solde ${c.toFixed(2)}), mais « ${account.name} » est à ${k.toFixed(2)} au ${knownBalance.txn_date}`
+    }
+  }
+  return null
+}
+
+function knownBalanceAt(accountId, date) {
+  if (!accountId || !date) return null
+  return db.prepare(`
+    SELECT txn_date, balance FROM bank_transactions
+    WHERE account_id=? AND txn_date <= ? AND balance IS NOT NULL AND deleted_at IS NULL
+    ORDER BY txn_date DESC, rowid DESC LIMIT 1
+  `).get(accountId, date) || null
+}
+
+function mismatchFor(account, rows, { currency, closing, periodEnd }) {
+  return accountMismatch(account, {
+    currency, rowCount: rows.length, closing,
+    knownBalance: rows.length ? null : knownBalanceAt(account?.id, periodEnd),
+  })
+}
+
+// Verdict stocké : l'arithmétique, sauf si le relevé contredit son compte.
+const balanceOkFlag = (check, mismatch) => (mismatch ? 0 : check.ok == null ? null : (check.ok ? 1 : 0))
 
 // ── Détection du compte ──────────────────────────────────────────────────────
 
@@ -585,8 +663,11 @@ export function planStatementRows(accountId, rows) {
   const existing = existingSignatureCounts(accountId, since)
   const maxDate = shiftDate(new Date().toISOString().slice(0, 10), 1)
   const { toInsert, skipped } = planImportFromCounts(rows, existing, { maxDate })
-  const fresh = new Set(toInsert)
-  return { fresh: toInsert, duplicates: skipped, flags: rows.map((r) => fresh.has(r)) }
+  // Un achat déjà entré « En attente » à une autre date n'est pas neuf.
+  const superseded = findSupersededPending(accountId, rows)
+  const fresh = new Set(toInsert.filter((r) => !superseded.has(rows.indexOf(r))))
+  const kept = toInsert.filter((r) => fresh.has(r))
+  return { fresh: kept, duplicates: skipped + (toInsert.length - kept.length), flags: rows.map((r) => fresh.has(r)) }
 }
 
 // ── Orchestration ────────────────────────────────────────────────────────────
@@ -642,17 +723,25 @@ export async function sendUploadToExtractor(id, up = null) {
     status: 'pret',
     error: res.status === 'duplicate' ? 'Document déjà présent dans l’extraction de données' : null,
   })
-  logSync('bank:statement-upload', 'success', `${row.original_name} : facture → extraction de données`)
+  logSync('bank:statement-upload', 'manual', { status: 'success' })
   return getUpload(id)
 }
 
-export async function analyzeUpload(id, { extract = extractStatement, refine = refineWithBalance } = {}) {
+// `accountId` : le compte auquel le fichier est destiné (dossier Drive). Il
+// s'impose à la détection et oriente la lecture d'un relevé à plusieurs
+// comptes. À défaut, une relecture reprend le compte déjà choisi — imposé s'il
+// vient du dossier Drive, simple repère sinon.
+export async function analyzeUpload(id, { extract = extractStatement, refine = refineWithBalance, accountId = null } = {}) {
   const up = db.prepare(SELECT_UPLOAD).get(id)
   if (!up) throw new Error('Dépôt introuvable')
+  if (!accountId && up.drive_file_id && up.account_id) accountId = up.account_id
   // Marqué AVANT de lire : une relecture laissait la ligne en 'pret', donc
   // l'écran reprenait l'ancien résultat comme s'il était le nouveau.
   touch(id, { status: 'en_analyse', error: null })
   try {
+    const hintId = accountId || up.account_id
+    const accountHint = hintId ? db.prepare('SELECT * FROM bank_accounts WHERE id=?').get(hintId) || null : null
+    const dateHint = dateHintFromName(up.original_name)
     const read = await readStatement(up.file_path, path.extname(up.original_name || up.file_path))
     let extracted = {}
     let rows = []
@@ -666,23 +755,39 @@ export async function analyzeUpload(id, { extract = extractStatement, refine = r
       readErrors = read.parsed.errors
       extracted = { columns: read.parsed.columns }
     } else {
-      const out = await extract(read.pages, { dateHint: dateHintFromName(up.original_name) })
+      const out = await extract(read.pages, { dateHint, accountHint })
       extracted = out.extracted || {}
       const normalized = normalizeExtracted(extracted)
       rows = normalized.rows
       readErrors = normalized.errors
       check = out.check
+      const isolated = isolateAccountChain(rows, extracted.opening_balance, extracted.closing_balance)
+      if (isolated) {
+        rows = isolated.rows
+        readErrors.push(`${isolated.dropped} ligne${isolated.dropped > 1 ? 's' : ''} d'un autre compte du relevé écartée${isolated.dropped > 1 ? 's' : ''}`)
+      }
     }
     // Facture déposée sur l'écran de rapprochement : elle part à l'extraction
     // de données, exactement comme si elle y avait été déposée.
     if (String(extracted.document_kind || '').toLowerCase() === 'facture') {
       return await sendUploadToExtractor(id, up)
     }
-    if (!rows.length) throw new Error(readErrors[0] || 'Aucune transaction reconnue dans ce fichier')
+    // Un mois sans mouvement est un vrai relevé, s'il le prouve : soldes
+    // d'ouverture et de clôture imprimés, égaux, et une date d'arrêté.
+    const opening0 = numOrNull(extracted.opening_balance)
+    const closing0 = numOrNull(extracted.closing_balance)
+    const emptyMonth = !rows.length && !readErrors.length && !read.parsed && extracted.period_end
+      && opening0 != null && closing0 != null && Math.abs(opening0 - closing0) <= 0.01
+    if (!rows.length && !emptyMonth) throw new Error(readErrors[0] || 'Aucune transaction reconnue dans ce fichier')
 
     const accounts = listAccounts()
     const det = detectAccount(extracted, rows, accounts, overlapsByAccount(rows), up.original_name || '')
-    const account = accounts.find((a) => a.id === det.account_id) || null
+    if (accountId && accountHint) {
+      det.account_id = accountHint.id
+      det.confidence = 1
+      det.evidence = [{ label: 'Dossier', detail: accountHint.name }]
+    }
+    const account = accounts.find((a) => a.id === det.account_id) || (accountId ? accountHint : null)
     const invertible = isInvertible(extracted)
     rows = applySignConvention(rows, account, invertible)
     let opening = numOrNull(extracted.opening_balance)
@@ -699,11 +804,12 @@ export async function analyzeUpload(id, { extract = extractStatement, refine = r
       // modèle à sa copie. Une seule passe — au-delà, l'écart est réel.
       if (!check.ok && !read.parsed) {
         try {
-          const again = await refine(read.pages, extracted, check, { dateHint: dateHintFromName(up.original_name) })
+          const again = await refine(read.pages, extracted, check, { dateHint, accountHint: account || accountHint })
           const retried = normalizeExtracted(again)
-          const signed = applySignConvention(retried.rows, account, isInvertible(again))
-          const recheck = checkBalance(signed, opening, again.closing_balance ?? extracted.closing_balance,
-            { kind: account?.kind || extracted.kind })
+          const againClosing = again.closing_balance ?? extracted.closing_balance
+          const retriedRows = isolateAccountChain(retried.rows, opening, againClosing)?.rows || retried.rows
+          const signed = applySignConvention(retriedRows, account, isInvertible(again))
+          const recheck = checkBalance(signed, opening, againClosing, { kind: account?.kind || extracted.kind })
           if (Math.abs(recheck.delta) < Math.abs(check.delta)) {
             extracted = again
             rows = signed
@@ -724,8 +830,11 @@ export async function analyzeUpload(id, { extract = extractStatement, refine = r
       readErrors.push(`Seules les ${MAX_VISION_PAGES} premières pages ont été lues`)
     }
     // Le repère de date du nom de fichier sert aussi de juge après coup.
-    const drift = yearDriftAgainstHint(dateHintFromName(up.original_name), rows)
+    const drift = yearDriftAgainstHint(dateHint, rows)
     if (drift) readErrors.push(drift)
+    const periodEnd = extracted.period_end || rows.map((r) => r.txn_date).sort().at(-1) || null
+    const mismatch = mismatchFor(account, rows, { currency: extracted.currency, closing: extracted.closing_balance, periodEnd })
+    if (mismatch) readErrors.unshift(mismatch)
     touch(id, {
       source: read.source,
       page_count: read.pageCount,
@@ -737,20 +846,20 @@ export async function analyzeUpload(id, { extract = extractStatement, refine = r
       account_number_masked: extracted.account_number_masked || null,
       currency: extracted.currency || null,
       period_start: extracted.period_start || rows.map((r) => r.txn_date).sort()[0] || null,
-      period_end: extracted.period_end || rows.map((r) => r.txn_date).sort().at(-1) || null,
+      period_end: periodEnd,
       opening_balance: opening,
       closing_balance: numOrNull(extracted.closing_balance),
       balance_check: check.method === 'soldes' ? check.delta : null,
       balance_method: check.method,
-      balance_ok: check.ok == null ? null : (check.ok ? 1 : 0),
+      balance_ok: balanceOkFlag(check, mismatch),
       rows_json: JSON.stringify(marked),
       status: 'pret',
       error: readErrors.length ? readErrors.slice(0, 3).join(' · ') : null,
     })
-    logSync('bank:statement-upload', 'success', `${up.original_name} : ${rows.length} lignes, ${plan?.fresh.length ?? rows.length} neuves`)
+    logSync('bank:statement-upload', 'manual', { status: 'success', modified: rows.length })
   } catch (e) {
     touch(id, { status: 'erreur', error: e.message })
-    logSync('bank:statement-upload', 'error', `${up.original_name} : ${e.message}`)
+    logSync('bank:statement-upload', 'manual', { status: 'error', error: `${up.original_name} : ${e.message}` })
   }
   return getUpload(id)
 }
@@ -784,9 +893,10 @@ export function commitUpload(id, userId, { only = null } = {}) {
   if (up.status === 'importe') throw new Error('Ce dépôt est déjà importé')
   if (up.document_kind === 'facture') throw new Error("Ce document est une facture : elle est partie à l'extraction de données")
   if (!up.account_id) throw new Error('Aucun compte choisi')
+  const superseded = findSupersededPending(up.account_id, up.rows_json)
   const picked = up.rows_json
     .map((r, i) => ({ r, i }))
-    .filter(({ r, i }) => (only ? only.includes(i) : r._new))
+    .filter(({ r, i }) => !superseded.has(i) && (only ? only.includes(i) : r._new))
     .map(({ r }) => {
       const { _new: _ignored, ...row } = r
       return row
@@ -794,6 +904,7 @@ export function commitUpload(id, userId, { only = null } = {}) {
   // Même sans ligne neuve, le document peut mettre à jour l'état des lignes
   // qu'il retrouve (« En attente » devenu « Autorisée »).
   const restated = applyStatesFromRows(up.account_id, up.rows_json)
+    + promoteSupersededPending(up.account_id, up.rows_json, superseded)
   if (!picked.length) {
     if (restated) {
       touch(id, { status: 'importe', inserted_count: 0, duplicate_count: up.rows_json.length })
@@ -851,11 +962,15 @@ export function replanUpload(id) {
   // Le type du compte décide de l'arithmétique du solde : passer d'une carte à
   // un compte chèque refait le contrôle, il ne le garde pas.
   const check = checkBalance(rows, up.opening_balance, up.closing_balance, { kind: account?.kind })
+  const mismatch = mismatchFor(account, rows, { currency: up.currency, closing: up.closing_balance, periodEnd: up.period_end })
+  // L'avertissement suit le compte choisi : posé s'il le contredit, retiré sinon.
+  const others = String(up.error || '').split(' · ').filter((e) => e && !e.startsWith(ACCOUNT_MISMATCH))
   touch(id, {
     rows_json: JSON.stringify(rows.map((r, i) => ({ ...r, _new: plan ? plan.flags[i] : true }))),
     balance_check: check.method === 'soldes' ? check.delta : null,
     balance_method: check.method,
-    balance_ok: check.ok == null ? null : (check.ok ? 1 : 0),
+    balance_ok: balanceOkFlag(check, mismatch),
+    error: [mismatch, ...others].filter(Boolean).join(' · ') || null,
   })
   return getUpload(id)
 }

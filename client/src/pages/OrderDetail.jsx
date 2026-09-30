@@ -11,6 +11,7 @@ import { Badge, orderStatusColor } from '../components/Badge.jsx'
 import { Modal } from '../components/Modal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
+import InstallationDocsAction from '../components/InstallationDocsAction.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtMoney, fmtAddress } from '../utils/formatters.js'
@@ -34,6 +35,7 @@ import ManualScanInput from '../components/ManualScanInput.jsx'
 import { trackingUrl } from '../lib/trackingUrl.js'
 import { shipmentTitle } from '../lib/shipmentLabel.js'
 import { invalidate } from '../lib/prefetch.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // ── Utilities ──────────────────────────────────────────────────────────────────
 
@@ -43,6 +45,16 @@ const ITEM_TYPE_COLORS = { 'Facturable': 'green', 'Remplacement': 'yellow', 'Non
 // `responsable_de_la_commande` : miroir Airtable (ids `rec…` d'une table non
 // miroitée) — la fiche le remplace par le choix d'un utilisateur (`assigned_to`).
 const ORDER_TAKEN_FIELDS = ['company_name', 'responsable_de_la_commande']
+
+// Les anciennes commandes gardent la référence automatique en première ligne.
+// La liaison dédiée la remplace à l'écran, sans toucher aux véritables notes.
+function orderNotesWithoutBuilderReference(order) {
+  const notes = order.notes || ''
+  const [firstLine, ...rest] = notes.split('\n')
+  return order.discovery_forms?.some(f => firstLine.replace(/\r$/, '') === `System Builder #${f.id}`)
+    ? rest.join('\n')
+    : notes
+}
 
 // Les deux adresses occupent chacune une ligne, même si la disposition
 // enregistrée séparait auparavant le champ natif et le champ personnalisé.
@@ -190,8 +202,11 @@ function AddItemModal({ orderId, onSave, onClose }) {
 // numéro de série se décide sur le stock « Disponible - Location » ; un article
 // sans numéro de série ne se décide pas d'ici — l'opérateur regarde d'abord les
 // reconditionnés, puis les neufs. Compteurs fournis par la route commande.
+// Une ligne de remplacement (type d'item, ou champ « Type de document ») se
+// sert comme un abonnement : le reconditionné y a sa place.
 function shelfHint(item, isSubscription) {
-  if (!isSubscription) return { label: 'Étagère neufs', tone: 'new' }
+  const isReplacement = item.item_type === 'Remplacement' || item.cf_type_de_document === 'Remplacement'
+  if (!isSubscription && !isReplacement) return { label: 'Étagère neufs', tone: 'new' }
   if (!(item.product_serial_count > 0)) return { label: 'Étagère reconditionnés, sinon neufs', tone: 'either' }
   return item.refurb_serials_available > 0
     ? { label: 'Étagère reconditionnés', tone: 'refurb' }
@@ -633,77 +648,6 @@ function AddToShipmentModal({ item, shipments, onConfirm, onClose }) {
   )
 }
 
-// Documents accessibles avant et après l'expédition, dans les deux vues.
-function InstallationDocsAction({ order, orderId }) {
-  const [generatingDocs, setGeneratingDocs] = useState(false)
-  const [docsError, setDocsError] = useState(null)
-  // Langue des documents d'installation : proposée par le serveur (contact de
-  // l'adresse de livraison), forçable ici par l'opérateur pour cette impression.
-  const [docsLangOverride, setDocsLangOverride] = useState(null)
-  const docsLang = docsLangOverride || order.docs_lang?.lang || 'fr'
-  const docsLangHint = docsLangOverride
-    ? 'Langue forcée pour cette impression'
-    : order.docs_lang?.contact_name
-      ? `Langue de ${order.docs_lang.contact_name} (contact de l'adresse de livraison)`
-      : 'Langue par défaut — aucun contact sur l\'adresse de livraison'
-
-  async function handleGenerateInstallationDocs() {
-    // Réserver l'onglet pendant le clic pour éviter le blocage des popups.
-    const preview = window.open('', '_blank')
-    if (!preview) {
-      setDocsError("Autorisez les fenêtres surgissantes pour ouvrir les documents.")
-      return
-    }
-    preview.opener = null
-    setGeneratingDocs(true)
-    setDocsError(null)
-    try {
-      const { blob } = await api.orders.generateInstallationDocsBlob(orderId, docsLang)
-      const url = URL.createObjectURL(blob)
-      preview.location.href = url
-      // Note: ne pas révoquer immédiatement — le nouvel onglet en a besoin
-      setTimeout(() => URL.revokeObjectURL(url), 60000)
-    } catch (e) {
-      preview.close()
-      setDocsError(e.message || 'Erreur lors de la génération des documents')
-    } finally {
-      setGeneratingDocs(false)
-    }
-  }
-
-  return (
-    <div className="space-y-2" data-testid="installation-docs">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          onClick={handleGenerateInstallationDocs}
-          disabled={generatingDocs}
-          className="btn-secondary btn-sm flex items-center gap-1.5"
-          title="Ouvrir les documents d'installation et de remplacement de la commande pour les imprimer"
-        >
-          <Printer size={14} />
-          {generatingDocs ? 'Génération…' : "Documents d'installation"}
-        </button>
-        <div className="flex rounded-lg border border-slate-200 bg-white overflow-hidden" title={docsLangHint} role="group" aria-label="Langue des documents">
-          {['fr', 'en'].map(l => (
-            <button
-              key={l}
-              onClick={() => setDocsLangOverride(l)}
-              disabled={generatingDocs}
-              aria-pressed={docsLang === l}
-              className={`px-3 py-1.5 text-sm font-semibold transition-colors ${
-                docsLang === l ? 'bg-slate-700 text-white' : 'text-slate-400 hover:bg-slate-50'
-              }`}
-            >
-              {l.toUpperCase()}
-            </button>
-          ))}
-        </div>
-      </div>
-      {docsError && <div role="alert" className="text-xs text-red-600">{docsError}</div>}
-    </div>
-  )
-}
-
 // ── Expedition mode — Full view ────────────────────────────────────────────────
 
 function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, scanToast, setScanToast, flashItemId, onManualScan }) {
@@ -1030,7 +974,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
               />
             ))}
             {!picking && <div className="p-4 bg-emerald-50 border-t border-emerald-100 space-y-2">
-              <InstallationDocsAction order={order} orderId={orderId} />
+              <InstallationDocsAction orderId={orderId} docsLang={order.docs_lang} label="Documents clients" />
               <button
                 onClick={() => setShowCreateShipment(true)}
                 className="w-full flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-base py-3.5 rounded-xl transition-colors shadow-sm"
@@ -1043,7 +987,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
         )}
 
         {done.length > 0 && (picking || picked.length === 0) && (
-          <InstallationDocsAction order={order} orderId={orderId} />
+          <InstallationDocsAction orderId={orderId} docsLang={order.docs_lang} label="Documents clients" />
         )}
 
         {/* Expédiés / dans l'envoi */}
@@ -1109,7 +1053,7 @@ function ExpeditionView({ order, orderId, onUpdate, onPatchItem, onToggleMode, s
                         title={s.label_pdf_path ? 'Réimprimer l\'étiquette Novoxpress' : 'Acheter une étiquette Novoxpress'}
                       >
                         {isOpening
-                          ? <><div className="animate-spin rounded-full h-3 w-3 border-b-2 border-white" /> …</>
+                          ? <><ThinkingOrb size={12} ink className="text-white" /> …</>
                           : <><Printer size={12} /> {s.label_pdf_path ? 'Réimprimer' : 'Étiquette Novoxpress'}</>
                         }
                       </button>
@@ -1499,7 +1443,7 @@ export default function OrderDetail({ recordId, onClose }) {
       await api.orders.deleteItem(id, row.id)
       setOrder(o => (o ? { ...o, items: (o.items || []).filter(i => i.id !== row.id) } : o))
     },
-    deleteConfirm: (row) => `Supprimer « ${row.product_name || 'Produit inconnu'} » (×${row.qty}) de la commande ? Cette action est irréversible.`,
+    deleteConfirm: null,
   }), [id, setOrder])
 
   // Édition « tableur » du DataTable Articles : PATCH du champ touché, puis
@@ -1755,13 +1699,7 @@ export default function OrderDetail({ recordId, onClose }) {
       <div className="flex items-center gap-0.5 justify-end" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
         <button onClick={() => handleDuplicateItem(item.id)} className="text-slate-400 hover:text-brand-600 p-1 rounded" title="Dupliquer" data-testid={`item-duplicate-${item.id}`}><Copy size={13} /></button>
         <button
-          onClick={async () => {
-            if (await confirmDialog({
-              title: "Supprimer l'article",
-              message: `Supprimer « ${item.product_name || 'Produit inconnu'} » (×${item.qty}) de la commande ?`,
-              confirmLabel: 'Supprimer',
-            })) handleDeleteItem(item.id)
-          }}
+          onClick={() => handleDeleteItem(item.id)}
           className="text-slate-400 hover:text-red-600 p-1 rounded"
           title="Supprimer"
           data-testid={`item-delete-${item.id}`}
@@ -1820,9 +1758,10 @@ export default function OrderDetail({ recordId, onClose }) {
     filterable: false,
     groupable: false,
     editable: false,
-    // Réutilise la variante de liens du tableau : sélection au premier clic,
-    // fiche au suivant. Seule la dissociation est proposée sur cette page.
+    // Le numéro ouvre sa fiche dès le premier clic ; cliquer à côté
+    // sélectionne la cellule pour proposer la dissociation.
     linkChips: true,
+    linkOpenOnClick: true,
     linkMulti: true,
     linkAllowAdd: false,
     linkChipsScrollable: true,
@@ -1916,7 +1855,7 @@ export default function OrderDetail({ recordId, onClose }) {
         ),
         actions: (
           <div className="flex flex-wrap items-start gap-2">
-            {order.items?.length > 0 && <InstallationDocsAction order={order} orderId={id} />}
+            {order.items?.length > 0 && <InstallationDocsAction orderId={id} docsLang={order.docs_lang} label="Documents clients" />}
             <button
               onClick={() => setExpeditionMode(true)}
               className="btn-secondary btn-sm flex items-center gap-1.5 border-emerald-300 text-emerald-700 hover:bg-emerald-50"
@@ -2106,7 +2045,7 @@ export default function OrderDetail({ recordId, onClose }) {
           <DetailField id="notes" label="Notes" span2>
             <SaveStatus status={notesSave.status} className="mb-1" />
             <InlineTextarea
-              value={order.notes}
+              value={orderNotesWithoutBuilderReference(order)}
               onSave={commitNotes}
               testId="order-notes-input"
             />
@@ -2132,7 +2071,13 @@ export default function OrderDetail({ recordId, onClose }) {
             // Les articles s'affichent tous : pas d'ascenseur dans la table,
             // c'est le panneau de la fiche qui défile.
             height="auto"
+            minHeight={320}
+            footerAtBottom
             onCellEdit={handleItemCellEdit}
+            selectedSelectChevron
+            selectedSelectClickOpens
+            singleSelectEmptyLabel=""
+            fullHeightCells
             onRowReorder={handleReorderItems}
             // Table manipulable : clic droit = dupliquer/supprimer l'article,
             // « + » sous la dernière ligne = article ajouté en place (voir

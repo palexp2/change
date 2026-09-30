@@ -4,6 +4,7 @@ import { makeUpload } from '../utils/upload.js'
 import { join, extname } from 'path'
 import { existsSync, unlinkSync } from 'fs'
 import db from '../db/database.js'
+import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { requireAuth } from '../middleware/auth.js'
 import { pushSaleReceiptToQB } from '../services/quickbooks.js'
 import { qbEntityUrl } from '../connectors/quickbooks.js'
@@ -31,6 +32,7 @@ function buildQbUrl(row) {
   if (!row.quickbooks_id) return null
   const entity = row.quickbooks_type === 'bill' ? 'bill'
     : row.quickbooks_type === 'cc_credit' ? 'creditcardcredit'
+    : row.quickbooks_type === 'deposit' ? 'deposit'
     : 'expense'
   return qbEntityUrl(entity, row.quickbooks_id)
 }
@@ -210,9 +212,9 @@ function bankLineFor(receiptId) {
   if (!t) return null
   return {
     ...t,
-    // Un compte ERP peut pointer vers plusieurs comptes QB (« 10020,10021 ») :
-    // on ne propose le compte de paiement que s'il n'y a aucune ambiguïté.
-    qb_account_id: t.qb_account_id && !String(t.qb_account_id).includes(',') ? String(t.qb_account_id) : null,
+    // Un compte ERP peut pointer vers plusieurs comptes QB (« 10021,10020 ») :
+    // le premier est celui où l'on écrit.
+    qb_account_id: mainQbAccount(t),
   }
 }
 
@@ -260,8 +262,8 @@ router.patch('/:id', (req, res) => {
         }
       } else if (key === 'quickbooks_id' || key === 'quickbooks_type') {
         v = v == null || v === '' ? null : String(v)
-        if (key === 'quickbooks_type' && v != null && !['purchase', 'bill', 'cc_credit'].includes(v)) {
-          return res.status(400).json({ error: 'quickbooks_type: purchase|bill|cc_credit|null attendu' })
+        if (key === 'quickbooks_type' && v != null && !['purchase', 'bill', 'cc_credit', 'deposit'].includes(v)) {
+          return res.status(400).json({ error: 'quickbooks_type: purchase|bill|cc_credit|deposit|null attendu' })
         }
       } else if (key === 'items') {
         if (!Array.isArray(v)) return res.status(400).json({ error: 'items: tableau attendu' })
@@ -581,7 +583,7 @@ router.post('/:id/push-to-qb', async (req, res) => {
       logReceiptEvent(req.params.id, req.user?.id, 'anomaly_override', `Doublon probable ignoré : ${String(anomalyOverride).trim()}`)
     }
     const bankNote = bankChargedTotal ? ` — montant passé à la banque : ${Number(bankChargedTotal).toFixed(2)} (écart éventuel en ligne « Frais de conversion »)` : ''
-    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : type === 'cc_credit' ? 'crédit carte de crédit' : 'dépense'})${bankNote}`)
+    logReceiptEvent(req.params.id, req.user?.id, 'published', `QuickBooks #${qbId} (${type === 'bill' ? 'facture' : type === 'cc_credit' ? 'crédit carte de crédit' : type === 'deposit' ? 'dépôt bancaire' : 'dépense'})${bankNote}`)
     // Trace distincte quand l'opérateur a forcé la publication malgré un écart de statut fiscal.
     if (forceReason && forceReason.trim()) {
       logReceiptEvent(req.params.id, req.user?.id, 'fiscal_override', `Écart fiscal forcé : ${forceReason.trim()}`)
@@ -703,7 +705,14 @@ router.delete('/:id', (req, res) => {
     db.prepare("UPDATE sale_receipts SET deleted_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?")
       .run(req.params.id)
   } else {
-    db.prepare('DELETE FROM sale_receipts WHERE id=?').run(req.params.id)
+    // Les liens vers la pièce sont détachés, pas supprimés : la trace de collecte
+    // reste (le robot ne la retélécharge pas) et le besoin de facture se rouvre.
+    db.transaction(() => {
+      for (const t of ['scraper_documents', 'invoice_needs', 'carm_transactions']) {
+        db.prepare(`UPDATE ${t} SET sale_receipt_id=NULL WHERE sale_receipt_id=?`).run(req.params.id)
+      }
+      db.prepare('DELETE FROM sale_receipts WHERE id=?').run(req.params.id)
+    })()
     db.prepare('DELETE FROM sale_receipt_events WHERE receipt_id=?').run(req.params.id)
   }
   // Le reçu n'existe plus : ses anomalies ouvertes (dont les paires de doublon) se résolvent.

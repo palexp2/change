@@ -37,6 +37,7 @@ const ENTITY_TABLES = {
   serial_numbers: 'serial_numbers',
   returns: 'returns',
   work_ideas: 'work_ideas',
+  discovery_forms: 'customer_onboarding_responses',
 }
 
 function sanitizeFileName(name) {
@@ -152,6 +153,29 @@ router.get('/:entityType/:entityId/:attId/download', (req, res) => {
   if (!fs.existsSync(absPath)) return res.status(404).json({ error: 'Fichier introuvable' })
   if (row.content_type) res.type(row.content_type)
   res.download(absPath, row.file_name || 'piece-jointe')
+})
+
+// PATCH /:entityType/:entityId/:attId — renommer (nom affiché et nom de
+// téléchargement ; le fichier sur disque garde son chemin). Sans extension, on
+// reprend celle d'origine pour ne pas perdre l'aperçu.
+router.patch('/:entityType/:entityId/:attId', (req, res) => {
+  const { entityType, entityId, attId } = req.params
+  const row = db.prepare(`
+    SELECT * FROM attachments WHERE id = ? AND entity_type = ? AND entity_id = ? AND deleted_at IS NULL
+  `).get(attId, entityType, entityId)
+  if (!row) return res.status(404).json({ error: 'Pièce jointe introuvable' })
+  const raw = String(req.body?.file_name || '').trim()
+  if (!raw) return res.status(400).json({ error: 'Nom requis' })
+  let name = sanitizeFileName(raw)
+  const oldExt = path.extname(row.file_name || '')
+  if (oldExt && !path.extname(name)) name = `${name}${oldExt}`.slice(0, 200)
+  db.prepare('UPDATE attachments SET file_name = ? WHERE id = ?').run(name, attId)
+  const updated = db.prepare(`
+    SELECT a.*, u.name AS uploaded_by_name
+    FROM attachments a LEFT JOIN users u ON u.id = a.uploaded_by
+    WHERE a.id = ?
+  `).get(attId)
+  res.json(serialize(updated))
 })
 
 // DELETE /:entityType/:entityId/:attId — soft delete + suppression du fichier

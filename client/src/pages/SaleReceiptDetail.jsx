@@ -60,6 +60,7 @@ function withRecomputedTotal(receipt, patch) {
 import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { ReceiptAttachment } from '../components/ReceiptAttachment.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // Code de taxe QB déduit par défaut selon les montants TPS/TVQ extraits — sert de
 // présélection. Doit rester aligné avec la déduction serveur (pushSaleReceiptToQB).
@@ -78,6 +79,15 @@ const PARTS_ACCT_NUM = '14000'
 // partage. « Other Current Asset » couvre le stock de pièces (14000).
 const EXPENSE_ACCOUNT_TYPES = ['Expense', 'Other Expense', 'Cost of Goods Sold', 'Other Current Asset']
 const accountLabel = a => (a.AcctNum ? `${a.AcctNum} — ${a.Name}` : a.Name)
+// Comptes qu'un dépôt peut créditer : revenus d'abord (intérêts, subventions…),
+// puis bilan, puis dépenses.
+const depositTypeRank = t => ['Other Income', 'Income'].includes(t) ? 0
+  : ['Other Current Asset', 'Other Asset', 'Fixed Asset', 'Accounts Receivable'].includes(t) ? 1
+  : ['Other Current Liability', 'Long Term Liability', 'Equity'].includes(t) ? 2 : 3
+const depositAccountOptions = accounts => (accounts || [])
+  .filter(a => !['Bank', 'Credit Card', 'Accounts Payable'].includes(a.AccountType))
+  .sort((a, b) => depositTypeRank(a.AccountType) - depositTypeRank(b.AccountType) || accountLabel(a).localeCompare(accountLabel(b), 'fr', { numeric: true }))
+  .map(a => ({ value: a.Id, label: accountLabel(a) }))
 const expenseAccountOptions = accounts => (accounts || [])
   .filter(a => EXPENSE_ACCOUNT_TYPES.includes(a.AccountType))
   .map(a => ({ value: a.Id, label: accountLabel(a) }))
@@ -154,6 +164,7 @@ const QB_ENTRY_TYPES = [
   { key: 'purchase', label: 'Dépense payée', testId: 'qb-type-purchase', hint: 'Purchase — dépense déjà réglée' },
   { key: 'bill', label: 'Facture à payer', testId: 'qb-type-bill', hint: 'Bill — portée aux Comptes fournisseurs' },
   { key: 'cc_credit', label: 'Crédit carte', testId: 'qb-type-cc-credit', hint: 'Credit Card Credit — remboursement porté sur la carte' },
+  { key: 'deposit', label: 'Dépôt', testId: 'qb-type-deposit', hint: 'Deposit — argent reçu au compte bancaire (crédit d’impôt, subvention…)' },
 ]
 
 // Ventilation TPS/TVQ d'un code (Id QB ou sentinel NO_TAX). null si taux inconnu.
@@ -245,20 +256,28 @@ function impliedTaxFromLineCodes(receipt, taxNameById) {
 }
 
 
-function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
+// Publications en cours (hors fenêtre) et dernier refus par reçu : rouvrir le
+// document pendant l'envoi le montre « Publication… » ; après un refus, le
+// message rouge (et « Publier quand même ») y attend l'utilisateur.
+const publishing = new Set()
+const publishErrors = new Map()
+
+function QBPublishForm({ receipt, onLeave, onUpdate, onOpenConversion }) {
   const { addToast } = useToast()
+  const navigate = useNavigate()
+  const lastError = publishErrors.get(receipt.id)
   const [accounts, setAccounts] = useState([])
   const [vendors, setVendors] = useState([])
   const [taxCodes, setTaxCodes] = useState([])
   const [txTypes, setTxTypes] = useState([])
   const [vendorHistory, setVendorHistory] = useState([])
   const [loading, setLoading] = useState(true)
-  const [submitting, setSubmitting] = useState(false)
-  const [error, setError] = useState(null)
+  const [submitting, setSubmitting] = useState(() => publishing.has(receipt.id))
+  const [error, setError] = useState(lastError?.message || null)
   // Champ à corriger signalé par la validation (locale ou serveur) — la section
   // correspondante est encadrée en rouge. Valeurs : vendor, expense_account,
   // payment_account, transaction_type, tax_code, currency.
-  const [errorField, setErrorField] = useState(null)
+  const [errorField, setErrorField] = useState(lastError?.field || null)
   // Publication tardive : nombre de jours de retard quand le garde-fou des 30 jours
   // bloque. Non nul ⇒ le message rouge propose « Publier quand même » (le retard est
   // souvent légitime — facture comptabilisée après coup — mais doit être vu).
@@ -267,7 +286,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   // est ouverte (cf. transactionAnomalies.js). Le blocage n'est pas une impasse — après
   // avoir LU le message, l'opérateur peut publier quand même en justifiant (la raison est
   // tracée au journal du reçu). Non nul ⇒ le message rouge propose la justification.
-  const [anomalyBlocked, setAnomalyBlocked] = useState(false)
+  const [anomalyBlocked, setAnomalyBlocked] = useState(lastError?.field === 'anomaly')
   const [anomalyReason, setAnomalyReason] = useState('')
   const fail = (msg, field = null) => { setError(msg); setErrorField(field); setStaleDays(null); setAnomalyBlocked(false) }
   const fieldFrame = f => (errorField === f ? 'ring-2 ring-red-400 rounded-lg bg-red-50 p-2 -m-2' : '')
@@ -322,7 +341,9 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   const touchAndDraft = (fn, field) => v => { userTouchedRef.current = true; fn(v); saveDraft({ [field]: v || null }) }
 
   useEffect(() => {
-    Promise.all([api.quickbooks.accounts(), api.quickbooks.vendors(), api.quickbooks.taxCodes(), api.saleReceipts.transactionTypes()])
+    // Tous les comptes actifs : un dépôt crédite des revenus, des actifs ou des passifs
+    // (les listes dépense/paiement filtrent leurs types elles-mêmes).
+    Promise.all([api.quickbooks.accounts({ all: 1 }), api.quickbooks.vendors(), api.quickbooks.taxCodes(), api.saleReceipts.transactionTypes()])
       .then(([accs, vends, codes, types]) => {
         setAccounts(accs)
         setVendors(vends)
@@ -341,7 +362,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         // rapprochement flou — on retrouve la facture exactement là où on l'a laissée.
         // Chaque valeur est validée contre les référentiels QB chargés (compte ou
         // vendor supprimé depuis → on retombe sur les défauts).
-        const draftType = ['purchase', 'bill', 'cc_credit'].includes(receipt.quickbooks_type) ? receipt.quickbooks_type : null
+        const draftType = ['purchase', 'bill', 'cc_credit', 'deposit'].includes(receipt.quickbooks_type) ? receipt.quickbooks_type : null
         const draftVendorId = receipt.vendor_id && vends.some(v => v.Id === receipt.vendor_id) ? receipt.vendor_id : null
         const draftExpenseId = receipt.expense_account_id && accs.some(a => a.Id === receipt.expense_account_id) ? receipt.expense_account_id : null
         const draftPaymentId = receipt.payment_account_id && accs.some(a => a.Id === receipt.payment_account_id) ? receipt.payment_account_id : null
@@ -463,7 +484,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   // withTax=true (bouton « Utiliser » manuel) copie aussi le code de taxe + toast ;
   // withTax=false (auto-apply silencieux) laisse la déduction TPS/TVQ du reçu courant.
   function applyAccountingFields(txn, { withTax } = { withTax: true }) {
-    const qbType = ['bill', 'cc_credit'].includes(txn.quickbooks_type) ? txn.quickbooks_type : 'purchase'
+    const qbType = ['bill', 'cc_credit', 'deposit'].includes(txn.quickbooks_type) ? txn.quickbooks_type : 'purchase'
     setType(qbType)
     if (txn.expense_account_id) setExpenseAccountId(txn.expense_account_id)
     if (txn.payment_account_id) setPaymentAccountId(txn.payment_account_id)
@@ -537,6 +558,11 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
       const cur = a.CurrencyRef?.value
       return { value: a.Id, label: `${accountLabel(a)}${cur && cur !== 'CAD' ? ` (${cur})` : ''}` }
     })
+  // Dépôt bancaire : l'argent entre dans un compte bancaire et vient créditer
+  // n'importe quel compte (revenu, crédit d'impôt à recevoir…).
+  const isDeposit = type === 'deposit'
+  const bankOptions = paymentOptions.filter(o => accounts.find(a => a.Id === o.value)?.AccountType === 'Bank')
+  const depositCreditOptions = depositAccountOptions(accounts)
   const taxCodeOptions = [{ value: NO_TAX, label: '— Aucune taxe —' }, ...taxCodes.map(c => ({ value: c.Id, label: c.Name }))]
   const accountById = new Map(accounts.map(a => [a.Id, a]))
   const taxNameById = new Map(taxCodes.map(c => [c.Id, c.Name]))
@@ -578,6 +604,14 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         return
       }
     }
+    if (isDeposit) {
+      if (!expenseAccountId) { fail('Sélectionnez le compte à créditer', 'expense_account'); return }
+      if (!paymentAccountId || !bankOptions.some(o => o.value === paymentAccountId)) { fail('Sélectionnez un compte bancaire', 'payment_account'); return }
+      if (vendorMode === 'new' && !newVendorName.trim()) { fail('Entrez le nom du payeur', 'vendor'); return }
+      fail(null)
+      doPublish()
+      return
+    }
     if (!transactionType) { fail('Sélectionnez le type de transaction (statut fiscal)', 'transaction_type'); return }
     if (!expenseAccountId) { fail('Sélectionnez un compte de dépense', 'expense_account'); return }
     if (type === 'purchase' && !paymentAccountId) { fail('Sélectionnez un compte de paiement', 'payment_account'); return }
@@ -600,33 +634,44 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   // Étape 2 : publication effective. forceReason n'est transmis (et requis) que si le
   // code de taxe ne correspond pas au statut fiscal attendu — échappatoire tracée.
   // anomalyOverride : justification saisie après un blocage « doublon probable ».
-  async function doPublish(anomalyOverride = null) {
+  // Comme Dext : on quitte le document tout de suite, l'envoi continue en
+  // arrière-plan et une notification dit « publié » ou l'erreur (avec « Ouvrir »).
+  function doPublish(anomalyOverride = null) {
+    const id = receipt.id
+    const label = [receipt.company, receipt.total != null ? fmtCad(receipt.total) : null].filter(Boolean).join(' · ') || 'Reçu'
+    const payload = {
+      type,
+      expenseAccountId,
+      paymentAccountId: type !== 'bill' ? paymentAccountId : undefined,
+      vendorId: vendorMode === 'existing' ? vendorId : undefined,
+      newVendorName: vendorMode === 'new' ? newVendorName.trim() : undefined,
+      dueDate: type === 'bill' && dueDate ? dueDate : undefined,
+      taxCodeId: taxCodeId === NO_TAX ? null : taxCodeId,
+      transactionType,
+      forceReason: fiscalOk || isDeposit ? undefined : forceReason.trim(),
+      bankChargedTotal: type === 'purchase' ? (parseAmountInput(bankChargedTotal) ?? undefined) : undefined,
+      anomalyOverride: anomalyOverride || undefined,
+    }
+    publishing.add(id)
+    publishErrors.delete(id)
     setSubmitting(true)
     fail(null)
-    try {
-      await api.saleReceipts.pushToQb(receipt.id, {
-        type,
-        expenseAccountId,
-        paymentAccountId: type !== 'bill' ? paymentAccountId : undefined,
-        vendorId: vendorMode === 'existing' ? vendorId : undefined,
-        newVendorName: vendorMode === 'new' ? newVendorName.trim() : undefined,
-        dueDate: type === 'bill' && dueDate ? dueDate : undefined,
-        taxCodeId: taxCodeId === NO_TAX ? null : taxCodeId,
-        transactionType,
-        forceReason: fiscalOk ? undefined : forceReason.trim(),
-        bankChargedTotal: type === 'purchase' ? (parseAmountInput(bankChargedTotal) ?? undefined) : undefined,
-        anomalyOverride: anomalyOverride || undefined,
+    setShowConfirm(false)
+    onLeave?.()
+    api.saleReceipts.pushToQb(id, payload)
+      .then(() => {
+        addToast({ message: `Publié sur QuickBooks — ${label}`, type: 'success' })
       })
-      setShowConfirm(false)
-      const updated = await api.saleReceipts.get(receipt.id)
-      onSuccess(updated)
-    } catch (e) {
-      fail(e.message, e.details?.field || null)
-      if (e.details?.field === 'anomaly') setAnomalyBlocked(true)
-      setShowConfirm(false)
-    } finally {
-      setSubmitting(false)
-    }
+      .catch(e => {
+        publishErrors.set(id, { message: e.message, field: e.details?.field || null })
+        addToast({
+          message: `Non publié — ${label} : ${e.message}`,
+          type: 'error',
+          duration: 0,
+          action: { label: 'Ouvrir', onClick: () => navigate(`/sale-receipts/${id}`) },
+        })
+      })
+      .finally(() => { publishing.delete(id); setSubmitting(false) })
   }
 
   // Changement du code de taxe DU DOCUMENT : met à jour la sélection locale (pour la
@@ -671,7 +716,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
   if (loading) {
     return (
       <div className="flex items-center gap-2 text-slate-400 text-sm mt-3 py-2">
-        <RefreshCw size={14} className="animate-spin" /> Chargement des comptes QuickBooks…
+        <ThinkingOrb size={14} ink /> Chargement des comptes QuickBooks…
       </div>
     )
   }
@@ -738,7 +783,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
           retombait dans la colonne du libellé et s'affichait sur 140 px de large. */}
       <div className="grid grid-cols-1 gap-3">
         <div className={fieldFrame('vendor')}>
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Fournisseur</label>
+          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">{isDeposit ? 'Payeur' : 'Fournisseur'}</label>
           {/* « Existant / Nouveau » tenait une ligne de radios au-dessus du champ ;
               c'est maintenant une bascule posée à côté du champ lui-même. */}
           <div className="flex items-center gap-3">
@@ -767,15 +812,15 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         </div>
 
         <div className={fieldFrame('expense_account')}>
-          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">Compte de dépense</label>
+          <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">{isDeposit ? 'Compte crédité' : 'Compte de dépense'}</label>
           <div>
           <SearchableSelect
             testId="qb-expense-select"
             value={expenseAccountId}
-            options={expenseOptions}
+            options={isDeposit ? depositCreditOptions : expenseOptions}
             onChange={touchAndDraft(setExpenseAccountId, 'expense_account_id')}
           />
-          {partsApplied && !userTouchedRef.current && (
+          {!isDeposit && partsApplied && !userTouchedRef.current && (
             <p data-testid="qb-parts-account-note" className="text-[11px] text-brand-700 bg-brand-50 border border-brand-100 rounded px-2 py-1 mt-1.5 leading-snug">
               Compte de <strong>pièces</strong> appliqué automatiquement : des lignes sont rattachées à des achats LIA (entrée au stock).
             </p>
@@ -783,7 +828,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
           {/* Exceptions par ligne (section Articles) : ce compte ne s'applique alors
               qu'aux lignes sans compte propre — visible ici pour éviter la surprise
               au moment de publier. */}
-          {lineAccountCount > 0 && (
+          {!isDeposit && lineAccountCount > 0 && (
             <p data-testid="qb-line-accounts-note" className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded px-2 py-1 mt-1.5 leading-snug">
               {lineAccountCount === 1 ? '1 ligne d’article a' : `${lineAccountCount} lignes d’articles ont`} leur
               <strong> propre compte de dépense</strong> (section Articles) — ce compte-ci s’applique aux autres lignes.
@@ -795,16 +840,16 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         {type !== 'bill' ? (
           <div className={fieldFrame('payment_account')}>
             <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
-              {type === 'cc_credit' ? 'Compte de carte de crédit' : 'Compte de paiement'}
+              {type === 'cc_credit' ? 'Compte de carte de crédit' : isDeposit ? 'Compte bancaire' : 'Compte de paiement'}
             </label>
             <div>
             <SearchableSelect
               testId="qb-payment-select"
               value={paymentAccountId}
-              options={type === 'cc_credit' ? creditCardOptions : paymentOptions}
+              options={type === 'cc_credit' ? creditCardOptions : isDeposit ? bankOptions : paymentOptions}
               onChange={touchAndDraft(setPaymentAccountId, 'payment_account_id')}
             />
-            {receipt.card_match && (
+            {!isDeposit && receipt.card_match && (
               <p className="text-[11px] text-slate-500 mt-1.5 leading-snug" data-testid="qb-card-match">
                 Carte ••{receipt.card_match.last4} — {receipt.card_match.holder}
                 {receipt.card_match.ownership === 'personal' ? ' (à rembourser)' : ''}
@@ -857,6 +902,15 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                         ? ((vendors.find(v => v.Id === vendorId)?.CurrencyRef?.value) || 'CAD').toUpperCase()
                         : (receipt.currency || 'CAD').toUpperCase()
                       const sameCur = vendorCur === (receipt.currency || 'CAD').toUpperCase()
+                      // Facture USD, fournisseur CAD : le débit sert de taux de
+                      // conversion — chaque montant est converti, aucun frais ajouté.
+                      if (!sameCur) {
+                        return (
+                          <p className="text-[11px] text-slate-400 mt-1.5 leading-snug" data-testid="qb-bank-charged-hint">
+                            Converti en {vendorCur} au taux du débit, sans frais.
+                          </p>
+                        )
+                      }
                       if (bank == null || bank <= 0 || receipt.total == null) {
                         return (
                           <p className="text-[11px] text-slate-400 mt-1.5 leading-snug">
@@ -865,7 +919,6 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                         )
                       }
                       const fee = Math.round((bank - Number(receipt.total)) * 100) / 100
-                      if (!sameCur) return null
                       if (fee === 0) {
                         return (
                           <p className="text-[11px] text-slate-400 mt-1.5 leading-snug" data-testid="qb-bank-charged-hint">
@@ -887,7 +940,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
             {/* Aiguillage : une facture libellée en devise étrangère ne se règle PAS
                 avec le champ ci-dessus (qui ajoute des frais) mais par une conversion
                 de tous les montants — d'où le raccourci vers le calculateur. */}
-            {(receipt.currency || 'CAD').toUpperCase() !== 'CAD' && (
+            {!isDeposit && (receipt.currency || 'CAD').toUpperCase() !== 'CAD' && (
               <button
                 type="button"
                 onClick={onOpenConversion}
@@ -926,6 +979,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
           </div>
         )}
 
+        {!isDeposit && <>
         <div className={fieldFrame('transaction_type')}>
           <label className="text-xs font-semibold text-slate-500 uppercase tracking-wide block mb-1.5">
             Type de transaction <span className="text-red-500">*</span>
@@ -1016,6 +1070,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
           )}
           </div>
         </div>
+        </>}
       </div>
 
       {/* Publication : erreurs et bouton vivent dans la bande épinglée au bas du
@@ -1068,7 +1123,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
         className="group w-full inline-flex items-center justify-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold text-white bg-gradient-to-b from-brand-500 to-brand-600 ring-1 ring-inset ring-white/25 shadow-lg shadow-brand-700/25 transition-all duration-150 hover:from-brand-400 hover:to-brand-500 hover:shadow-brand-700/35 hover:-translate-y-px active:translate-y-0 active:scale-[0.985] active:shadow-sm focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 disabled:opacity-60 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:active:scale-100"
       >
         {submitting
-          ? <RefreshCw size={15} className="animate-spin" />
+          ? <ThinkingOrb size={15} ink />
           : <BookOpen size={15} className="transition-transform duration-150 group-active:scale-90" />}
         {submitting ? 'Publication…' : 'Publier sur QuickBooks'}
       </button>
@@ -1095,8 +1150,8 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
                 <li key={txn.id} className="flex items-center gap-2 text-xs bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
                   <span className="text-slate-500 w-24 shrink-0">{txn.receipt_date ? fmtDate(txn.receipt_date) : '—'}</span>
                   <span className="tabular-nums font-medium text-slate-700 w-20 shrink-0 text-right">{fmtCad(txn.total)}</span>
-                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full ${txn.quickbooks_type === 'bill' ? 'bg-purple-100 text-purple-700' : txn.quickbooks_type === 'cc_credit' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
-                    {txn.quickbooks_type === 'bill' ? 'Facture' : txn.quickbooks_type === 'cc_credit' ? 'Crédit CC' : 'Dépense'}
+                  <span className={`shrink-0 px-1.5 py-0.5 rounded-full ${txn.quickbooks_type === 'bill' ? 'bg-purple-100 text-purple-700' : txn.quickbooks_type === 'cc_credit' || txn.quickbooks_type === 'deposit' ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'}`}>
+                    {txn.quickbooks_type === 'bill' ? 'Facture' : txn.quickbooks_type === 'cc_credit' ? 'Crédit CC' : txn.quickbooks_type === 'deposit' ? 'Dépôt' : 'Dépense'}
                   </span>
                   <span className="text-slate-500 truncate flex-1 min-w-0" title={acc ? accountLabel(acc) : ''}>
                     {acc ? accountLabel(acc) : <span className="text-slate-300">compte non enregistré</span>}
@@ -1206,7 +1261,7 @@ function QBPublishForm({ receipt, onSuccess, onUpdate, onOpenConversion }) {
               disabled={submitting || (!fiscalOk && !forceReason.trim())}
               onClick={() => doPublish()}
             >
-              {submitting ? <><RefreshCw size={12} className="animate-spin" /> Publication…</> : <><BookOpen size={12} /> {fiscalOk ? 'Confirmer et publier' : 'Forcer la publication'}</>}
+              {submitting ? <><ThinkingOrb size={12} ink /> Publication…</> : <><BookOpen size={12} /> {fiscalOk ? 'Confirmer et publier' : 'Forcer la publication'}</>}
             </button>
           </div>
         </div>
@@ -1252,7 +1307,7 @@ function CurrencyField({ receipt, onUpdate }) {
           <option value="USD">USD</option>
           <option value="EUR">EUR</option>
         </select>
-        {saving && <RefreshCw size={12} className="animate-spin text-slate-400" />}
+        {saving && <ThinkingOrb size={12} ink className="text-slate-400" />}
       </div>
       {/* Les montants du dossier ont été convertis : ils ne sont plus ceux du document.
           Remettre ici la devise de la facture ferait reconvertir à la publication — la
@@ -1333,7 +1388,7 @@ function EditableDateField({ receipt, field, onUpdate, testId }) {
             {receipt[field] ? fmtDate(receipt[field]) : <span className="text-slate-300">—</span>}
           </button>
         )}
-        {saving && <RefreshCw size={11} className="animate-spin text-slate-400 flex-shrink-0" />}
+        {saving && <ThinkingOrb size={11} ink className="text-slate-400 flex-shrink-0" />}
       </div>
     </>
   )
@@ -1374,7 +1429,7 @@ function EditableTextField({ receipt, field, onUpdate, testId }) {
           disabled={saving}
           className="w-full text-sm text-slate-700 bg-transparent border border-transparent hover:border-slate-300 focus:border-brand-500 focus:bg-white rounded px-2 py-0.5 -ml-2 outline-none"
         />
-        {saving && <RefreshCw size={11} className="animate-spin text-slate-400 flex-shrink-0" />}
+        {saving && <ThinkingOrb size={11} ink className="text-slate-400 flex-shrink-0" />}
       </div>
     </>
   )
@@ -1407,7 +1462,7 @@ function EditableMemoField({ receipt, onUpdate }) {
       <div>
         <div className="flex items-baseline justify-between mb-2">
           <h3 className="text-sm font-semibold text-slate-700">Description principale</h3>
-          {savingDesc && <RefreshCw size={11} className="animate-spin text-slate-400" />}
+          {savingDesc && <ThinkingOrb size={11} ink className="text-slate-400" />}
         </div>
         <input
           data-testid="receipt-general-description"
@@ -1895,7 +1950,7 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   // Comptes de dépense proposés par ligne — mêmes types que le sélecteur du document.
   // Vide (emptyOption) = la ligne suit le compte de dépense choisi à la publication ;
   // un choix ici l'emporte, pour les achats qui touchent plus d'un compte.
-  const lineAccountOptions = expenseAccountOptions(accounts)
+  const lineAccountOptions = receipt.quickbooks_type === 'deposit' ? depositAccountOptions(accounts) : expenseAccountOptions(accounts)
 
   // Achats LIA du menu : la section « À recevoir » d'Airtable seulement — ni reçus, ni
   // déjà facturés. Ceux des autres fournisseurs suivent, pour un choix manuel.
@@ -1926,6 +1981,8 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
   // les Purchase, donc bank_charged_total n'est jamais renseigné pour un Bill.
   const conversionFee = (() => {
     if (receipt.bank_charged_total == null) return 0
+    // Débit dans une autre devise que la facture : c'est une conversion, pas un frais.
+    if (receipt.bank_txn && (receipt.bank_txn.currency || 'CAD').toUpperCase() !== (receipt.currency || 'CAD').toUpperCase()) return 0
     const bank = Number(receipt.bank_charged_total)
     const total = Number(receipt.total) || 0
     if (!Number.isFinite(bank) || bank <= 0) return 0
@@ -1942,10 +1999,12 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
     if (!receipt.raw_data || items.length <= 1) return null
     let parsed
     try { parsed = JSON.parse(receipt.raw_data) } catch { return null }
-    const freight = round2(Number(parsed.freight_amount) || 0)
-    const discount = round2(Number(parsed.discount_amount) || 0)
+    // `prorata` : trace posée par le serveur (lignes de frais sorties comprises).
+    const p = parsed.prorata
+    const freight = round2(Number(p ? p.freight : parsed.freight_amount) || 0)
+    const discount = round2(Number(p ? p.discount : parsed.discount_amount) || 0)
     if (!freight && !discount) return null
-    return { freight, discount }
+    return { freight, discount, lines: p?.lines || [] }
   })()
 
   return (
@@ -1953,7 +2012,7 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
       <div className="flex items-center justify-between mb-2">
         <h3 className="text-sm font-semibold text-slate-700">Articles</h3>
         <div className="flex items-center gap-2">
-          {saving && <RefreshCw size={12} className="animate-spin text-slate-400" />}
+          {saving && <ThinkingOrb size={12} ink className="text-slate-400" />}
           <button
             type="button"
             onClick={addItem}
@@ -2077,10 +2136,12 @@ function EditableItems({ receipt, onUpdate, taxCodes = [], accounts = [] }) {
         )}
       </div>
       {prorata && (
-        <p className="text-[11px] text-slate-400 mt-1 leading-snug" data-testid="receipt-freight-prorata-hint">
-          Totaux ci-dessus incluant{prorata.freight > 0 ? ` transport ${fmtCad(prorata.freight)}` : ''}
-          {prorata.freight > 0 && prorata.discount > 0 ? ' et' : ''}
-          {prorata.discount > 0 ? ` escompte ${fmtCad(prorata.discount)}` : ''} réparti au prorata des lignes.
+        <p className="text-[11px] text-slate-500 mt-1 leading-snug flex items-center gap-1" data-testid="receipt-freight-prorata-hint">
+          <span className="inline-flex items-center rounded bg-green-50 text-green-700 px-1.5 py-0.5 font-medium">✓ Prorata</span>
+          {prorata.lines.length
+            ? prorata.lines.map(l => `${l.label} ${fmtCad(l.amount)}`).join(' · ')
+            : [prorata.freight > 0 && `transport ${fmtCad(prorata.freight)}`, prorata.discount > 0 && `escompte ${fmtCad(prorata.discount)}`].filter(Boolean).join(' · ')}
+          {' '}réparti sur les lignes
         </p>
       )}
     </div>
@@ -2145,7 +2206,7 @@ function EditableAmountRow({ receipt, field, label, bold, onUpdate, readOnly, hi
     <div className="flex justify-between items-center gap-2">
       <span className={`text-sm ${bold ? 'font-semibold text-slate-800' : 'text-slate-600'}`}>{label}</span>
       <div className="flex items-center gap-1">
-        {saving && <RefreshCw size={11} className="animate-spin text-slate-400" />}
+        {saving && <ThinkingOrb size={11} ink className="text-slate-400" />}
         <input
           type="text"
           inputMode="decimal"
@@ -2535,7 +2596,7 @@ function EditableTotalTaxesRow({ receipt, onUpdate }) {
     <div className="flex justify-between items-center gap-2 border-t border-slate-200 pt-2 mt-2">
       <span className="text-sm text-slate-600">Total des taxes</span>
       <div className="flex items-center gap-1">
-        {saving && <RefreshCw size={11} className="animate-spin text-slate-400" />}
+        {saving && <ThinkingOrb size={11} ink className="text-slate-400" />}
         <input
           type="text"
           inputMode="decimal"
@@ -3035,7 +3096,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
     api.quickbooks.taxCodes()
       .then(codes => { if (!cancelled) setTaxCodes(codes || []) })
       .catch(() => { if (!cancelled) setTaxCodes([]) })
-    api.quickbooks.accounts()
+    api.quickbooks.accounts({ all: 1 })
       .then(accs => { if (!cancelled) setAccounts(accs || []) })
       .catch(() => { if (!cancelled) setAccounts([]) })
     return () => { cancelled = true }
@@ -3263,7 +3324,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
                 data-testid="receipt-reread"
                 title="Relire le document par l'IA et réextraire les données (les corrections manuelles seront écrasées)"
               >
-                <RefreshCw size={14} className={acting ? 'animate-spin' : ''} />
+                {acting ? <ThinkingOrb state="working" size={14} ink /> : <RefreshCw size={14} />}
                 Relire
               </button>
             )}
@@ -3315,7 +3376,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
 
         {tab === 'details' && (receipt.status === 'processing' ? (
           <div className="flex flex-col items-center justify-center py-20 text-blue-500 gap-3">
-            <RefreshCw size={48} strokeWidth={1} className="animate-spin" />
+            <ThinkingOrb state="working" size={64} />
             <p className="font-medium">Extraction en cours…</p>
             <p className="text-slate-400 text-sm">Les données seront disponibles dans quelques secondes</p>
           </div>
@@ -3331,7 +3392,7 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
               data-testid="receipt-re-extract"
               title="Relancer l'extraction sur le fichier déjà téléversé"
             >
-              <RefreshCw size={14} className={acting ? 'animate-spin' : ''} />
+              {acting ? <ThinkingOrb state="working" size={14} ink /> : <RefreshCw size={14} />}
               Relancer l'extraction
             </button>
           </div>
@@ -3352,12 +3413,11 @@ export default function SaleReceiptDetail({ recordId, onClose }) {
             <div className="space-y-6">
               {receipt.status === 'done' && !receipt.quickbooks_id && (
                 <QBPublishForm
+                  key={receipt.id}
                   receipt={receipt}
                   onUpdate={setReceipt}
                   onOpenConversion={() => setConversionOpen(true)}
-                  onSuccess={(updated) => {
-                    setReceipt(updated)
-                    addToast({ message: 'Reçu publié sur QuickBooks', type: 'success' })
+                  onLeave={() => {
                     // Enchaînement : on file directement au document suivant de la liste
                     // (même ordre que les flèches ‹ › — vue filtrée/triée mémorisée au clic
                     // sur la ligne) pour traiter la pile sans repasser par le menu. Dernier

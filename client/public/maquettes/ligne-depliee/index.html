@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ligne dépliée — maquettes</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f6f7f5; --surface: #ffffff; --surface2: #f1f3f0; --hover: #f7f9f6;
+  --border: #e5e8e3; --border2: #d6dbd3;
+  --ink: #16201a; --ink2: #3a463e; --ink3: #6b766e; --ink4: #9aa39c;
+  --brand: #1f6b3a; --brand-soft: #e6f1e9; --brand-ink: #185a30;
+  --pos: #1f7a44; --amber: #b76e00; --amber-soft: #fdf3e1;
+  --red: #c0392b; --red-soft: #fbe9e6; --blue: #2d6cb5; --blue-soft: #e8f0fa;
+  --green-soft: #e8f3ea; --yellow-soft: #fdf6e0; --gray-soft: #eef0ed;
+  --shadow: 0 1px 2px rgb(16 24 20 / .05), 0 8px 24px rgb(16 24 20 / .06);
+}
+:root[data-theme="dark"] {
+  --bg: #111613; --surface: #181e1a; --surface2: #1f2622; --hover: #1c231f;
+  --border: #2a332d; --border2: #36413a;
+  --ink: #e9eee9; --ink2: #c7d0c9; --ink3: #93a097; --ink4: #6c786f;
+  --brand: #5fbf82; --brand-soft: #1d3326; --brand-ink: #8fd6a8;
+  --pos: #6fcf93; --amber: #f0b04a; --amber-soft: #33291a;
+  --red: #ff8a7a; --red-soft: #3a2220; --blue: #7fb0ea; --blue-soft: #1c2a3b;
+  --green-soft: #1d3326; --yellow-soft: #33291a; --gray-soft: #222924;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 13px/1.4 Inter, system-ui, sans-serif; padding: 20px 16px 48px; -webkit-font-smoothing: antialiased; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+.num { font-variant-numeric: tabular-nums; }
+.top { max-width: 1240px; margin: 0 auto 12px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.top h1 { font-size: 17px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+.opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.opt { padding: 6px 12px; border: 1px solid var(--border2); border-radius: 999px; background: var(--surface); font-weight: 500; color: var(--ink2); }
+.opt b { color: var(--brand); margin-right: 5px; }
+.opt[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.opt[aria-pressed="true"] b { color: inherit; opacity: .6; }
+.theme { margin-left: auto; color: var(--ink3); font-size: 12px; border: 1px solid var(--border2); border-radius: 999px; padding: 5px 11px; background: var(--surface); }
+.lede { max-width: 1240px; margin: 0 auto 12px; color: var(--ink3); }
+
+.screen { max-width: 1240px; margin: 0 auto; border: 1px solid var(--border2); border-radius: 14px; overflow: hidden; background: var(--surface); box-shadow: var(--shadow); }
+.hub { display: flex; gap: 24px; padding: 0 20px; height: 44px; align-items: stretch; border-bottom: 1px solid var(--border); background: var(--surface); }
+.hub a { display: flex; align-items: center; color: var(--ink3); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; }
+.hub a.on { color: var(--brand-ink); border-bottom-color: var(--brand); }
+
+table { width: 100%; border-collapse: collapse; }
+th { text-align: left; font-size: 11px; font-weight: 500; color: var(--ink4); padding: 8px 12px; border-bottom: 1px solid var(--border); }
+td { padding: 9px 12px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+tr.st-red td { background: var(--red-soft); }
+tr.st-blue td { background: var(--blue-soft); }
+tr.st-yellow td { background: var(--yellow-soft); }
+tr.st-green td { background: var(--green-soft); }
+tr.open td { box-shadow: inset 0 2px 0 var(--brand); }
+.lbl { font-weight: 500; }
+.desc { color: var(--ink3); font-size: 12px; }
+.amt { text-align: right; font-weight: 500; }
+.chev { color: var(--ink4); }
+.btn { padding: 5px 11px; border-radius: 8px; background: var(--brand); color: #fff; font-weight: 500; }
+.btn.ghost { background: transparent; color: var(--ink2); border: 1px solid var(--border2); }
+.btn.big { padding: 8px 16px; font-size: 13px; }
+.link { color: var(--ink3); text-decoration: underline; text-underline-offset: 2px; }
+.exp { padding: 0; }
+.exp > div { padding: 16px 18px; background: var(--surface); border-left: 3px solid var(--brand); }
+
+/* L1 — la phrase */
+.phrase { font-size: 15px; line-height: 2; color: var(--ink2); max-width: 820px; }
+.slot { display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 8px; background: var(--surface2); border: 1px solid var(--border); color: var(--ink); font-weight: 500; }
+.slot.miss { background: var(--amber-soft); border-color: transparent; color: var(--amber); }
+.slot::after { content: '▾'; font-size: 9px; color: var(--ink4); }
+.row-actions { display: flex; align-items: center; gap: 14px; margin-top: 14px; }
+
+/* L2 — face à face */
+.face { display: grid; grid-template-columns: 1fr 44px 1fr; align-items: stretch; gap: 0; max-width: 940px; }
+.card { border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; background: var(--surface); }
+.card .k { font-size: 11px; color: var(--ink4); }
+.card .v { font-weight: 600; font-size: 14px; margin-top: 2px; }
+.card .meta { color: var(--ink3); font-size: 12px; margin-top: 6px; }
+.tie { display: flex; flex-direction: column; align-items: center; justify-content: center; color: var(--ink4); }
+.tie .line { width: 1px; flex: 1; background: var(--border2); }
+.tie .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--brand-soft); color: var(--brand-ink); display: grid; place-items: center; font-size: 12px; font-weight: 600; margin: 4px 0; }
+
+/* L3 — trois portes */
+.doors { display: flex; gap: 10px; max-width: 760px; }
+.door { flex: 1; border: 1px solid var(--border); border-radius: 12px; padding: 12px; text-align: left; background: var(--surface); }
+.door[aria-pressed="true"] { border-color: var(--brand); background: var(--brand-soft); box-shadow: 0 0 0 1px var(--brand); }
+.door .t { font-weight: 600; }
+.door .s { color: var(--ink3); font-size: 12px; margin-top: 3px; }
+.door .why { color: var(--brand-ink); font-size: 11px; margin-top: 6px; font-weight: 500; }
+
+/* L5 — QuickBooks */
+.qbo-tabs { display: flex; gap: 0; border-bottom: 1px solid var(--border); margin: -4px 0 14px; }
+.qbo-tabs button { padding: 8px 14px; color: var(--ink3); font-weight: 500; border-bottom: 3px solid transparent; }
+.qbo-tabs button[aria-pressed="true"] { color: var(--ink); border-bottom-color: var(--brand); }
+.qbo-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 14px; max-width: 980px; }
+.qbo-foot { display: flex; align-items: center; gap: 16px; margin-top: 16px; max-width: 980px; }
+.qbo-note { color: var(--brand-ink); font-size: 12px; font-weight: 500; }
+.chk { display: inline-flex; align-items: center; gap: 7px; color: var(--ink2); }
+.chk span { width: 14px; height: 14px; border: 1px solid var(--border2); border-radius: 3px; display: block; }
+
+/* L4 — formulaire */
+.form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px 14px; max-width: 900px; }
+.f { display: flex; flex-direction: column; gap: 4px; }
+.f .k { font-size: 11px; color: var(--ink4); }
+.f .c { border: 1px solid var(--border2); border-radius: 8px; padding: 7px 10px; background: var(--surface); font-weight: 500; display: flex; justify-content: space-between; align-items: center; }
+.f .c i { font-style: normal; color: var(--ink4); font-size: 10px; }
+.f.wide { grid-column: span 2; }
+.auto { color: var(--brand-ink); font-size: 11px; font-weight: 500; }
+.foot { display: flex; align-items: center; gap: 14px; margin-top: 14px; flex-wrap: wrap; }
+.rule { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border-radius: 10px; background: var(--brand-soft); color: var(--brand-ink); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="top">
+  <h1>Ligne dépliée</h1>
+  <div class="opts" id="opts"></div>
+  <button class="theme" id="theme">Nuit</button>
+</div>
+<div class="lede" id="lede"></div>
+
+<div class="screen">
+  <div class="hub">
+    <a href="#" class="on">Transactions</a><a href="#">Écritures</a><a href="#">Règles</a><a href="#">Factures</a>
+  </div>
+  <table>
+    <thead><tr><th style="width:86px">Date</th><th>Libellé</th><th style="width:120px">Montant</th><th style="width:210px">Geste</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+
+<script>
+const OPTS = [
+  ['L5', 'QuickBooks', 'Ce qu’on voit dans Opérations bancaires, à l’identique.'],
+  ['L1', 'La phrase', 'Une phrase à compléter, un bouton.'],
+  ['L2', 'Face à face', 'Le relevé à gauche, ce qu’on a trouvé à droite.'],
+  ['L3', 'Trois portes', 'Qu’est-ce que c’est ? — la bonne porte est déjà choisie.'],
+  ['L4', 'Tout de suite', 'L’écriture déjà remplie, à corriger au besoin.'],
+]
+const ROWS = [
+  { d: '26 sept.', l: 'PAIEMENT HYDRO-QUEBEC', s: 'Retrait préautorisé', a: '-412,18', st: 'green', g: 'Hydro-Québec · Électricité' },
+  { d: '25 sept.', l: 'CHQ #4471 DIGI-KEY CORP MN', s: 'Chèque', a: '-1 284,56', st: 'red', g: null, open: true },
+  { d: '25 sept.', l: 'VIREMENT MCR 0913', s: 'Virement entre comptes', a: '-8 000,00', st: 'blue', g: 'Lier le virement' },
+  { d: '24 sept.', l: 'DEPOT SERRES BELLEVUE', s: 'Dépôt', a: '+3 450,00', st: 'yellow', g: 'Apparier · FAC-2291' },
+  { d: '24 sept.', l: 'FRAIS MENSUELS', s: 'Frais bancaires', a: '-14,95', st: 'green', g: 'Frais de banque' },
+]
+const EXP = {
+L1: `<div>
+  <div class="phrase">
+    Le <span class="slot">25 sept. 2026</span> on a payé <span class="slot">1 284,56 $</span>
+    à <span class="slot">DigiKey</span> pour <span class="slot">Pièces électroniques</span>,
+    taxes <span class="slot">TPS/TVQ</span>, facture <span class="slot miss">aucune</span>.
+  </div>
+  <div class="row-actions">
+    <button class="btn big">Comptabiliser</button>
+    <button class="link">Ce n’est pas une dépense</button>
+    <span class="rule">3<sup>e</sup> fois en 2 mois — toujours faire ça pour ce libellé <button class="btn" style="padding:3px 9px">Oui</button></span>
+  </div>
+</div>`,
+L2: `<div>
+  <div class="face">
+    <div class="card">
+      <div class="k">Relevé BNC CAD</div>
+      <div class="v">CHQ #4471 DIGI-KEY CORP MN</div>
+      <div class="meta">25 sept. 2026 · chèque</div>
+      <div class="v num" style="margin-top:10px">1 284,56 $</div>
+    </div>
+    <div class="tie"><span class="line"></span><span class="dot">=</span><span class="line"></span></div>
+    <div class="card">
+      <div class="k">Facture fournisseur</div>
+      <div class="v">DigiKey 132580242</div>
+      <div class="meta">22 sept. 2026 · Pièces électroniques · TPS/TVQ</div>
+      <div class="v num" style="margin-top:10px">1 284,56 $</div>
+    </div>
+  </div>
+  <div class="row-actions">
+    <button class="btn big">C’est ça</button>
+    <button class="link">Ce n’est pas ça</button>
+    <button class="link">Chercher autre chose</button>
+  </div>
+</div>`,
+L3: `<div>
+  <div class="doors">
+    <button class="door" aria-pressed="true">
+      <div class="t">Une dépense</div><div class="s">Sortie d’argent sans facture entrée</div>
+      <div class="why">DigiKey reconnu · Pièces électroniques</div>
+    </button>
+    <button class="door">
+      <div class="t">Une facture déjà entrée</div><div class="s">Apparier au document</div>
+    </button>
+    <button class="door">
+      <div class="t">Un virement</div><div class="s">Entre deux comptes à nous</div>
+    </button>
+  </div>
+  <div class="form" style="margin-top:14px">
+    <div class="f"><span class="k">Fournisseur</span><span class="c">DigiKey <i>▾</i></span></div>
+    <div class="f"><span class="k">Compte</span><span class="c">Pièces électroniques <i>▾</i></span></div>
+    <div class="f"><span class="k">Taxes</span><span class="c">TPS/TVQ <i>▾</i></span></div>
+    <div class="f"><span class="k">Mémo</span><span class="c">Chèque 4471 <i>▾</i></span></div>
+  </div>
+  <div class="foot"><button class="btn big">Comptabiliser</button><button class="link">Annuler</button></div>
+</div>`,
+L4: `<div>
+  <div class="form">
+    <div class="f"><span class="k">Fournisseur <span class="auto">reconnu</span></span><span class="c">DigiKey <i>▾</i></span></div>
+    <div class="f"><span class="k">Compte <span class="auto">habituel</span></span><span class="c">Pièces électroniques <i>▾</i></span></div>
+    <div class="f"><span class="k">Taxes</span><span class="c">TPS/TVQ <i>▾</i></span></div>
+    <div class="f"><span class="k">Date</span><span class="c">25 sept. 2026 <i>▾</i></span></div>
+    <div class="f wide"><span class="k">Mémo</span><span class="c">Chèque 4471 <i>▾</i></span></div>
+    <div class="f wide"><span class="k">Facture</span><span class="c" style="color:var(--amber)">aucune trouvée <i>▾</i></span></div>
+  </div>
+  <div class="foot">
+    <button class="btn big">Comptabiliser 1 284,56 $</button>
+    <button class="link">Apparier plutôt</button>
+    <button class="link">Virement</button>
+    <span class="rule">Toujours faire ça pour ce libellé <button class="btn" style="padding:3px 9px">Créer la règle</button></span>
+  </div>
+</div>`,
+L5: `<div class="qbo">
+  <div class="qbo-tabs">
+    <button aria-pressed="true">Catégoriser</button>
+    <button>Trouver une correspondance</button>
+    <button>Enregistrer comme transfert</button>
+  </div>
+  <div class="qbo-grid">
+    <div class="f"><span class="k">Fournisseur</span><span class="c">DigiKey <i>▾</i></span></div>
+    <div class="f"><span class="k">Catégorie</span><span class="c">Pièces électroniques <i>▾</i></span></div>
+    <div class="f"><span class="k">TPS/TVQ</span><span class="c">TPS/TVQ QC <i>▾</i></span></div>
+    <div class="f"><span class="k">Montant</span><span class="c num">1 284,56 $</span></div>
+    <div class="f wide"><span class="k">Mémo</span><span class="c">Chèque 4471 <i>▾</i></span></div>
+    <div class="f"><span class="k">N° du document</span><span class="c">4471</span></div>
+    <div class="f"><span class="k">&nbsp;</span><button class="btn ghost" style="width:100%">Diviser</button></div>
+  </div>
+  <div class="qbo-foot">
+    <label class="chk"><span></span> Facturable</label>
+    <span class="qbo-note">Règle « DIGI-KEY » appliquée</span>
+    <span style="flex:1"></span>
+    <button class="link">Annuler</button>
+    <button class="btn big">Ajouter</button>
+  </div>
+</div>`,
+}
+let cur = 'L5'
+const optsEl = document.getElementById('opts'), ledeEl = document.getElementById('lede'), rowsEl = document.getElementById('rows')
+function render() {
+  optsEl.innerHTML = OPTS.map(([k, n]) => `<button class="opt" data-k="${k}" aria-pressed="${k === cur}"><b>${k}</b>${n}</button>`).join('')
+  ledeEl.textContent = (OPTS.find((o) => o[0] === cur) || [])[2] || ''
+  rowsEl.innerHTML = ROWS.map((r) => {
+    const head = `<tr class="st-${r.st}${r.open ? ' open' : ''}">
+      <td class="num">${r.d}</td>
+      <td><span class="lbl">${r.l}</span> <span class="desc">· ${r.s}</span></td>
+      <td class="amt num">${r.a} $</td>
+      <td>${r.g ? `<span class="desc">${r.g}</span>` : '<button class="btn">Comptabiliser</button>'}</td>
+    </tr>`
+    return r.open ? head + `<tr><td class="exp" colspan="4">${EXP[cur]}</td></tr>` : head
+  }).join('')
+  optsEl.querySelectorAll('.opt').forEach((b) => b.onclick = () => { cur = b.dataset.k; render() })
+}
+document.getElementById('theme').onclick = (e) => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark'
+  document.documentElement.setAttribute('data-theme', dark ? 'light' : 'dark')
+  e.target.textContent = dark ? 'Nuit' : 'Jour'
+}
+render()
+</script>
+</body>
+</html>

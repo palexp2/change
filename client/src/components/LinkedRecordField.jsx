@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Link } from 'react-router-dom'
 import { Plus, X, Search, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
+import ThinkingOrb from './ThinkingOrb'
 
 const EMPTY_OPTIONS = []
 
@@ -100,7 +101,7 @@ export default function LinkedRecordField({
   }, [open])
 
   const spinner = saving && (
-    <span className="inline-block w-3 h-3 border border-slate-400 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+    <ThinkingOrb size={12} ink className="text-slate-400 flex-shrink-0" />
   )
 
   // Liste recherchable — la même qu'un champ vide ouvre pour lier, et qu'un

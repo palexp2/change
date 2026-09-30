@@ -21,9 +21,9 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { SystemeContent, UtilisateursContent } from './AdminSections.jsx'
 import { CorbeilleContent } from './Corbeille.jsx'
 import { ConnectorsContent } from './Connectors.jsx'
-import { ArchitectureContent } from './Architecture.jsx'
 import { ActivityContent } from './ActivityFeed.jsx'
 import { ChangelogContent } from './Changelog.jsx'
+import { AiCostsContent } from './AiCosts.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { KeyboardShortcutsList } from '../components/KeyboardShortcutsModal.jsx'
 
@@ -393,8 +393,8 @@ const CONTENT = {
   nouveautes: NouveautesSection,
   systeme: SystemeContent,
   connecteurs: ConnectorsContent,
+  'couts-ia': AiCostsContent,
   activite: ActivityContent,
-  architecture: ArchitectureContent,
   corbeille: CorbeilleContent,
 }
 

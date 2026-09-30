@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback, Suspense } from 'react'
 import { createPortal } from 'react-dom'
 import { useHref } from 'react-router-dom'
-import { X, SlidersHorizontal } from 'lucide-react'
+import { X, SlidersHorizontal, ChevronUp, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { hasOpenModal } from './Modal.jsx'
 import { OVERLAY_BASE, registerOverlay } from '../lib/overlayLayers.js'
@@ -54,6 +54,10 @@ import Spinner from './Spinner.jsx'
 //                  Par défaut, la ressource déduite de `to`. À fournir pour les
 //                  panneaux sans `to` (formulaire d'achat, écriture de journal…)
 //                  sans quoi ils partagent tous la clé `default`.
+//  - onPrev / onNext : () => void | null | undefined — chevrons ↑/↓ de l'en-tête
+//                  pour passer à l'enregistrement voisin de la liste. Absents
+//                  (undefined) : pas de chevrons ; null : chevron grisé (bout
+//                  de liste). Fournis par DataTable pour son side-peek.
 //  - children    : contenu du corps (scrollable).
 //
 // Mode édition des champs : si la fiche embarquée rend une carte
@@ -144,7 +148,7 @@ function clampWidth(w, min = MIN_WIDTH) {
   return Math.min(Math.max(w, floor), max)
 }
 
-export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, minWidth = MIN_WIDTH, peekKey, children }) {
+export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, syncUrl = true, width = 560, minWidth = MIN_WIDTH, peekKey, onPrev, onNext, children }) {
   const wKey = widthKey(peekKey, to)
   // `to` est une route du routeur (« /projects/:id ») ; l'app est servie sous
   // le basename /erp. window.history ne connaît pas ce basename : sans cette
@@ -278,23 +282,44 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
   // faisait aussi, sa fermeture déclencherait un history.back() : le routeur
   // écoute popstate et naviguerait alors pour de vrai vers l'URL du panneau
   // parent, démontant la liste — et donc toute la pile de panneaux.
+  //
+  // Passage à l'enregistrement voisin (chevrons ↑/↓) : `to` change panneau
+  // ouvert. L'entrée d'historique déjà poussée est RÉÉCRITE (replaceState) —
+  // un history.back() (asynchrone) suivi d'un pushState faisait revenir sur
+  // l'entrée neuve, et le popstate refermait le panneau.
+  const toHrefRef = useRef(toHref)
+  toHrefRef.current = toHref
+  const shownHrefRef = useRef(null) // URL que le panneau a écrite, null sinon
+  const hasTo = !!to
   useEffect(() => {
-    if (!open || !to || !syncUrl) return
+    if (!open || !hasTo || !syncUrl) return
     if (openStack.indexOf(stackIdRef.current) > 0) return
     const here = () => window.location.pathname + window.location.search + window.location.hash
-    if (here() === toHref) return
-    window.history.pushState({ ...(window.history.state || {}), peekDrawer: true }, '', toHref)
+    const href = toHrefRef.current
+    if (here() === href) return
+    window.history.pushState({ ...(window.history.state || {}), peekDrawer: true }, '', href)
+    shownHrefRef.current = href
     let popped = false
     const onPop = () => { popped = true; requestClose() }
     window.addEventListener('popstate', onPop)
     return () => {
       window.removeEventListener('popstate', onPop)
+      const shown = shownHrefRef.current
+      shownHrefRef.current = null
       // Ne revenir en arrière que si notre entrée est toujours la courante :
       // une navigation faite depuis le drawer (lien vers une autre fiche) ne
       // doit pas être annulée.
-      if (!popped && here() === toHref) window.history.back()
+      if (!popped && here() === shown) window.history.back()
     }
-  }, [open, to, toHref, syncUrl, requestClose])
+  }, [open, hasTo, syncUrl, requestClose])
+  useEffect(() => {
+    const shown = shownHrefRef.current
+    if (!shown || shown === toHref) return
+    const here = window.location.pathname + window.location.search + window.location.hash
+    if (here !== shown) return
+    window.history.replaceState(window.history.state, '', toHref)
+    shownHrefRef.current = toHref
+  }, [toHref])
 
   // Verrou du scroll du body tant que le drawer est ouvert.
   useEffect(() => {
@@ -457,6 +482,30 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
             >
               <SlidersHorizontal size={16} />
             </button>
+          )}
+          {(onPrev !== undefined || onNext !== undefined) && (
+            <div className="flex items-center">
+              <button
+                onClick={() => onPrev?.()}
+                disabled={!onPrev}
+                data-testid="record-peek-prev"
+                aria-label="Précédent"
+                title="Précédent"
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-default"
+              >
+                <ChevronUp size={18} />
+              </button>
+              <button
+                onClick={() => onNext?.()}
+                disabled={!onNext}
+                data-testid="record-peek-next"
+                aria-label="Suivant"
+                title="Suivant"
+                className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-default"
+              >
+                <ChevronDown size={18} />
+              </button>
+            </div>
           )}
           <button
             onClick={requestClose}

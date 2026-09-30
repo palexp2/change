@@ -8,6 +8,7 @@
 //
 // La date imprimée n'est pas perdue : elle passe dans `document_date`.
 import db from '../db/database.js'
+import { autoConvertUsdReceipt } from './receiptFxAutoConvert.js'
 
 const NOW = `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')`
 
@@ -28,6 +29,8 @@ export function bankDateForReceipt(receiptId) {
 export function alignReceiptDate(receiptId) {
   const rec = db.prepare('SELECT id, receipt_date, document_date FROM sale_receipts WHERE id=? AND deleted_at IS NULL').get(String(receiptId))
   if (!rec) return false
+  // Facture USD d'un fournisseur en CAD : convertie au taux du débit dès l'appariement.
+  try { autoConvertUsdReceipt(rec.id) } catch (e) { console.warn('autoConvertUsdReceipt:', e.message) }
   const bankDate = bankDateForReceipt(rec.id)
   if (!bankDate || bankDate === rec.receipt_date) return false
   db.prepare(`

@@ -70,6 +70,9 @@ export function AdresseModalContent({
     suggestion: editingAdresse?.confirm_suggestion || null,
   }))
   const [confirming, setConfirming] = useState(false)
+  // Saisie courante, lue après l'attente de la vérification (création).
+  const formRef = useRef(adresseForm)
+  useEffect(() => { formRef.current = adresseForm }, [adresseForm])
 
   // Dernière ligne connue du serveur, et ses valeurs de formulaire : un champ
   // dont la saisie diffère de cette base est en cours d'édition — une
@@ -188,11 +191,18 @@ export function AdresseModalContent({
   async function handleSubmitCreate(e) {
     e.preventDefault()
     setConfirming(true)
-    let verdict = null
+    let submitted, verdict
     try {
-      verdict = await api.adresses.confirmInput(adresseForm)
-    } catch {
-      verdict = null // API muette : on n'empêche pas d'enregistrer.
+      // Les champs restent modifiables pendant la vérification : une saisie
+      // changée entre-temps rend le verdict caduc, on revérifie la nouvelle.
+      do {
+        submitted = formRef.current
+        try {
+          verdict = await api.adresses.confirmInput(submitted)
+        } catch {
+          verdict = null // API muette : on n'empêche pas d'enregistrer.
+        }
+      } while (submitted !== formRef.current)
     } finally { setConfirming(false) }
 
     if (verdict && (verdict.status === 'corrected' || verdict.status === 'not_found')) {
@@ -207,7 +217,7 @@ export function AdresseModalContent({
       return
     }
     setConfirm({ status: verdict?.status || null, formatted: verdict?.formatted || '', suggestion: null })
-    await create(adresseForm)
+    await create(submitted)
   }
 
   // « Utiliser » : l'écriture proposée remplace la saisie. En édition elle part

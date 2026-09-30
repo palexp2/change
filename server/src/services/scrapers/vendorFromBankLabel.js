@@ -74,6 +74,21 @@ function matchWeight(label, name) {
   return 0
 }
 
+// Un nom de fiche porte souvent son autre nom entre parenthèses — « Newark (Premier
+// Farnell) », « ChatGPT (Open AI) », « Gumroad (Little Appy) ». Le relevé n'en imprime
+// qu'un des deux : chaque partie vaut donc comme alias implicite.
+export function nameVariants(name) {
+  const raw = String(name || '')
+  const out = [raw]
+  const outside = raw.replace(/\([^)]*\)/g, ' ').trim()
+  if (outside && outside !== raw) out.push(outside)
+  for (const m of raw.matchAll(/\(([^)]*)\)/g)) {
+    const inside = m[1].trim()
+    if (inside) out.push(inside)
+  }
+  return out
+}
+
 /**
  * @param {string} rawLabel libellé du relevé (details en priorité, sinon description)
  * @returns {{profile:{id,name}, via:'motif'|'alias'|'nom', weight:number}|null}
@@ -97,8 +112,11 @@ export function resolveVendorFromBankLabel(rawLabel) {
       const w = matchWeight(label, alias)
       if (w > weight) { weight = w; via = 'alias' }
     }
-    const w = matchWeight(label, p.name)
-    if (w > weight) { weight = w; via = 'nom' }
+    // Le nom, et ses variantes entre parenthèses (« Newark », « Premier Farnell »).
+    for (const variant of nameVariants(p.name)) {
+      const w = matchWeight(label, variant)
+      if (w > weight) { weight = w; via = 'nom' }
+    }
     if (!weight) continue
 
     if (!best || weight > best.weight) { best = { profile: { id: p.id, name: p.name }, via, weight }; tie = false }

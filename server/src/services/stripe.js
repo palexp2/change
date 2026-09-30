@@ -1,4 +1,5 @@
 import { decryptCredentials } from '../utils/encryption.js'
+import { companyIdForStripeCustomer } from './stripeCustomerCompany.js'
 import Stripe from 'stripe'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
@@ -10,6 +11,7 @@ import {
 } from './subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from './subscriptionMonthly.js'
 import { resolveStripeSubscriptionFields } from './stripeSubscriptionFieldMap.js'
+import { emitSubscription } from './realtimeEmitters.js'
 
 export function getStripeKey() {
   const row = db.prepare(
@@ -175,7 +177,7 @@ export async function syncStripeSubscriptions() {
 
     // Resolve company — strictement par stripe_customer_id
     let companyId = customerId
-      ? db.prepare('SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1').get(customerId)?.id || null
+      ? companyIdForStripeCustomer(customerId)
       : null
 
     // If no match, keep existing link if updating
@@ -254,6 +256,9 @@ export async function syncStripeSubscriptions() {
         intervalCount, intervalType,
         existingRow.id
       )
+      // Seulement si la ligne a bougé : la sync repasse tous les abonnements.
+      const next = db.prepare('SELECT * FROM subscriptions WHERE id=?').get(existingRow.id)
+      if (Object.keys(next).some(k => next[k] !== prev[k])) emitSubscription('updated', existingRow.id)
       updated++
     } else {
       const newId = newRecordId()
@@ -269,6 +274,7 @@ export async function syncStripeSubscriptions() {
         stripeUrl, customerId, customerEmail,
         intervalCount, intervalType
       )
+      emitSubscription('created', newId)
       // Si le sub arrive déjà annulé (import legacy, sub annulé immédiatement),
       // on n'enregistre aucun event — il n'y a pas de mouvement MRR à tracer.
       // Le sub reste en DB pour l'historique mais n'apparaît pas dans les
@@ -923,8 +929,7 @@ export function backfillRefundsToFactures({ dryRun = false } = {}) {
     // Cas 4 : aucune ligne — INSERT classique.
     let companyId = null
     if (bt.stripe_customer_id) {
-      const co = db.prepare('SELECT id FROM companies WHERE stripe_customer_id=?').get(bt.stripe_customer_id)
-      companyId = co?.id || null
+      companyId = companyIdForStripeCustomer(bt.stripe_customer_id)
     }
     if (!companyId) unmatched++
 

@@ -1,7 +1,6 @@
 import { useMemo } from 'react'
 import { Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
-import { Badge } from '../components/Badge.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { InlineText, InlineTextarea, InlineDate } from '../components/InlineFields.jsx'
@@ -13,10 +12,28 @@ import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAutosave } from '../lib/useAutosave.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { useFieldOverrides, parseNativeChoices } from '../lib/fieldOverrides.jsx'
+import { ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 import {
   OPS_AREA_OPTIONS, OPS_SEVERITY_OPTIONS, OPS_STATUS_OPTIONS,
   OPS_SEVERITY_COLORS, OPS_STATUS_COLORS,
 } from '../lib/opsIssues.js'
+
+// Même configuration que le tableau : valeurs stockées, libellés et couleurs.
+// Conserver aussi une valeur héritée hors liste pour ne pas afficher un vide.
+function selectChoices(overrides, key, defaults, colors, value) {
+  const configured = parseNativeChoices(overrides.get(key))
+  const choices = (configured.length ? configured : defaults)
+    .map(c => ({ ...c, color: c.color || colors[c.value] || 'gray' }))
+  if (value && !choices.some(c => c.value === value)) {
+    choices.push({ value, label: value, color: colors[value] || 'gray' })
+  }
+  return choices
+}
+
+const choicePill = choice => (
+  <ChoiceBadge color={choice.color} className="single-select-label">{choice.label}</ChoiceBadge>
+)
 
 // Fiche d'un problème d'opérations — toujours en panneau latéral (registre
 // lib/recordPeekRoutes.jsx). Autosave champ par champ : la réponse du PATCH est
@@ -28,6 +45,7 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
   const undoableDelete = useUndoableDelete()
   const { addToast } = useToast()
   const users = useTable('users')
+  const { overrides } = useFieldOverrides('ops_issues')
 
   const { record: issue, setRecord: setIssue, loading, loadError, reload } =
     useDetailRecord(() => api.opsIssues.get(id), [id], { clearOnError: true })
@@ -61,14 +79,18 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
   const pending = detailPending({ loading, loadError, onRetry: reload, record: issue, notFound: 'Problème introuvable.' })
   if (pending) return pending
 
+  const areaChoices = selectChoices(overrides, 'area', OPS_AREA_OPTIONS, {}, issue.area)
+  const severityChoices = selectChoices(overrides, 'severity', OPS_SEVERITY_OPTIONS, OPS_SEVERITY_COLORS, issue.severity)
+  const statusChoices = selectChoices(overrides, 'status', OPS_STATUS_OPTIONS, OPS_STATUS_COLORS, issue.status)
+
   return (
     <DetailShell
       header={{
-        badge: issue.status && <Badge color={OPS_STATUS_COLORS[issue.status] || 'gray'}>{issue.status}</Badge>,
-        status: issue.severity && <Badge color={OPS_SEVERITY_COLORS[issue.severity] || 'gray'}>{issue.severity}</Badge>,
+        badge: issue.status && choicePill(statusChoices.find(c => c.value === issue.status)),
+        status: issue.severity && choicePill(severityChoices.find(c => c.value === issue.severity)),
         meta: (
           <>
-            {issue.area && <span>{issue.area}</span>}
+            {issue.area && choicePill(areaChoices.find(c => c.value === issue.area))}
             <span>{fmtDate(issue.occurred_at)}</span>
             {issue.reported_by_name && <span>{issue.reported_by_name}</span>}
           </>
@@ -91,6 +113,7 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
         record={issue}
         onSaveCustom={save}
         savingKeys={savingKeys}
+        selectPills
         className="card p-5"
         testId="ops-issue-fields"
       >
@@ -103,7 +126,9 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
         <DetailField id="area" label="Secteur" saving={savingKeys.area}>
           <SearchableSelect
             value={issue.area || ''}
-            options={OPS_AREA_OPTIONS}
+            options={areaChoices}
+            renderValue={choicePill}
+            renderOption={choicePill}
             emptyOption="—"
             onChange={v => save('area', v)}
             className="input text-sm w-full"
@@ -114,7 +139,9 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
         <DetailField id="severity" label="Gravité" saving={savingKeys.severity}>
           <SearchableSelect
             value={issue.severity || ''}
-            options={OPS_SEVERITY_OPTIONS}
+            options={severityChoices}
+            renderValue={choicePill}
+            renderOption={choicePill}
             emptyOption="—"
             onChange={v => save('severity', v)}
             className="input text-sm w-full"
@@ -125,7 +152,9 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
         <DetailField id="status" label="Statut" saving={savingKeys.status}>
           <SearchableSelect
             value={issue.status || ''}
-            options={OPS_STATUS_OPTIONS}
+            options={statusChoices}
+            renderValue={choicePill}
+            renderOption={choicePill}
             onChange={v => save('status', v)}
             className="input text-sm w-full"
             size="sm"

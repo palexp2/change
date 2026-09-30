@@ -17,7 +17,7 @@ export const NAV_SUBSECTIONS = {
   // ── Espace finance ────────────────────────────────────────────────────────
   '/travaux': {
     kind: 'tabs', param: 'onglet', items: [
-      { value: 'file', label: 'Ma file de prompts' },
+      { value: 'file', label: 'Travaux' },
       { value: 'suggestions', label: 'Suggestions de Claude' },
       { value: 'idees', label: 'De côté & idées' },
       { value: 'recurrents', label: 'Travaux récurrents' },

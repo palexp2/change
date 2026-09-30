@@ -89,6 +89,53 @@ export function forgetManychatSession() {
   return { ok: true }
 }
 
+/**
+ * ManyChat renouvelle sa session en renvoyant de nouveaux témoins à chaque
+ * appel, comme il le fait avec un navigateur. On les garde : sans ça, on
+ * rejouait indéfiniment ceux du jour où la session a été collée, et elle
+ * mourait au bout d'une semaine environ.
+ */
+export function absorbManychatCookies(res) {
+  let fresh = []
+  try { fresh = res?.headers?.getSetCookie?.() || [] } catch { fresh = [] }
+  if (!fresh.length) return 0
+  const row = getManychatAccount()
+  if (!row?.storage_state_enc) return 0
+  let state
+  try { state = JSON.parse(decryptCredentials(row.storage_state_enc)) } catch { return 0 }
+  const cookies = state.cookies || (state.cookies = [])
+  let changed = 0
+  for (const line of fresh) {
+    const [pair, ...attrs] = String(line).split(';')
+    const eq = pair.indexOf('=')
+    if (eq <= 0) continue
+    const name = pair.slice(0, eq).trim()
+    const value = pair.slice(eq + 1).trim()
+    const attr = k => attrs.map(a => a.trim()).find(a => a.toLowerCase().startsWith(`${k}=`))?.split('=').slice(1).join('=')
+    const maxAge = attr('max-age')
+    const expiresAttr = attr('expires')
+    const expires = maxAge != null ? Math.floor(Date.now() / 1000) + Number(maxAge)
+      : expiresAttr ? Math.floor(new Date(expiresAttr).getTime() / 1000) : -1
+    const domain = attr('domain') || 'app.manychat.com'
+    // Un témoin effacé par le serveur (expiré, vide) n'est pas une rotation :
+    // on garde l'ancien plutôt que de s'amputer d'un témoin de session.
+    if (!value || (expires > 0 && expires * 1000 < Date.now())) continue
+    const i = cookies.findIndex(c => c.name === name)
+    if (i >= 0) {
+      if (cookies[i].value === value) continue
+      cookies[i] = { ...cookies[i], value, expires }
+    } else {
+      cookies.push({ name, value, domain, path: attr('path') || '/', expires, httpOnly: true, secure: true })
+    }
+    changed++
+  }
+  if (changed) {
+    db.prepare('UPDATE scraper_accounts SET storage_state_enc=?, updated_at=? WHERE id=?')
+      .run(encryptCredentials(JSON.stringify(state)), nowIso(), row.id)
+  }
+  return changed
+}
+
 /** Témoins de session, prêts pour un en-tête Cookie. */
 export function manychatCookieHeader() {
   const row = getManychatAccount()
@@ -127,19 +174,23 @@ export async function probeManychat() {
       detail: 'Aucune session ManyChat — la coller dans Connecteurs → ManyChat.',
     })
   }
+  // On sonde la page même que lit la tournée : la racine du site redirige
+  // toujours, connecté ou non, et passait donc une session morte pour valide.
+  const pageId = manychatPageId()
   let res, body = ''
   try {
-    res = await fetch('https://app.manychat.com/', {
+    res = await fetch(`https://app.manychat.com/${pageId || ''}${pageId ? '/subscribers' : ''}`, {
       headers: { 'User-Agent': UA, accept: 'text/html,application/json', cookie },
       redirect: 'manual',
       signal: AbortSignal.timeout(20_000),
     })
     body = await res.text()
+    absorbManychatCookies(res)
   } catch (e) {
     return recordSessionStatus('manychat', { status: 'error', detail: `ManyChat injoignable : ${e.message}` })
   }
   const loc = res.headers.get('location') || ''
-  if (/\/(login|signin)\b/i.test(loc) || res.status === 401 || res.status === 403) {
+  if ((pageId && res.status >= 300 && res.status < 400) || /\/(login|signin)\b/i.test(loc) || res.status === 401 || res.status === 403) {
     return recordSessionStatus('manychat', {
       status: 'expired',
       detail: 'ManyChat renvoie vers sa page de connexion — rouvrir une session dans Connecteurs → ManyChat.',
@@ -187,6 +238,7 @@ async function fetchCsrfToken() {
     redirect: 'manual',
     signal: AbortSignal.timeout(20_000),
   })
+  absorbManychatCookies(res)
   if (res.status >= 300 && res.status < 400) throw new Error('Session ManyChat expirée')
   const html = await res.text()
   const token = (html.match(/csrf[_-]?token["':\s]+([a-f0-9]{16,})/i) || [])[1]
@@ -227,6 +279,7 @@ export async function mcFetch(path, { method = 'GET', body = null, retry = true 
     recordSessionStatus('manychat', { status: 'expired', detail: 'ManyChat renvoie vers sa page de connexion — rouvrir une session dans Connecteurs → ManyChat.' })
     throw new Error('Session ManyChat expirée')
   }
+  absorbManychatCookies(res)
   const text = await res.text()
   if (res.status === 400 && retry) {
     await csrfToken(true)

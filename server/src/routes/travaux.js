@@ -1,7 +1,14 @@
 // Routes de la page /travaux : file de prompts, suggestions de l'agent, travaux
 // récurrents. Validation manuelle, erreurs uniformes { error }.
 import { Router } from 'express'
+import { execFile, spawn } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
+import os from 'node:os'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 import { requireAdmin } from '../middleware/auth.js'
+import { TZ, shiftDate } from '../utils/datetime.js'
 import {
   listPrompts, getPrompt, createPrompt, updatePrompt, deletePrompt,
   reorderPrompts, moveToFront, advanceQueue, listMessages, replyToPrompt,
@@ -24,13 +31,136 @@ import { KNOWN_MODELS } from '../services/agentModel.js'
 import {
   getSettings, setSettings, isRunnerBusy, findAgentTask,
   getRunningQuestionCount, getMaxParallelQuestions, stopRunningTask,
-  getRunningExecutionCount, getExecLaneCount, execLaneOf,
+  getRunningExecutionCount, getExecLaneCount,
 } from '../services/taskRunner.js'
 import { spellfix, MAX_SPELLFIX_LENGTH } from '../services/textSpellfix.js'
 import { DEFAULT_REVIEW_CRITERIA, MAX_REVIEW_CRITERIA_LENGTH, normalizeReviewCriteria } from '../services/appReview.js'
 
+const execFileAsync = promisify(execFile)
 const router = Router()
 router.use(requireAdmin)
+
+// ─── Compteur de lignes de code de Boréal ─────────────────────────────────────
+// Fichiers suivis par git (client, serveur, partagé), lignes non vides. Lecture
+// asynchrone + cache 10 min : le serveur est mono-thread, ne pas le figer.
+const REPO_ROOT = fileURLToPath(new URL('../../../', import.meta.url))
+const LOC_DIRS = ['client/src', 'server/src', 'server/scripts', 'shared']
+const LOC_EXT = /\.(jsx?|mjs|cjs|css|py)$/
+const LOC_TTL_MS = 10 * 60_000
+let locCache = null
+let locPending = null
+
+async function countLinesOfCode() {
+  const { stdout } = await execFileAsync('git', ['ls-files', '-z', '--', ...LOC_DIRS], { cwd: REPO_ROOT, maxBuffer: 16 * 1024 * 1024 })
+  const files = stdout.split('\0').filter(f => LOC_EXT.test(f))
+  let lines = 0, count = 0
+  for (const f of files) {
+    try {
+      const text = await readFile(path.join(REPO_ROOT, f), 'utf8')
+      for (const l of text.split('\n')) if (l.trim()) lines++
+      count++
+    } catch { /* fichier supprimé non commité : ignoré */ }
+  }
+  const history = await locHistory(lines).catch(() => [])
+  return { lines, files: count, at: new Date().toISOString(), history }
+}
+
+// Historique quotidien sur 1 an : les diffs git (awk, hors du thread Node) donnent
+// le solde de lignes non vides de chaque commit ; on remonte depuis le compte
+// actuel. Deltas des commits mis en cache par HEAD.
+const LOC_AWK = `
+/^C [0-9]/ { if (d != "") print d, n; d = $2; n = 0; next }
+/^diff --git / { h = 0; ok = ($NF ~ /${LOC_EXT.source}/); next }
+/^@@/ { h = 1; next }
+h && ok && /^\\+/ { if (substr($0, 2) ~ /[^ \\t\\r]/) n++; next }
+h && ok && /^-/ { if (substr($0, 2) ~ /[^ \\t\\r]/) n--; next }
+END { if (d != "") print d, n }`
+const DIFF_OPTS = ['--no-renames', '-p', '--no-color', '--no-ext-diff']
+let commitDeltas = null // { head, rows: [[day, delta]] } du plus récent au plus ancien
+
+function gitDeltas(gitArgs, prefix = '') {
+  return new Promise((resolve, reject) => {
+    const git = spawn('git', gitArgs, { cwd: REPO_ROOT, env: { ...process.env, TZ } })
+    const awk = spawn('awk', [LOC_AWK])
+    let out = ''
+    if (prefix) awk.stdin.write(prefix)
+    git.stdout.pipe(awk.stdin)
+    git.on('error', reject)
+    awk.on('error', reject)
+    awk.stdout.on('data', c => { out += c })
+    awk.on('close', code => code ? reject(new Error(`awk ${code}`))
+      : resolve(out.trim().split('\n').filter(Boolean).map(l => { const [d, n] = l.split(' '); return [d, Number(n)] })))
+  })
+}
+
+async function locHistory(current) {
+  const { stdout } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: REPO_ROOT })
+  const head = stdout.trim()
+  if (commitDeltas?.head !== head) {
+    commitDeltas = { head, rows: await gitDeltas(['log', '--first-parent', '--diff-merges=first-parent', ...DIFF_OPTS,
+      '--format=C %cd', '--date=format-local:%Y-%m-%d', '--', ...LOC_DIRS]) }
+  }
+  const wt = (await gitDeltas(['diff', 'HEAD', ...DIFF_OPTS, '--', ...LOC_DIRS], 'C 0000-00-00\n'))[0]?.[1] || 0
+  // Fin de journée de chaque jour de commit (le plus récent du jour l'emporte).
+  const endOfDay = new Map()
+  let running = current - wt
+  for (const [day, delta] of commitDeltas.rows) {
+    if (!endOfDay.has(day)) endOfDay.set(day, running)
+    running -= delta
+  }
+  const today = localDay()
+  const first = commitDeltas.rows.at(-1)?.[0]
+  const points = []
+  let value = null
+  const known = [...endOfDay.keys()].sort()
+  let k = 0
+  for (let i = 364; i >= 0; i--) {
+    const day = shiftDate(today, -i)
+    while (k < known.length && known[k] <= day) value = endOfDay.get(known[k++])
+    if (!first || day < first) continue
+    points.push([day, i === 0 ? current : value])
+  }
+  return points
+}
+
+router.get('/code-stats', async (req, res) => {
+  try {
+    if (!locCache || Date.now() - Date.parse(locCache.at) > LOC_TTL_MS) {
+      locPending ||= countLinesOfCode().finally(() => { locPending = null })
+      locCache = await locPending
+    }
+    res.json(locCache)
+  } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ─── Utilisation du CPU de la machine ─────────────────────────────────────────
+// % occupé entre deux relevés des compteurs os.cpus() (tous cœurs). Le premier
+// appel mesure sur 300 ms sans bloquer ; ensuite, delta depuis l'appel précédent.
+function cpuTimes() {
+  let idle = 0, total = 0
+  for (const c of os.cpus()) {
+    const t = c.times
+    idle += t.idle
+    total += t.user + t.nice + t.sys + t.idle + t.irq
+  }
+  return { idle, total }
+}
+let cpuPrev = null
+let cpuLast = null
+
+router.get('/cpu', async (req, res) => {
+  if (!cpuPrev) {
+    cpuPrev = cpuTimes()
+    await new Promise(r => setTimeout(r, 300))
+  }
+  const now = cpuTimes()
+  const dTotal = now.total - cpuPrev.total
+  if (dTotal > 0) {
+    cpuLast = Math.max(0, Math.min(100, Math.round((1 - (now.idle - cpuPrev.idle) / dTotal) * 100)))
+    cpuPrev = now
+  }
+  res.json({ percent: cpuLast ?? 0, cores: os.cpus().length, load: os.loadavg().map(v => Math.round(v * 100) / 100) })
+})
 
 // ─── File de prompts ──────────────────────────────────────────────────────────
 
@@ -53,12 +183,12 @@ function runState(p, task) {
 
 /**
  * Voie d'exécution d'un item : les questions ont la leur (lecture seule, parallèle),
- * les implémentations sont réparties en quatre files qui avancent de front. C'est
+ * les implémentations partagent UNE file servie par plusieurs postes. C'est
  * cette voie qui définit « avec qui » un item se dispute un poste — donc son rang
  * d'attente affiché.
  */
 function laneOf(p) {
-  return (p.mode === 'question' && !p.same_context) ? 'question' : `exec:${execLaneOf({ exec_lane: p.exec_lane })}`
+  return (p.mode === 'question' && !p.same_context) ? 'question' : 'exec'
 }
 
 /**
@@ -77,6 +207,15 @@ function parseQuestion(raw) {
   }
 }
 
+// Pages citées par le rapport d'implémentation : `client/src/pages/Foo.jsx` → `Foo`.
+// Le front en déduit la route (voir COMPONENT_TO_ROUTE dans PageLink.jsx).
+function pagesFromReport(report) {
+  if (!report) return []
+  const names = new Set()
+  for (const m of String(report).matchAll(/client\/src\/pages\/(\w+)\.jsx/g)) names.add(m[1])
+  return [...names]
+}
+
 // Le compte-rendu vit sur la tâche agent : on le rapatrie sur l'item pour que la
 // page n'ait pas à croiser deux sources (et reste lisible après un /clear).
 function withResult(p) {
@@ -86,14 +225,24 @@ function withResult(p) {
     pending_question: parseQuestion(p.pending_question),
     user_summary: task?.user_summary || null,
     agent_status: task?.status || null,
+    // Modèle qui a VRAIMENT tourné (Auto résolu, ou repli de quota) : la colonne
+    // « Modèle » l'affiche même quand l'item a été laissé en « Auto ».
+    run_model: task?.run_model || null,
     // Fichiers touchés par une exécution qui n'a pas fini proprement (arrêtée,
     // bloquée) : la carte s'en sert pour proposer un nettoyage à la suppression.
     touched_files: task?.touched_files || [],
     // Repris tel quel par <PageLink> côté front pour retrouver la section modifiée
     // (route de signalement, ou à défaut déduite du rapport d'implémentation).
     context: task?.context || null,
-    agent_result: task?.agent_result || null,
+    // Le rapport brut de l'agent ne part PLUS dans la liste : à lui seul il pesait
+    // 1,5 Mo sur les 3,5 Mo de la réponse, pour un seul usage à l'écran — deviner la
+    // page modifiée. On envoie donc juste les pages qu'il cite (<PageLink>).
+    agent_pages: pagesFromReport(task?.agent_result),
     run_state: runState(p, task),
+    // Bornes de l'exécution réelle (pas de la remise à l'ordonnanceur) : colonne
+    // « Temps » du tableau.
+    run_started_at: task?.started_at || null,
+    run_completed_at: task?.completed_at || null,
     lane: laneOf(p),
     // Le fil est joint à la liste : quelques messages courts par tâche, ça évite un
     // aller-retour par carte pour l'afficher.
@@ -153,7 +302,7 @@ router.get('/prompts', (req, res) => {
   // tâche agent et un fil de messages par item, et l'historique en compte des
   // centaines dont ce point d'entrée ne rendra rien. Les rangs d'attente ne
   // portent que sur des items vivants (running/queued), ils sont donc identiques.
-  const rows = activeOnly ? listPrompts().filter(isActivePrompt) : listPrompts()
+  const rows = activeOnly ? listPrompts({ activeOnly: true }).filter(isActivePrompt) : listPrompts()
   const prompts = withWaitRank(rows.map(withResult))
     .filter(p => !space || p.space === space)
   const pause = getQueuePauseState()

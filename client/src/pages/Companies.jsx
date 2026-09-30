@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import { Plus, X, Building2 } from 'lucide-react'
+import { Plus, X, Building2, Copy } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -7,6 +8,7 @@ import { ListPage } from '../components/ListPage.jsx'
 import { Badge, phaseBadgeColor } from '../components/Badge.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
+import { CompanyDuplicatesModal } from '../components/CompanyDuplicatesModal.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 
 // Plus de TYPES : la colonne « Type » de l'entreprise a été droppée
@@ -52,6 +54,7 @@ export default function Companies() {
   const farmProvince = searchParams.get('farm_province') || ''
   const shippingProvince = searchParams.get('shipping_province') || ''
   const undoableDelete = useUndoableDelete()
+  const [showDups, setShowDups] = useState(false)
 
   const filtered = !!(farmProvince || shippingProvince)
   const { rows: companies, loading, reload: load } = useListData({
@@ -88,13 +91,19 @@ export default function Companies() {
         {farmProvince && provinceChip(`Ferme en ${farmProvince}`)}
         {shippingProvince && provinceChip(`Client — livraison en ${shippingProvince}`)}
       </>}
+      actions={
+        <button onClick={() => setShowDups(true)} className="btn-secondary" data-testid="company-dups-open">
+          <Copy size={16} /> Doublons
+        </button>
+      }
       create={{
         label: 'Nouvelle entreprise', table: 'companies', fields: COMPANY_FORM_FIELDS, columns: 2, size: 'lg',
         onSubmit: handleCreate,
         extra: values => <DuplicateWarning kind="company" values={values} />,
       }}
     >
-      {({ openCreate }) => (
+      {({ openCreate }) => (<>
+        <CompanyDuplicatesModal isOpen={showDups} onClose={() => setShowDups(false)} onMerged={load} />
         <DataTable
           table="companies"
           manageViews
@@ -114,7 +123,7 @@ export default function Companies() {
           }}
           emptyState={{ icon: Building2, title: 'Aucune entreprise', description: "Aucune entreprise n'est encore enregistrée. Ajoute une entreprise pour gérer ses contacts, commandes et factures.", cta: { label: 'Nouvelle entreprise', icon: Plus, onClick: openCreate } }}
         />
-      )}
+      </>)}
     </ListPage>
   )
 }

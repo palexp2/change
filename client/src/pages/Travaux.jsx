@@ -23,11 +23,10 @@ import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import {
-  Play, Pause, Trash2, ChevronUp, ChevronsUp, Plus, Sparkles, Check, X, Loader2,
-  ListOrdered, Link2, CheckCircle2, AlertTriangle, RefreshCw, ChevronDown, Send,
-  Hourglass, GripVertical, Plug, HelpCircle, CircleStop, PauseCircle, PlayCircle,
+  Play, Pause, Trash2, ChevronUp, ChevronsUp, Plus, Sparkles, Check, X, ListOrdered, Link2, CheckCircle2, AlertTriangle, RefreshCw, ChevronDown, Send,
+  Hourglass, GripVertical, Plug, CircleStop, PauseCircle, PlayCircle,
   Lightbulb, MessageSquare, ChevronLeft, ChevronRight, CalendarDays, Paperclip,
-  Settings2, Square, Wand2, Star, FileText, RotateCw, Power, Settings, Users,
+  Settings2, Square, Wand2, Star, FileText, RotateCw, Power, Settings, Cpu,
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
@@ -35,19 +34,22 @@ import { useAuth } from '../lib/auth.jsx'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
-import { ClaudeUsageStrip, ClaudeModelControl, modelLabel } from '../components/ClaudeUsage.jsx'
-import { PageLink } from '../components/PageLink.jsx'
+import { DataTable } from '../components/DataTable.jsx'
+import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
+import { ClaudeUsageStrip, modelLabel } from '../components/ClaudeUsage.jsx'
+import { PageLink, requestPage } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
-import { useTravauxQuick } from '../components/TravauxQuickPanel.jsx'
 import Spinner from '../components/Spinner.jsx'
+import { fmtDate } from '../lib/formatDate.js'
 // Briques partagées avec le panneau rapide (accessible depuis toute l'app) :
 // lecture temps réel de la file, pastille d'état, choix d'une question, réponse.
 // Une seule implémentation, deux points d'entrée — voir lib/travauxQueue.jsx.
 import {
   inputCls, btnCls, btnPrimary,
   isAsking, pillStateOf, firstLine, shortDate,
-  StatusPill, QuestionChoices, ReplyBox, useTravauxPrompts, CreatorChip,
+  StatusPill, QuestionChoices, ReplyBox, useTravauxPrompts, CreatorChip, STATUS_LABELS,
 } from '../lib/travauxQueue.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // « Auto » : le calibre est jugé côté serveur à partir de la demande (comme le
 // titre automatique) — un choix manuel le fige, revenir à Auto le rend au modèle.
@@ -58,7 +60,6 @@ const PRESETS = [
   { value: 'deep', label: 'Approfondi' },
 ]
 const presetLabel = v => PRESETS.find(o => o.value === v)?.label || v
-const PROMPT_MODELS = ['opus', 'fable', 'sonnet', 'haiku', 'codex']
 
 /**
  * Sélecteur de calibre d'un item existant. La valeur affichée reste « Auto » tant
@@ -103,9 +104,35 @@ function useElapsed(startedAt, live) {
     return () => clearInterval(t)
   }, [live])
   if (!startedAt) return null
-  const secs = Math.max(0, Math.round((now - new Date(startedAt).getTime()) / 1000))
-  const m = Math.floor(secs / 60)
+  return fmtSecs(Math.round((now - new Date(startedAt).getTime()) / 1000))
+}
+
+function fmtSecs(secs) {
+  secs = Math.max(0, secs)
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor(secs / 60) % 60
+  if (h) return `${h} h ${String(m).padStart(2, '0')} min`
   return m ? `${m} min ${String(secs % 60).padStart(2, '0')} s` : `${secs} s`
+}
+
+// Bornes de la dernière exécution réelle : chrono vivant pendant qu'elle tourne,
+// durée figée une fois finie, rien tant qu'elle attend un poste.
+function runSpan(p) {
+  if (p.status === 'running') {
+    return p.run_state === 'executing' ? { from: p.run_started_at || p.started_at, to: null } : null
+  }
+  const from = p.run_started_at || p.started_at
+  const to = p.run_completed_at || p.completed_at
+  return from && to && to >= from ? { from, to } : null
+}
+
+function RunTimeCell({ p }) {
+  const span = runSpan(p)
+  const live = useElapsed(span && !span.to ? span.from : null, !!span && !span.to)
+  if (!span) return <span className="text-slate-300">—</span>
+  if (live) return <span className="text-sm tabular-nums text-brand-600">{live}</span>
+  const secs = Math.round((new Date(span.to) - new Date(span.from)) / 1000)
+  return <span className="text-sm tabular-nums text-slate-500">{fmtSecs(secs)}</span>
 }
 
 const sameTrimmed = (a, b) => String(a ?? '').trim() === String(b ?? '').trim()
@@ -217,7 +244,7 @@ function SteerBox({ onSend, executing, autoFocus }) {
       />
       <div className="flex items-center gap-2 mt-1.5">
         <button className={btnPrimary} data-testid="travaux-steer-send" onClick={send} disabled={sending || !text.trim()}>
-          {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Envoyer en cours de tâche
+          {sending ? <ThinkingOrb size={14} ink /> : <Send size={14} />} Envoyer en cours de tâche
         </button>
         <span className="text-xs text-slate-400">
           {executing
@@ -278,13 +305,15 @@ const THREAD_TAIL = 3
 
 const SPACE_LABEL = { finance: 'Espace finance', agent: 'Agent' }
 
-function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onReply, onSteer, dnd, space }) {
+// `embedded` : la carte vit sous une ligne dépliée du tableau de la file — la
+// ligne porte déjà l'état et le titre, la carte ne rend que ses actions et son
+// contenu, toujours ouvert.
+function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onReply, onSteer, dnd, space, embedded = false }) {
   const state = pillStateOf(p)
   const asking = state === 'asking'
   const executing = state === 'running'
   const waiting = state === 'waiting'
   const [stopping, setStopping] = useState(false)
-  const [savingModel, setSavingModel] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   // Item interrompu (arrêté ou bloqué) qui a déjà touché des fichiers : la
   // suppression doit pouvoir proposer un nettoyage plutôt que de juste faire
@@ -299,7 +328,7 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
   // changement. Seule une exécution réellement en cours est figée.
   const editable = ['queued', 'paused'].includes(p.status) || waiting
 
-  const [open, setOpen] = useState(asking)
+  const [open, setOpen] = useState(embedded || asking)
   const [focusReply, setFocusReply] = useState(0)
   const [showWholeThread, setShowWholeThread] = useState(false)
   const cardRef = useRef(null)
@@ -337,6 +366,164 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
     if (e.target.closest('button, a, input, textarea, select, label, [draggable="true"]')) return
     if (window.getSelection && String(window.getSelection())) return
     setOpen(o => !o)
+  }
+
+  const actions = (
+    <div className="flex items-center gap-0.5 shrink-0">
+      {/* Frein posé sur un item précis : quand CELUI-CI se termine, la file se
+          met en pause au lieu d'enchaîner. La façon la plus simple de borner la
+          consommation de jetons sans surveiller la page. */}
+      {['queued', 'running'].includes(p.status) && (
+        <button
+          data-testid="travaux-stop-after"
+          data-active={p.stop_after ? '1' : '0'}
+          className={`inline-flex items-center gap-1 px-1.5 py-1 text-[11px] rounded-lg border transition ${
+            p.stop_after
+              ? 'border-amber-300 bg-amber-50 text-amber-700'
+              : 'border-transparent text-slate-400 hover:bg-slate-100 hover:text-slate-600'
+          }`}
+          title={p.stop_after
+            ? 'La file se mettra en pause une fois cette tâche terminée. Clique pour annuler.'
+            : 'Mettre la file en pause une fois cette tâche terminée — les suivantes attendront ton feu vert.'}
+          onClick={() => onPatch(p.id, { stop_after: p.stop_after ? 0 : 1 })}
+        >
+          <CircleStop size={13} />{p.stop_after ? ' Pause après' : ''}
+        </button>
+      )}
+      {['done', 'blocked'].includes(p.status) && (
+        <button
+          className={iconBtn} data-testid="travaux-reply"
+          onClick={() => { setOpen(true); setFocusReply(n => n + 1) }}
+          title="Répondre à Claude"
+        ><Send size={14} /></button>
+      )}
+      {editable && p.status !== 'paused' && (
+        <button className={iconBtn} data-testid="travaux-move-first" onClick={() => onFirst(p.id)} title="Passer en premier — partira avant tout le reste, même les tâches déjà remises à l'agent"><ChevronsUp size={14} /></button>
+      )}
+      {editable && p.status !== 'paused' && (
+        <button className={iconBtn} onClick={() => onPatch(p.id, { status: 'paused' })} title="Mettre de côté"><Pause size={14} /></button>
+      )}
+      {p.status === 'paused' && (
+        <button className={iconBtn} onClick={() => onPatch(p.id, { status: 'queued' })} title="Remettre en file"><Play size={14} /></button>
+      )}
+      {executing && (
+        <button
+          className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-stop"
+          disabled={stopping}
+          onClick={async () => { setStopping(true); try { await onStop(p.id) } finally { setStopping(false) } }}
+          title="Arrêter cette exécution — le process est tué tout de suite"
+        >{stopping ? <ThinkingOrb size={14} ink /> : <Square size={14} />}</button>
+      )}
+      {!executing && (
+        <button
+          className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-delete"
+          onClick={() => (cleanupEligible ? setConfirmDelete(true) : onDelete(p.id))}
+          title="Retirer"
+        ><Trash2 size={14} /></button>
+      )}
+    </div>
+  )
+
+  const confirmModal = confirmDelete && (
+    <CleanupDeleteModal
+      p={p}
+      onClose={() => setConfirmDelete(false)}
+      onDeleteOnly={() => { setConfirmDelete(false); onDelete(p.id) }}
+      onDeleteAndCleanup={() => { setConfirmDelete(false); onCleanupDelete(p) }}
+    />
+  )
+
+  const body = open && (
+    <div className="border-t border-slate-100 px-3 py-3 space-y-3">
+      {/* Fil de discussion : chaque compte-rendu y est versé, et une réponse
+          relance l'exécution avec le fil en contexte. `user_summary` seul ne
+          s'affiche que pour les items d'avant le fil. */}
+      {messages.length ? (
+        <div className="space-y-2">
+          {hidden > 0 && (
+            <button
+              className="text-xs text-slate-500 hover:text-slate-700 inline-flex items-center gap-1"
+              data-testid="travaux-show-thread"
+              onClick={() => setShowWholeThread(true)}
+            ><ChevronUp size={12} /> Afficher les {hidden} message{hidden > 1 ? 's' : ''} précédent{hidden > 1 ? 's' : ''}</button>
+          )}
+          {shownMessages.map(m => <ThreadMessage key={m.id} m={m} />)}
+        </div>
+      ) : p.user_summary ? (
+        <div className="text-sm text-slate-600 whitespace-pre-wrap bg-slate-50 rounded-lg px-3 py-2">{p.user_summary}</div>
+      ) : null}
+
+      {/* Question de Claude : le texte est déjà dans le fil (dernier message), on
+          n'affiche donc ici que les choix — un clic répond et relance la tâche. */}
+      {asking && <QuestionChoices p={p} onAnswer={opt => onReply(p.id, opt)} />}
+
+      {['done', 'blocked'].includes(p.status) && <ReplyBox onSend={(text, placement) => onReply(p.id, text, placement)} autoFocus={focusReply} />}
+
+      {/* Steering : on peut parler à Claude PENDANT qu'il travaille (ou pendant
+          que la tâche attend son tour) — le message est pris en compte en cours
+          de tâche, rien n'est interrompu. */}
+      {(executing || waiting) && (
+        <SteerBox onSend={text => onSteer(p.id, text)} executing={executing} autoFocus={focusReply} />
+      )}
+      {waiting && (
+        <p className="text-xs text-amber-600 inline-flex items-center gap-1">
+          <Hourglass size={11} />
+          {p.wait_rank > 1
+            ? `Pas encore démarrée — ${p.wait_rank - 1} tâche${p.wait_rank > 2 ? 's' : ''} à partir avant celle-ci. Le prompt et l'ordre restent modifiables.`
+            : 'Pas encore démarrée — elle part dès que sa file se libère. Le prompt et l\'ordre restent modifiables.'}
+        </p>
+      )}
+
+      <div>
+        <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">
+          {editable ? 'Prompt envoyé — modifiable tant que ça n\'a pas démarré' : 'Prompt envoyé'}
+        </div>
+        {editable ? (
+          <textarea
+            data-testid="travaux-prompt-input"
+            className={`${inputCls} w-full font-mono text-xs`}
+            rows={8}
+            value={draft.prompt}
+            onChange={e => edit('prompt', e.target.value)}
+            onBlur={flush}
+          />
+        ) : (
+          <pre className="text-xs text-slate-600 whitespace-pre-wrap font-mono bg-slate-50 rounded-lg p-3">{p.prompt}</pre>
+        )}
+      </div>
+
+      {editable && (
+        <div className="flex items-center gap-3 flex-wrap">
+          <PresetSelect p={p} onPatch={onPatch} />
+          <select className={inputCls} value={p.mode} onChange={e => onPatch(p.id, { mode: e.target.value })}>
+            <option value="implement">Implémenter</option>
+            <option value="question">Question (lecture seule, en parallèle)</option>
+          </select>
+        </div>
+      )}
+    </div>
+  )
+
+  if (embedded) {
+    return (
+      <div data-prompt-id={p.id} data-prompt-status={p.status} className="bg-white">
+        <div className="flex items-center gap-2 px-3 pt-2">
+          {editable ? (
+            <input
+              className="flex-1 min-w-0 bg-transparent text-sm font-medium text-slate-800 border-0 p-0 focus:outline-none"
+              value={draft.title}
+              onChange={e => edit('title', e.target.value)}
+              onBlur={flush}
+            />
+          ) : <span className="flex-1" />}
+          {elapsed && <span className="shrink-0 text-xs text-slate-400">{elapsed}</span>}
+          {p.status === 'done' && <PageLink task={p} />}
+          {actions}
+        </div>
+        {confirmModal}
+        {body}
+      </div>
+    )
   }
 
   return (
@@ -436,16 +623,16 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
             {p.mode === 'question' && (
               <span className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-sky-50 text-sky-700" title="Lecture seule — tourne en parallèle">Q</span>
             )}
-            {/* Modèle demandé : visible sans déplier. Rien sur un item laissé en
-                « Auto » (le cas courant), et rien de plus que le nom du modèle —
-                le choix lui-même reste dans la carte ouverte. */}
-            {!!p.model && (
+            {/* Modèle visible sans déplier : celui qui a tourné dès qu'il est connu
+                (y compris un item laissé en « Auto »), sinon celui demandé. Le choix
+                lui-même reste dans la carte ouverte. */}
+            {!!(p.run_model || p.model) && (
               <span
                 data-testid="travaux-model-badge"
-                data-model={p.model}
+                data-model={p.run_model || p.model}
                 className="shrink-0 px-1.5 py-0.5 text-[10px] font-medium rounded bg-slate-100 text-slate-600"
-                title={`Modèle demandé — ${modelLabel(p.model)}`}
-              >{modelLabel(p.model)}</span>
+                title={p.run_model ? `Modèle utilisé — ${modelLabel(p.run_model)}` : `Modèle demandé — ${modelLabel(p.model)}`}
+              >{modelLabel(p.run_model || p.model)}</span>
             )}
             {/* Conversation venue de l'AUTRE file : elle est listée ici pour ne jamais
                 disparaître, mais on dit d'où elle vient. */}
@@ -480,159 +667,11 @@ function PromptRow({ p, onPatch, onDelete, onStop, onCleanupDelete, onFirst, onR
           )}
         </div>
 
-        <div className="flex items-center gap-0.5 shrink-0">
-          {/* Frein posé sur un item précis : quand CELUI-CI se termine, la file se
-              met en pause au lieu d'enchaîner. La façon la plus simple de borner la
-              consommation de jetons sans surveiller la page. */}
-          {['queued', 'running'].includes(p.status) && (
-            <button
-              data-testid="travaux-stop-after"
-              data-active={p.stop_after ? '1' : '0'}
-              className={`inline-flex items-center gap-1 px-1.5 py-1 text-[11px] rounded-lg border transition ${
-                p.stop_after
-                  ? 'border-amber-300 bg-amber-50 text-amber-700'
-                  : 'border-transparent text-slate-400 hover:bg-slate-100 hover:text-slate-600'
-              }`}
-              title={p.stop_after
-                ? 'La file se mettra en pause une fois cette tâche terminée. Clique pour annuler.'
-                : 'Mettre la file en pause une fois cette tâche terminée — les suivantes attendront ton feu vert.'}
-              onClick={() => onPatch(p.id, { stop_after: p.stop_after ? 0 : 1 })}
-            >
-              <CircleStop size={13} />{p.stop_after ? ' Pause après' : ''}
-            </button>
-          )}
-          {['done', 'blocked'].includes(p.status) && (
-            <button
-              className={iconBtn} data-testid="travaux-reply"
-              onClick={() => { setOpen(true); setFocusReply(n => n + 1) }}
-              title="Répondre à Claude"
-            ><Send size={14} /></button>
-          )}
-          {editable && p.status !== 'paused' && (
-            <button className={iconBtn} data-testid="travaux-move-first" onClick={() => onFirst(p.id)} title="Passer en premier — partira avant tout le reste, même les tâches déjà remises à l'agent"><ChevronsUp size={14} /></button>
-          )}
-          {editable && p.status !== 'paused' && (
-            <button className={iconBtn} onClick={() => onPatch(p.id, { status: 'paused' })} title="Mettre de côté"><Pause size={14} /></button>
-          )}
-          {p.status === 'paused' && (
-            <button className={iconBtn} onClick={() => onPatch(p.id, { status: 'queued' })} title="Remettre en file"><Play size={14} /></button>
-          )}
-          {executing && (
-            <button
-              className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-stop"
-              disabled={stopping}
-              onClick={async () => { setStopping(true); try { await onStop(p.id) } finally { setStopping(false) } }}
-              title="Arrêter cette exécution — le process est tué tout de suite"
-            >{stopping ? <Loader2 size={14} className="animate-spin" /> : <Square size={14} />}</button>
-          )}
-          {!executing && (
-            <button
-              className={`${iconBtn} hover:text-rose-600`} data-testid="travaux-delete"
-              onClick={() => (cleanupEligible ? setConfirmDelete(true) : onDelete(p.id))}
-              title="Retirer"
-            ><Trash2 size={14} /></button>
-          )}
-        </div>
+        {actions}
       </div>
 
-      {confirmDelete && (
-        <CleanupDeleteModal
-          p={p}
-          onClose={() => setConfirmDelete(false)}
-          onDeleteOnly={() => { setConfirmDelete(false); onDelete(p.id) }}
-          onDeleteAndCleanup={() => { setConfirmDelete(false); onCleanupDelete(p) }}
-        />
-      )}
-
-      {open && (
-        <div className="border-t border-slate-100 px-3 py-3 space-y-3">
-          {/* Fil de discussion : chaque compte-rendu y est versé, et une réponse
-              relance l'exécution avec le fil en contexte. `user_summary` seul ne
-              s'affiche que pour les items d'avant le fil. */}
-          {messages.length ? (
-            <div className="space-y-2">
-              {hidden > 0 && (
-                <button
-                  className="text-xs text-slate-500 hover:text-slate-700 inline-flex items-center gap-1"
-                  data-testid="travaux-show-thread"
-                  onClick={() => setShowWholeThread(true)}
-                ><ChevronUp size={12} /> Afficher les {hidden} message{hidden > 1 ? 's' : ''} précédent{hidden > 1 ? 's' : ''}</button>
-              )}
-              {shownMessages.map(m => <ThreadMessage key={m.id} m={m} />)}
-            </div>
-          ) : p.user_summary ? (
-            <div className="text-sm text-slate-600 whitespace-pre-wrap bg-slate-50 rounded-lg px-3 py-2">{p.user_summary}</div>
-          ) : null}
-
-          {/* Question de Claude : le texte est déjà dans le fil (dernier message), on
-              n'affiche donc ici que les choix — un clic répond et relance la tâche. */}
-          {asking && <QuestionChoices p={p} onAnswer={opt => onReply(p.id, opt)} />}
-
-          {['done', 'blocked'].includes(p.status) && <ReplyBox onSend={(text, placement) => onReply(p.id, text, placement)} autoFocus={focusReply} />}
-
-          {/* Steering : on peut parler à Claude PENDANT qu'il travaille (ou pendant
-              que la tâche attend son tour) — le message est pris en compte en cours
-              de tâche, rien n'est interrompu. */}
-          {(executing || waiting) && (
-            <SteerBox onSend={text => onSteer(p.id, text)} executing={executing} autoFocus={focusReply} />
-          )}
-          {waiting && (
-            <p className="text-xs text-amber-600 inline-flex items-center gap-1">
-              <Hourglass size={11} />
-              {p.wait_rank > 1
-                ? `Pas encore démarrée — ${p.wait_rank - 1} tâche${p.wait_rank > 2 ? 's' : ''} à finir avant celle-ci dans sa file. Le prompt et l'ordre restent modifiables.`
-                : 'Pas encore démarrée — elle part dès que sa file se libère. Le prompt et l\'ordre restent modifiables.'}
-            </p>
-          )}
-
-          <div>
-            <div className="text-[11px] uppercase tracking-wide text-slate-400 mb-1">
-              {editable ? 'Prompt envoyé — modifiable tant que ça n\'a pas démarré' : 'Prompt envoyé'}
-            </div>
-            {editable ? (
-              <textarea
-                data-testid="travaux-prompt-input"
-                className={`${inputCls} w-full font-mono text-xs`}
-                rows={8}
-                value={draft.prompt}
-                onChange={e => edit('prompt', e.target.value)}
-                onBlur={flush}
-              />
-            ) : (
-              <pre className="text-xs text-slate-600 whitespace-pre-wrap font-mono bg-slate-50 rounded-lg p-3">{p.prompt}</pre>
-            )}
-          </div>
-
-          {editable && (
-            <div className="flex items-center gap-3 flex-wrap">
-              <label className="inline-flex items-center gap-2 text-xs text-slate-500">
-                Modèle demandé
-                <select
-                  className={inputCls}
-                  data-testid="travaux-model"
-                  value={p.model || ''}
-                  disabled={savingModel}
-                  onChange={async e => {
-                    const model = e.target.value || null
-                    setSavingModel(true)
-                    try { await onPatch(p.id, { model }) }
-                    finally { setSavingModel(false) }
-                  }}
-                >
-                  <option value="">Auto (selon le calibre)</option>
-                  {PROMPT_MODELS.map(m => <option key={m} value={m}>{modelLabel(m)}</option>)}
-                </select>
-                {savingModel && <Loader2 size={13} className="animate-spin" aria-label="Enregistrement" />}
-              </label>
-              <PresetSelect p={p} onPatch={onPatch} />
-              <select className={inputCls} value={p.mode} onChange={e => onPatch(p.id, { mode: e.target.value })}>
-                <option value="implement">Implémenter</option>
-                <option value="question">Question (lecture seule, en parallèle)</option>
-              </select>
-            </div>
-          )}
-        </div>
-      )}
+      {confirmModal}
+      {body}
     </div>
   )
 }
@@ -666,82 +705,6 @@ function CleanupDeleteModal({ p, onClose, onDeleteOnly, onDeleteAndCleanup }) {
         </div>
       </div>
     </Modal>
-  )
-}
-
-// Combien de conversations terminées on rend d'emblée : au-delà, la suite arrive
-// en défilant. Le fil complet de chacune est de toute façon replié, mais rendre
-// 200 cartes coûte cher.
-const HISTORY_PAGE = 15
-
-/**
- * Fin de liste des conversations : la tranche suivante se charge d'elle-même dès
- * que ce repère approche du bas de l'écran — plus besoin de cliquer « afficher
- * plus » à chaque fois pour descendre dans l'historique. Le repère reste un
- * bouton : si l'`IntersectionObserver` n'est pas disponible (ou si la liste tient
- * déjà à l'écran sans jamais défiler), un clic fait le même travail.
- */
-function AutoLoadMore({ remaining, onLoadMore }) {
-  const ref = useRef(null)
-  // L'observateur est recréé à chaque tranche ; passer par une ref évite de le
-  // recréer aussi à chaque re-rendu du parent (la callback est une lambda).
-  const cb = useRef(onLoadMore)
-  cb.current = onLoadMore
-  useEffect(() => {
-    const el = ref.current
-    if (!el || typeof IntersectionObserver === 'undefined') return
-    // 400 px d'avance : la tranche est déjà là quand le repère atteint le bas.
-    const io = new IntersectionObserver(
-      entries => { if (entries.some(e => e.isIntersecting)) cb.current() },
-      { rootMargin: '400px 0px' })
-    io.observe(el)
-    return () => io.disconnect()
-  }, [remaining])
-  return (
-    <button
-      ref={ref}
-      type="button"
-      className={`${btnCls} w-full justify-center text-slate-400`}
-      data-testid="travaux-load-more"
-      onClick={() => cb.current()}
-    >
-      <Loader2 size={14} className="animate-spin" /> {remaining} restantes
-    </button>
-  )
-}
-
-// Vue « Conversations » : chacun fait le ménage dans SES tâches terminées — les
-// conversations sont donc regroupées par créateur, la section de l'utilisateur
-// connecté ouverte, celles des collègues repliées. Les replis manuels sont retenus
-// par utilisateur (localStorage), comme les cartes du tableau de bord.
-const conversationCollapseKey = userId => `travaux_conversations_collapsed_${userId || 'anon'}`
-function loadGroupCollapse(userId) {
-  try { return JSON.parse(localStorage.getItem(conversationCollapseKey(userId))) || {} } catch { return {} }
-}
-
-// Sélecteur de personne : la file est commune, mais on y vient d'abord pour SES
-// prompts, SES questions et SES travaux — le filtre s'ouvre donc sur l'utilisateur
-// connecté, « Tout le monde » rendant la vue d'ensemble d'avant. Il porte sur les
-// deux vues (File et Conversations) et le choix est retenu par utilisateur
-// (localStorage), comme les replis de sections.
-const PERSON_ALL = '__all__'
-const NO_CREATOR = '__none__'
-const personFilterKey = userId => `travaux_person_filter_${userId || 'anon'}`
-function loadPersonFilter(userId) {
-  try { return localStorage.getItem(personFilterKey(userId)) || userId || PERSON_ALL } catch { return userId || PERSON_ALL }
-}
-
-/**
- * Rappel sous une liste vide : ce n'est peut-être pas qu'il n'y a rien, c'est que
- * le filtre de personne masque le reste. Un clic remet « Tout le monde ».
- */
-function PersonFilterNote({ hidden, onShowAll }) {
-  if (!hidden) return null
-  return (
-    <div className="mt-2 text-xs text-slate-500" data-testid="travaux-person-filter-note">
-      {hidden} item{hidden > 1 ? 's' : ''} d'autres personnes {hidden > 1 ? 'sont masqués' : 'est masqué'} par le filtre —{' '}
-      <button type="button" className="underline hover:text-slate-700" onClick={onShowAll}>voir tout le monde</button>.
-    </div>
   )
 }
 
@@ -852,211 +815,80 @@ function usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPr
 
 export function QueueTab({ toast, space }) {
   const { user } = useAuth()
-  const [view, setView] = useState('file')
-  const [search, setSearch] = useState('')
-  const [historyLimit, setHistoryLimit] = useState(HISTORY_PAGE)
-  // Pagination PAR SECTION de créateur : une limite globale ferait qu'ouvrir une
-  // grosse section masque les conversations des autres.
-  const [groupLimits, setGroupLimits] = useState({})
-  const [groupCollapse, setGroupCollapse] = useState(() => loadGroupCollapse(user?.id))
-  const [person, setPerson] = useState(() => loadPersonFilter(user?.id))
-  const choosePerson = useCallback((value) => {
-    setPerson(value)
-    try { localStorage.setItem(personFilterKey(user?.id), value) } catch { /* stockage plein/bloqué : le choix vit en mémoire */ }
-  }, [user?.id])
-  // Défaut : ma section ouverte, celles des autres repliées — et la section de la
-  // personne explicitement choisie au filtre, sinon la filtrer sur un collègue ne
-  // laisserait qu'un en-tête replié. Un choix manuel prime.
-  const collapsedByDefault = useCallback(
-    key => key !== user?.id && key !== person,
-    [user?.id, person])
-  const isGroupCollapsed = useCallback(
-    key => groupCollapse[key] ?? collapsedByDefault(key),
-    [groupCollapse, collapsedByDefault])
-  const toggleGroup = useCallback(key => {
-    setGroupCollapse(prev => {
-      const next = { ...prev, [key]: !(prev[key] ?? collapsedByDefault(key)) }
-      try { localStorage.setItem(conversationCollapseKey(user?.id), JSON.stringify(next)) } catch { /* stockage plein/bloqué : l'état vit en mémoire */ }
-      return next
-    })
-  }, [user?.id, collapsedByDefault])
-
-  // On charge les DEUX files (pas de filtre `space` côté serveur). La vue « File »
-  // ne montre que celle de la page (les deux ordres sont indépendants), mais la vue
-  // « Conversations » les réunit : une tâche terminée ne doit jamais rester
-  // invisible parce qu'elle a été lancée depuis l'autre section (typiquement une
-  // suggestion acceptée depuis /agent alors qu'on la cherche dans /travaux — les
-  // suggestions, elles, sont partagées entre les deux sections).
+  // UNE seule file (demande de Pap, 2026-09-29) : tous les items, quelle que soit la
+  // section d'où ils ont été lancés, dans un seul ordre commun.
   // Chargement, temps réel et garde-frappe : lib/travauxQueue.jsx (partagé avec le
   // panneau rapide accessible depuis toute l'app).
   const onLoadError = useCallback(e => toast.error(e.message), [toast])
-  const { data, setData, loading, load, flushStale, dropPrompt, undropPrompt, liftPrompt, unliftPrompt } = useTravauxPrompts({ onError: onLoadError })
-  // « running » côté DB couvre deux réalités : l'item que Claude traite vraiment et
-  // celui qui attend son tour chez l'ordonnanceur. On les sépare pour l'affichage,
-  // en gardant les vrais « en cours » en tête de liste.
-  // Un item qui attend une réponse sort de l'historique et passe tout en haut : c'est
-  // le seul état où le travail est arrêté par nous, pas par l'agent.
-  // Filtre de personne : appliqué en amont de tout le reste (file, questions,
-  // conversations, items de l'autre file), pour que « Antoine » veuille dire la
-  // même chose partout sur l'onglet.
-  const byPerson = useCallback(
-    p => person === PERSON_ALL || (p.created_by || NO_CREATOR) === person,
-    [person])
-
-  const { asking, executing, waiting, queuedList, pausedList, history } = useMemo(() => {
-    // Vue « File » : seulement la file de cette page (l'ordre lui est propre).
-    // Vue « Conversations » : les deux files, pour qu'un travail terminé soit
-    // toujours retrouvable là où l'utilisateur le cherche.
-    // Ligne sans `space` (fixture, ancienne réponse en cache) : on la garde dans la
-    // file courante plutôt que de la faire disparaître.
-    const visible = data.prompts.filter(byPerson)
-    const mine = visible.filter(p => !p.space || p.space === space)
-    const running = mine.filter(p => p.status === 'running')
-    return {
-      asking: mine.filter(isAsking),
-      executing: running.filter(p => p.run_state === 'executing'),
-      waiting: running.filter(p => p.run_state !== 'executing'),
-      queuedList: mine.filter(p => p.status === 'queued'),
-      pausedList: mine.filter(p => p.status === 'paused'),
-      // Les conversations se lisent de la PLUS RÉCEMMENT terminée à la plus ancienne.
-      // L'ordre du serveur (position dans la file, puis date de création) n'a aucun
-      // sens ici : une tâche qui vient de finir se retrouvait enfouie au milieu de
-      // l'historique — hors des 15 premières affichées, donc introuvable.
-      history: visible
-        .filter(p => ['done', 'blocked', 'cancelled'].includes(p.status) && !isAsking(p))
-        .sort((a, b) => String(b.completed_at || b.started_at || b.created_at || '')
-          .localeCompare(String(a.completed_at || a.started_at || a.created_at || ''))),
-    }
-  }, [data.prompts, space, byPerson])
-
-  const matches = useCallback((p) => {
-    const q = search.trim().toLowerCase()
-    if (!q) return true
-    return [p.title, p.prompt, ...(p.messages || []).map(m => m.text)]
-      .some(t => String(t || '').toLowerCase().includes(q))
-  }, [search])
-
-  // L'exécuteur est PARTAGÉ entre les deux files (une implémentation à la fois) : ce
-  // qui tourne dans l'autre section bloque aussi celle-ci. On montre donc ses items
-  // actifs — en cours, en attente de slot, ou en attente d'une réponse — en tête de
-  // file, badgés et non réordonnables (les positions sont propres à chaque file).
-  const otherActive = useMemo(() => {
-    const rank = p => (p.run_state === 'executing' ? 0 : isAsking(p) ? 1 : 2)
-    return data.prompts
-      .filter(byPerson)
-      .filter(p => p.space && p.space !== space && (p.status === 'running' || isAsking(p)))
-      .sort((a, b) => rank(a) - rank(b))
-  }, [data.prompts, space, byPerson])
-
-  // Les personnes proposées viennent des items eux-mêmes : pas d'appel de plus, et
-  // la liste ne montre que des gens qui ont réellement quelque chose ici. On force
-  // deux présences : l'utilisateur connecté (le défaut doit exister même sans le
-  // moindre item) et la personne actuellement choisie (sinon supprimer son dernier
-  // item viderait le sélecteur en laissant la page filtrée sur du vide).
-  const people = useMemo(() => {
-    const map = new Map()
-    const add = (id, name) => {
-      const e = map.get(id)
-      if (!e) map.set(id, { id, name: name || (id === NO_CREATOR ? 'Sans créateur' : 'Sans nom') })
-      else if (name && e.name === 'Sans nom') e.name = name
-    }
-    if (user?.id) add(user.id, user.name)
-    for (const p of data.prompts) add(p.created_by || NO_CREATOR, p.created_by_name)
-    if (person !== PERSON_ALL) add(person)
-    const rank = e => (e.id === user?.id ? 0 : e.id === NO_CREATOR ? 2 : 1)
-    return [...map.values()].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
-  }, [data.prompts, person, user?.id, user?.name])
-
-  // Combien d'items le filtre met de côté : sans ce chiffre, une file vide parce
-  // qu'on regarde la sienne ressemble à une file vide tout court.
-  const hiddenByPerson = useMemo(
-    () => (person === PERSON_ALL ? 0 : data.prompts.filter(p => !byPerson(p)).length),
-    [data.prompts, person, byPerson])
-
-  const fileList = useMemo(
-    () => [...asking, ...executing, ...otherActive, ...waiting, ...queuedList, ...pausedList].filter(matches),
-    [asking, executing, otherActive, waiting, queuedList, pausedList, matches])
-  const historyList = useMemo(() => history.filter(matches), [history, matches])
-
-  // Conversations regroupées par créateur (hors recherche : une recherche reste une
-  // liste plate, tous résultats visibles). Ordre : ma section d'abord, puis les plus
-  // fournies ; les items sans créateur (anciens enregistrements) ferment la marche.
-  const historyGroups = useMemo(() => {
-    const map = new Map()
-    for (const p of history) {
-      const key = p.created_by || NO_CREATOR
-      let g = map.get(key)
-      if (!g) { g = { key, name: p.created_by_name || 'Sans créateur', items: [], unread: 0 }; map.set(key, g) }
-      g.items.push(p)
-      if (!p.seen_at) g.unread++
-    }
-    const rank = g => (g.key === user?.id ? 0 : g.key === NO_CREATOR ? 2 : 1)
-    return [...map.values()].sort((a, b) => rank(a) - rank(b) || b.items.length - a.items.length)
-  }, [history, user?.id])
+  const { data, loading, load, flushStale, dropPrompt, undropPrompt, liftPrompt, unliftPrompt } = useTravauxPrompts({ onError: onLoadError })
+  // Une ligne de tableau par item. Les deux vues (File / Travaux complétés) sont
+  // des vues filtrées sur `section` ; `ordre` rend l'ordre de la file : questions
+  // ouvertes, exécutions, attente, file, puis de côté — l'ordre serveur dans
+  // chaque groupe.
+  const rows = useMemo(() => {
+    const visible = data.prompts
+    const running = visible.filter(p => p.status === 'running')
+    const fileOrder = [
+      ...visible.filter(isAsking),
+      ...running.filter(p => p.run_state === 'executing'),
+      ...running.filter(p => p.run_state !== 'executing'),
+      ...visible.filter(p => p.status === 'queued' && !isAsking(p)),
+      ...visible.filter(p => p.status === 'paused'),
+    ]
+    const rank = new Map(fileOrder.map((p, i) => [p.id, i]))
+    return visible.map(p => {
+      const inFile = rank.has(p.id)
+      const span = runSpan(p)
+      return {
+        // Tri seulement : l'affichage (RunTimeCell) avance seul chaque seconde.
+        duree: span ? Math.round(((span.to ? new Date(span.to) : Date.now()) - new Date(span.from)) / 1000) : null,
+        ...p,
+        section: inFile ? 'File' : 'Complété',
+        ordre: inFile ? rank.get(p.id) : null,
+        etat: STATUS_LABELS[pillStateOf(p)] || p.status,
+        model_label: (p.run_model || p.model) ? modelLabel(p.run_model || p.model) : 'Auto',
+        page: requestPage(p).split('?')[0],
+        thread_text: (p.messages || []).map(m => m.text).join('\n'),
+      }
+    })
+  }, [data.prompts])
 
   const { patch, remove, stop, removeWithCleanup, first, reply, steer } = usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPrompt, toast, queuePaused: data.queue_paused })
-
-  // ── Priorité : réordonner la file ──────────────────────────────────────────
-  // Seule une exécution RÉELLEMENT en cours est intouchable. Les items « en
-  // attente » (remis à l'ordonnanceur, pas encore démarrés) se réordonnent avec
-  // ceux de la file — le serveur les lui reprend et les lui rend dans le nouvel
-  // ordre. Deux groupes, chacun réordonnable en son sein : « en file » (attente +
-  // file) et « de côté » — le serveur trie toujours la file avant les items de
-  // côté, un glissement d'un groupe à l'autre reviendrait en place.
-  const groupIds = useMemo(() => ({
-    queued: [...waiting, ...queuedList].map(p => p.id),
-    paused: pausedList.map(p => p.id),
-  }), [waiting, queuedList, pausedList])
-  // Mêmes groupes, filtre de personne mis à part : les positions envoyées au serveur
-  // couvrent TOUTE la file, sinon réordonner en ne voyant que ses items renumérote
-  // les siens et laisse ceux des collègues s'intercaler n'importe où.
-  const fullGroupIds = useMemo(() => {
-    const mine = data.prompts.filter(p => !p.space || p.space === space)
-    const pending = mine.filter(p => p.status === 'running' && p.run_state !== 'executing')
-    return {
-      executing: mine.filter(p => p.status === 'running' && p.run_state === 'executing').map(p => p.id),
-      queued: [...pending, ...mine.filter(p => p.status === 'queued')].map(p => p.id),
-      paused: mine.filter(p => p.status === 'paused').map(p => p.id),
-    }
-  }, [data.prompts, space])
-  const groupOf = useCallback((id) => (
-    groupIds.queued.includes(id) ? 'queued' : groupIds.paused.includes(id) ? 'paused' : null
-  ), [groupIds])
-
-  const applyOrder = useCallback(async (group, ids) => {
-    if (ids.every((id, i) => id === groupIds[group][i])) return
-    // Les items visibles reprennent LEURS emplacements dans le groupe complet, dans
-    // le nouvel ordre : ceux que le filtre de personne masque ne bougent pas.
-    const moving = new Set(ids)
-    let k = 0
-    const reordered = fullGroupIds[group].map(id => (moving.has(id) ? ids[k++] : id))
-    const ordered = group === 'queued'
-      ? [...reordered, ...fullGroupIds.paused]
-      : [...fullGroupIds.queued, ...reordered]
-    const slots = new Set(ordered)
-    // Optimiste : la carte bouge tout de suite, le serveur confirme derrière. Les
-    // items déplaçables reprennent leurs propres emplacements dans le tableau,
-    // dans le nouvel ordre — les autres cartes ne bronchent pas.
-    setData(d => {
-      const moved = ordered.map(id => d.prompts.find(p => p.id === id)).filter(Boolean)
-      let i = 0
-      return { ...d, prompts: d.prompts.map(p => (slots.has(p.id) ? moved[i++] : p)) }
-    })
-    try {
-      await api.travaux.reorderPrompts(fullGroupIds.executing.concat(ordered))
-    } catch (e) { toast.error(e.message) }
-    load()
-  }, [groupIds, fullGroupIds, load, setData, toast])
-
-  const siblingsOf = useCallback((id) => groupIds[groupOf(id)] || null, [groupIds, groupOf])
-  const applyGroupOrder = useCallback((ids, id) => applyOrder(groupOf(id), ids), [applyOrder, groupOf])
-  const dnd = useReorderDnd({ siblingsOf, applyOrder: applyGroupOrder })
   const rowProps = { onPatch: patch, onDelete: remove, onStop: stop, onCleanupDelete: removeWithCleanup, onFirst: first, onReply: reply, onSteer: steer, space }
-  const seg = (active) => `inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg transition ${
-    active ? 'bg-white text-slate-900 shadow-sm ring-1 ring-slate-200' : 'text-slate-500 hover:text-slate-800'}`
+
+  const columns = useMemo(() => {
+    const renders = {
+      etat: p => <StatusPill p={p} />,
+      title: p => (
+        <span className={`flex items-center gap-1.5 min-w-0 ${p.seen_at || p.section === 'File' ? '' : 'font-bold'}`}>
+          {p.section === 'Complété' && !p.seen_at && <span className="w-1.5 h-1.5 shrink-0 rounded-full bg-brand-500" />}
+          <span className="truncate">{p.title}</span>
+          {p.suggestion_id && <Sparkles size={11} className="shrink-0 text-violet-500" />}
+          {!!p.messages?.length && <span className="shrink-0 inline-flex items-center gap-0.5 text-xs text-slate-400"><MessageSquare size={11} /> {p.messages.length}</span>}
+        </span>
+      ),
+      created_by_name: p => (
+        <span className="inline-flex items-center gap-1.5 min-w-0">
+          <CreatorChip name={p.created_by_name} />
+          <span className="truncate">{p.created_by_name || '—'}</span>
+        </span>
+      ),
+      page: p => p.page
+        ? <span className="truncate text-slate-600 text-sm" title={p.page}>{p.page}</span>
+        : <span className="text-slate-400">—</span>,
+      created_at: p => <span className="text-slate-500 text-sm">{shortDate(p.created_at) || '—'}</span>,
+      completed_at: p => <span className="text-slate-500 text-sm">{shortDate(p.completed_at) || '—'}</span>,
+      duree: p => <RunTimeCell p={p} />,
+    }
+    return TABLE_COLUMN_META.travaux_prompts.map(meta => ({ ...meta, render: renders[meta.id] }))
+  }, [])
+
+  const renderExpanded = useCallback(p => <PromptRow p={p} embedded {...rowProps} />,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [patch, remove, stop, removeWithCleanup, first, reply, steer, space])
 
   return (
-    <div>
+    <div onBlur={flushStale}>
       {/* Pause en cours : le dire ici aussi (le bouton est en haut de page), sinon une
           file qui n'avance pas ressemble à une panne. */}
       {data.queue_paused && (
@@ -1075,180 +907,27 @@ export function QueueTab({ toast, space }) {
         </div>
       )}
 
-      {/* Barre de navigation : deux vues, comptées, et une recherche. Elle colle en
-          haut pour rester accessible sans remonter toute la liste. */}
-      <div className="sticky top-0 z-10 -mx-1 px-1 py-2 bg-slate-50/95 backdrop-blur-sm">
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="inline-flex items-center gap-1 p-1 rounded-xl bg-slate-100">
-            <button className={seg(view === 'file')} data-testid="travaux-view-file" onClick={() => setView('file')}>
-              <ListOrdered size={14} /> File
-              <span className="text-xs text-slate-400">{asking.length + executing.length + waiting.length + queuedList.length + pausedList.length}</span>
-            </button>
-            <button className={seg(view === 'conversations')} data-testid="travaux-view-conversations" onClick={() => setView('conversations')}>
-              <MessageSquare size={14} /> Conversations
-              <span className="text-xs text-slate-400">{history.length}</span>
-            </button>
+      <DataTable
+        table="travaux_prompts"
+        columns={columns}
+        data={rows}
+        loading={loading}
+        renderExpanded={renderExpanded}
+        searchFields={['title', 'prompt', 'thread_text']}
+        searchAcrossViews
+        manageViews
+        height="calc(100vh - 220px)"
+        rowClassName={p => (isAsking(p) ? 'bg-violet-50/60' : '')}
+        toolbarEnd={(
+          <div className="flex items-center gap-2">
+            {/* Plusieurs postes servent la file : on dit combien sont occupés. */}
+            {data.running_implementations > 0 && (
+              <span className="text-xs text-slate-500">{data.running_implementations}/{data.exec_lanes} en cours</span>
+            )}
           </div>
-
-          {!!asking.length && view !== 'file' && (
-            <button
-              className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg bg-violet-50 text-violet-700 border border-violet-200 hover:bg-violet-100"
-              onClick={() => setView('file')}
-            ><HelpCircle size={13} /> {asking.length} à répondre</button>
-          )}
-
-          <div className="flex-1" />
-
-          {/* Qui ? Par défaut soi-même — la file est commune, le suivi est personnel. */}
-          <label className="inline-flex items-center gap-1.5 text-slate-500" title="Ne voir que les prompts, questions et travaux d'une personne">
-            <Users size={14} className="shrink-0" />
-            <span className="sr-only">Personne</span>
-            <select
-              className={inputCls}
-              data-testid="travaux-person-filter"
-              value={person}
-              onChange={e => choosePerson(e.target.value)}
-            >
-              <option value={PERSON_ALL}>Tout le monde</option>
-              {people.map(o => (
-                <option key={o.id} value={o.id}>{o.id === user?.id ? `${o.name} (moi)` : o.name}</option>
-              ))}
-            </select>
-          </label>
-
-          <input
-            className={`${inputCls} w-44`}
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            data-testid="travaux-search"
-          />
-          {/* Quatre files avancent de front : sans ce compteur, une file immobile
-              ressemble à une panne alors que les trois autres travaillent. */}
-          {view === 'file' && data.running_implementations > 0 && (
-            <span className="text-xs text-slate-500">
-              {data.running_implementations}/{data.exec_lanes} en cours
-            </span>
-          )}
-          {/* Les questions étant en lecture seule, elles tournent à plusieurs et en
-              même temps qu'un chantier : on dit combien occupent l'exécuteur. */}
-          {view === 'file' && data.running_questions > 0 && (
-            <span className="text-xs text-slate-500">
-              {data.running_questions}/{data.max_parallel_questions} question{data.running_questions > 1 ? 's' : ''} en parallèle
-            </span>
-          )}
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="text-sm text-slate-500 flex items-center gap-2 mt-3"><Spinner size="xs" label="Chargement…" /></div>
-      ) : search.trim() ? (
-        // Une recherche cherche dans les deux sections à la fois : peu importe
-        // l'onglet affiché, on ne veut jamais rater un résultat rangé dans l'autre.
-        <div className="space-y-4 mt-1">
-          <div>
-            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
-              <ListOrdered size={12} /> File ({fileList.length})
-            </p>
-            <div className="space-y-1.5">
-              {fileList.map(p => (
-                <PromptRow key={p.id} p={p} dnd={(!p.space || p.space === space) ? dnd : undefined} {...rowProps} />
-              ))}
-              {!fileList.length && (
-                <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-4 text-center">
-                  Aucun item ne correspond à cette recherche.
-                  <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
-                </div>
-              )}
-            </div>
-          </div>
-          <div>
-            <p className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1.5 flex items-center gap-1.5">
-              <MessageSquare size={12} /> Conversations ({historyList.length})
-            </p>
-            <div className="space-y-1.5">
-              {historyList.slice(0, historyLimit).map(p => <PromptRow key={p.id} p={p} {...rowProps} />)}
-              {!historyList.length && (
-                <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-4 text-center">
-                  Aucune conversation ne correspond à cette recherche.
-                  <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
-                </div>
-              )}
-              {historyList.length > historyLimit && (
-                <AutoLoadMore
-                  remaining={historyList.length - historyLimit}
-                  onLoadMore={() => setHistoryLimit(n => n + HISTORY_PAGE)}
-                />
-              )}
-            </div>
-          </div>
-        </div>
-      ) : view === 'file' ? (
-        <div
-          className="space-y-1.5 mt-1"
-          onDragEnd={dnd.dragEnd}
-          onBlur={flushStale}
-        >
-          {/* Un item de l'AUTRE file ne se réordonne pas ici : les positions sont
-              propres à chaque file. Il est là pour dire ce qui occupe l'exécuteur. */}
-          {fileList.map(p => (
-            <PromptRow key={p.id} p={p} dnd={(!p.space || p.space === space) ? dnd : undefined} {...rowProps} />
-          ))}
-          {!fileList.length && (
-            <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-6 text-center">
-              File vide. Ajoute un prompt ci-dessus — il partira tout seul.
-              <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3 mt-1">
-          {/* Une section par créateur : chacun ouvre la sienne pour faire son ménage,
-              celles des collègues restent repliées (avec compteur et « à lire »). */}
-          {historyGroups.map(g => {
-            const collapsed = isGroupCollapsed(g.key)
-            const limit = groupLimits[g.key] || HISTORY_PAGE
-            return (
-              <div key={g.key} data-testid="travaux-creator-group" data-group-collapsed={collapsed ? '1' : '0'}>
-                <button
-                  type="button"
-                  className="w-full flex items-center gap-2 px-2 py-2 rounded-lg text-left text-sm font-semibold text-slate-700 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-                  aria-expanded={!collapsed}
-                  data-testid="travaux-creator-group-toggle"
-                  onClick={() => toggleGroup(g.key)}
-                >
-                  <ChevronDown size={16} className={`shrink-0 text-slate-400 transition-transform ${collapsed ? '-rotate-90' : ''}`} />
-                  <CreatorChip name={g.key === '__none__' ? '' : g.name} />
-                  <span className="truncate">{g.name}</span>
-                  <span className="text-slate-400 font-normal shrink-0">({g.items.length})</span>
-                  {collapsed && g.unread > 0 && (
-                    <span
-                      className="shrink-0 inline-flex items-center px-2 py-0.5 rounded-full bg-brand-50 text-brand-700 text-xs font-semibold"
-                      data-testid="travaux-creator-group-unread"
-                    >{g.unread} à lire</span>
-                  )}
-                </button>
-                {!collapsed && (
-                  <div className="space-y-1.5 mt-1">
-                    {g.items.slice(0, limit).map(p => <PromptRow key={p.id} p={p} {...rowProps} />)}
-                    {g.items.length > limit && (
-                      <AutoLoadMore
-                        remaining={g.items.length - limit}
-                        onLoadMore={() => setGroupLimits(l => ({ ...l, [g.key]: (l[g.key] || HISTORY_PAGE) + HISTORY_PAGE }))}
-                      />
-                    )}
-                  </div>
-                )}
-              </div>
-            )
-          })}
-          {!history.length && (
-            <div className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 p-6 text-center">
-              Aucune tâche terminée pour l'instant.
-              <PersonFilterNote hidden={hiddenByPerson} onShowAll={() => choosePerson(PERSON_ALL)} />
-            </div>
-          )}
-        </div>
-      )}
+        )}
+        emptyState={{ icon: ListOrdered, title: 'Rien ici' }}
+      />
     </div>
   )
 }
@@ -1321,13 +1000,13 @@ function SuggestionChat({ s }) {
         <MessageSquare size={12} />
         {open ? 'Masquer la discussion' : 'Discuter avec Claude'}
         {count > 0 && <span className="text-slate-400" data-testid="suggestion-chat-count">· {count}</span>}
-        {!open && pending && <Loader2 size={11} className="animate-spin text-slate-400" />}
+        {!open && pending && <ThinkingOrb size={11} ink className="text-slate-400" />}
       </button>
 
       {open && (
         <div className="mt-2 space-y-2" data-testid="suggestion-chat">
           {loading ? (
-            <div className="text-xs text-slate-500 inline-flex items-center gap-1.5"><Loader2 size={12} className="animate-spin" /> Chargement du fil…</div>
+            <div className="text-xs text-slate-500 inline-flex items-center gap-1.5"><ThinkingOrb size={12} ink /> Chargement du fil…</div>
           ) : messages.length ? (
             <div className="space-y-2" data-testid="suggestion-chat-thread">
               {messages.map(m => <ThreadMessage key={m.id} m={m} />)}
@@ -1341,7 +1020,7 @@ function SuggestionChat({ s }) {
 
           {pending && (
             <div className="text-xs text-slate-500 inline-flex items-center gap-1.5" data-testid="suggestion-chat-pending">
-              <Loader2 size={12} className="animate-spin" /> Claude réfléchit…
+              <ThinkingOrb size={20} /> Claude réfléchit…
             </div>
           )}
           {error && <p className="text-xs text-red-600" data-testid="suggestion-chat-error">{error}</p>}
@@ -1364,7 +1043,7 @@ function SuggestionChat({ s }) {
               disabled={sending || !text.trim()}
               title="Poser la question à Claude"
             >
-              {sending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+              {sending ? <ThinkingOrb size={14} ink /> : <Send size={14} />}
             </button>
           </div>
         </div>
@@ -1373,14 +1052,14 @@ function SuggestionChat({ s }) {
   )
 }
 
-function SuggestionCard({ s, onAccept, onDismiss, simplified = false }) {
+function SuggestionCard({ s, onAccept, onDismiss }) {
   const [open, setOpen] = useState(false)
   const [prompt, setPrompt] = useState(s.prompt)
   useEffect(() => { setPrompt(s.prompt) }, [s.prompt])
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-3.5">
-      <div className={simplified ? 'flex flex-col sm:flex-row items-start gap-3' : 'flex items-start gap-3'}>
+      <div className="flex items-start gap-3">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             {s.kind === 'integration' && (
@@ -1413,9 +1092,9 @@ function SuggestionCard({ s, onAccept, onDismiss, simplified = false }) {
             <button className={btnPrimary} data-testid="suggestion-accept-last" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, false)} title="Ajouter à la fin de ma file">
               <Check size={14} /> Ajouter à la fin
             </button>
-            {!simplified && <button className={btnCls} data-testid="suggestion-accept-first" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, true)} title="Ajouter en tête de file — partira avant tout le reste">
+            <button className={btnCls} data-testid="suggestion-accept-first" onClick={() => onAccept(s.id, prompt !== s.prompt ? prompt : null, true)} title="Ajouter en tête de file — partira avant tout le reste">
               <ChevronsUp size={14} /> En premier
-            </button>}
+            </button>
             <button className={btnCls} onClick={() => onDismiss(s.id)}><X size={14} /> Rejeter</button>
           </div>
         )}
@@ -1451,10 +1130,10 @@ function groupSuggestionsByArea(suggestions) {
     .filter(g => g.items.length > 0)
 }
 
-function SuggestionsTab({ toast, space, simplified = false }) {
+function SuggestionsTab({ toast, space }) {
   const [suggestions, setSuggestions] = useState([])
   const [status, setStatus] = useState('new')
-  const [kind, setKind] = useState(simplified ? 'chantier' : '')
+  const [kind, setKind] = useState('')
   // Domaine métier sélectionné ('' = tous). Filtre purement client : la liste
   // tient en mémoire, et garder les suggestions non filtrées permet d'afficher
   // le compte de chaque domaine sur ses pastilles.
@@ -1499,14 +1178,13 @@ function SuggestionsTab({ toast, space, simplified = false }) {
   const load = useCallback(async () => {
     try {
       const { suggestions } = await api.travaux.listSuggestions({
-        ...(simplified ? { source: 'app_review' } : {}),
         ...(status ? { status } : {}),
         ...(kind ? { kind } : {}),
       })
       setSuggestions(suggestions)
     } catch (e) { toast.error(e.message) }
     finally { setLoading(false) }
-  }, [status, kind, simplified, toast])
+  }, [status, kind, toast])
 
   useEffect(() => { load() }, [load])
   useEffect(() => {
@@ -1528,7 +1206,7 @@ function SuggestionsTab({ toast, space, simplified = false }) {
         await criteriaDraft.flush()
         await criteriaWrites.current
       }
-      await api.travaux.generateSuggestions(kind || null, simplified ? 'app_review' : null)
+      await api.travaux.generateSuggestions(kind || null)
       toast.info(kind === 'integration'
         ? 'Recherche d\'outils à brancher lancée — les propositions apparaîtront ici'
         : 'Analyse lancée — les suggestions apparaîtront ici')
@@ -1592,8 +1270,8 @@ function SuggestionsTab({ toast, space, simplified = false }) {
               onClick={() => setStatus(v)}
             >{l}</button>
           ))}
-          {!simplified && <span className="w-px h-5 bg-slate-200 mx-1.5" />}
-          {!simplified && SUGGESTION_KINDS.map(([v, l]) => (
+          <span className="w-px h-5 bg-slate-200 mx-1.5" />
+          {SUGGESTION_KINDS.map(([v, l]) => (
             <button
               key={v || 'all'}
               className={`px-3 py-1.5 text-sm rounded-lg inline-flex items-center gap-1.5 ${kind === v ? 'bg-indigo-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
@@ -1609,14 +1287,14 @@ function SuggestionsTab({ toast, space, simplified = false }) {
             : kind === 'chantier' ? 'Chercher des chantiers'
               : 'Chercher des chantiers ET des outils à brancher'}
         >
-          {generating ? <Loader2 size={14} className="animate-spin" /> : <Sparkles size={14} />}
-          {simplified ? 'Analyser l’app' : kind === 'integration' ? 'Chercher des intégrations' : 'Générer maintenant'}
+          {generating ? <ThinkingOrb state="composing" size={14} ink /> : <Sparkles size={14} />}
+          {kind === 'integration' ? 'Chercher des intégrations' : 'Générer maintenant'}
         </button>
       </div>
 
       {/* Filtre par domaine : sept domaines au plus, tous visibles d'un coup — pas
           besoin de dropdown ni de recherche (règle des >10 options). */}
-      {!simplified && areaChips.length > 1 && (
+      {areaChips.length > 1 && (
         <div className="flex items-center gap-1.5 flex-wrap mb-4" data-testid="suggestion-area-filter">
           <button
             className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${area === '' ? 'bg-slate-900 text-white border-slate-900' : 'text-slate-600 border-slate-200 hover:bg-slate-100'}`}
@@ -1636,12 +1314,12 @@ function SuggestionsTab({ toast, space, simplified = false }) {
         </div>
       )}
 
-      {simplified ? <p className="text-sm text-slate-500 mb-5">La revue du code par Codex propose ici ses corrections. Tu choisis celles à ajouter à ta file.</p> : <p className="text-xs text-slate-500 mb-4">
+      <p className="text-xs text-slate-500 mb-4">
         L'agent regarde chaque matin les travaux que tu fais encore à la main, les chantiers récents et les erreurs de synchronisation,
         puis propose ici les prochaines étapes. Il propose aussi des <strong className="font-medium text-slate-600">intégrations</strong> — des
         logiciels ou des API externes à brancher à l'ERP, en tenant compte de ce qui est déjà connecté — avec ce que le branchement débloquerait.
         Rien ne s'exécute avant que tu ne l'ajoutes à ta file.
-      </p>}
+      </p>
 
       {loading ? (
         <div className="text-sm text-slate-500 flex items-center gap-2"><Spinner size="xs" label="Chargement…" /></div>
@@ -1662,7 +1340,7 @@ function SuggestionsTab({ toast, space, simplified = false }) {
               </button>
               <div className="space-y-2.5">
                 {items.map(s => (
-                  <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} simplified={simplified} />
+                  <SuggestionCard key={s.id} s={s} onAccept={accept} onDismiss={dismiss} />
                 ))}
               </div>
             </div>
@@ -1710,11 +1388,10 @@ function SetAsideSection({ toast, space }) {
   const { data, loading, load, flushStale, dropPrompt, undropPrompt, liftPrompt, unliftPrompt } = useTravauxPrompts({ activeOnly: true, onError: onLoadError })
   const actions = usePromptActions({ load, dropPrompt, undropPrompt, liftPrompt, unliftPrompt, toast, queuePaused: data.queue_paused })
 
-  // Ligne sans `space` (fixture, ancienne réponse en cache) : gardée dans la
-  // section courante plutôt que de disparaître — même règle que la vue File.
+  // File unique : tous les items de côté, quelle que soit leur section d'origine.
   const aside = useMemo(
-    () => data.prompts.filter(p => p.status === 'paused' && (!p.space || p.space === space)),
-    [data.prompts, space])
+    () => data.prompts.filter(p => p.status === 'paused'),
+    [data.prompts])
 
   // Remettre en file a un effet réel (l'item repart quand son tour vient) : on le
   // confirme, sinon la carte disparaît de la section sans qu'on sache où.
@@ -1854,7 +1531,7 @@ function IdeaAttachments({ ideaId, toast }) {
         disabled={uploading}
         data-testid="idea-attachment-add"
       >
-        {uploading ? <Loader2 size={12} className="animate-spin" /> : <Paperclip size={12} />}
+        {uploading ? <ThinkingOrb size={12} ink /> : <Paperclip size={12} />}
         Ajouter une pièce jointe
       </button>
 
@@ -2055,7 +1732,7 @@ function IdeasTab({ toast, space }) {
             Rien ne s'exécute depuis les idées : elles restent là pour être relues.
           </p>
           <button className={btnPrimary} onClick={add} disabled={saving || !form.title.trim()} data-testid="idea-add">
-            {saving ? <Loader2 size={14} className="animate-spin" /> : <Plus size={14} />} Garder l'idée
+            {saving ? <ThinkingOrb size={14} ink /> : <Plus size={14} />} Garder l'idée
           </button>
         </div>
       </div>
@@ -2883,10 +2560,112 @@ function QueuePauseControl({ toast }) {
         ? 'Reprendre la file là où elle s\'est arrêtée'
         : 'Mettre la file en pause : la tâche en cours va au bout, aucune autre ne démarre'}
     >
-      {busy ? <Loader2 size={14} className="animate-spin" />
+      {busy ? <ThinkingOrb size={14} ink />
         : paused ? <PlayCircle size={14} /> : <PauseCircle size={14} />}
       {paused ? 'Reprendre la file' : 'Pause'}
     </button>
+  )
+}
+
+/** Taille de Boréal en lignes de code, à droite du titre. Silencieux en cas d'échec. */
+function CodeLinesCounter() {
+  const [stats, setStats] = useState(null)
+  useEffect(() => {
+    let alive = true
+    api.travaux.codeStats().then(s => { if (alive) setStats(s) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  if (!stats) return null
+  return (
+    <div className="inline-flex items-center gap-3 shrink-0">
+      <CodeLinesChart points={stats.history} />
+      <div
+        className="inline-flex items-baseline gap-1.5 text-sm text-slate-500"
+        title={`${stats.files.toLocaleString('fr-CA')} fichiers`}
+        data-testid="travaux-code-lines"
+      >
+        <span className="font-semibold text-slate-800 tabular-nums">{stats.lines.toLocaleString('fr-CA')}</span>
+        lignes de code
+      </div>
+    </div>
+  )
+}
+
+/** Tendance quotidienne des lignes de code sur 1 an ([[jour, lignes]]), survol = valeur du jour. */
+function CodeLinesChart({ points }) {
+  const [hover, setHover] = useState(null)
+  if (!points?.length || points.length < 2) return null
+  const W = 220, H = 40, P = 2
+  const max = Math.max(...points.map(p => p[1]))
+  const x = i => P + (i / (points.length - 1)) * (W - 2 * P)
+  const y = v => H - P - (v / (max || 1)) * (H - 2 * P)
+  const line = points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p[1]).toFixed(1)}`).join('')
+  const onMove = (e) => {
+    const r = e.currentTarget.getBoundingClientRect()
+    const i = Math.round(((e.clientX - r.left) / r.width * W - P) / (W - 2 * P) * (points.length - 1))
+    setHover(Math.max(0, Math.min(points.length - 1, i)))
+  }
+  const h = hover != null ? points[hover] : null
+  return (
+    <div className="relative text-sky-600" data-testid="travaux-code-lines-chart">
+      <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block cursor-crosshair"
+        onMouseMove={onMove} onMouseLeave={() => setHover(null)} role="img"
+        aria-label={`Lignes de code, ${points[0][0]} → ${points.at(-1)[0]}`}>
+        <line x1={P} x2={W - P} y1={H - P} y2={H - P} stroke="currentColor" strokeOpacity=".2" />
+        <path d={`${line}L${x(points.length - 1)},${H - P}L${x(0)},${H - P}Z`} fill="currentColor" fillOpacity=".12" />
+        <path d={line} fill="none" stroke="currentColor" strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+        {h && <>
+          <line x1={x(hover)} x2={x(hover)} y1={0} y2={H} stroke="currentColor" strokeOpacity=".4" />
+          <circle cx={x(hover)} cy={y(h[1])} r="3.5" fill="currentColor" stroke="white" strokeWidth="1.5" />
+        </>}
+      </svg>
+      {h && (
+        <div className="absolute top-full mt-1 z-10 whitespace-nowrap rounded border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600 shadow-sm pointer-events-none"
+          style={{ left: Math.min(x(hover), W - 110) }}>
+          {fmtDate(h[0])} · <span className="font-semibold text-slate-800 tabular-nums">{h[1].toLocaleString('fr-CA')}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** Utilisation CPU de la machine, relevée toutes les 5 s (onglet visible), 5 dernières minutes en tendance. */
+const CPU_POLL_MS = 5000
+const CPU_POINTS = 60
+function CpuUsage() {
+  const [cpu, setCpu] = useState(null)
+  const [history, setHistory] = useState([])
+  useEffect(() => {
+    let alive = true
+    const tick = () => {
+      if (document.hidden) return
+      api.travaux.cpu().then(c => {
+        if (!alive) return
+        setCpu(c)
+        setHistory(h => [...h, c.percent].slice(-CPU_POINTS))
+      }).catch(() => {})
+    }
+    tick()
+    const id = setInterval(tick, CPU_POLL_MS)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
+  if (!cpu) return null
+  const W = 80, H = 24
+  const x = i => (i / (CPU_POINTS - 1)) * W
+  const offset = CPU_POINTS - history.length
+  const line = history.map((v, i) => `${i ? 'L' : 'M'}${x(i + offset).toFixed(1)},${(H - 1 - (v / 100) * (H - 2)).toFixed(1)}`).join('')
+  const tone = cpu.percent >= 85 ? 'text-red-600' : cpu.percent >= 60 ? 'text-amber-600' : 'text-emerald-600'
+  return (
+    <div className={`inline-flex items-center gap-1.5 text-sm ${tone}`} data-testid="travaux-cpu"
+      title={`${cpu.cores} cœurs · charge ${cpu.load.join(' / ')}`}>
+      <Cpu size={14} />
+      {history.length > 1 && (
+        <svg width={W} height={H} viewBox={`0 0 ${W} ${H}`} className="block" aria-hidden="true">
+          <path d={line} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />
+        </svg>
+      )}
+      <span className="font-semibold tabular-nums">{cpu.percent} %</span>
+    </div>
   )
 }
 
@@ -2935,7 +2714,7 @@ function PromptEditorPanel({ testid, title, description, value, defaultValue, pl
         <span className="text-sm font-medium text-slate-700 flex-1">{title}</span>
         {customized && !open && <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 font-medium">Personnalisé</span>}
         {saving
-          ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+          ? <ThinkingOrb size={13} ink className="text-slate-400" />
           : saved
             ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
             : dirty && open && <span className="text-[11px] text-slate-400">Modifié</span>}
@@ -3037,7 +2816,7 @@ function ClaudeMdPanel() {
         <FileText size={15} className="text-brand-500" />
         <span className="text-sm font-medium text-slate-700 flex-1">Instructions projet (CLAUDE.md)</span>
         {saving
-          ? <Loader2 size={13} className="text-slate-400 animate-spin" />
+          ? <ThinkingOrb size={13} ink className="text-slate-400" />
           : saved
             ? <span className="text-[11px] text-emerald-600 font-medium">Enregistré</span>
             : dirty && open && <span className="text-[11px] text-slate-400">Modifié</span>}
@@ -3212,14 +2991,10 @@ function AgentSettingsControl({ toast }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { key: 'file', label: 'Ma file de prompts', icon: ListOrdered },
+  { key: 'file', label: 'Travaux', icon: ListOrdered },
   { key: 'suggestions', label: 'Suggestions de Claude', icon: Sparkles },
   { key: 'idees', label: 'De côté & idées', icon: Lightbulb },
   { key: 'recurrents', label: 'Travaux récurrents', icon: RefreshCw },
-]
-const SIMPLE_TABS = [
-  { key: 'file', label: 'Ma file', icon: ListOrdered },
-  { key: 'suggestions', label: 'Améliorations', icon: Sparkles },
 ]
 // L'onglet des idées héberge aussi les items mis de côté : « ?onglet=de-cote » y
 // mène. Les liens existants (?onglet=idees) restent valides — une clé d'URL déjà
@@ -3231,22 +3006,6 @@ const TAB_ALIASES = { 'de-cote': 'idees' }
 const SPACE_TITLE = 'Travaux'
 
 export default function Travaux({ space = 'finance' }) {
-  const { user } = useAuth()
-  const quick = useTravauxQuick()
-  const [fullView, setFullView] = useState(null)
-  const [identityError, setIdentityError] = useState(false)
-  const [identityRetry, setIdentityRetry] = useState(0)
-  useEffect(() => {
-    let alive = true
-    setFullView(null)
-    setIdentityError(false)
-    // Le JWT ne contient pas l’email. On lit le compte pour éviter d’identifier
-    // Antoine par un nom modifiable ou de confondre deux homonymes.
-    api.auth.me().then(account => {
-      if (alive) setFullView(account.email?.trim().toLowerCase() === 'antoine.lambert96@gmail.com')
-    }).catch(() => { if (alive) setIdentityError(true) })
-    return () => { alive = false }
-  }, [user?.id, identityRetry])
   const { addToast } = useToast()
   // Adaptateur : les onglets appellent toast.error/success/info, le provider
   // expose addToast({ message, type }).
@@ -3261,24 +3020,18 @@ export default function Travaux({ space = 'finance' }) {
   const [params, setParams] = useSearchParams()
   const raw = params.get('onglet')
   const asked = TAB_ALIASES[raw] || raw
-  const tabs = fullView ? TABS : SIMPLE_TABS
-  const tab = tabs.some(x => x.key === asked) ? asked : 'file'
+  const tab = TABS.some(x => x.key === asked) ? asked : 'file'
   const select = (key) => setParams({ onglet: key }, { replace: true })
 
   return (
     <Layout>
-      <div className="p-4 sm:p-6 max-w-5xl" data-travaux-space={space} data-travaux-view={fullView === null ? 'loading' : fullView ? 'full' : 'simple'}>
-        {fullView === null ? (
-          identityError ? <div role="alert" className="text-sm text-slate-600">
-            Impossible de charger ton espace.
-            <button className={`${btnCls} ml-3`} onClick={() => setIdentityRetry(n => n + 1)}>Réessayer</button>
-          </div> : <Spinner label="Chargement…" />
-        ) : <>
+      <div className="p-4 sm:p-6" data-travaux-space={space}>
         <div className="flex items-center justify-between gap-3 mb-4">
           <PageTitle>{SPACE_TITLE}</PageTitle>
-          {!fullView && quick && <button className={btnPrimary} onClick={() => quick.setOpen(true)}>
-            <Plus size={15} /> Nouveau prompt
-          </button>}
+          <div className="inline-flex items-center gap-5">
+            <CpuUsage />
+            <CodeLinesCounter />
+          </div>
         </div>
 
         {/* Consommation de Claude + commandes, à la même hauteur : le bandeau ne
@@ -3289,15 +3042,13 @@ export default function Travaux({ space = 'finance' }) {
             silencieusement). */}
         <div className="flex flex-wrap items-center gap-2 mt-4 mb-5">
           <ClaudeUsageStrip className="mb-0 flex-1 min-w-0" />
-          {fullView && <>
-            <ClaudeModelControl />
-            <QueuePauseControl toast={toast} />
-            <AgentSettingsControl toast={toast} />
-          </>}
+          {/* Visible par tous ceux qui ont la fenêtre « Modifier le système ». */}
+          <QueuePauseControl toast={toast} />
+          <AgentSettingsControl toast={toast} />
         </div>
 
         <nav aria-label="Sections des travaux" className="flex items-center gap-1 border-b border-slate-200 mb-5 overflow-x-auto">
-          {tabs.map(t => (
+          {TABS.map(t => (
             <button
               key={t.key}
               aria-current={tab === t.key ? 'page' : undefined}
@@ -3312,10 +3063,9 @@ export default function Travaux({ space = 'finance' }) {
         </nav>
 
         {tab === 'file' && <QueueTab toast={toast} space={space} />}
-        {tab === 'suggestions' && <SuggestionsTab key={fullView ? 'full' : 'simple'} toast={toast} space={space} simplified={!fullView} />}
+        {tab === 'suggestions' && <SuggestionsTab toast={toast} space={space} />}
         {tab === 'idees' && <IdeasTab toast={toast} space={space} />}
         {tab === 'recurrents' && <RecurringTab toast={toast} />}
-        </>}
       </div>
     </Layout>
   )

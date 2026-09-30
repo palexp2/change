@@ -191,24 +191,30 @@ export const MANUAL_RUNNERS = {
     const out = await linkKnownDebits()
     return { ...out, summary: summarizeLinks(out) }
   },
-  // Banque silencieuse : dry-run = état de chaque connexion sans notifier ;
-  // run-now = vérifie et notifie tout de suite, sans attendre l'anti-spam.
+  // Fraîcheur du solde : dry-run = âge du dernier solde lu + état des
+  // autorisations, sans notifier ; run-now = vérifie et notifie tout de suite,
+  // sans attendre l'anti-spam.
   sys_plaid_silence_alert: async ({ dryRun }) => {
-    const { checkPlaidSilence, getSilenceConfig, silenceVerdict, humanDuration } = await import('./plaidSilenceAlert.js')
-    if (!dryRun) return await checkPlaidSilence({ force: true, trigger: 'manuel' })
+    const { checkBalanceFreshness, getBalanceAlertConfig, balanceVerdict, lastBankBalance, reauthVerdict, humanDuration } =
+      await import('./plaidBalanceAlert.js')
+    if (!dryRun) return await checkBalanceFreshness({ force: true, trigger: 'manuel' })
     const { listItems, itemHealth } = await import('../connectors/plaid.js')
-    const cfg = getSilenceConfig()
-    const silenceHours = Number(cfg.silence_hours) || 36
+    const cfg = getBalanceAlertConfig()
+    const staleHours = Number(cfg.stale_hours) || 8
     const rows = []
     for (const item of listItems()) {
       let health
       try { health = await itemHealth(item.itemId) } catch (e) { health = { institution_name: item.institution_name, health_error: e.message } }
-      const v = silenceVerdict(health, { silenceHours })
-      rows.push({ institution: health.institution_name, last_successful_update: health.last_successful_update || null,
-        would_alert: !!v.alert, kind: v.kind || null, silence: v.hours != null ? humanDuration(v.hours) : null })
+      const v = reauthVerdict(health)
+      rows.push({ institution: health.institution_name, needs_reauth: !!health.needs_reauth, would_alert: !!v.alert, reason: v.reason || null })
     }
-    return { config: cfg, connections: rows,
-      summary: rows.map((r) => `${r.institution} : ${r.would_alert ? `ALERTE (${r.kind === 'reauth' ? 'à réautoriser' : r.silence})` : `à jour${r.silence ? ` (${r.silence})` : ''}`}`).join(' · ') || 'aucune connexion' }
+    const b = balanceVerdict(lastBankBalance(), { staleHours })
+    return {
+      config: cfg, connections: rows,
+      balance: { read_at: b.read_at || null, amount: b.balance ?? null, age: b.hours != null ? humanDuration(b.hours) : null, would_alert: !!b.alert },
+      summary: `Solde lu il y a ${b.hours != null ? humanDuration(b.hours) : 'jamais'}${b.alert ? ' — ALERTE' : ''}`
+        + (rows.some((r) => r.would_alert) ? ` · à réautoriser : ${rows.filter((r) => r.would_alert).map((r) => r.institution).join(', ')}` : ''),
+    }
   },
   // Sync bancaire Plaid : dry-run = état de la connexion compte par compte
   // (fraîcheur, nombre de transactions, comptes mappés mais vides) ;
@@ -422,6 +428,20 @@ export const SYSTEM_AUTOMATIONS = [
       event: 'invoice.paid',
       summary: 'Webhook entrant Stripe sur événement invoice.paid',
     },
+  },
+  {
+    id: 'sys_soumission_system_builder',
+    name: 'Soumission payée → System builder',
+    description:
+      "Quand un client paie une soumission sur Stripe (bouton « S'abonner » ou « Acheter » du PDF), un System builder est créé avec les serres de la soumission (Chef de culture / Assistant), les extras de chaque serre et ceux du site. " +
+      "Le client est ensuite redirigé vers le lien public du formulaire. Un seul formulaire par paiement. Désactivée : le client retombe sur l'ancien parcours post-paiement.",
+    trigger_config: {
+      kind: 'webhook',
+      source: 'POST /api/stripe-webhooks + retour de Stripe (/erp/pay/soumission/:id/paye)',
+      event: 'checkout.session.completed',
+      summary: 'Paiement Stripe d’une soumission',
+    },
+    default_active: 1,
   },
   {
     id: 'sys_shipment_tracking_email',
@@ -897,6 +917,7 @@ export const SYSTEM_AUTOMATIONS = [
       "LE moteur de vérification « est-ce comptabilisé ? » du rapprochement bancaire, pour TOUS les comptes mappés à QuickBooks (pas seulement ceux branchés à la banque). " +
       "Pour chaque transaction pas encore rapprochée, il cherche l'écriture correspondante dans le grand livre QuickBooks avec la recherche approfondie : tolérance de montant (frais, conversion), fenêtre de ±30 jours, virements comptabilisés du côté de l'autre compte, dépôts groupés. " +
       "Ce qui est certain se pose tout seul (auto_apply_methods) ; le reste devient une proposition à confirmer sur la page. AUCUNE écriture n'est publiée dans QuickBooks — la vérification lit, elle n'écrit jamais chez Intuit. " +
+      "PASSAGE AU VERT (auto_reconcile) : une ligne jaune devient « rapprochée » dans Boréal quand son écriture est déjà rapprochée dans QuickBooks (qb_rapproche), ou quand l'écart relevé ↔ QuickBooks du compte est nul — toutes les jaunes jusqu'à la date du relevé (ecart_zero). Vider pour couper. Un rapprochement annulé à la main n'est jamais refait. " +
       "Il remplace à lui seul deux passages qui reconstruisaient le MÊME rapport de grand livre à trente secondes d'intervalle (la sync du fichier TRX_Orisha, coupée, et l'audit des comptes Plaid) : de ~72 rapports par heure à 12. " +
       "PASSAGE HORAIRE sur une fenêtre glissante de window_days (plancher de 30 jours : en deçà, l'orientation des signes ne peut plus être votée et les appariements s'inversent). " +
       "PASSAGE PROFOND chaque jour à 6 h UTC depuis deep_since : c'est le seul qui efface les liens devenus introuvables — sur une fenêtre courte, une écriture simplement hors fenêtre ferait effacer un lien valide. " +
@@ -911,8 +932,43 @@ export const SYSTEM_AUTOMATIONS = [
       grace_days: '4',
       auto_apply_methods: 'exact,conversion',
       deep_since: '2024-01-01',
+      auto_reconcile: 'qb_rapproche,ecart_zero',
     },
     configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_qb_reconcile_robot',
+    name: 'Rapprochement bancaire : préparer le rapprochement dans QuickBooks (robot)',
+    description:
+      "Au clic « Préparer dans QuickBooks » (menu « ⋯ » de la page Rapprochement bancaire), un navigateur ouvre l'écran « Rapprocher » de QuickBooks avec la session envoyée par le module Chrome. " +
+      "Il commence le rapprochement à la date du dernier solde imprimé du relevé (ou reprend celui déjà en cours), coche chaque écriture dont la ligne Boréal est verte — par l'id QuickBooks, sinon montant exact et date ±4 jours — puis lit la « Différence ». " +
+      "Il ENREGISTRE POUR PLUS TARD et ne clique JAMAIS « Terminer » : c'est Charles qui ferme le mois (décision du 2026-09-26). Il ne décoche jamais rien et ne crée ni ne modifie aucune écriture. " +
+      "Le résultat (différence, coches, lignes sans correspondance, capture) s'affiche à côté de l'écart. Session absente ou expirée : rien n'est tenté, la page le dit. Désactiver = le bouton répond « désactivé ».",
+    trigger_config: {
+      kind: 'manual',
+      source: 'POST /api/bank/accounts/:id/qb-reconcile (routes/bank.js) → services/qbReconcileRobot.js reconcileAccount()',
+      summary: 'Au clic « Préparer dans QuickBooks » sur /rapprochement',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_bank_statement_drive_watch',
+    name: 'Rapprochement : relevés du Drive → QuickBooks',
+    description:
+      "Chaque matin, regarde le relevé PDF le plus récent de chaque compte dans le Drive partagé « Banque (relevés) ». " +
+      "S'il est nouveau, Boréal le lit (sans importer ses lignes, déjà au compte), puis le robot prépare le rapprochement de ce compte dans QuickBooks : " +
+      "date et solde de fin du relevé, coche ce qui y figure, décoche le reste (annulé si la différence s'éloigne de 0), puis « Enregistrer pour plus tard ». " +
+      "Il ne clique JAMAIS « Terminer » — c'est Charles qui ferme le mois. Chaque compte part le jour où SON relevé arrive (MasterCard vers le 15-17). " +
+      "Le résultat se voit dans l'onglet « Rapprocher (QBO) ».",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron 40 6 * * * (index.js) → services/bankStatementDriveWatch.js',
+      summary: 'Tous les matins à 6 h 40 UTC',
+    },
+    action_config: {},
     default_active: 1,
   },
   {
@@ -1035,7 +1091,8 @@ export const SYSTEM_AUTOMATIONS = [
     name: 'Rapprochement bancaire : le moteur des propositions',
     description:
       "Repasse sur les comptes bancaires et prépare tout ce qui peut l'être, sans jamais rien comptabiliser tout seul : la pièce que l'ERP possède déjà et qui va avec une ligne du relevé, le débit de la paie, un versement de dette, le prélèvement d'assurance collective à ventiler dans les comptes de salaires, un paiement émis qui vient de passer au compte, et — en dernier recours — la dépense sans facture dont le dossier est complet (fournisseur reconnu et compte de dépense connu, par une règle, un profil ou l'habitude). " +
-      "TOUT RESTE UNE PROPOSITION : chaque trouvaille s'affiche sur la ligne du relevé avec sa preuve, et c'est un clic qui l'applique. Deux d'entre elles publient dans QuickBooks quand on les accepte (l'assurance collective et la dépense sans facture) — jamais sans ce clic. " +
+      "Les trouvailles très sûres qui n'écrivent rien dans QuickBooks (paiement émis passé, débit de la paie, versement de dette) s'appliquent seules, marquées « auto » et annulables d'un clic (auto_accept_kinds, auto_accept_min_confidence ; vider = tout redemander). " +
+      "Le reste est une proposition : chaque trouvaille s'affiche sur la ligne du relevé avec sa preuve, et c'est un clic qui l'applique. Deux d'entre elles publient dans QuickBooks quand on les accepte (l'assurance collective et la dépense sans facture) — jamais sans ce clic. " +
       "L'ordre des étapes compte : la pièce d'abord, les sorties connues d'avance ensuite, la dépense devinée en tout dernier ; chaque étape écarte les lignes qu'une précédente a déjà réclamées, pour qu'une même ligne ne reçoive jamais deux propositions contradictoires. " +
       "Le prélèvement d'assurance collective d'un mois ne peut plus partir deux fois : sa période sert de clé. " +
       "Un plafond de propositions ouvertes évite l'ensevelissement — au-delà, le moteur cesse de produire du dernier recours plutôt que d'empiler. " +
@@ -1052,28 +1109,32 @@ export const SYSTEM_AUTOMATIONS = [
       min_confidence_doc: '0.8',
       tie_margin: '0.05',
       max_open: '200',
+      // Natures appliquées sans clic (jamais celles qui publient dans
+      // QuickBooks) et leur seuil. Vider = tout redemander.
+      auto_accept_kinds: 'payment_clear,paie_debit,debt_payment',
+      auto_accept_min_confidence: '0.9',
     },
     configurable: true,
     default_active: 1,
   },
   {
     id: 'sys_plaid_silence_alert',
-    name: 'Alerte : une banque ne livre plus rien',
+    name: 'Alerte : le solde bancaire ne se relit plus',
     description:
-      "Vérifie trois fois par jour depuis quand chaque banque connectée a livré des transactions pour la dernière fois, et prévient dans Boréal (cloche de notification, plus Slack si un canal est configuré) quand une connexion se tait depuis plus longtemps que le seuil. " +
-      "POURQUOI : une connexion bancaire ne tombe pas en panne bruyamment, elle se tait. Du 2 au 6 septembre 2026, la BNC n'a plus rien livré pendant quatre jours sans la moindre erreur — le rapprochement, le solde de la projection de trésorerie et la recherche du débit de la paie travaillaient sur des données figées sans que rien ne le signale. " +
-      "Le chiffre surveillé est celui de Plaid (« dernière livraison réussie »), pas notre propre dernière tentative : demander sans rien recevoir n'est pas une connexion en santé. " +
-      "Une autorisation expirée (la banque redemande de se connecter) est signalée à part et en priorité : elle ne se répare jamais toute seule. " +
-      "Le seuil par défaut est de 36 heures, ce qui laisse passer une fin de semaine creuse. Une même connexion n'est pas re-signalée avant 24 heures. " +
-      "Le journal reste silencieux quand tout va bien. « Simuler » montre l'état de chaque connexion sans notifier ; « Exécuter » vérifie et notifie immédiatement.",
+      "Vérifie trois fois par jour que le solde bancaire lu au compte — celui dont vit la projection de trésorerie — a bien été rafraîchi récemment, et prévient dans Boréal (cloche de notification, plus Slack si un canal est configuré) quand il est figé depuis plus longtemps que le seuil. " +
+      "POURQUOI : un solde qui ne se relit plus ne fait aucun bruit — le dernier montant connu reste affiché comme s'il était d'aujourd'hui, et la projection comme l'écart de solde s'appuient dessus. " +
+      "CE QUI N'EST PLUS SURVEILLÉ : la livraison des TRANSACTIONS par la banque connectée. Elle est coupée volontairement depuis le 12 septembre 2026 (le rapprochement est alimenté par le fichier TRX_Orisha) ; l'alerte criait pour un silence voulu. Décision de Charles le 2026-09-29. " +
+      "Une autorisation expirée (la banque redemande de se connecter) est signalée à part et en priorité : elle ne se répare jamais toute seule, et plus rien n'est lu tant qu'elle dure. " +
+      "Le seuil par défaut est de 8 heures — le solde est relu toutes les 10 minutes et ré-inscrit au moins toutes les 6 heures. La même alerte n'est pas répétée avant 24 heures. " +
+      "Le journal reste silencieux quand tout va bien. « Simuler » montre l'âge du dernier solde lu sans notifier ; « Exécuter » vérifie et notifie immédiatement.",
     trigger_config: {
       kind: 'schedule',
-      source: "cron '0 11,17,23 * * *' UTC (index.js) → services/plaidSilenceAlert.js",
+      source: "cron '0 11,17,23 * * *' UTC (index.js) → services/plaidBalanceAlert.js",
       cron: '0 11,17,23 * * * UTC (7 h, 13 h et 19 h à Montréal)',
-      summary: 'Trois vérifications par jour ; alerte au-delà du seuil de silence',
+      summary: 'Trois vérifications par jour ; alerte si le solde n\'a pas été relu',
     },
     action_config: {
-      silence_hours: '36',
+      stale_hours: '8',
       repeat_hours: '24',
       notify_roles: 'admin',
       slack_webhook_env: 'SLACK_WEBHOOK_TREASURY',
@@ -1549,7 +1610,7 @@ export const SYSTEM_AUTOMATIONS = [
       summary: 'Tous les matins',
     },
     action_config: {
-      connectors: 'instagram',
+      connectors: 'instagram,manychat',
       slack_channel: 'antoine.lambert96@gmail.com',
       recipient: 'Antoine Lambert',
       slack_webhook_url: '',
@@ -1562,7 +1623,7 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_instagram_weekly_slack',
     name: 'Prospects Instagram : liste hebdomadaire à Philippe (Slack)',
     description:
-      "Chaque lundi à 7 h 30 (heure de Montréal), envoie à Philippe la liste des prospects Instagram captés depuis le dernier envoi : nom d'usager cliquable, mot-clé, date, DM envoyé ou non, réponse reçue ou non, et le lien vers la table Airtable où il édite le suivi. " +
+      "Juste après la reconnexion d'Instagram (le samedi), et seulement si la lecture des commentaires a réussi, envoie à Philippe la liste des prospects Instagram captés depuis le dernier envoi : nom d'usager cliquable, mot-clé, date, DM envoyé ou non, réponse reçue ou non, et le lien vers la table Airtable où il édite le suivi. " +
       "Le message est DÉLIBÉRÉMENT COURT : la semaine en clair (« du 17 au 23 août »), le nombre de prospects, combien avec le mot-clé, combien de DM envoyés, combien ont répondu — puis deux liens, vers la page ERP et vers Airtable. " +
       "Le détail n'est pas recopié dans Slack : il vit là où Philippe travaille et coche « contacté », et un pavé serait périmé dès la première case cochée. Un message part même s'il n'y a aucun prospect — un silence serait indistinguable d'une panne. " +
       "Le backlog part en entier : un prospect non annoncé (panne Slack, canal manquant) repart au passage suivant, jamais perdu. Un seul envoi planifié par semaine, même si le serveur redémarre. " +
@@ -1571,16 +1632,42 @@ export const SYSTEM_AUTOMATIONS = [
       "Le bouton « Simuler » montre le message qui partirait sans l'envoyer ni marquer les fiches ; « Exécuter » envoie immédiatement (ignore le jour, l'heure et l'idempotence hebdomadaire).",
     trigger_config: {
       kind: 'schedule',
-      source: 'cron 30 11,12 * * 1 UTC (index.js) → services/instagramProspects.js',
-      cron: '30 11,12 * * 1 UTC (lundi 7 h 30 à Montréal, en heure d\'été comme en heure d\'hiver)',
-      summary: 'Lundi 7 h 30 (Montréal), une fois par semaine',
+      source: 'reconnexion Instagram (services/instagramRefresh.js) → services/instagramProspects.js',
+      cron: 'aucun — déclenché par la reconnexion Instagram',
+      summary: 'Après la reconnexion Instagram, une fois par semaine',
     },
     action_config: {
-      send_weekday: '1',
-      send_hour: '7',
+      send_weekday: '6',
+      send_hour: '20',
       slack_webhook_url: '',
       slack_webhook_env: 'SLACK_WEBHOOK_PHILIPPE',
       recipient: 'Philippe',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_missing_invoice_request',
+    name: 'Factures manquantes : demande envoyée sur Slack',
+    description:
+      "Dans Transactions (/rapprochement), cocher des lignes du relevé et cliquer « Facture manquante » les inscrit dans la liste des factures demandées. " +
+      "Le panneau « Factures demandées » montre cette liste ; le bouton « Envoyer sur Slack » publie un message qui dit aux collègues quelles factures Charles cherche (date, fournisseur, montant, compte). " +
+      "ENVOI 100 % MANUEL : rien ne part tout seul, aucun planificateur n'est branché dessus. " +
+      "Décocher une facture dans le panneau la sort du message SANS la sortir de la liste. " +
+      "DESTINATAIRE : « slack_channel » (« #information-importante ») passe par le bot Slack de l'ERP ; sinon l'URL de webhook entrant de « slack_webhook_url », ou le nom d'une variable d'environnement dans « slack_webhook_env ». " +
+      "« intro » accepte {n} (nombre de factures), {s} (pluriel) et {total} ; « outro » est la dernière ligne du message. " +
+      "Désactiver cette automation coupe l'envoi, pas la liste : les factures demandées restent visibles dans le relevé.",
+    trigger_config: {
+      kind: 'app_event',
+      source: 'pages/RapprochementBancaire.jsx → POST /bank/invoice-requests/send',
+      summary: 'Clic sur « Envoyer sur Slack » dans le panneau des factures demandées',
+    },
+    action_config: {
+      slack_channel: '',
+      slack_webhook_url: '',
+      slack_webhook_env: '',
+      intro: 'Je cherche {n} facture{s} ({total}) pour fermer les livres.',
+      outro: 'Si vous en avez une, répondez ici ou envoyez-la à factures@orisha.io — merci !',
     },
     configurable: true,
     default_active: 1,
@@ -1888,6 +1975,14 @@ const RETIRED_SYSTEM_AUTOMATION_IDS = [
   'sys_return_exchange_reminder',
 ]
 
+// Clés de réglage retirées d'une automatisation encore vivante (le passage a
+// changé de surveillance). Nettoyées au démarrage, une seule fois.
+const OBSOLETE_ACTION_KEYS = {
+  // Surveillait le silence des transactions ; surveille maintenant la
+  // fraîcheur du solde (2026-09-29).
+  sys_plaid_silence_alert: ['silence_hours'],
+}
+
 export function seedSystemAutomations() {
   // ON CONFLICT doesn't touch `active`, so user toggles persist across seeds.
   // On first insert we honour `default_active` (default 1) — use 0 to ship a
@@ -1945,6 +2040,19 @@ export function seedSystemAutomations() {
       }
     }
   }
+  // Réglages devenus sans objet : laissés dans le row, ils réapparaîtraient
+  // comme champs éditables que le serveur refuserait ensuite de recevoir.
+  for (const [id, keys] of Object.entries(OBSOLETE_ACTION_KEYS)) {
+    const row = db.prepare('SELECT action_config FROM automations WHERE id = ?').get(id)
+    if (!row) continue
+    let cfg
+    try { cfg = JSON.parse(row.action_config || '{}') } catch { continue }
+    const dropped = keys.filter(k => k in cfg)
+    if (!dropped.length) continue
+    for (const k of dropped) delete cfg[k]
+    db.prepare('UPDATE automations SET action_config = ? WHERE id = ?').run(JSON.stringify(cfg), id)
+  }
+
   for (const id of RETIRED_SYSTEM_AUTOMATION_IDS) {
     db.prepare(`
       UPDATE automations SET active = 0, deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')

@@ -5,7 +5,7 @@
 // règle qu'ailleurs : rien n'est appliqué sans geste, et un refus est définitif.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Check, X, RefreshCw } from 'lucide-react'
+import { Check, X, RefreshCw, Undo2 } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
 import Spinner from '../components/Spinner.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
@@ -26,6 +26,10 @@ const KIND = {
   aga_repartition: { label: 'Assurance collective' },
   debt_payment: { label: 'Versement de dette' },
 }
+
+// Ce qui s'annule d'un clic une fois accepté : rien de ce qui a écrit dans
+// QuickBooks (serveur : UNDOERS dans bankProposals/apply.js).
+const UNDOABLE = new Set(['payment_clear', 'paie_debit', 'debt_payment', 'doc_match'])
 
 const STATUSES = [
   ['proposee', 'À confirmer'],
@@ -67,6 +71,14 @@ export default function Propositions() {
       else await api.bank.refuseProposal(p.id)
       setRows((r) => r.filter((x) => x.id !== p.id))
       api.bank.proposalsSummary().then((s) => setCounts(s || {})).catch(() => {})
+    } catch (e) { setError(e.message) } finally { setBusy(null) }
+  }
+
+  const undo = async (p) => {
+    setBusy(p.id); setError(null)
+    try {
+      await api.bank.undoProposal(p.id)
+      setRows((r) => r.filter((x) => x.id !== p.id))
     } catch (e) { setError(e.message) } finally { setBusy(null) }
   }
 
@@ -132,6 +144,9 @@ export default function Propositions() {
                         className="truncate text-slate-700 hover:text-brand-600 hover:underline">
                         {p.txn_label}
                       </Link>
+                      {!!p.auto_accepted && (
+                        <span className="shrink-0 text-[10px] font-bold tracking-wide text-emerald-700 border border-emerald-600 rounded px-1">AUTO</span>
+                      )}
                       <span className="ml-auto tabular-nums shrink-0 text-slate-600">
                         {fmtMoney(p.txn_amount, p.currency || 'CAD')}
                       </span>
@@ -143,6 +158,12 @@ export default function Propositions() {
                     {p.last_error && <div className="text-xs text-red-600">{p.last_error}</div>}
                   </div>
 
+                  {status === 'acceptee' && UNDOABLE.has(p.kind) && (
+                    <button type="button" title="Annuler" disabled={busy === p.id} onClick={() => undo(p)}
+                      className="shrink-0 inline-flex items-center gap-1 px-2 py-1 text-xs rounded-lg text-slate-500 hover:text-slate-800 hover:bg-slate-100 disabled:opacity-40">
+                      <Undo2 size={13} /> Annuler
+                    </button>
+                  )}
                   {status === 'proposee' && (
                     <div className="flex gap-1 shrink-0">
                       <button type="button" title="C'est bien ça" disabled={busy === p.id}

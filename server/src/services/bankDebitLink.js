@@ -113,6 +113,13 @@ export function attachDebtPaymentBankTxn(paymentId, txnId, extra = null) {
   return res.changes > 0
 }
 
+// L'inverse, pour l'annulation d'une proposition acceptée.
+export function detachDebtPaymentBankTxn(paymentId, txnId) {
+  return db.prepare(`UPDATE lt_debt_payments SET bank_txn_id=NULL, bank_extra_amount=NULL,
+              updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND bank_txn_id=?`)
+    .run(paymentId, txnId).changes > 0
+}
+
 export async function confirmDebtPaymentsFromBank(debtId = null) {
   const hits = await findDebtPaymentMatches(debtId)
   for (const h of hits) attachDebtPaymentBankTxn(h.payment_id, h.txn_id, h.extra)

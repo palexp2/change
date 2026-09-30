@@ -1,16 +1,9 @@
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PackageCheck, AlertTriangle, XCircle } from 'lucide-react'
 import api from '../lib/api.js'
-import { localISODate } from '../lib/formatDate.js'
-import { useCustomFields } from '../lib/useCustomFields.js'
-import { parseSelectChoices } from '../lib/customFieldDisplay.jsx'
 import { useBarcodeScanner } from '../lib/useBarcodeScanner.js'
 import ManualScanInput from './ManualScanInput.jsx'
-
-// Réceptionniste par défaut : Martin reçoit les retours à l'atelier.
-const DEFAULT_PERSON = 'Martin'
-// Filet si le champ « Réceptionné par » n'a pas (encore) ses choix Airtable.
-const FALLBACK_PEOPLE = ['Martin', 'PA', 'Marc-Antoine', 'Frédéric', 'Alicia', 'Charles']
+import { SearchableSelect } from './SearchableSelect.jsx'
 
 const TONE = {
   received: { icon: PackageCheck, cls: 'bg-emerald-50 border-emerald-200 text-emerald-900' },
@@ -21,17 +14,18 @@ const TONE = {
 // Section « Réception » de la fiche retour : le réceptionniste, la date, et le
 // pistolet. Un scan pose la date et la personne sur l'article du retour, puis
 // affiche l'instruction d'étagère (règle reprise d'Airtable, calculée par le
-// serveur — services/returnReception.js).
-export default function RetourReceptionSection({ retour, onItemReceived }) {
-  const { fields } = useCustomFields('return_items')
+// serveur — services/returnReception.js). Personne et date appartiennent à la
+// fiche : le bouton « Réceptionner » des articles cochés s'en sert aussi.
+export default function RetourReceptionSection({ retour, person, setPerson, date, setDate, onItemReceived }) {
+  // Réceptionnistes = utilisateurs Boréal actifs ; l'utilisateur connecté est
+  // pré-choisi par la fiche (RetourDetail).
+  const [users, setUsers] = useState([])
+  useEffect(() => { api.auth.users().then(setUsers).catch(() => {}) }, [])
   const people = useMemo(() => {
-    const choices = parseSelectChoices(fields.find(f => f.column_name === 'received_by'))
-    const labels = choices.map(c => c.label).filter(Boolean)
-    return labels.length ? labels : FALLBACK_PEOPLE
-  }, [fields])
+    const names = users.map(u => u.name).filter(Boolean)
+    return person && !names.includes(person) ? [person, ...names] : names
+  }, [users, person])
 
-  const [person, setPerson] = useState(DEFAULT_PERSON)
-  const [date, setDate] = useState(() => localISODate())
   const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
@@ -52,24 +46,21 @@ export default function RetourReceptionSection({ retour, onItemReceived }) {
 
   const tone = TONE[result?.action] || TONE.not_in_return
   const Icon = tone.icon
-  const selected = people.includes(person) ? person : ''
 
   return (
     <div className="card p-5 mb-4" data-testid="retour-reception">
       <div className="flex items-center gap-2 flex-wrap">
         <h2 className="font-semibold text-slate-900 mr-2">Réception</h2>
-        <select
-          value={selected}
-          aria-label="Réceptionné par"
-          // Le pistolet ignore les frappes faites dans un champ : on rend la
-          // main dès le choix fait, sinon le scan suivant tombe dans le select.
-          onChange={e => { setPerson(e.target.value); e.target.blur() }}
-          className="input py-1 text-sm w-40"
-          data-testid="reception-person"
-        >
-          {!selected && <option value=""></option>}
-          {people.map(p => <option key={p} value={p}>{p}</option>)}
-        </select>
+        <div className="w-48" aria-label="Réceptionné par">
+          <SearchableSelect
+            value={person || ''}
+            options={people.map(p => ({ value: p, label: p }))}
+            onChange={setPerson}
+            className="input py-1 text-sm w-full"
+            size="sm"
+            testId="reception-person"
+          />
+        </div>
         <input
           type="date"
           value={date}

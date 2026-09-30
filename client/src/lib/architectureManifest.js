@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-09-24T01:01:47.497Z",
+  "generatedAt": "2026-09-30T19:48:23.437Z",
   "stats": {
-    "routes": 94,
-    "pages": 81,
+    "routes": 96,
+    "pages": 82,
     "groups": 6,
-    "api": 113,
-    "tables": 171,
+    "api": 114,
+    "tables": 177,
     "connectors": 11
   },
   "groups": [
@@ -133,78 +133,6 @@ export const architectureManifest = {
           "to": "/comptabilite",
           "label": "Espace finance",
           "component": "ComptaDashboard",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/factures",
-          "label": "Factures clients",
-          "component": "Factures",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/paiements",
-          "label": "Paiements",
-          "component": "Paiements",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/items-vendus",
-          "label": "Items vendus",
-          "component": "ItemsVendus",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/abonnements",
-          "label": "Abonnements",
-          "component": "Abonnements",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/abonnements/mouvements",
-          "label": "/abonnements/mouvements",
-          "component": "AbonnementMouvements",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/sale-receipts",
-          "label": "Extraction de données",
-          "component": "SaleReceipts",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": "/api/sale-receipts"
-        },
-        {
-          "to": "/journal-entries",
-          "label": "Écritures de journal",
-          "component": "JournalEntries",
-          "adminOnly": false,
-          "hrOnly": false,
-          "api": "/api/journal-entries"
-        },
-        {
-          "to": "/comptabilite/regles-serials",
-          "label": "Mouvements numéros de série",
-          "component": "SerialAccountingRules",
-          "adminOnly": true,
-          "hrOnly": false,
-          "api": null
-        },
-        {
-          "to": "/stock-movement",
-          "label": "/stock-movement",
-          "component": "StockMovements",
           "adminOnly": false,
           "hrOnly": false,
           "api": null
@@ -453,6 +381,14 @@ export const architectureManifest = {
       "api": "/api/orders"
     },
     {
+      "to": "/soumissions/nouvelle",
+      "label": "SoumissionCreate",
+      "component": "SoumissionCreate",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/discovery-form-editor",
       "label": "DiscoveryFormEditor",
       "component": "DiscoveryFormEditor",
@@ -461,9 +397,57 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/comptabilite/regles-serials",
+      "label": "SerialAccountingRules",
+      "component": "SerialAccountingRules",
+      "adminOnly": true,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/factures",
+      "label": "Factures",
+      "component": "Factures",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/paiements",
+      "label": "Paiements",
+      "component": "Paiements",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
       "to": "/paiements-emis",
       "label": "PaiementsEmis",
       "component": "PaiementsEmis",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/items-vendus",
+      "label": "ItemsVendus",
+      "component": "ItemsVendus",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/abonnements",
+      "label": "Abonnements",
+      "component": "Abonnements",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
+    },
+    {
+      "to": "/abonnements/mouvements",
+      "label": "AbonnementMouvements",
+      "component": "AbonnementMouvements",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -581,12 +565,36 @@ export const architectureManifest = {
       "api": null
     },
     {
+      "to": "/sale-receipts",
+      "label": "SaleReceipts",
+      "component": "SaleReceipts",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": "/api/sale-receipts"
+    },
+    {
       "to": "/stripe-payouts",
       "label": "StripePayouts",
       "component": "StripePayouts",
       "adminOnly": false,
       "hrOnly": false,
       "api": "/api/stripe-payouts"
+    },
+    {
+      "to": "/journal-entries",
+      "label": "JournalEntries",
+      "component": "JournalEntries",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": "/api/journal-entries"
+    },
+    {
+      "to": "/stock-movement",
+      "label": "StockMovements",
+      "component": "StockMovements",
+      "adminOnly": false,
+      "hrOnly": false,
+      "api": null
     },
     {
       "to": "/rapprochement",
@@ -605,9 +613,9 @@ export const architectureManifest = {
       "api": null
     },
     {
-      "to": "/propositions",
-      "label": "Propositions",
-      "component": "Propositions",
+      "to": "/rapprochement-qbo",
+      "label": "QbReconcile",
+      "component": "QbReconcile",
       "adminOnly": false,
       "hrOnly": false,
       "api": null
@@ -793,6 +801,7 @@ export const architectureManifest = {
     "/api/serials",
     "/api/shipments",
     "/api/side-effects",
+    "/api/soumission-assets",
     "/api/stock-movements",
     "/api/stripe-invoice-items",
     "/api/stripe-invoices",
@@ -823,6 +832,8 @@ export const architectureManifest = {
     "activity_log",
     "adresses",
     "agent_tasks",
+    "ai_model_prices",
+    "ai_usage_events",
     "airtable_field_defs",
     "airtable_field_directions",
     "airtable_field_mappings",
@@ -854,6 +865,7 @@ export const architectureManifest = {
     "base_interaction_links",
     "base_interactions",
     "bom_items",
+    "bridge_sessions",
     "calls",
     "card_ceiling_alerts",
     "card_ceilings",
@@ -904,6 +916,7 @@ export const architectureManifest = {
     "marketing_expense_rules",
     "marketing_expenses",
     "meetings",
+    "missing_invoice_requests",
     "month_end_provision_months",
     "month_end_provisions",
     "notifications",
@@ -917,6 +930,7 @@ export const architectureManifest = {
     "payments",
     "pending_invoices",
     "pieces_disbursements",
+    "portal_sightings",
     "prepaid_accounts",
     "prepaid_amortizations",
     "prepaid_expenses",
@@ -943,6 +957,7 @@ export const architectureManifest = {
     "scraper_accounts",
     "scraper_documents",
     "scraper_runs",
+    "sequences",
     "serial_accounting_rules",
     "serial_numbers",
     "serial_state_changes",

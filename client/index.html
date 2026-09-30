@@ -10,17 +10,24 @@
          est indisponible, voir fontFamily.sans dans tailwind.config.js. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
-    <!-- Mode nuit appliqué avant le premier rendu : évite le flash blanc.
-         Même logique que client/src/lib/theme.js (clé erp.theme). -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Cinzel:wght@400;500&display=swap" rel="stylesheet" />
+    <!-- Look appliqué avant le premier rendu : évite le flash.
+         Même logique que client/src/lib/theme.js (clés erp.theme et
+         erp.theme-mode) ; un look retiré est corrigé au démarrage de l'app. -->
     <script>
       (function () {
         try {
           var t = localStorage.getItem('erp.theme')
-          if (t !== 'light' && t !== 'dark') {
-            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+          var m = localStorage.getItem('erp.theme-mode')
+          if (t === 'light' || t === 'dark') m = t
+          if (!t || t === 'auto' || (m !== 'light' && m !== 'dark')) {
+            m = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
+            t = m
           }
-          if (t === 'dark') document.documentElement.classList.add('dark')
+          var root = document.documentElement
+          root.setAttribute('data-look', t)
+          root.classList.add(m)
+          if (t !== 'light' && t !== 'dark') root.classList.add('qne')
         } catch (e) {}
       })()
     </script>

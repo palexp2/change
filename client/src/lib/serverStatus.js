@@ -11,7 +11,9 @@
 // élimine les flashs d'overlay sur les blips ultra-courts (reconnexion WS,
 // requête transiente qui rate puis la suivante passe).
 
-const DEBOUNCE_MS = 400
+// 4 s : un redémarrage du serveur (relais nginx, voir server/scripts/restart.sh)
+// ne doit jamais faire apparaître l'écran « Connexion perdue ».
+const DEBOUNCE_MS = 4000
 
 let offline = false
 let lastReason = null

@@ -1,17 +1,22 @@
+import { useDiscoveryTr } from '../lib/discoveryLang.js'
 // Choix illustré des ventilateurs de bout de serre : l'image porte la réponse
 // (aucun, un, ou deux ventilateurs sur le mur de bout) et le texte est dessiné
 // dedans, pour qu'on puisse répondre sans rien lire sous l'image.
-const FAN_LABELS = { 0: 'Aucun ventilateur', 1: '1 ventilateur', 2: '2 ventilateurs' }
+const FAN_LABELS = { 0: 'Aucun ventilateur', 1: '1 ventilateur', 2: '2 ventilateurs', 3: '3 ventilateurs', 4: '4 ventilateurs' }
 
-// Un seul ventilateur se place au centre du bout, deux se répartissent.
+// Un seul ventilateur se place au centre du bout, les autres se répartissent ;
+// à 4 (permission Ventilation) ils rapetissent pour tenir sur le mur.
 function fanX(count, i) {
-  return count === 1 ? 120 : 92 + i * 56
+  if (count === 1) return 120
+  if (count === 2) return 92 + i * 56
+  return count === 3 ? 66 + i * 54 : 62 + i * 38.7
 }
+const fanScale = count => count > 3 ? 0.75 : 1
 
-function Fan({ x }) {
+function Fan({ x, scale = 1 }) {
   const cy = 92
   return (
-    <g>
+    <g transform={scale === 1 ? undefined : `translate(${x} ${cy}) scale(${scale}) translate(${-x} ${-cy})`}>
       <rect x={x - 19} y={cy - 19} width="38" height="38" rx="4" className="fill-white stroke-slate-400" strokeWidth="2" />
       <circle cx={x} cy={cy} r="15" className="fill-sky-50 stroke-slate-400" strokeWidth="1.5" />
       {[0, 90, 180, 270].map(a => (
@@ -29,7 +34,8 @@ function Fan({ x }) {
 }
 
 export default function EndFanChoice({ count, checked, onChange, name }) {
-  const label = FAN_LABELS[count]
+  const tr = useDiscoveryTr()
+  const label = tr(FAN_LABELS[count])
   return (
     <label className={`relative block cursor-pointer rounded-lg border p-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
       <input type="radio" name={name} className="sr-only" checked={checked} onChange={onChange} aria-label={label} />
@@ -37,7 +43,7 @@ export default function EndFanChoice({ count, checked, onChange, name }) {
         <line x1="10" y1="124" x2="230" y2="124" className="stroke-slate-300" strokeWidth="2" />
         {/* Mur de bout de serre, vu de face. */}
         <path d="M36 124 V88 C36 34 204 34 204 88 V124 Z" className="fill-brand-50 stroke-slate-400" strokeWidth="2.5" strokeLinejoin="round" />
-        {Array.from({ length: count }, (_, i) => <Fan key={i} x={fanX(count, i)} />)}
+        {Array.from({ length: count }, (_, i) => <Fan key={i} x={fanX(count, i)} scale={fanScale(count)} />)}
         <text x="120" y="144" textAnchor="middle" fontSize="14" className="fill-slate-700 font-semibold">{label}</text>
       </svg>
     </label>

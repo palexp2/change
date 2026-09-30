@@ -1,5 +1,6 @@
 import { useFieldGate } from '../lib/fieldGate.js'
 import { FieldPulse } from './FieldPulse.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 // Un bloc « libellé + valeur » pour UN champ d'une table, gardé par le portier
 // des champs supprimés (lib/fieldGate.js).
@@ -54,7 +55,7 @@ export function Field({
 
   const text = gate.labelFor(id, label)
   const spinner = saving
-    ? <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />
+    ? <ThinkingOrb size={12} />
     : null
 
   return (

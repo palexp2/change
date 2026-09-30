@@ -1,13 +1,15 @@
 /**
- * Spinner réutilisable : indicateur de chargement homogène pour toute l'app.
+ * Spinner réutilisable : indicateur de chargement homogène pour toute l'app
+ * (une Thinking Orb, voir ThinkingOrb.jsx).
  *
  * Remplace les `<div className="animate-spin rounded-full …" />` dupliqués dans
  * les fiches détail et les `<div>Chargement…</div>` en texte brut sans feedback
  * visuel. Complète <EmptyState> (états vides) côté états de chargement.
  *
  * Props :
- *  - size       : 'xs' | 'sm' | 'md' | 'lg' (défaut 'md') — diamètre du cercle
- *  - color      : 'brand' | 'white' | 'slate' | 'emerald' (défaut 'brand')
+ *  - size       : 'xs' | 'sm' | 'md' | 'lg' (défaut 'md') — diamètre de l'orbe
+ *  - color      : 'brand' | 'white' (défaut 'brand') — 'white' = couleur du texte hôte
+ *  - state      : état Thinking Orb (défaut 'breathing')
  *  - label      : texte optionnel affiché à côté du cercle (ex. « Chargement… »)
  *  - center     : true → centre le spinner dans une zone h-64 (loader de page détail)
  *  - fullscreen : true → centre le spinner en plein écran (min-h-screen, pages publiques)
@@ -19,18 +21,10 @@
  *  <Spinner size="sm" color="white" />         // dans un bouton
  *  <Spinner fullscreen label="Chargement…" />  // page publique plein écran
  */
-const SIZES = {
-  xs: 'h-3.5 w-3.5',
-  sm: 'h-5 w-5',
-  md: 'h-8 w-8',
-  lg: 'h-10 w-10',
-}
-const COLORS = {
-  brand: 'border-brand-600',
-  white: 'border-white',
-  slate: 'border-slate-500',
-  emerald: 'border-emerald-600',
-}
+import ThinkingOrb from './ThinkingOrb'
+
+// Diamètre en px de l'orbe par taille.
+const SIZES = { xs: 14, sm: 20, md: 32, lg: 40 }
 
 export default function Spinner({
   size = 'md',
@@ -39,13 +33,13 @@ export default function Spinner({
   center = false,
   fullscreen = false,
   className = '',
+  state = 'breathing',
 }) {
+  // `white` = posé sur un bouton plein : l'orbe prend la couleur du texte.
   const circle = (
-    <span
-      data-testid="spinner"
-      aria-hidden="true"
-      className={`inline-block animate-spin rounded-full border-b-2 ${SIZES[size] || SIZES.md} ${COLORS[color] || COLORS.brand}`}
-    />
+    <span data-testid="spinner" aria-hidden="true" className={`inline-flex ${color === 'white' ? 'text-white' : ''}`}>
+      <ThinkingOrb state={state} size={SIZES[size] || SIZES.md} ink={color === 'white'} />
+    </span>
   )
 
   if (center || fullscreen) {

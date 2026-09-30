@@ -341,6 +341,33 @@ export async function writeDraft(prospectId, { instructions, force = false } = {
   return { ok: true, draft: getDraft(id), created: true }
 }
 
+/**
+ * Un message que Philippe tape lui-même, sans suggestion au départ : il est
+ * gardé comme brouillon retenu (jamais envoyé en lot), pour le retrouver tel
+ * quel en revenant.
+ */
+export function saveManualDraft(prospectId, text) {
+  const p = db.prepare('SELECT id, ig_username, manychat_subscriber_id FROM instagram_prospects WHERE id=? AND deleted_at IS NULL').get(prospectId)
+  if (!p) throw new Error('Fiche introuvable')
+  const clean = String(text || '').trim()
+  if (!clean) throw new Error('Message vide')
+  const now = new Date().toISOString()
+  const existing = db.prepare(`
+    SELECT id FROM instagram_drafts WHERE prospect_id=? AND status IN (${OPEN_STATES.map(() => '?').join(',')})
+  `).get(prospectId, ...OPEN_STATES)
+  if (existing) {
+    db.prepare('UPDATE instagram_drafts SET text=?, edited=1, updated_at=? WHERE id=?').run(clean, now, existing.id)
+    return getDraft(existing.id)
+  }
+  const { thread } = threadFor(p)
+  const id = newRecordId()
+  db.prepare(`
+    INSERT INTO instagram_drafts (id, prospect_id, manychat_user_id, ig_username, text, status, edited, created_at, updated_at)
+    VALUES (?,?,?,?,?,'held',1,?,?)
+  `).run(id, p.id, thread?.user_id || p.manychat_subscriber_id || null, p.ig_username, clean, now, now)
+  return getDraft(id)
+}
+
 export function getDraft(id) {
   return db.prepare('SELECT * FROM instagram_drafts WHERE id=?').get(id) || null
 }
@@ -610,14 +637,17 @@ export function workbench({ all = false } = {}) {
       AND d.status IN ('draft','queued','review','held','failed')
     WHERE p.deleted_at IS NULL AND p.ig_username IS NOT NULL
       AND COALESCE(p.segment,'commentaire') NOT IN ('story','robot')
-      AND (${all ? '1=1 OR' : ''} p.contacted = 0 OR (t.last_incoming_at IS NOT NULL AND t.last_incoming_at > COALESCE(p.contacted_at,'')))
+      AND (${all ? '1=1 OR' : ''} p.contacted = 0
+           OR (t.last_direction = 'in' AND t.last_incoming_at > COALESCE(p.contacted_at,'')))
     ORDER BY COALESCE(t.last_incoming_at, p.last_event_at, p.created_at) DESC
     LIMIT ${all ? 1000 : 400}
   `).all()
 
   // Une personne écrit à nouveau après avoir été traitée : elle revient dans sa
-  // pile, au lieu de rester rangée avec les dossiers clos.
-  const reopened = r => !!(r.contacted && r.last_incoming_at && r.last_incoming_at > (r.contacted_at || ''))
+  // pile, au lieu de rester rangée avec les dossiers clos. Seulement si c'est
+  // ELLE qui a le dernier mot : si on lui a répondu depuis, c'est traité.
+  const reopened = r => !!(r.contacted && r.last_direction === 'in' && r.last_incoming_at
+    && r.last_incoming_at > (r.contacted_at || ''))
   const items = rows.map(r => {
     const segment = SEGMENT_LABELS[r.segment] ? r.segment : 'commentaire'
     const arrival = arrivalOf(r)
@@ -626,6 +656,8 @@ export function workbench({ all = false } = {}) {
       segment,
       arrival: arrival.text,
       arrival_url: arrival.url,
+      arrival_head: arrival.head || null,
+      arrival_quote: arrival.quote || null,
       reopened: reopened(r),
       group: r.contacted && !reopened(r) ? 'done' : segment,
       review_label: r.review_reason ? REVIEW_LABELS[r.review_reason] || r.review_reason : null,

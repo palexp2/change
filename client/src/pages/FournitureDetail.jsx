@@ -3,6 +3,7 @@ import { ExternalLink, Plus, Trash2 } from 'lucide-react'
 import api from '../lib/api.js'
 import { InlineText, InlineUrl, InlineNumber, InlineTextarea } from '../components/InlineFields.jsx'
 import ErrorBanner from '../components/ErrorBanner.jsx'
+import ImageSlot from '../components/ImageSlot.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
@@ -58,6 +59,13 @@ export default function FournitureDetail({ recordId: id, onClose, onChanged }) {
     finally { setSaving(null) }
   }
 
+  async function saveImage(call) {
+    setSaving('image'); setSaveError(null)
+    try { const next = await call(); setRecord(r => ({ ...r, ...next })); onChanged?.({ fourniture: next }) }
+    catch (e) { setSaveError(e.message) }
+    finally { setSaving(null) }
+  }
+
   async function saveAchat(row, col, value) {
     setSaveError(null)
     try {
@@ -98,7 +106,11 @@ export default function FournitureDetail({ recordId: id, onClose, onChanged }) {
   return (
     <DetailShell
       header={{
-        leading: f.image_url && <img src={f.image_url} alt="" className="w-16 h-16 object-contain rounded bg-white shrink-0" />,
+        leading: (
+          <ImageSlot testId="fourniture-image" src={f.image_url} alt={f.name || ''} size="w-16 h-16"
+            busy={saving === 'image'} onPick={file => saveImage(() => api.fournitures.uploadImage(id, file))}
+            onRemove={() => saveImage(() => api.fournitures.deleteImage(id))} />
+        ),
         actions: (
           <>
             {f.web_url && (

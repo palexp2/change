@@ -514,7 +514,8 @@ function resolveSenderAccount({ accountEmail, userId }) {
   return account
 }
 
-function buildRawMessage({ to, cc, subject, htmlBody, attachments }) {
+// Bcc : Gmail lit l'en-tête pour distribuer puis le retire du message remis.
+function buildRawMessage({ to, cc, bcc, subject, htmlBody, attachments }) {
   const subjectHeader = `=?UTF-8?B?${Buffer.from(subject).toString('base64')}?=`
 
   let raw
@@ -523,6 +524,7 @@ function buildRawMessage({ to, cc, subject, htmlBody, attachments }) {
     const lines = [
       `To: ${to}`,
       ...(cc ? [`Cc: ${cc}`] : []),
+      ...(bcc ? [`Bcc: ${bcc}`] : []),
       `Subject: ${subjectHeader}`,
       'MIME-Version: 1.0',
       `Content-Type: multipart/mixed; boundary="${boundary}"`,
@@ -551,6 +553,7 @@ function buildRawMessage({ to, cc, subject, htmlBody, attachments }) {
     const rawLines = [
       `To: ${to}`,
       ...(cc ? [`Cc: ${cc}`] : []),
+      ...(bcc ? [`Bcc: ${bcc}`] : []),
       'Content-Type: text/html; charset=utf-8',
       'MIME-Version: 1.0',
       `Subject: ${subjectHeader}`,
@@ -563,10 +566,10 @@ function buildRawMessage({ to, cc, subject, htmlBody, attachments }) {
 }
 
 export async function sendEmail(to, subject, htmlBody, options = {}) {
-  const { cc, attachments, userId, accountEmail } = options
+  const { cc, bcc, attachments, userId, accountEmail } = options
   const account = resolveSenderAccount({ accountEmail, userId })
   const gmail = await getGmailClient(account.id)
-  const raw = buildRawMessage({ to, cc, subject, htmlBody, attachments })
+  const raw = buildRawMessage({ to, cc, bcc, subject, htmlBody, attachments })
 
   const resp = await gmail.users.messages.send({ userId: 'me', requestBody: { raw } })
   return {

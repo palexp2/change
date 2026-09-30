@@ -7,6 +7,7 @@
 // Un seul débit au relevé, deux comptes à l'écriture : on propose la coupe
 // toute faite, le capital sur la marge et les intérêts en charge.
 import db from '../db/database.js'
+import { mainQbAccount } from '../utils/qbBankAccount.js'
 
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100
 const money = (n) => `${n.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`
@@ -80,7 +81,7 @@ export function marginRepaymentSplit(txn, account) {
   const marginAccount = db.prepare(`
     SELECT name, qb_account_id FROM bank_accounts WHERE id=?
   `).get(hit.line.account_id)
-  const marginQb = String(marginAccount?.qb_account_id || '').split(',')[0].trim() || null
+  const marginQb = mainQbAccount(marginAccount)
   if (!marginQb) return null
 
   return {

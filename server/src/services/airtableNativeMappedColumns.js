@@ -1,4 +1,5 @@
 import db from '../db/database.js'
+import { mergedCompanyForAirtableId } from './companyMerge.js'
 
 // ── Colonnes ERP natives ouvertes au mapping Airtable, sans champ de rendu ───
 //
@@ -95,6 +96,8 @@ export function resolveProjectVendeurRef(val) {
     if (emp) return `employee:${emp.id}`
     const comp = s.compByAirtable.get(label)
     if (comp) return `company:${comp.id}`
+    const merged = mergedCompanyForAirtableId(label)
+    if (merged) return `company:${merged}`
     return null
   }
 

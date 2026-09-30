@@ -508,9 +508,11 @@ export function syncReceiptAnomalies(receiptId) {
     // Anomalies ouvertes de ce reçu qui ne sont plus détectées → resolved. Les
     // fingerprints de paire mentionnent les deux ids : on résout aussi celles où ce
     // reçu est le pair (entity_id = l'autre) si la paire n'est plus détectée.
+    // qb_entry_missing n'est pas détecté ici (appel QB, verifyPublishedQbLinks) :
+    // le résoudre le faisait rouvrir au passage suivant, avec un appel QB à chaque fois.
     const open = db.prepare(`
       SELECT id, fingerprint FROM transaction_anomalies
-      WHERE status='open' AND entity_type='sale_receipt'
+      WHERE status='open' AND entity_type='sale_receipt' AND kind != 'qb_entry_missing'
         AND (entity_id = ? OR fingerprint LIKE '%' || ? || '%')
     `).all(receiptId, receiptId)
     for (const row of open) {
@@ -672,6 +674,24 @@ export async function verifyPublishedQbLinks({ fetchEntity, sinceDays = 400 } = 
       AND quickbooks_id NOT IN (SELECT quickbooks_id FROM achats_fournisseurs WHERE quickbooks_id IS NOT NULL)
   `).all(`-${sinceDays} days`)
 
+  // Un lien déjà constaté mort n'est plus redemandé à QB : une écriture supprimée
+  // ne revient pas, et ce sondage répété à chaque scan (6 Id × tous les
+  // démarrages) remplissait le journal d'erreurs de « Objet introuvable ».
+  // Le reçu rattaché à un autre Id donne une autre empreinte → revérifié.
+  const knownDead = new Set(db.prepare(`
+    SELECT fingerprint FROM transaction_anomalies
+    WHERE kind='qb_entry_missing' AND status IN ('open','dismissed')
+  `).all().map(r => r.fingerprint))
+  // Anomalie ouverte dont le reçu ne pointe plus vers cet Id (rattaché, dépublié,
+  // supprimé) : le problème n'existe plus.
+  for (const a of db.prepare(`
+    SELECT a.fingerprint FROM transaction_anomalies a
+    LEFT JOIN sale_receipts r ON r.id = a.entity_id
+    WHERE a.kind='qb_entry_missing' AND a.status='open'
+      AND (r.id IS NULL OR r.deleted_at IS NOT NULL
+           OR a.fingerprint != 'qb_entry_missing:' || r.id || ':' || COALESCE(r.quickbooks_id, ''))
+  `).all()) resolveAnomaly(a.fingerprint)
+
   let get = fetchEntity
   if (!get) {
     const { qbGet } = await import('../connectors/quickbooks.js')
@@ -683,6 +703,7 @@ export async function verifyPublishedQbLinks({ fetchEntity, sinceDays = 400 } = 
     const entity = QB_ENTITY_BY_TYPE[rec.quickbooks_type] || null
     if (!entity) continue // type inconnu : ne rien conclure plutôt que d'alerter à tort
     const fingerprint = `qb_entry_missing:${rec.id}:${rec.quickbooks_id}`
+    if (knownDead.has(fingerprint)) { missing++; continue }
     let exists = null
     try {
       exists = Boolean(await get(entity, rec.quickbooks_id))

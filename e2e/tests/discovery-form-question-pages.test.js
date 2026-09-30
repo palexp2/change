@@ -166,8 +166,8 @@ test('détails de chaque équipement et questions conditionnelles, sur mobile', 
     { id: 'sides', section: 'greenhouse', label: 'Détails des côtés', required: true, visibleIf: { match: 'all', rules: [{ field: 'has_side_vents', op: 'eq', value: 'yes' }] } },
     { id: 'chief', section: 'greenhouse_chief', label: 'Détails Chief', type: 'text' },
   ] } })
-  // Le formulaire reprend à la première question sans réponse : on remonte au
-  // début pour dérouler le parcours complet.
+  // Le formulaire entamé se rouvre sur la première question ; on remonte tout
+  // de même au début (page de garde éventuelle) pour dérouler le parcours.
   // La première page ne porte pas de bouton « Précédent » : son absence est la
   // fin de la remontée (l'attendre activé expirerait).
   const previous = page.getByRole('button', { name: 'Précédent', exact: true })
@@ -226,7 +226,6 @@ test('ancien lien après paiement : nombre de serres et contrôleur mobile', asy
   const { page } = await openForm(t, { legacy: true, locked: false, mobile: true, response: { is_new_site: 'new', farm_address: { line1: '10 rue Test', province: 'QC' }, shipping_same_as_farm: true } })
   await next(page, 'farm_address')
   await next(page, 'shipping_same')
-  await next(page, 'mobile')
   await next(page, 'greenhouse_count')
   await control(page).fill('2')
   await next(page, 'greenhouse:0:side_vents')
@@ -309,10 +308,11 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 390, height: 844 
 
     await page.reload()
     await page.locator('[data-question-page]').waitFor()
-    // Le formulaire reprend à la première réponse manquante ou à l’envoi.
-    for (let i = 0; i < 15 && await current(page) !== 'greenhouse:0:furnaces'; i++) {
+    // Le formulaire entamé se rouvre toujours sur la première question.
+    assert.equal(await current(page), 'order_type')
+    for (let i = 0; i < 60 && await current(page) !== 'greenhouse:0:furnaces'; i++) {
       const previous = await current(page)
-      await page.getByRole('button', { name: 'Précédent', exact: true }).click()
+      await page.getByRole('button', { name: 'Suivant', exact: true }).click()
       await page.waitForFunction(id => document.querySelector('[data-question-page]')?.dataset.questionPage !== id, previous)
     }
     assert.equal(await current(page), 'greenhouse:0:furnaces')
@@ -384,20 +384,19 @@ test('permissions supplémentaires : plafonds relevés, rien d’ajouté d’off
   for (let i = 0; i < 120 && await current(page) !== 'submit'; i++) {
     const id = await current(page)
     visited.push(id)
-    if (id === 'greenhouse:0:furnaces') await page.getByRole('spinbutton', { name: 'Fournaises', exact: true }).fill('3')
-    else if (id === 'greenhouse:0:irrigation_zones') await page.getByRole('spinbutton', { name: 'Valves', exact: true }).fill('7')
+    if (id === 'greenhouse:0:furnaces') await page.getByRole('radio', { name: '3', exact: true }).check({ force: true })
+    else if (id === 'greenhouse:0:irrigation_zones') await page.getByRole('radio', { name: '7 zones', exact: true }).check({ force: true })
     else if (id === 'greenhouse:0:orisha_valves') {
       await page.locator('[data-question-page] input[type=radio]').first().check({ force: true })
       await page.locator('[data-question-page] input[type=radio]').last().check({ force: true })
     } else if (id === 'greenhouse:1:roof_present') {
-      await page.getByRole('radio', { name: 'Oui', exact: true }).check({ force: true })
-      await page.locator('[data-question-page] input[type=number]').fill('2')
+      await page.getByRole('radio', { name: '2 toits ouvrants', exact: true }).check({ force: true })
     } else await answerIfBlocked(page)
     await next(page)
   }
   assert.equal(await current(page), 'submit')
   assert.ok(visited.includes('greenhouse:1:furnaces'), 'Helper avec permission Chauffage')
-  assert.ok(visited.includes('greenhouse:1:roof_voltage'), 'Helper avec permission Toits ouvrants')
+  assert.ok(visited.includes('greenhouse:1:roof_inverter'), 'Helper avec permission Toits ouvrants')
   assert.ok(!visited.includes('greenhouse:1:irrigation_zones'), 'Helper sans permission Irrigation')
   assert.equal(state.response.greenhouses[0].num_furnaces, 3)
   assert.equal(state.response.greenhouses[0].furnaces.length, 3)

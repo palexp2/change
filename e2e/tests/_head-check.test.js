@@ -224,7 +224,6 @@ test('ancien lien après paiement : nombre de serres et contrôleur mobile', asy
   const { page } = await openForm(t, { legacy: true, locked: false, mobile: true, response: { is_new_site: 'new', farm_address: { line1: '10 rue Test', province: 'QC' }, shipping_same_as_farm: true } })
   await next(page, 'farm_address')
   await next(page, 'shipping_same')
-  await next(page, 'mobile')
   await next(page, 'greenhouse_count')
   await control(page).fill('2')
   await next(page, 'greenhouse:0:side_vents')

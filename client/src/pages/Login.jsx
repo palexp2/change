@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link } from 'react-router-dom'
 import { useAuth } from '../lib/auth.jsx'
 import { AuthShell } from '../components/AuthShell.jsx'
 
@@ -8,14 +8,13 @@ export default function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const { login, isLoading } = useAuth()
-  const navigate = useNavigate()
 
   async function handleSubmit(e) {
     e.preventDefault()
     setError('')
     try {
       await login(email, password)
-      navigate('/dashboard')
+      // App choisit l'accueil une fois l'utilisateur connecté (capture sur téléphone).
     } catch {
       setError('Courriel ou mot de passe invalide.')
     }

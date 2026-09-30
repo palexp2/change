@@ -59,6 +59,7 @@ import {
   fieldMapDirection, isDirectionConfigurable, setFieldDirection,
   dynamicFieldDirection, dynamicDirectionKey, isDynamicDirectionKey, writebackModuleForTable,
   pushableLinkColumn,
+  isImportRequiredColumn,
   coreDirectionLockReason,
   pushOnlyColumns,
   resetComputedKeyCache,
@@ -565,6 +566,9 @@ router.post('/manychat/session', requireAdmin, async (req, res) => {
   const { importManychatSession, publicManychatAccount } = await import('../services/manychat.js')
   try {
     const out = importManychatSession(req.body?.payload)
+    import('../services/instagramRefresh.js')
+      .then(({ refreshAfterReconnect }) => refreshAfterReconnect({ trigger: 'reconnexion ManyChat' }))
+      .catch(e => console.error('instagram refresh:', e.message))
     res.json({ ...out, account: publicManychatAccount() })
   } catch (e) {
     res.status(400).json({ error: e.message })
@@ -1133,12 +1137,12 @@ async function mappingDataHandler(moduleKey, req, res) {
       try { cfOpts = JSON.parse(cf?.options || '{}') } catch {}
       // Sens de sync du champ dynamique ('pull' par défaut — jamais réécrit vers
       // Airtable). Configurable quand la table appartient à un module write-back
-      // et que le champ n'est pas un lien (colonne = id ERP, non poussable) —
-      // sauf lien que le module sait résoudre en record id Airtable, déclaré
-      // dans `linkColumns` (ex. « Commande » des envois).
+      // — y compris pour un champ lien, dès que sa table cible est miroitée :
+      // le write-back traduit alors l'id Boréal en record id Airtable (cf.
+      // pushableLinkColumn).
       const linkTarget = opts.link_target_table || opts.target_table
         || cfOpts.link_target_table || cfOpts.target_table || null
-      const pushableLink = !!(wbModule && pushableLinkColumn(wbModule, c))
+      const pushableLink = !!(wbModule && pushableLinkColumn(wbModule, c, d ? opts : null))
       // Champ Airtable calculé derrière ce mapping : rien ne peut y être écrit.
       const atComputed = !!(isMapped && isComputedAtField(d.airtable_field_name))
       // Colonne native à résolveur (ex. projects.vendeur_ref → « Vendeur ») :
@@ -1185,6 +1189,9 @@ async function mappingDataHandler(moduleKey, req, res) {
         // Un champ Airtable calculé n'est jamais réécrit : sens figé en import.
         direction: isMapped ? (atComputed ? 'pull' : dynamicFieldDirection(wbModule, c)) : null,
         direction_configurable: !!(isMapped && wbModule && !atComputed && (!linkTarget || pushableLink)),
+        // Rattachement requis à l'import (« Retour » d'un article) : jamais
+        // « Boréal → Airtable » seul.
+        direction_no_push: !!(wbModule && isImportRequiredColumn(wbModule, c)),
         // Pourquoi le sens n'est PAS configurable (null si configurable ou non
         // mappé) — permet au client d'afficher une infobulle honnête au lieu du
         // texte générique « Airtable → ERP ».
@@ -1979,11 +1986,13 @@ router.put('/airtable/module-fields/:module/field-direction', requireAuth, (req,
     }
     let opts = {}
     try { opts = JSON.parse(def.options || '{}') } catch {}
-    // Champ lien : la colonne ERP porte un id local, donc non poussable — sauf
-    // si le module déclare la table où le résoudre (`linkColumns`), auquel cas le
-    // write-back sait envoyer [recXXX] et le sens redevient un choix.
-    if (opts.link_target_table && !pushableLinkColumn(wbModule, column)) {
-      return res.status(400).json({ error: 'Champ lien — sens non configurable (la colonne ERP porte un id local)' })
+    // Champ lien : poussable dès que sa table cible est miroitée (le write-back
+    // envoie alors [recXXX]) ; sinon rien où résoudre l'id Boréal.
+    if (opts.link_target_table && !pushableLinkColumn(wbModule, column, opts)) {
+      return res.status(400).json({ error: 'Champ lien — table cible sans jumeau Airtable, sens non configurable' })
+    }
+    if (direction === 'push' && isImportRequiredColumn(wbModule, column)) {
+      return res.status(400).json({ error: 'Rattachement requis à l\'import — « Boréal → Airtable » seul impossible' })
     }
     // Colonne native à résolveur : la colonne ERP porte une référence Boréal
     // (`employee:<id>`), qui ne veut rien dire dans Airtable — import seulement.
@@ -2232,7 +2241,7 @@ router.post('/sync/airtable-all', requireAuth, async (req, res) => {
 
 const ENV_FILE = resolve(process.cwd(), '.env')
 
-function updateEnvKey(key, value) {
+export function updateEnvKey(key, value) {
   let content = existsSync(ENV_FILE) ? readFileSync(ENV_FILE, 'utf8') : ''
   const regex = new RegExp(`^${key}=.*$`, 'm')
   if (regex.test(content)) {

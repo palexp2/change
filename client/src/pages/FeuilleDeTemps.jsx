@@ -568,7 +568,7 @@ export default function FeuilleDeTemps() {
   // Liste des users — uniquement pour les admins (qui peuvent consulter la feuille d'un autre employé).
   useEffect(() => {
     if (!isAdmin) return
-    api.admin.listUsers().then(setUsers).catch(() => setUsers([]))
+    api.timesheets.users().then(setUsers).catch(() => setUsers([]))
   }, [isAdmin])
 
   const selectedUserName = useMemo(() => {
@@ -1012,6 +1012,14 @@ export default function FeuilleDeTemps() {
             {!isWeekMode && <RsdeReport history={history} />}
           </main>
         </div>
+
+        {isAdmin && (
+          <PayPeriodTotals
+            refreshKey={`${history.length}-${weekHistory.length}-${day?.updated_at || ''}-${weekRec?.minutes ?? ''}`}
+            selectedUserId={selectedUserId}
+            onPick={(id) => { setHistoryMode(null); setSelectedUserId(id) }}
+          />
+        )}
       </div>
     </Layout>
   )
@@ -1295,6 +1303,47 @@ function RsdeReport({ history }) {
   )
 }
 
+// RH : heures de chaque employé par période de paie (14 jours).
+function PayPeriodTotals({ refreshKey, selectedUserId, onPick }) {
+  const [data, setData] = useState(null)
+  useEffect(() => {
+    let alive = true
+    api.timesheets.periodTotals({ periods: 6 })
+      .then(r => { if (alive) setData(r) })
+      .catch(() => { if (alive) setData({ periods: [], users: [] }) })
+    return () => { alive = false }
+  }, [refreshKey])
+  if (!data || !data.users.length) return null
+  const fmtH = (m) => m ? (m / 60).toFixed(2).replace('.', ',') : '—'
+  const short = (s) => new Date(s + 'T00:00:00').toLocaleDateString('fr-CA', { day: 'numeric', month: 'short' })
+  return (
+    <div className="card overflow-x-auto mt-6" data-testid="pay-period-totals">
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="bg-slate-50 text-xs text-slate-500">
+            <th className="text-left px-3 py-2 font-semibold">Heures par période</th>
+            {data.periods.map(p => (
+              <th key={p} className="text-right px-3 py-2 font-semibold whitespace-nowrap">{short(p)} — {short(shiftDate(p, 13))}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {data.users.map(u => (
+            <tr key={u.user_id} className={`border-t border-slate-100 ${u.user_id === selectedUserId ? 'bg-brand-50' : ''}`}>
+              <td className="px-3 py-1.5">
+                <button type="button" className="link-record" onClick={() => onPick(u.user_id)}>{u.name}</button>
+              </td>
+              {data.periods.map(p => (
+                <td key={p} className="px-3 py-1.5 text-right tabular-nums text-slate-700">{fmtH(u.totals[p])}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
 function HistoryTable({ history, weeks, currentDate, currentWeek, isWeekMode, onJump }) {
   const grouped = useMemo(() => {
     const byPeriod = new Map()
@@ -1322,7 +1371,7 @@ function HistoryTable({ history, weeks, currentDate, currentWeek, isWeekMode, on
             <div key={period} className="card overflow-hidden" data-testid={`history-pay-period-${period}`}>
               <div className="flex items-center justify-between px-3 py-1.5 bg-slate-50 border-b border-slate-100">
                 <div className="text-xs font-semibold text-slate-600">{dateRangeLabel(period, shiftDate(period, 13))}</div>
-                <div className="text-xs text-slate-500 tabular-nums font-semibold text-slate-900" data-testid="history-pay-period-total">{formatMinutes(periodTotal)}</div>
+                <div className="text-xs text-slate-500 tabular-nums font-semibold text-slate-900" data-testid="history-pay-period-total">{(periodTotal / 60).toFixed(2).replace('.', ',')} h</div>
               </div>
               <table className="w-full text-sm">
                 <tbody>

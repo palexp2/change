@@ -5,6 +5,7 @@ import api from '../lib/api.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
 import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, individualBoxes = false, onClose, onDone }) {
   const [step, setStep] = useState('package') // 'package' | 'rates' | 'confirm' | 'done'
@@ -378,7 +379,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
     <div className="space-y-4">
       {loading ? (
         <div className="flex flex-col items-center justify-center py-12 gap-3 text-slate-500">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" />
+          <ThinkingOrb size={32} />
           <span className="text-sm">Récupération des tarifs…</span>
         </div>
       ) : error ? (
@@ -388,7 +389,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
           {!diagnostic?.available && (
             <button onClick={() => handleDiagnose('rate')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
               {diagLoading
-                ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~20 s)</>
+                ? <><ThinkingOrb size={14} ink className="text-slate-500" /> Diagnostic en cours… (~20 s)</>
                 : <><Stethoscope size={14} /> Diagnostiquer en dev</>}
             </button>
           )}
@@ -489,7 +490,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
           {!diagnostic?.available && (
             <button onClick={() => handleDiagnose('label')} disabled={diagLoading} className="btn-secondary text-sm flex items-center gap-1.5">
               {diagLoading
-                ? <><div className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-slate-500" /> Diagnostic en cours… (~20 s)</>
+                ? <><ThinkingOrb size={14} ink className="text-slate-500" /> Diagnostic en cours… (~20 s)</>
                 : <><Stethoscope size={14} /> Diagnostiquer en dev</>}
             </button>
           )}
@@ -500,7 +501,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
         <button onClick={() => { setStep('rates'); setError(''); setErrorDetails(null); setDiagnostic(null) }} disabled={loading} className="btn-secondary">← Retour</button>
         <button onClick={handleConfirm} disabled={loading} className="btn-primary flex items-center gap-1.5">
           {loading
-            ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Création…</>
+            ? <><ThinkingOrb size={16} ink className="text-white" /> Création…</>
             : <><CheckCircle size={14} /> Confirmer et acheter</>
           }
         </button>
@@ -579,7 +580,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
               className="btn-primary w-full flex items-center justify-center gap-2"
             >
               {retrying
-                ? <><div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white" /> Téléchargement…</>
+                ? <><ThinkingOrb size={16} ink className="text-white" /> Téléchargement…</>
                 : <><RefreshCw size={15} /> Réessayer le téléchargement</>}
             </button>
             <button onClick={onClose} className="btn-secondary w-full">Fermer (récupérable plus tard depuis l'envoi)</button>

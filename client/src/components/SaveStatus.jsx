@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { Check, AlertCircle } from 'lucide-react'
 import { useToast } from '../contexts/ToastContext.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 /**
  * Indicateur d'autosave unifié pour les fiches détail.
@@ -22,7 +23,7 @@ export function SaveStatus({ status, className = '' }) {
   if (status === 'saving') {
     return (
       <span className={`${base} text-slate-400`} aria-live="polite">
-        <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-slate-300 border-t-slate-500" />
+        <ThinkingOrb size={12} ink className="text-slate-300" />
         Sauvegarde…
       </span>
     )

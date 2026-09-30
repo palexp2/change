@@ -184,7 +184,7 @@ export function amountOfRow(row, cols, spec) {
 export function txnsForAccount(accountId, sinceDate) {
   const rows = db.prepare(`
     SELECT id, txn_date, description, details, reference, amount, balance, status, bank_state,
-           review_flag, review_flag_at, comment, comment_sheet_base
+           review_flag, review_flag_at, review_sheet_base, comment, comment_sheet_base
     FROM bank_transactions
     WHERE account_id=? AND deleted_at IS NULL AND txn_date >= ?
     ORDER BY txn_date ASC, rowid ASC
@@ -479,21 +479,48 @@ export function cellsToWrite(paired, cols, title, kind = 'bank') {
 // ── La colonne « X » : ce que Charles envoie relire à Michel ────────────────
 //
 // Le classeur porte déjà cette colonne sur chaque onglet (légende « Trx non
-// révisée (Mike) ») ; on écrit à CETTE place, pas ailleurs. Boréal n'y touche
-// que pour poser ou retirer un X isolé : tout ce que quelqu'un y a écrit
-// d'autre (« AL », une phrase) est laissé intact.
-export function reviewCells(paired, cols, title) {
-  if (cols.review == null) return []
-  const out = []
+// révisée (Mike) »). La marque se pose DES DEUX CÔTÉS — dans Boréal ou à la
+// main dans le fichier — et se synchronise comme le commentaire : on retient le
+// dernier état commun (`review_sheet_base`) et le côté qui s'en écarte gagne.
+// Sans état commun connu, le X l'emporte : une marque n'est jamais retirée par
+// Boréal sans qu'on l'ait vue retirée ailleurs. Tout autre texte (« AL », une
+// phrase) est laissé intact et ne compte pas.
+export function resolveReview(erpFlag, fileRaw, base) {
+  const raw = String(fileRaw ?? '').trim()
+  if (raw && raw.toUpperCase() !== 'X') return { skip: true }
+  const e = erpFlag ? 'X' : ''
+  const f = raw ? 'X' : ''
+  const b = base == null ? null : (String(base).trim().toUpperCase() === 'X' ? 'X' : '')
+  if (e === f) return { value: e }
+  if (b != null && e === b) return { value: f, toErp: true }
+  if (b != null && f === b) return { value: e, toFile: true }
+  return e === 'X' ? { value: 'X', toFile: true } : { value: 'X', toErp: true }
+}
+
+// Cellules X à écrire au fichier ; met à jour l'ERP pour les marques venues du fichier.
+export function syncReviewMarks(paired, cols, title) {
+  if (cols.review == null) return { cells: [], toErp: [] }
+  const setErp = db.prepare(
+    "UPDATE bank_transactions SET review_flag=?, review_flag_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'), review_sheet_base=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
+  )
+  const setBase = db.prepare('UPDATE bank_transactions SET review_sheet_base=? WHERE id=?')
+  const cells = []
+  const toErp = []
   for (const p of paired) {
     if (!p.txn) continue
-    const have = String(p.current?.review ?? '').trim()
-    const want = p.txn.review_flag ? 'X' : ''
-    if (want === have) continue
-    if (want === '' && have.toUpperCase() !== 'X') continue
-    out.push({ range: `${title}!${colLetter(cols.review)}${p.rowIndex + 1}`, values: [[want]] })
+    const r = resolveReview(p.txn.review_flag, p.fresh ? '' : p.current?.review, p.txn.review_sheet_base)
+    if (r.skip) continue
+    if (r.toFile) cells.push({ range: `${title}!${colLetter(cols.review)}${p.rowIndex + 1}`, values: [[r.value]] })
+    if (r.toErp) {
+      setErp.run(r.value ? 1 : 0, r.value, p.txn.id)
+      toErp.push(p.txn.id)
+    } else if ((p.txn.review_sheet_base ?? null) !== r.value) {
+      setBase.run(r.value, p.txn.id)
+    }
+    p.txn.review_flag = r.value ? 1 : 0
+    p.txn.review_sheet_base = r.value
   }
-  return out
+  return { cells, toErp }
 }
 
 // ── Commentaire : dans les deux sens ─────────────────────────────────────────
@@ -539,23 +566,6 @@ export function syncComments(paired, cols, title) {
     p.txn.comment_sheet_base = r.value
   }
   return { cells, toErp }
-}
-
-// Les X déjà écrits dans le fichier avant que Boréal connaisse la colonne :
-// ils entrent une fois, tant que la marque n'a jamais été posée ici.
-export function adoptReviewMarks(paired) {
-  const mark = db.prepare(
-    "UPDATE bank_transactions SET review_flag=1, review_flag_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?",
-  )
-  let n = 0
-  for (const p of paired) {
-    if (!p.txn || p.txn.review_flag_at || p.txn.review_flag) continue
-    if (String(p.current?.review ?? '').trim().toUpperCase() !== 'X') continue
-    mark.run(p.txn.id)
-    p.txn.review_flag = 1
-    n += 1
-  }
-  return n
 }
 
 // ── Le solde, dans l'ordre DU FICHIER ────────────────────────────────────────
@@ -870,12 +880,13 @@ async function mirrorTab(sheets, spreadsheetId, account, tab, cfg) {
   const ordered = placements
 
   // L'état à la banque sur les lignes déjà au fichier.
-  const adopted = adoptReviewMarks(paint)
   const cells = cellsToWrite(paint, cols, title, account.kind)
-  cells.push(...reviewCells(paint, cols, title))
+  const reviews = syncReviewMarks(paint, cols, title)
+  cells.push(...reviews.cells)
+  const adopted = reviews.toErp.length
   const comments = syncComments(paint, cols, title)
   cells.push(...comments.cells)
-  if (comments.toErp.length) touchBankTxns(comments.toErp)
+  if (comments.toErp.length || reviews.toErp.length) touchBankTxns([...new Set([...comments.toErp, ...reviews.toErp])])
 
   // Puis le solde. Il se calcule sur le fichier TEL QU'IL EST après insertion
   // (les nouvelles lignes ont décalé les numéros), donc on le relit.

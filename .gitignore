@@ -46,3 +46,4 @@ client/dist.before-*/
 e2e/.tmp-verify/
 server/tmp/
 server/*-tmp.mjs
+client/.build.lock

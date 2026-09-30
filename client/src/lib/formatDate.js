@@ -130,18 +130,24 @@ const MONTHS_FR = ['janvier', 'février', 'mars', 'avril', 'mai', 'juin', 'juill
 // replient sur leur équivalent sans heure. On extrait directement les champs
 // Y/M/D de la chaîne plutôt que de passer par `new Date()`, pour la même
 // raison que fmtDate : éviter le décalage d'un jour au rendu en fuseau local.
-export function fmtDateWithFormat(d, format) {
+// `dateOnlyAsMidnight` : une date sans heure s'affiche à 00:00 dans les formats
+// « + heure » au lieu de replier sur la date seule.
+export function fmtDateWithFormat(d, format, { dateOnlyAsMidnight = false } = {}) {
   if (!d) return '—'
   const fmt = normalizeDateFormat(format)
   if (fmt === 'iso_date') return fmtDate(d)
   const s = typeof d === 'string' ? d : ''
   const dateOnlyMatch = s.match(/^(\d{4})-(\d{2})-(\d{2})$/) || s.match(/^(\d{4})-(\d{2})-(\d{2})T00:00:00(?:\.0+)?Z$/)
+  let dt
   if (dateOnlyMatch) {
-    if (fmt !== 'local_date' && fmt !== 'local_datetime') return fmtDate(d)
     const [, y, m, day] = dateOnlyMatch
-    return `${parseInt(day, 10)} ${MONTHS_FR[parseInt(m, 10) - 1]} ${y}`
-  }
-  const dt = new Date(d)
+    if (dateOnlyAsMidnight && dateFormatHasTime(fmt)) {
+      dt = new Date(Number(y), Number(m) - 1, Number(day))
+    } else {
+      if (fmt !== 'local_date' && fmt !== 'local_datetime') return fmtDate(d)
+      return `${parseInt(day, 10)} ${MONTHS_FR[parseInt(m, 10) - 1]} ${y}`
+    }
+  } else dt = new Date(d)
   if (isNaN(dt)) return '—'
   if (fmt === 'iso_24h') return `${ymdLocal(dt)} ${pad(dt.getHours())}:${pad(dt.getMinutes())}`
   if (fmt === 'iso_12h') {

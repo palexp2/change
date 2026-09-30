@@ -11,6 +11,7 @@ import Spinner from './Spinner.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
 import { parseAttachments, attachmentFileUrl } from '../lib/customFieldDisplay.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 const REASON_LABELS = {
   preferred: 'transporteur préféré',
@@ -250,7 +251,7 @@ export default function RetourActionsSection({ retour, onDone }) {
       {/* ── Étiquette de retour ── */}
       <section className="space-y-4">
         <h3 className="font-semibold text-slate-900 text-sm flex items-center gap-1.5">
-          <Sparkles size={14} className="text-brand-500" /> Étiquette de retour
+          <Sparkles size={14} className="text-brand-500" /> Instructions de retour
         </h3>
 
         {result?.tracking_id ? (
@@ -294,7 +295,7 @@ export default function RetourActionsSection({ retour, onDone }) {
               </p>
             )}
             <button onClick={() => setStep('package')} disabled={!addressId} className="btn-primary text-sm flex items-center gap-1.5">
-              Continuer <ChevronRight size={14} />
+              Créer une étiquette de retour <ChevronRight size={14} />
             </button>
           </div>
         ) : step === 'package' ? (
@@ -337,7 +338,7 @@ export default function RetourActionsSection({ retour, onDone }) {
           <div className="space-y-3">
             {loading ? (
               <div className="flex items-center gap-2 text-sm text-slate-500 py-4 justify-center">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-brand-600" /> Récupération des tarifs…
+                <ThinkingOrb size={16} /> Récupération des tarifs…
               </div>
             ) : error ? (
               <div className="space-y-3">
@@ -463,7 +464,7 @@ export default function RetourActionsSection({ retour, onDone }) {
         {retour.instructions_sent_at ? (
           <p className="text-sm text-slate-500">Envoyées le {fmtDate(retour.instructions_sent_at)}.</p>
         ) : (
-          <button onClick={() => setComposerOpen(true)} className="btn-primary text-sm whitespace-nowrap">Vérifier le courriel</button>
+          <button onClick={() => setComposerOpen(true)} className="btn-primary text-sm whitespace-nowrap">Envoyer les instructions au client</button>
         )}
       </section>
 

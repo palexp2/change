@@ -12,6 +12,7 @@ export const FOCUS_LABELS = {
   network: 'Le contrôleur central et son antenne',
   network_ethernet: 'Un câble Ethernet jusqu’à la serre',
   network_wifi: 'Le Wi-Fi de la maison jusqu’à la serre',
+  network_wifi_credentials: 'Le nom et le mot de passe du Wi-Fi',
   network_coax: 'Une antenne montée en hauteur avec câble coaxial',
   network_mobile_choice: 'Le contrôleur internet mobile et la tour cellulaire',
   network_mobile: 'Le contrôleur internet mobile',
@@ -30,6 +31,8 @@ export const FOCUS_LABELS = {
   diameter_unknown: 'Un diamètre inconnu',
   guide_pipes: 'Les tuyaux guides',
   fans_two: 'Les deux ventilateurs de bout de serre',
+  roof_vents: 'Le toit ouvrant',
+  thermal_screens: 'La toile thermique',
   furnaces: 'Les fournaises de la serre',
   furnace_dry_contact: 'Un thermostat mural ordinaire',
   furnace_wire: 'Le filage de contrôle de la fournaise',
@@ -42,6 +45,7 @@ export const FOCUS_LABELS = {
 // préfixe qui correspond gagne, donc du plus précis au plus large.
 const BY_PREFIX = [
   ['network.mobile', 'network_mobile'],
+  ['network.wifi', 'network_wifi_credentials'],
   ['network.', 'network'],
   ['order_type.', 'site'],
   ['farm.', 'farm'],
@@ -54,6 +58,8 @@ const BY_PREFIX = [
   ['greenhouse.side_pipe', 'side_pipe'],
   ['greenhouse.diameter_other', 'side_pipe'],
   ['greenhouse.guide_pipes', 'guide_pipes'],
+  ['roofs.', 'roof_vents'],
+  ['screens.', 'thermal_screens'],
   ['chief.furnaces', 'furnaces'],
   ['chief.has_furnaces', 'furnaces'],
   ['chief.num_furnaces', 'furnaces'],

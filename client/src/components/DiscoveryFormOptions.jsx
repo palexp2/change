@@ -15,16 +15,30 @@ export function CountStepper({ id, label, value, onChange, max = MAX_SENSORS }) 
   </div>
 }
 
-export default function DiscoveryFormOptions({ value, onChange, disabled = false }) {
+// Nombre de contrôleurs mobiles ; l'ancien format ne portait que la case.
+const mobileCount = value => (value.mobile_controllers != null ? Number(value.mobile_controllers) || 0 : value.mobile_controller ? 1 : 0)
+
+// `flat` : capteurs au même niveau que les contrôleurs, sans sous-titre.
+// `mobileQty` : contrôleurs Internet mobiles en quantité plutôt qu'en case.
+export default function DiscoveryFormOptions({ value, onChange, disabled = false, title = 'Options achetées', flat = false, mobileQty = false }) {
   const setSensor = (role, v) => onChange({ ...value, sensors: { ...value.sensors, [role]: v } })
-  return <fieldset disabled={disabled} className="space-y-4 border-t border-slate-200 pt-4">
-    <legend className="text-sm font-semibold text-slate-900">Options achetées</legend>
+  const setMobile = v => onChange({ ...value, mobile_controllers: v, mobile_controller: Number(v) > 0 })
+  return <fieldset disabled={disabled} className={`${flat ? 'space-y-2' : 'space-y-4'} border-t border-slate-200 pt-4`}>
+    <legend className="text-sm font-semibold text-slate-900">{title}</legend>
     <div className="space-y-2 text-sm">
-      <label className="flex items-center gap-2"><input type="checkbox" checked={!!value.mobile_controller} onChange={e => onChange({ ...value, mobile_controller: e.target.checked })} />Contrôleur Internet mobile</label>
-      <label className="flex items-center gap-2"><input type="checkbox" checked={!!value.humidity_retention} onChange={e => onChange({ ...value, humidity_retention: e.target.checked })} />Conservation de l’humidité</label>
+      {mobileQty
+        ? <div className="flex items-center justify-between gap-3 text-slate-700">
+          <span>Contrôleur Internet mobile</span>
+          <CountStepper label="Contrôleur Internet mobile" max={20} value={mobileCount(value)} onChange={setMobile} />
+        </div>
+        : <label className="flex items-center gap-2"><input type="checkbox" checked={mobileCount(value) > 0} onChange={e => setMobile(e.target.checked ? Math.max(1, mobileCount(value)) : 0)} />Contrôleur Internet mobile</label>}
+      <div className="flex items-center justify-between gap-3 text-slate-700">
+        <span>Contrôleur central additionnel</span>
+        <CountStepper label="Contrôleur central additionnel" max={20} value={value.extra_central_controllers} onChange={v => onChange({ ...value, extra_central_controllers: v })} />
+      </div>
     </div>
     <div className="space-y-2">
-      <p className="text-xs font-medium text-slate-500">Capteurs à fournir</p>
+      {!flat && <p className="text-xs font-medium text-slate-500">Capteurs à fournir</p>}
       {SENSOR_PRODUCTS.map(([role, label]) => (
         <div key={role} className="flex items-center justify-between gap-3 text-sm text-slate-700">
           <span>{label}</span>

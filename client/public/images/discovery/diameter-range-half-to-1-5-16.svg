@@ -1,27 +1,27 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-labelledby="title desc">
-  <title id="title">Diamètres de 1/2 po à 1 5/16 po</title>
+  <title id="title">Diamètres de 3/4 po à 1 1/4 po</title>
   <desc id="desc">Quatre sections de tuyaux de tailles croissantes et une flèche reliant les deux bornes de la plage.</desc>
   <rect width="640" height="300" fill="#fff"/>
-  <!-- Diamètres extérieurs proportionnels : 1/2, 3/4, environ 1 et 1 5/16 po. -->
+  <!-- Diamètres extérieurs proportionnels : 1/2, 3/4, environ 1 et 1 1/4 po. -->
   <g fill="#7ecdd0">
     <circle cx="80" cy="108" r="28"/>
     <circle cx="210" cy="108" r="42"/>
     <circle cx="365" cy="108" r="58"/>
-    <circle cx="535" cy="108" r="73.5"/>
+    <circle cx="535" cy="108" r="70"/>
   </g>
   <g fill="#fff">
     <circle cx="80" cy="108" r="20"/>
     <circle cx="210" cy="108" r="32"/>
     <circle cx="365" cy="108" r="46"/>
-    <circle cx="535" cy="108" r="59.5"/>
+    <circle cx="535" cy="108" r="56.5"/>
   </g>
   <g fill="none" stroke="#22a34a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
     <path d="M80 214H535"/>
     <path d="m94 204-14 10 14 10m427-20 14 10-14 10"/>
   </g>
   <g font-family="system-ui, -apple-system, sans-serif" font-size="40" font-weight="600" fill="#475569" text-anchor="middle">
-    <text x="80" y="269">1/2 po</text>
-    <text x="535" y="269">1 5/16 po</text>
+    <text x="80" y="269">3/4 po</text>
+    <text x="535" y="269">1 1/4 po</text>
   </g>
   <rect y="289" width="640" height="7" rx="3.5" fill="#22a34a"/>
 </svg>

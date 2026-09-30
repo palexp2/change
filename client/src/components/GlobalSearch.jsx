@@ -4,6 +4,7 @@ import { Search, Building2, Users, TrendingUp, ShoppingCart, Package, LifeBuoy, 
 import api from '../lib/api.js'
 import { defaultNavItems } from '../lib/navItems.js'
 import { useRecentRecords, clearRecentRecords } from '../lib/useRecentRecords.js'
+import ThinkingOrb from './ThinkingOrb'
 
 const TYPE_ICON = {
   company: Building2,
@@ -77,7 +78,8 @@ const PAGE_ITEMS = (() => {
     if (item.flyoutGroups) {
       if (item.to) pages.push({ to: item.to, label: item.label, icon: item.icon, group })
       for (const sub of item.flyoutGroups) {
-        for (const s of sub.items) {
+        // Un regroupement (Banque…) : chacune de ses pages reste cherchable.
+        for (const s of sub.items.flatMap(s => s.hubPages || [s])) {
           pages.push({ to: s.to, label: s.label, icon: s.icon, group: item.label })
         }
       }
@@ -239,7 +241,7 @@ export function GlobalSearch({ open, onClose }) {
             className="flex-1 text-sm outline-none text-slate-900 placeholder-slate-400"
           />
           {loading && (
-            <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin flex-shrink-0" />
+            <ThinkingOrb state="searching" size={16} className="flex-shrink-0" />
           )}
           {!loading && query && (
             <button onClick={() => { setQuery(''); setResults([]); setSelected(0) }} className="text-slate-400 hover:text-slate-600">

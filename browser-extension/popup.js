@@ -1,7 +1,8 @@
 const go = document.getElementById('go')
 const out = document.getElementById('out')
 
-const MARK = { ok: '✓', absent: '–', erreur: '✕' }
+const MARK = { ok: '✓', absent: '–', erreur: '✕', wait: '…' }
+const STALE_MS = 60000 // un envoi plus vieux est considéré comme figé
 
 function render(items) {
   out.innerHTML = ''
@@ -17,11 +18,13 @@ function render(items) {
 // avancement s'écrit dans le stockage. On peut donc la fermer et la rouvrir.
 function paint(run) {
   if (!run) return
+  const running = !!run.running && Date.now() - (run.at || 0) < STALE_MS
   const items = [...(run.sent || [])]
+  if (running && !items.length) items.push({ state: 'wait', label: 'Envoi', detail: 'liste des portails…' })
   if (run.error) items.push({ state: 'erreur', label: 'Échec', detail: run.error })
   render(items)
-  go.disabled = !!run.running
-  go.textContent = run.running
+  go.disabled = running
+  go.textContent = running
     ? 'Envoi…'
     : (run.collect ? 'Collecte lancée' : 'Envoyer mes sessions et collecter')
 }

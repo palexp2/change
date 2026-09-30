@@ -13,8 +13,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
-import { Scan, Loader2 } from 'lucide-react'
+import { Scan } from 'lucide-react'
 import api from '../lib/api.js'
+import ThinkingOrb from './ThinkingOrb'
 
 export const IMAGERY_TILES = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'
 export const IMAGERY_ATTRIB = '&copy; Esri, Maxar, Earthstar Geographics'
@@ -85,7 +86,7 @@ export default function SatelliteView({ lat, lng, zoom = 16, height = 240, class
       <div className="mt-1.5 flex items-center gap-2 text-xs">
         <button type="button" onClick={frameGreenhouses} disabled={scanning} data-testid="satellite-frame"
           className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-50">
-          {scanning ? <Loader2 size={12} className="animate-spin" /> : <Scan size={12} />}
+          {scanning ? <ThinkingOrb size={12} ink /> : <Scan size={12} />}
           Serres
         </button>
         {found && (

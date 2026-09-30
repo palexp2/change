@@ -26,7 +26,7 @@ import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
 import { getAccessToken, airtableFetch } from '../connectors/airtable.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
-import { dynamicFieldDirection, writebackModuleForTable, pushableLinkColumn, pushOnlyColumns } from './airtableWriteback.js'
+import { dynamicFieldDirection, writebackModuleForTable, declaredLinkColumn, pushOnlyColumns } from './airtableWriteback.js'
 
 // ── Les miroirs connus ──────────────────────────────────────────────────────
 //
@@ -313,7 +313,7 @@ export function classifyFields(mirror, atTable, fieldMap) {
     // une colonne lien poussable, que le sync entrant n'écrit qu'en COALESCE (un
     // lien non résolu ne délie jamais le record) et que le write-back sait
     // renvoyer. C'est le cas de shipments.order_id (« Commande lié »).
-    if (notNull.has(d.column_name) && !pushableLinkColumn(wbModule, d.column_name)) {
+    if (notNull.has(d.column_name) && !declaredLinkColumn(wbModule, d.column_name)) {
       classified.push({ ...row, state: 'excluded', reason: 'colonne NOT NULL sans défaut', comparable: false }); continue
     }
 

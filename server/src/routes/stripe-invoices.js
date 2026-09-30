@@ -13,6 +13,8 @@ import { checkForeignKeys } from '../utils/fkExists.js'
 import { TAX_REGIMES, isCanada, suggestTaxRegime } from '../services/taxes.js'
 import { logSync } from '../services/syncLog.js'
 import { APP_URL } from '../config/appUrl.js'
+import { cleanDiscounts, pendingInvoiceTotals, discountsBreakdown } from '../services/invoiceDiscount.js'
+import { soumissionDiscounts, purchasePct } from '../services/soumissionTotals.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -55,7 +57,19 @@ router.get('/soumissions/:id/items', (req, res) => {
     WHERE di.document_type = 'soumission' AND di.document_id = ?
     ORDER BY di.sort_order, di.id
   `).all(req.params.id)
-  res.json({ data: items })
+  // Rabais d'achat encore valides de la soumission → pré-remplissent la facture.
+  const s = db.prepare('SELECT discounts, discount_pct, discount_amount FROM soumissions WHERE id = ?').get(req.params.id)
+  const today = new Date().toISOString().slice(0, 10)
+  const disc = s ? soumissionDiscounts(s).filter(d => (!d.until || d.until >= today) && (purchasePct(d) || d.amount)) : []
+  let discount = null
+  if (disc.length === 1 && !disc[0].amount) {
+    discount = { kind: 'percent', value: purchasePct(disc[0]), name: disc[0].name || '' }
+  } else if (disc.length) {
+    const sub = items.reduce((t, it) => t + (Number(it.qty) || 0) * (Number(it.unit_price) || 0), 0)
+    const off = disc.reduce((t, d) => t + sub * purchasePct(d) / 100 + (Number(d.amount) || 0), 0)
+    if (off > 0) discount = { kind: 'amount', value: Math.round(off * 100) / 100, name: disc.map(d => d.name).filter(Boolean).join(', ') }
+  }
+  res.json({ data: items, discount })
 })
 
 router.get('/companies/:companyId/shipping-province', (req, res) => {
@@ -84,7 +98,7 @@ router.post('/', async (req, res) => {
     shipping_province, shipping_country,
     send_email, due_days,
     email_to, email_subject, email_message,
-    tax_regime, tax_exempt_reason,
+    tax_regime, tax_exempt_reason, discount, discounts,
   } = req.body || {}
 
   if (!company_id) return res.status(400).json({ error: 'company_id requis' })
@@ -108,6 +122,13 @@ router.post('/', async (req, res) => {
     cleanItems.push({ product_id: it.product_id || null, qty, unit_price, description })
   }
 
+  let cleanDisc
+  try { cleanDisc = cleanDiscounts(discounts ?? discount) } catch (e) { return res.status(400).json({ error: e.message, code: 'invalid_discount' }) }
+  const grossSubtotal = cleanItems.reduce((s, it) => s + it.qty * it.unit_price, 0)
+  if (cleanDisc.length && discountsBreakdown(cleanDisc, grossSubtotal).total >= grossSubtotal) {
+    return res.status(400).json({ error: 'Le rabais ne peut pas couvrir toute la facture', code: 'invalid_discount' })
+  }
+
   // Régime de taxe : celui choisi par l'utilisateur, sinon celui que suggère la
   // province. Une facture canadienne sans taxe est possible (client autochtone
   // livré sur réserve, export) mais jamais par accident : elle exige une raison.
@@ -125,19 +146,21 @@ router.post('/', async (req, res) => {
   }
 
   const id = newRecordId()
-  const days = Number.isFinite(Number(due_days)) && Number(due_days) > 0 ? Math.floor(Number(due_days)) : 30
+  // Par défaut : payable sur réception (0 jour).
+  const days = Number.isFinite(Number(due_days)) && Number(due_days) > 0 ? Math.floor(Number(due_days)) : 0
   db.prepare(`
     INSERT INTO pending_invoices
       (id, company_id, soumission_id, currency, items_json,
        shipping_province, shipping_country, due_days, status, created_by,
-       tax_regime, tax_exempt_reason)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+       tax_regime, tax_exempt_reason, discount_json)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
   `).run(
     id, company_id, soumission_id || null, 'CAD',
     JSON.stringify(cleanItems),
     shipping_province, country,
     days, 'draft', req.user.id,
-    regime, exemptReason || null
+    regime, exemptReason || null,
+    cleanDisc.length ? JSON.stringify(cleanDisc) : null
   )
 
   let emailedTo = null, emailedFrom = null, emailMessageId = null
@@ -199,12 +222,12 @@ router.post('/:pendingId/send', async (req, res) => {
   if (!isGmailSendAvailable(req.user.id)) {
     return res.status(400).json({ error: 'Aucun compte Gmail connecté pour votre utilisateur', code: 'gmail_not_connected' })
   }
-  const { to, subject, message } = req.body || {}
+  const { to, cc, bcc, subject, message } = req.body || {}
   try {
     const sent = await sendInvoiceEmail({
       pendingId: pending.id,
       userId: req.user.id,
-      overrides: { to, subject, message },
+      overrides: { to, cc, bcc, subject, message },
     })
     db.prepare(`UPDATE pending_invoices SET status='sent', sent_at=COALESCE(sent_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(pending.id)
     res.json({
@@ -240,9 +263,13 @@ router.get('/pending/:pendingId', (req, res) => {
     WHERE p.id = ?
   `).get(req.params.pendingId)
   if (!row) return res.status(404).json({ error: 'Introuvable' })
+  const t = pendingInvoiceTotals(row)
   res.json({
     ...row,
-    items: JSON.parse(row.items_json || '[]'),
+    items: t.items,
+    discount: t.discount,
+    discounts: t.discounts,
+    discount_amount: t.discount_amount,
     pay_url: `${appBaseUrl()}/erp/pay/${row.id}`,
   })
 })
@@ -263,6 +290,12 @@ function resolveDefaultRecipient(companyId) {
   }
 }
 
+// Libellé d'échéance des courriels ; null pour « sur réception » (0 jour),
+// les gabarits omettent alors la mention « payable au plus tard ».
+function dueDaysLabel(days) {
+  return Number(days) > 0 ? `${days} jours après émission` : null
+}
+
 function buildDefaultMessage({ contactFirstName, totalLabel, dueDateLabel }) {
   const greeting = contactFirstName ? `Bonjour ${contactFirstName},` : 'Bonjour,'
   const intro = `Vous trouverez ci-dessous le lien de paiement pour la facture au montant de ${totalLabel}${dueDateLabel ? `, payable au plus tard ${dueDateLabel}` : ''}.`
@@ -270,9 +303,7 @@ function buildDefaultMessage({ contactFirstName, totalLabel, dueDateLabel }) {
 }
 
 function buildPendingTotalLabel(pending) {
-  const items = JSON.parse(pending.items_json || '[]')
-  const subtotal = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
-  return fmtMoney(subtotal, pending.currency || 'CAD') + ' (avant taxes)'
+  return fmtMoney(pendingInvoiceTotals(pending).net, pending.currency || 'CAD') + ' (avant taxes)'
 }
 
 // GET /api/stripe-invoices/:pendingId/email-defaults — pré-remplit la modale d'envoi
@@ -289,10 +320,18 @@ router.get('/:pendingId/email-defaults', (req, res) => {
   `).all(pending.company_id)
 
   const totalLabel = buildPendingTotalLabel(pending)
-  const dueDateLabel = pending.due_days ? `${pending.due_days} jours après émission` : null
+  const dueDateLabel = dueDaysLabel(pending.due_days)
+  // Compte Gmail qui enverra (même résolution que sendEmail avec userId).
+  const sender = db.prepare(`
+    SELECT co.account_email FROM connector_oauth co
+    JOIN users u ON lower(u.email) = lower(co.account_email)
+    WHERE co.connector='google' AND co.refresh_token IS NOT NULL AND u.id=?
+    LIMIT 1
+  `).get(req.user.id)
 
   res.json({
     pending_invoice_id: pending.id,
+    from: sender?.account_email || null,
     company: company ? { id: company.id, name: company.name, email: company.email || null } : null,
     contacts: contacts.map(c => ({
       id: c.id,
@@ -340,7 +379,7 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
   }
 
   const totalLabel = buildPendingTotalLabel(pending)
-  const dueDateLabel = pending.due_days ? `${pending.due_days} jours après émission` : null
+  const dueDateLabel = dueDaysLabel(pending.due_days)
 
   const interactionId = newRecordId()
   const emailRowId = newRecordId()
@@ -365,7 +404,9 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
     customMessage: overrides?.message || null,
   })
 
-  const sent = await sendEmail(recipientEmail, subject, html, { userId })
+  const cc = overrides?.cc ? String(overrides.cc).trim() || null : null
+  const bcc = overrides?.bcc ? String(overrides.bcc).trim() || null : null
+  const sent = await sendEmail(recipientEmail, subject, html, { userId, cc, bcc })
 
   // L'email est DÉJÀ parti. On persiste l'interaction et l'email dans une seule
   // transaction : sans ça, si le second INSERT échoue on aurait une interaction
@@ -376,9 +417,9 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
     db.prepare(`INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
       VALUES (?,?,?,?,'email','out',?)`)
       .run(interactionId, recipientContactId, pending.company_id, userId, ts)
-    db.prepare(`INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, gmail_message_id, gmail_thread_id, automated, open_count)
-      VALUES (?,?,?,?,?,?,?,?,0,0)`)
-      .run(emailRowId, interactionId, subject, html, sent.account_email, recipientEmail, sent.message_id, sent.thread_id || null)
+    db.prepare(`INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, bcc, gmail_message_id, gmail_thread_id, automated, open_count)
+      VALUES (?,?,?,?,?,?,?,?,?,?,0,0)`)
+      .run(emailRowId, interactionId, subject, html, sent.account_email, recipientEmail, cc, bcc, sent.message_id, sent.thread_id || null)
   })
   persistEmail()
 

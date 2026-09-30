@@ -9,7 +9,8 @@ import { PageTitle } from '../components/PageTitle.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { RecordForm } from '../components/RecordForm.jsx'
-import ProjectDetail from './ProjectDetail.jsx'
+import ProjectDetail, { VendeurPicker } from './ProjectDetail.jsx'
+import { useAuth } from '../lib/auth.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { useEntityListRealtime } from '../lib/useRealtimeChannel.js'
@@ -25,15 +26,14 @@ import { useToast } from '../contexts/ToastContext.jsx'
 
 import { fmtMoney } from '../utils/formatters.js'
 
-const PROJECT_TYPES = ['Nouveau client', 'Expansion', 'Ajouts mineurs', 'Pièces de rechange']
-
 // Champs proposés par le formulaire « Nouveau projet » — liste calquée sur ce
 // que POST /api/projects persiste (voir RecordForm.jsx pour la configuration).
 // « Raison du refus » n'y figure pas : la route de création ne l'accepte pas, un
 // champ qui ne sauvegarde pas n'a rien à faire dans un formulaire d'ajout.
-function projectFormFields(companies) {
+function projectFormFields(companies, vendeurOptions, defaultVendeur) {
   return [
-    { field: 'name', label: 'Nom du projet', span: 2, locked: true, required: true },
+    // Pas de « Nom du projet » : les projets n'ont pas de nom (demande de
+    // P.-A. Papillon) — le serveur en dérive un de l'entreprise et du type.
     {
       field: 'company_id', label: 'Entreprise',
       input: ({ value, onChange }) => (
@@ -47,7 +47,15 @@ function projectFormFields(companies) {
         />
       ),
     },
-    { field: 'type', label: 'Type', type: 'select', options: PROJECT_TYPES },
+    // Vendeur : présélectionné sur l'utilisateur connecté (s'il est vendeur).
+    {
+      field: 'vendeur_ref', label: 'Vendeur', defaultValue: defaultVendeur,
+      input: ({ value, onChange }) => (
+        <VendeurPicker value={value || ''} options={vendeurOptions} onChange={v => onChange(v || '')} />
+      ),
+    },
+    // Pas de « Type » : déduit par le serveur (Expansion si l'entreprise a déjà
+    // un projet gagné, sinon Nouveau client) — demande de P.-A. Papillon.
     {
       field: 'probability', label: 'Probabilité (%)', defaultValue: 50,
       input: ({ value, onChange, id }) => (
@@ -62,7 +70,8 @@ function projectFormFields(companies) {
         </>
       ),
     },
-    { field: 'close_date', label: 'Date de clôture prévue', type: 'date' },
+    // Pas de « Date de clôture prévue » : retirée du formulaire d'ajout (demande
+    // de P.-A. Papillon) — la colonne reste dans la liste et sur la fiche.
     { field: 'notes', label: 'Notes', type: 'textarea', span: 2 },
     // Masqués par défaut — disponibles via « Modifier le formulaire ».
     { field: 'value_cad', label: 'Valeur (CAD)', type: 'currency', min: '0', visible: false },
@@ -80,6 +89,13 @@ export default function Pipeline() {
   const createdMonthFilter = searchParams.get('createdMonth') // e.g. "2026-03" — filters by created_at
   const [projects, setProjects] = useState([])
   const [companies, setCompanies] = useState([])
+  const { user } = useAuth()
+  const [vendeurOptions, setVendeurOptions] = useState([])
+  useEffect(() => {
+    api.projects.vendeurOptions().then(r => setVendeurOptions(r?.data || r || [])).catch(() => {})
+  }, [])
+  const myVendeurRef = user?.employee_id ? `employee:${user.employee_id}` : ''
+  const defaultVendeur = vendeurOptions.some(o => o.ref === myVendeurRef) ? myVendeurRef : ''
   const [loading, setLoading] = useState(true)
   const [showModal, setShowModal] = useState(false)
   const disabledCols = useDisabledColumns('projects') // Map<column_name, { airtable_field_name }>
@@ -124,8 +140,12 @@ export default function Pipeline() {
   // et autres colonnes masquées. Le second appel ne bascule pas `loading` à true
   // pour éviter un flash.
   const load = useCallback(async () => {
+    // Vue qui va s'ouvrir (même priorité que useTableView) : le lite embarque
+    // ses colonnes, pour que ses filtres jouent dès la première peinture.
+    let view = new URLSearchParams(window.location.search).get('vue')
+    if (!view) { try { view = localStorage.getItem('erp_lastView_projects') } catch { /* stockage bloqué */ } }
     await loadProgressive(
-      (page, limit) => api.projects.list({ limit, page, lite: 1 }),
+      (page, limit) => api.projects.list({ limit, page, lite: 1, ...(view && view !== 'null' ? { view } : {}) }),
       setProjects, setLoading
     )
   }, [])
@@ -299,7 +319,7 @@ export default function Pipeline() {
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nouveau projet" size="lg">
         <RecordForm
           table="projects"
-          fields={projectFormFields(companies)}
+          fields={projectFormFields(companies, vendeurOptions, defaultVendeur)}
           columns={2}
           onSubmit={handleCreate}
           onClose={() => setShowModal(false)}

@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildFollowUpPrompt, resolveReply, futureStart, briefFor, REQUESTER_MARKER, pickLane, SCHEDULED_LANE } from './promptQueue.js'
+import { buildFollowUpPrompt, resolveReply, futureStart, briefFor, REQUESTER_MARKER, pickNextImplementations } from './promptQueue.js'
 import { detectSessionLimit, detectRateLimitEvent, extractPendingQuestion, QUESTION_MARKER } from './taskRunner.js'
 
 // ── Continuité d'un fil ───────────────────────────────────────────────────────
@@ -192,23 +192,31 @@ test('heure passée, vide ou illisible : aucun report', () => {
   assert.equal(futureStart('ce soir'), null)
 })
 
-// ── Répartition dans les files d'exécution ────────────────────────────────────
-// Ce qui est demandé « maintenant » doit partir en même temps que les autres
-// demandes du moment (une file libre chacun) ; ce qui est programmé le soir doit
-// s'enchaîner dans UNE seule file.
+// ── Une seule file, plusieurs postes ──────────────────────────────────────────
+// Un poste libre prend le premier item de la file, quel qu'il soit.
 
-test('départ immédiat : la file la moins chargée, donc des départs simultanés', () => {
-  assert.equal(pickLane({ loads: [0, 0] }), 0)
-  assert.equal(pickLane({ loads: [1, 0] }), 1)
-  // Toutes occupées : on repart sur la moins chargée, pas sur une file au hasard.
-  assert.equal(pickLane({ loads: [2, 1] }), 1)
-  // Charge héritée des anciennes files (3 et 4) : elle ne compte plus, seules les
-  // files encore servies sont comparées.
-  assert.equal(pickLane({ loads: [1, 1, 0, 0] }), 0)
+const q = (id, extra = {}) => ({ id, status: 'queued', start_at: null, same_context: 0, ...extra })
+const ids = rows => rows.map(r => r.id)
+
+test('file unique : les postes libres prennent les premiers items, dans l\'ordre', () => {
+  const pending = [q('a'), q('b'), q('c')]
+  assert.deepEqual(ids(pickNextImplementations(pending, { free: 2 })), ['a', 'b'])
+  assert.deepEqual(ids(pickNextImplementations([{ ...q('x'), status: 'running' }, ...pending], { free: 1 })), ['a'])
+  assert.deepEqual(ids(pickNextImplementations(pending, { free: 0 })), [])
 })
 
-test('départ programmé : toujours la même file, quelle que soit la charge', () => {
-  const at = '2030-01-01T23:00:00.000Z'
-  assert.equal(pickLane({ startAt: at, loads: [0, 0] }), SCHEDULED_LANE)
-  assert.equal(pickLane({ startAt: at, loads: [5, 0] }), SCHEDULED_LANE)
+test('départ programmé : jamais avant l\'heure, un seul à la fois', () => {
+  const now = Date.parse('2030-01-01T23:00:00.000Z')
+  const past = '2030-01-01T22:00:00.000Z'
+  const future = '2030-01-02T01:00:00.000Z'
+  assert.deepEqual(ids(pickNextImplementations([q('a', { start_at: future }), q('b')], { free: 2, now })), ['b'])
+  assert.deepEqual(ids(pickNextImplementations([q('a', { start_at: past }), q('b', { start_at: past }), q('c')], { free: 2, now })), ['a', 'c'])
+  const running = { ...q('r', { start_at: past }), status: 'running' }
+  assert.deepEqual(ids(pickNextImplementations([running, q('a', { start_at: past }), q('b')], { free: 1, now })), ['b'])
+})
+
+test('« même contexte » attend son prédécesseur sans bloquer les suivants', () => {
+  const running = { ...q('p'), status: 'running' }
+  assert.deepEqual(ids(pickNextImplementations([running, q('s', { same_context: 1 }), q('b')], { free: 1 })), ['b'])
+  assert.deepEqual(ids(pickNextImplementations([q('s', { same_context: 1 }), q('b')], { free: 2 })), ['s', 'b'])
 })

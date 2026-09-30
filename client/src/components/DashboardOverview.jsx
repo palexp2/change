@@ -157,7 +157,7 @@ function labelAt(i, n, every) {
    `vw` = largeur du viewBox : les cartes larges (la bande héros) en prennent
    une plus grande pour que le texte ne soit pas agrandi par la mise à
    l'échelle uniforme du SVG. */
-function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW, linkFor, chartId }) {
+export function MiniColumns({ points, tone = 'brand', format = fmtInt, labelEvery = 2, vw = CW, linkFor, chartId }) {
   const [hover, setHover] = useState(null)
   const navigate = useNavigate()
   const t = TONES[tone] || TONES.brand
@@ -432,14 +432,14 @@ function GroupedColumns({ points, series, format = fmtMoneyCompact, labelEvery =
 }
 
 /* Jumeau tableau des colonnes groupées : une colonne par série, plus le total. */
-function SeriesTable({ points, series, format, periodLabel = 'Période' }) {
+function SeriesTable({ points, series, format, periodLabel = 'Période', withTotal = true }) {
   return (
     <table className="w-full text-xs">
       <thead className="sticky top-0 bg-white">
         <tr className="border-b border-slate-200 text-left text-[11px] text-slate-500">
           <th className="py-1 pr-2 font-medium">{periodLabel}</th>
           {series.map(s => <th key={s.key} className="py-1 pl-2 text-right font-medium">{s.short || s.label}</th>)}
-          <th className="py-1 pl-2 text-right font-medium">Total</th>
+          {withTotal && <th className="py-1 pl-2 text-right font-medium">Total</th>}
         </tr>
       </thead>
       <tbody>
@@ -449,9 +449,9 @@ function SeriesTable({ points, series, format, periodLabel = 'Période' }) {
             {series.map(s => (
               <td key={s.key} className="py-1 pl-2 text-right tabular-nums">{format(Number(p[s.key]) || 0)}</td>
             ))}
-            <td className="py-1 pl-2 text-right font-medium tabular-nums text-slate-700">
+            {withTotal && <td className="py-1 pl-2 text-right font-medium tabular-nums text-slate-700">
               {format(series.reduce((sum, s) => sum + (Number(p[s.key]) || 0), 0))}
-            </td>
+            </td>}
           </tr>
         ))}
       </tbody>
@@ -608,12 +608,62 @@ function lastMondayKeys(n) {
    renvoie les lignes déjà aplaties (en-tête / compte / sous-total) avec la
    chaîne de sections parentes : replier une section masque son détail mais
    garde son sous-total, et la dernière ligne est le résultat net. */
+
+// Le sous-total « Total de … » d'une section monte sur sa ligne de titre :
+// c'est la ligne qui suit le détail de la section, même profondeur, même
+// chaîne de parents, même groupe. Les sous-totaux sans titre (bénéfice brut,
+// résultat net) restent des lignes à part.
+function mergeSectionTotals(rows) {
+  const out = []
+  const absorbed = new Set()
+  rows.forEach((r, i) => {
+    if (absorbed.has(r.id)) return
+    if (r.kind !== 'header') { out.push(r); return }
+    let j = i + 1
+    while (j < rows.length && (rows[j].parents || []).includes(r.id)) j++
+    const s = rows[j]
+    const sameChain = s && (s.parents || []).join('/') === (r.parents || []).join('/')
+    if (s?.kind === 'summary' && s.depth === r.depth && (s.group || null) === (r.group || null) && sameChain) {
+      absorbed.add(s.id)
+      out.push({ ...r, values: s.values, total: s.total })
+    } else out.push(r)
+  })
+  return out
+}
+
+// « AUTRES DÉPENSES » devient une sous-section « Autres » de « DÉPENSES » :
+// ses comptes descendent d'un niveau, son total s'ajoute à celui des dépenses
+// (et quitte le résultat hors exploitation, si QB en renvoie un).
+function mergeOtherExpenses(rows) {
+  const top = (kind, group) => rows.find(r => r.kind === kind && r.group === group && !r.depth)
+  const eh = top('header', 'Expenses'), es = top('summary', 'Expenses')
+  const oh = top('header', 'OtherExpenses'), os = top('summary', 'OtherExpenses')
+  if (!eh || !es || !oh || !os) return rows
+  const shift = (r, sign) => {
+    const values = r.values.map((v, i) => Math.round((v + sign * (os.values[i] || 0)) * 100) / 100)
+    return { ...r, values, total: Math.round(values.reduce((s, v) => s + v, 0) * 100) / 100 }
+  }
+  const inOther = r => (r.parents || []).includes(oh.id)
+  const moved = rows.filter(inOther).map(r => ({ ...r, depth: r.depth + 1, parents: [eh.id, ...r.parents] }))
+  const out = []
+  for (const r of rows) {
+    if (r === oh || r === os || inOther(r)) continue
+    if (r === es) {
+      out.push({ ...oh, label: 'Autres', group: null, depth: 1, parents: [eh.id] }, ...moved,
+        { ...os, label: 'Total Autres', group: null, depth: 1, parents: [eh.id] }, shift(es, 1))
+    } else if (r.kind === 'summary' && r.group === 'NetOperatingIncome') out.push(shift(r, -1))
+    else if (r.kind === 'summary' && r.group === 'NetOtherIncome') out.push(shift(r, 1))
+    else out.push(r)
+  }
+  return out
+}
+
 function IncomeStatementCard({ data, error }) {
-  // `null` = état par défaut : tout replié, on ne voit que les sous-totaux de
-  // section et le résultat net. Le détail par compte est à un clic.
+  // `null` = état par défaut : tout replié, on ne voit que les titres de
+  // section (avec leur total) et le résultat net. Le détail par compte est à un clic.
   const [override, setOverride] = useState(null)
   const months = data?.months || []
-  const rows = data?.rows || []
+  const rows = mergeSectionTotals(mergeOtherExpenses(data?.rows || []))
   const sections = rows.filter(r => r.collapsible)
   const collapsed = override || new Set(sections.map(r => r.id))
   const allCollapsed = sections.length > 0 && sections.every(r => collapsed.has(r.id))
@@ -679,19 +729,21 @@ function IncomeStatementCard({ data, error }) {
               </tr>
             </thead>
             <tbody>
-              {visible.map(r => {
+              {visible.map((r, idx) => {
                 const isNet = r.group === 'NetIncome'
+                // Une ligne sur deux teintée, cellules figées comprises.
+                const bg = idx % 2 ? 'bg-slate-50' : 'bg-white'
                 const cls = isNet
                   ? 'border-t-2 border-slate-300 font-semibold text-slate-900'
                   : r.kind === 'summary'
                     ? 'border-t border-slate-200 font-medium text-slate-700'
                     : r.kind === 'header'
-                      ? 'font-medium text-slate-700'
+                      ? `font-medium text-slate-700 ${r.depth ? '' : 'border-t border-slate-200'}`
                       : 'text-slate-600'
                 return (
-                  <tr key={r.id} className={cls}>
+                  <tr key={r.id} className={`${cls} ${bg}`}>
                     <td
-                      className="sticky left-0 z-10 max-w-[240px] truncate bg-white py-1 pr-2"
+                      className={`sticky left-0 z-10 max-w-[240px] truncate py-1 pr-2 ${bg}`}
                       style={{ paddingLeft: 8 + (r.depth || 0) * 10 }}
                       title={r.label}
                     >
@@ -707,7 +759,7 @@ function IncomeStatementCard({ data, error }) {
                         {r.values ? money(r.values[i]) : null}
                       </td>
                     ))}
-                    <td className="sticky right-0 whitespace-nowrap bg-white px-2 py-1 text-right font-semibold">
+                    <td className={`sticky right-0 whitespace-nowrap px-2 py-1 text-right font-semibold ${bg}`}>
                       {r.values ? money(r.total) : null}
                     </td>
                   </tr>
@@ -726,6 +778,9 @@ function IncomeStatementCard({ data, error }) {
 export function DashboardOverview({ data, subscriptionEvents }) {
   const [bank, setBank] = useState(null)
   const [bankError, setBankError] = useState(null)
+  const [accountBalances, setAccountBalances] = useState(null)
+  const [accountBalancesError, setAccountBalancesError] = useState(false)
+  const [accountBalancesLoading, setAccountBalancesLoading] = useState(true)
   const [history, setHistory] = useState(null)
   const [aging, setAging] = useState(null)
   const [qbRevenue, setQbRevenue] = useState(null)
@@ -747,6 +802,12 @@ export function DashboardOverview({ data, subscriptionEvents }) {
     api.dashboard.revenueByMonth({ months: 12, ...opts })
       .then(setQbRevenue)
       .catch(e => { setQbRevenue(null); setQbRevenueError(e?.message || 'Erreur QuickBooks') })
+    setAccountBalancesLoading(true)
+    setAccountBalancesError(false)
+    return api.dashboard.overviewBalances(opts)
+      .then(result => setAccountBalances(result.accounts))
+      .catch(() => { setAccountBalances(null); setAccountBalancesError(true) })
+      .finally(() => setAccountBalancesLoading(false))
   }
 
   useEffect(() => { loadFinance() }, [])
@@ -756,18 +817,11 @@ export function DashboardOverview({ data, subscriptionEvents }) {
     setBank(null)
     setQbRevenue(null)
     setPnl(null)
-    loadFinance({ refresh: true })
-    // Le rafraîchissement QB peut prendre quelques secondes ; on rend la main
-    // dès que les soldes reviennent (l'effet ci-dessous suit `bank`).
-    setTimeout(() => setReloading(false), 1200)
+    loadFinance({ refresh: true }).finally(() => setReloading(false))
   }
 
   /* Trésorerie */
   const treasury = bank?.treasury ?? bank?.totals?.net ?? null
-  const creditLimit = bank?.credit_limit || 0
-  const headroom = treasury != null ? treasury + creditLimit : null
-  const headroomPct = creditLimit && headroom != null ? Math.max(0, Math.min(1, headroom / creditLimit)) : 0
-  const headroomTone = headroomPct > 0.5 ? 'brand' : headroomPct > 0.2 ? 'amber' : 'rose'
 
   const treasurySeries = useMemo(() => (history?.months || []).map(m => {
     const [y, mo] = m.month.split('-').map(Number)
@@ -791,7 +845,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   }, [data])
 
   const sum = (arr, k) => arr.reduce((s, x) => s + (x[k] || 0), 0)
-  const revenueSeries = profitWeeks.map(w => ({ ...w, value: w.revenue }))
   // Marge en fenêtre glissante de 28 jours (4 semaines) : une semaine sans
   // expédition n'a pas de marge — la lisser évite les chutes à 0 % qui ne
   // veulent rien dire. Même convention que la section « Rentabilité ».
@@ -837,8 +890,15 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   /* Projets créés, closing, billets */
   const projectsSeries = useMemo(() => {
     const by = new Map((data?.projectsCreatedByMonth || []).map(r => [r.month, r.count]))
-    return lastMonthKeys(12).map(m => ({ ...m, value: by.get(m.key) || 0 }))
+    return lastMonthKeys(12).map(m => {
+      const [y, mo] = m.key.split('-')
+      return { ...m, value: by.get(m.key) || 0, prev: by.get(`${Number(y) - 1}-${mo}`) || 0 }
+    })
   }, [data])
+  const projectsCompareSeries = [
+    { key: 'prev', label: 'Année préc.', tone: 'slate' },
+    { key: 'value', label: 'Actuel', tone: 'brand' },
+  ]
 
   const closingSeries = useMemo(() => {
     const by = new Map()
@@ -861,11 +921,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   // La tuile « Billets ouverts » et le graphique « Billets de support » sont
   // partis avec le statut et la date d'un billet (migration 040).
 
-  const shipmentsSeries = useMemo(() => {
-    const by = new Map((data?.weeklyShipments || []).map(r => [r.week_start, r.count]))
-    return lastMondayKeys(16).map(w => ({ ...w, value: by.get(w.key) || 0 }))
-  }, [data])
-
   const mrrSeries = useMemo(() => {
     const by = new Map((subscriptionEvents?.months || []).map(m => [m.month, m.net_mrr_delta_cad]))
     return lastMonthKeys(12).map(m => ({ ...m, value: Number(by.get(m.key)) || 0 }))
@@ -886,13 +941,15 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const failedSections = Object.keys(data?._errors || {})
 
   const bankRows = bank?.accounts || []
-  // Les comptes à 0 $ n'apportent rien à la lecture : on les masque (les sous-totaux restent inchangés)
-  const nonZero = bankRows.filter(a => {
+  // Les comptes entre -500 $ et 500 $ n'apportent rien à la lecture : on les masque (les sous-totaux restent inchangés)
+  // Idem pour le compte d'écart de change latent, qui n'est pas un compte réel
+  const significant = bankRows.filter(a => {
+    if (/variation de change non mat[ée]rialis[ée]e/i.test(a.name || '')) return false
     const v = Number(a.balance_cad ?? a.balance)
-    return Number.isFinite(v) && Math.round(v * 100) !== 0
+    return Number.isFinite(v) && Math.abs(v) >= 500
   })
-  const banks = nonZero.filter(a => a.type === 'Bank')
-  const cards = nonZero.filter(a => a.type === 'Credit Card')
+  const banks = significant.filter(a => a.type === 'Bank')
+  const cards = significant.filter(a => a.type === 'Credit Card')
 
   return (
     <div data-testid="dashboard-overview" className="space-y-3">
@@ -912,8 +969,9 @@ export function DashboardOverview({ data, subscriptionEvents }) {
               <button
                 type="button"
                 onClick={refreshFinance}
-                aria-label="Rafraîchir les soldes QuickBooks"
-                title="Rafraîchir les soldes QuickBooks"
+                disabled={accountBalancesLoading}
+                aria-label="Rafraîchir les soldes"
+                title="Rafraîchir les soldes"
                 className="rounded p-1 text-slate-300 transition-colors hover:bg-slate-50 hover:text-slate-600"
               >
                 <RefreshCw size={13} className={reloading ? 'animate-spin' : ''} />
@@ -938,19 +996,33 @@ export function DashboardOverview({ data, subscriptionEvents }) {
                   {' · '}
                   Cartes &amp; marges <span className="font-medium text-slate-700 tabular-nums">{fmtMoney(bank?.totals?.credit_card || 0)}</span>
                 </p>
-                {creditLimit > 0 && (
-                  <div className="mt-3">
-                    <div className="flex items-baseline justify-between text-[11px]">
-                      <span className="text-slate-500">Coussin avant la limite de marge</span>
-                      <span className="font-medium text-slate-700 tabular-nums">
-                        {fmtMoney(headroom)} · {Math.round(headroomPct * 100)} %
-                      </span>
-                    </div>
-                    <Meter pct={headroomPct * 100} tone={headroomTone} />
-                  </div>
-                )}
               </>
             )}
+            <div className="mt-3" data-testid="overview-account-balances" aria-busy={accountBalancesLoading}>
+              {accountBalancesError ? (
+                <p className="text-xs text-rose-600" role="status">Soldes indisponibles. Réessayez avec le bouton de rafraîchissement.</p>
+              ) : !accountBalances ? (
+                <p className="text-xs text-slate-400" role="status">Chargement des comptes…</p>
+              ) : (
+                <dl className={`space-y-2 ${accountBalancesLoading ? 'opacity-50' : ''}`}>
+                  {accountBalances.map(account => (
+                    <div key={account.key} className="flex items-baseline justify-between gap-3 text-[11px]">
+                      <dt className="min-w-0 text-slate-500">{account.name}</dt>
+                      <dd className="shrink-0 text-right">
+                        <div className="font-medium text-slate-700 tabular-nums">
+                          {fmtMoneyBase(account.balance, account.currency, { decimals: 2 })}
+                        </div>
+                        <div className="text-[10px] text-slate-400" title={account.as_of ? `Solde lu le ${new Date(account.as_of).toLocaleString('fr-CA')}` : undefined}>
+                          {account.source === 'plaid_live' ? 'Plaid · à jour'
+                            : account.source === 'plaid_cached' ? 'Plaid · dernier solde connu'
+                            : account.source === 'quickbooks' ? 'QuickBooks' : 'Indisponible'}
+                        </div>
+                      </dd>
+                    </div>
+                  ))}
+                </dl>
+              )}
+            </div>
           </div>
           <div>
             <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-slate-400">Évolution — 12 derniers mois</p>
@@ -1047,14 +1119,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           sub="Compte 65000"
           to="/dashboard/couts-expedition"
         />
-        <Tile
-          id="lowstock"
-          label="Produits sous le seuil"
-          value={fmtInt(data?.inventory?.lowStockCount)}
-          tone={data?.inventory?.lowStockCount > 0 ? 'rose' : 'slate'}
-          sub="Stock au niveau minimum ou en dessous"
-          to="/products"
-        />
       </section>
 
       {/* Graphiques compacts */}
@@ -1081,10 +1145,10 @@ export function DashboardOverview({ data, subscriptionEvents }) {
         <ChartCard
           id="projects" title="Projets créés" subtitle="12 derniers mois"
           to="/dashboard/projets-crees"
-          points={projectsSeries} format={fmtInt} valueLabel="Projets" periodLabel="Mois"
+          table={<SeriesTable points={projectsSeries} series={projectsCompareSeries} format={fmtInt} periodLabel="Mois" withTotal={false} />}
         >
-          <MiniColumns
-            points={projectsSeries} tone="brand" format={fmtInt}
+          <GroupedColumns
+            points={projectsSeries} series={projectsCompareSeries} format={fmtInt}
             chartId="projects"
             linkFor={p => p.value ? `/pipeline?createdMonth=${p.key}` : null}
           />
@@ -1104,30 +1168,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           points={marginSeries} format={v => fmtPct(v, 0)} valueLabel="Marge" periodLabel="Semaine"
         >
           <MiniLine points={marginSeries} tone="brand" format={v => fmtPct(v, 0)} labelEvery={4} />
-        </ChartCard>
-
-        <ChartCard
-          id="revenue" title="Revenus expédiés" subtitle="Hors taxes · 16 semaines"
-          to="/dashboard/rentabilite"
-          points={revenueSeries} format={fmtMoneyCompact} valueLabel="Revenus" periodLabel="Semaine"
-        >
-          <MiniColumns
-            points={revenueSeries} tone="brand" format={fmtMoneyCompact} labelEvery={4}
-            chartId="revenue"
-            linkFor={p => p.value ? `/orders?shippedWeek=${p.key}` : null}
-          />
-        </ChartCard>
-
-        <ChartCard
-          id="shipments" title="Livraisons" subtitle="Colis envoyés · 16 semaines"
-          to="/dashboard/livraisons"
-          points={shipmentsSeries} format={fmtInt} valueLabel="Colis" periodLabel="Semaine"
-        >
-          <MiniColumns
-            points={shipmentsSeries} tone="sky" format={fmtInt} labelEvery={4}
-            chartId="shipments"
-            linkFor={p => p.value ? `/envois?week=${p.key}` : null}
-          />
         </ChartCard>
 
         <ChartCard

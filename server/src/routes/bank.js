@@ -20,7 +20,7 @@ import { mergeSheetDuplicates, countSheetDuplicates } from '../services/plaidSyn
 import { resolveVendorFromBankLabel, invalidateBankLabelCache } from '../services/scrapers/vendorFromBankLabel.js'
 import { proposalsForTxn, proposalSummary, decode as decodeProposal } from '../services/bankProposals/store.js'
 import { ruleForTxn } from '../services/bankRules/store.js'
-import { acceptProposal, refuseProposal, getProposal } from '../services/bankProposals/apply.js'
+import { acceptProposal, refuseProposal, getProposal, undoProposal } from '../services/bankProposals/apply.js'
 import { isBatchAcceptable, PUBLISHES_TO_QB } from '../services/bankProposals/model.js'
 import {
   BankActionError, suggestAddDefaults, addExpenseFromTxn,
@@ -29,7 +29,21 @@ import {
 import { matchedDocState, publishMatchedDoc } from '../services/bankMatchPublish.js'
 import { findInvoiceCandidates } from '../services/bankInvoiceMatch.js'
 import { findDocCandidates } from '../services/bankReceiptMatch.js'
+import { getPaieRepartitionConfig } from '../services/paieRepartition.js'
+import { labelMatchesPattern } from '../services/bankDebitLookup.js'
 import { missingInvoiceAgeDays } from '../services/scrapers/invoiceNeeds.js'
+import {
+  listRequests as listInvoiceRequests, addRequests as addInvoiceRequests,
+  removeRequest as removeInvoiceRequest, setInSend as setInvoiceRequestInSend,
+  buildMessage as buildInvoiceRequestMessage, sendRequests as sendInvoiceRequests,
+} from '../services/missingInvoiceRequests.js'
+import {
+  openReconcile, reconcileAccount, isRobotRunning, RECONCILE_AUTOMATION_ID, CAPTURE_DIR as QB_RECONCILE_CAPTURES,
+} from '../services/qbReconcileRobot.js'
+import { isSystemAutomationActive, logSystemRun } from '../services/systemAutomations.js'
+import { monthCloseStatus } from '../services/bankMonthClose.js'
+import { basename, join as joinPath } from 'path'
+import { existsSync as fileExists } from 'fs'
 
 const router = Router()
 router.use(requireAuth)
@@ -51,12 +65,17 @@ function getAccount(id) {
 
 // ── Comptes ──────────────────────────────────────────────────────────────────
 
+// Le rapprochement commence au 1er janvier 2026 : 2025 est fermé, ses lignes
+// ne s'affichent plus nulle part sur la page (demande de Charles, 2026-09-27).
+const RECON_SINCE = '2026-01-01'
+
 router.get('/accounts', (req, res) => {
   const accounts = db.prepare(`
     SELECT a.*,
-      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL) AS txn_count,
-      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.status='a_traiter') AS a_traiter_count,
-      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.review_flag=1) AS review_count,
+      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.txn_date >= '${RECON_SINCE}') AS txn_count,
+      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.status='a_traiter' AND t.txn_date >= '${RECON_SINCE}') AS a_traiter_count,
+      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.status IN ('a_traiter','facture_recue') AND t.txn_date >= '${RECON_SINCE}') AS todo_count,
+      (SELECT COUNT(*) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL AND t.review_flag=1 AND t.txn_date >= '${RECON_SINCE}') AS review_count,
       (SELECT MAX(t.txn_date) FROM bank_transactions t WHERE t.account_id=a.id AND t.deleted_at IS NULL) AS last_txn_date
     FROM bank_accounts a WHERE a.deleted_at IS NULL
     ORDER BY a.sort_order, a.name COLLATE NOCASE
@@ -116,9 +135,9 @@ router.get('/accounts/:id/transactions', (req, res) => {
            COALESCE(NULLIF(t.details, ''), t.description) AS label
     FROM bank_transactions t
     LEFT JOIN users u ON u.id = t.reconciled_by
-    WHERE t.account_id=? AND t.deleted_at IS NULL
+    WHERE t.account_id=? AND t.deleted_at IS NULL AND t.txn_date >= ?
     ORDER BY t.txn_date DESC, t.created_at DESC
-  `).all(account.id)
+  `).all(account.id, RECON_SINCE)
   // Libellé du document apparié pour affichage direct dans le tableau, et
   // lien direct vers la transaction QB si le document a été publié.
   const achatLabel = db.prepare('SELECT vendor, total_cad AS total, quickbooks_id, type FROM achats_fournisseurs WHERE id=?')
@@ -163,6 +182,7 @@ router.get('/accounts/:id/transactions', (req, res) => {
       if (doc?.quickbooks_id) {
         const entity = doc.quickbooks_type === 'bill' ? 'bill'
           : doc.quickbooks_type === 'cc_credit' ? 'creditcardcredit'
+          : doc.quickbooks_type === 'deposit' ? 'deposit'
           : 'expense'
         t.qb_url = qbEntityUrl(entity, doc.quickbooks_id)
       }
@@ -196,6 +216,28 @@ router.get('/accounts/:id/transactions', (req, res) => {
     t.proposal_count = p?.n || 0
     t.publishing_count = p?.publishing || 0
   }
+  // La suggestion affichée SUR la ligne (la plus sûre), avec ce qu'il faut pour
+  // trancher sans ouvrir le panneau ; et celle que l'app a appliquée seule,
+  // pour pouvoir l'annuler d'un clic.
+  const pick = (status, extra = '') => {
+    const m = new Map()
+    for (const r of db.prepare(`
+      SELECT id, bank_txn_id, kind, confidence, evidence, payload, auto_accepted FROM bank_proposals
+      WHERE status=? AND account_id=? ${extra} ORDER BY confidence DESC
+    `).all(status, account.id)) {
+      if (m.has(r.bank_txn_id)) continue
+      const d = decodeProposal(r)
+      m.set(r.bank_txn_id, { id: d.id, kind: d.kind, confidence: d.confidence, evidence: d.evidence,
+        payload: d.payload, publishes: PUBLISHES_TO_QB.has(d.kind) })
+    }
+    return m
+  }
+  const top = pick('proposee')
+  const auto = pick('acceptee', 'AND auto_accepted=1')
+  for (const t of rows) {
+    t.suggestion = top.get(t.id) || null
+    t.auto_suggestion = auto.get(t.id) || null
+  }
   // La règle qui a préparé l'écriture : la ligne doit pouvoir dire d'où vient
   // ce qu'on lui propose (le champ était stocké et n'était affiché nulle part).
   const ruleNames = new Map(db.prepare('SELECT id, name FROM bank_rules').all().map((r) => [r.id, r.name]))
@@ -222,6 +264,14 @@ router.get('/accounts/:id/transactions', (req, res) => {
       : null
     t.missing_invoice = n ? 1 : 0
   }
+  // Ce que Charles a lui-même réclamé : la pastille « demandées » et la marque
+  // sur la ligne s'en servent. Aucun lien avec la détection automatique.
+  const requested = new Set(db.prepare(`
+    SELECT r.bank_txn_id FROM missing_invoice_requests r
+    JOIN bank_transactions t ON t.id = r.bank_txn_id
+    WHERE t.account_id = ?
+  `).all(account.id).map((r) => r.bank_txn_id))
+  for (const t of rows) t.invoice_requested = requested.has(t.id) ? 1 : 0
   res.json(rows)
 })
 
@@ -334,6 +384,88 @@ router.post('/accounts/:id/qb-audit', async (req, res) => {
   }
 })
 
+// Robot « Rapprocher » QuickBooks, tranche 1 : ouvre l'écran du compte avec la
+// session du pont de session, capture et lit — ne modifie rien dans QuickBooks.
+router.post('/accounts/:id/qb-reconcile/probe', requireAdmin, async (req, res) => {
+  const account = getAccount(req.params.id)
+  if (!account) return res.status(404).json({ error: 'Not found' })
+  const out = await openReconcile(account.id)
+  res.json({
+    ...out,
+    captureUrl: out.capture ? `/erp/api/bank/qb-reconcile/captures/${encodeURIComponent(out.capture)}` : null,
+  })
+})
+
+// Robot « Rapprocher », tranche 2 : coche les lignes vertes dans QuickBooks, lit
+// la Différence, enregistre pour plus tard — ne termine JAMAIS (c'est Charles).
+// Le passage prend une à deux minutes : POST le lance en arrière-plan, la page
+// relit GET jusqu'à ce que `running` retombe.
+const captureUrl = (name) => (name ? `/erp/api/bank/qb-reconcile/captures/${encodeURIComponent(name)}` : null)
+
+function lastReconcileRun(accountId) {
+  const r = db.prepare('SELECT * FROM bank_qb_reconcile_runs WHERE account_id=? ORDER BY created_at DESC LIMIT 1').get(accountId)
+  if (!r) return null
+  const json = (v) => { try { return JSON.parse(v || '[]') } catch { return [] } }
+  return {
+    id: r.id, ok: !!r.ok, at: r.created_at, statement_date: r.statement_date, ending_balance: r.ending_balance,
+    difference: r.difference, checked: r.checked, already_checked: r.already_checked,
+    saved: !!r.saved, resumed: !!r.resumed, needs_session: !!r.needs_session, error: r.error,
+    unmatched_boreal: json(r.unmatched_boreal), unmatched_qb: json(r.unmatched_qb),
+    screenshot_url: captureUrl(r.screenshot),
+    view: (() => { try { return JSON.parse(r.result || '{}').view || null } catch { return null } })(),
+  }
+}
+
+let reconcileRunningFor = null
+// « Fermer le mois » : rapprochements à 0 $ qui attendent « Terminer » dans QuickBooks.
+router.get('/month-close', (req, res) => res.json(monthCloseStatus()))
+
+router.get('/accounts/:id/qb-reconcile', (req, res) => {
+  const account = getAccount(req.params.id)
+  if (!account) return res.status(404).json({ error: 'Not found' })
+  res.json({ running: isRobotRunning() && reconcileRunningFor === account.id, last: lastReconcileRun(account.id) })
+})
+
+router.post('/accounts/:id/qb-reconcile', requireAdmin, (req, res) => {
+  const account = getAccount(req.params.id)
+  if (!account) return res.status(404).json({ error: 'Not found' })
+  if (!isSystemAutomationActive(RECONCILE_AUTOMATION_ID)) return res.status(409).json({ error: 'Robot désactivé (Automations)' })
+  if (isRobotRunning()) return res.status(409).json({ error: 'Un passage du robot est déjà en cours' })
+  reconcileRunningFor = account.id
+  const userId = req.user?.id || null
+  reconcileAccount(account.id).then((out) => {
+    db.prepare(`
+      INSERT INTO bank_qb_reconcile_runs (id, account_id, ok, statement_date, ending_balance, difference, checked,
+        already_checked, saved, resumed, unmatched_boreal, unmatched_qb, screenshot, error, needs_session, result, run_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(newRecordId(), account.id, out.ok ? 1 : 0, out.statement_date || null, out.ending_balance ?? null,
+      out.difference ?? null, out.checked || 0, out.already_checked || 0, out.saved ? 1 : 0, out.resumed ? 1 : 0,
+      JSON.stringify(out.unmatched_boreal || []), JSON.stringify(out.unmatched_qb || []), out.screenshot || null,
+      out.error || out.hint || null, out.needsSession ? 1 : 0, JSON.stringify(out), userId)
+    const diffTxt = out.difference == null ? '—' : `${out.difference.toFixed(2)} $`
+    logSystemRun(RECONCILE_AUTOMATION_ID, {
+      status: out.ok ? 'success' : 'error',
+      result: out.ok
+        ? `${account.name} au ${out.statement_date} : différence ${diffTxt} · ${out.checked} cochée(s) · ${out.already_checked} déjà cochée(s) · ` +
+          `${out.unmatched_boreal.length} verte(s) introuvable(s) · ${out.unmatched_qb.length} écriture(s) QB sans ligne verte · ` +
+          (out.saved ? 'enregistré pour plus tard' : `NON enregistré (${out.save_note})`)
+        : null,
+      error: out.ok ? null : (out.error || out.hint || out.screen || 'échec'),
+      duration_ms: out.duration_ms,
+      triggerData: { account_id: account.id, account: account.name, trace: out.trace },
+    })
+  }).catch((e) => {
+    logSystemRun(RECONCILE_AUTOMATION_ID, { status: 'error', error: e.message, triggerData: { account_id: account.id } })
+  }).finally(() => { reconcileRunningFor = null })
+  res.status(202).json({ running: true })
+})
+
+router.get('/qb-reconcile/captures/:name', requireAdmin, (req, res) => {
+  const file = joinPath(QB_RECONCILE_CAPTURES, basename(req.params.name))
+  if (!fileExists(file)) return res.status(404).json({ error: 'Not found' })
+  res.sendFile(file)
+})
+
 // Réparation ponctuelle des montants de l'import historique (voir
 // services/bankImportRepair.js). `apply` absent = simulation : on renvoie le
 // plan sans rien écrire.
@@ -379,6 +511,7 @@ router.post('/accounts/:id/update-all', async (req, res) => {
   if (auto.matched) said.push(`${auto.matched} document${auto.matched > 1 ? 's' : ''} apparié${auto.matched > 1 ? 's' : ''}`)
   if (qb?.linked) said.push(`${qb.linked} écriture${qb.linked > 1 ? 's' : ''} QuickBooks retrouvée${qb.linked > 1 ? 's' : ''}`)
   if (qb?.proposed) said.push(`${qb.proposed} à confirmer`)
+  if (qb?.reconciled) said.push(`${qb.reconciled} rapprochée${qb.reconciled > 1 ? 's' : ''}`)
   if (qbError) said.push(`QuickBooks indisponible (${qbError})`)
   if (!said.length) said.push('rien de neuf')
 
@@ -523,8 +656,8 @@ router.post('/transactions/reconcile', (req, res) => {
   if (!ids.length) return res.status(400).json({ error: 'ids requis' })
   const un = req.body.unreconcile === true
   const stmt = un
-    ? db.prepare(`UPDATE bank_transactions SET reconciled_at=NULL, reconciled_by=NULL, status='a_traiter', updated_at=${NOW} WHERE id=? AND deleted_at IS NULL`)
-    : db.prepare(`UPDATE bank_transactions SET reconciled_at=${NOW}, reconciled_by=?, status='rapproche', updated_at=${NOW} WHERE id=? AND deleted_at IS NULL`)
+    ? db.prepare(`UPDATE bank_transactions SET reconciled_at=NULL, reconciled_by=NULL, reconcile_method='annule', status='a_traiter', updated_at=${NOW} WHERE id=? AND deleted_at IS NULL`)
+    : db.prepare(`UPDATE bank_transactions SET reconciled_at=${NOW}, reconciled_by=?, reconcile_method='manuel', status='rapproche', updated_at=${NOW} WHERE id=? AND deleted_at IS NULL`)
   let changed = 0
   const tx = db.transaction(() => {
     for (const id of ids) {
@@ -572,6 +705,14 @@ router.get('/transactions/:id/proposals', (req, res) => {
 router.post('/proposals/:id/accept', async (req, res) => {
   try {
     res.json(await acceptProposal(req.params.id, req.user?.id))
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+router.post('/proposals/:id/undo', async (req, res) => {
+  try {
+    res.json(await undoProposal(req.params.id, req.user?.id))
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message })
   }
@@ -752,6 +893,16 @@ router.get('/transactions/:id/dossier', (req, res) => {
   `).get(txn.id)
   if (paie) out.paie = { ...paie, booked: !!paie.salary_purchase_id }
 
+  // Le prélèvement de l'assurance collective (AGA) : reconnu par le libellé de
+  // l'automation, il se comptabilise depuis la ligne tant qu'aucune écriture
+  // QuickBooks ne le porte.
+  if (txn.amount < 0 && !txn.qb_txn_id && !txn.matched_id && !txn.transfer_txn_id) {
+    const cfg = getPaieRepartitionConfig()
+    if (labelMatchesPattern(`${txn.details || ''} ${txn.description || ''}`, cfg.aga_bank_label_pattern)) {
+      out.aga = { id: txn.id, amount: Math.round(Math.abs(txn.amount) * 100) / 100, txn_date: txn.txn_date }
+    }
+  }
+
   // ENCAISSEMENT CLIENT. Un virement Interac d'un client (« 600-4386 » pour La
   // ferme Décembre) n'a aucun document dans l'ERP : il faut aller marquer la
   // facture payée ailleurs. Les factures ouvertes DU MÊME MONTANT sont donc
@@ -829,6 +980,46 @@ router.delete('/transactions/:id/qb-link', (req, res) => {
   touchBankTxns([txn.id])
   mirrorSoon('lien-qb')
   res.json(getTxn(txn.id))
+})
+
+// ── Factures manquantes réclamées à la main ────────────────────────────────
+//
+// La liste ne se remplit QUE par le bouton « Facture manquante » de la barre de
+// sélection du relevé (décision de Charles, 2026-09-29) : la détection
+// automatique reste la pastille « sans facture », qui ne la touche pas.
+router.get('/invoice-requests', (req, res) => {
+  res.json({ requests: listInvoiceRequests(), message: buildInvoiceRequestMessage() })
+})
+
+router.post('/invoice-requests', (req, res) => {
+  const ids = Array.isArray(req.body?.txn_ids) ? req.body.txn_ids : []
+  if (!ids.length) return res.status(400).json({ error: 'txn_ids requis' })
+  const requests = addInvoiceRequests(ids, req.user?.name || req.user?.email || null)
+  touchBankTxns(ids)
+  res.json({ requests, message: buildInvoiceRequestMessage(requests) })
+})
+
+// Sortir une facture de la LISTE (elle n'est plus réclamée du tout).
+router.delete('/invoice-requests/:txnId', (req, res) => {
+  const requests = removeInvoiceRequest(req.params.txnId)
+  touchBankTxns([req.params.txnId])
+  res.json({ requests, message: buildInvoiceRequestMessage(requests) })
+})
+
+// Sortir une facture de l'ENVOI sans la sortir de la liste — et l'y remettre.
+router.patch('/invoice-requests/:txnId', (req, res) => {
+  const requests = setInvoiceRequestInSend(req.params.txnId, req.body?.in_send !== false)
+  res.json({ requests, message: buildInvoiceRequestMessage(requests) })
+})
+
+router.post('/invoice-requests/send', async (req, res) => {
+  try {
+    const out = await sendInvoiceRequests({ user: req.user?.name || req.user?.email || null })
+    if (!out.sent) return res.status(400).json({ error: out.reason === 'vide' ? 'Aucune facture dans l\'envoi' : 'Envoi désactivé' })
+    res.json({ ...out, message: buildInvoiceRequestMessage(out.requests) })
+  } catch (e) {
+    res.status(502).json({ error: e.message })
+  }
 })
 
 // « X » : la ligne part à la relecture de Michel. La marque vit dans Boréal et

@@ -1,10 +1,10 @@
 import {
   LayoutDashboard,
   TrendingUp, ShoppingCart, Package, LifeBuoy,
-  ShoppingBag, Truck, RotateCcw, FileText, RefreshCw, Wrench,
+  ShoppingBag, Truck, RotateCcw, FileText, Wrench,
   Barcode, MessageSquare, CheckSquare, Hammer,
-  ReceiptText, Landmark, Users, Banknote, Contact, BookOpen,
-  ArrowLeftRight, Clock, Tag, Mail, PhoneCall,
+  Landmark, Users, Banknote, Contact,
+  Clock, Tag, Mail, PhoneCall,
   FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
@@ -89,24 +89,12 @@ export const defaultNavItems = [
     { to: '/envois',   icon: Truck,        label: 'Envois' },
     { to: '/retours',  icon: RotateCcw,    label: 'Retours' },
   ]},
-  { group: 'Comptabilité', icon: Landmark, accent: 'compta', items: [
-    // Espace finance, en tête du groupe : hub du suivi comptable quotidien.
-    // `flyoutGroups` lui fait déployer ses sections dans un panneau flottant au
-    // survol (NavFlyoutItem) ; le clic, lui, mène au dashboard comptabilité —
-    // qui n'a donc plus de ligne à part dans le panneau. Sections définies dans
-    // lib/financeSections.js.
+  // `inlineFlyout` : le panneau de la section montre directement les sections
+  // de l'Espace finance (au lieu d'un second panneau au survol de sa ligne).
+  // Toutes les pages compta vivent dans lib/financeSections.js.
+  { group: 'Comptabilité', icon: Landmark, accent: 'compta', inlineFlyout: true, items: [
+    // Le clic sur « Espace finance » mène au dashboard comptabilité.
     { to: '/comptabilite',          icon: Landmark,   label: 'Espace finance', flyoutGroups: FINANCE_GROUPS },
-    { to: '/factures',              icon: FileText,   label: 'Factures clients' },
-    { to: '/paiements',             icon: Banknote,   label: 'Paiements' },
-    { to: '/items-vendus',          icon: Tag,        label: 'Items vendus' },
-    { to: '/abonnements',           icon: RefreshCw,  label: 'Abonnements' },
-    { to: '/abonnements/mouvements', icon: RefreshCw, label: "Mouvements d'abonnements" },
-    // La collecte de factures est un onglet de cette page : elle vit dans son
-    // sous-menu (lib/navSubsections.js), pas dans une entrée de menu à part.
-    { to: '/sale-receipts',         icon: ReceiptText,label: 'Extraction de données' },
-    { to: '/journal-entries',       icon: BookOpen,   label: 'Écritures de journal' },
-    { to: '/comptabilite/regles-serials', icon: BookOpen, label: 'Mouvements numéros de série' },
-    { to: '/stock-movement',        icon: ArrowLeftRight, label: "Mouvements d'inventaire" },
   ]},
   { group: 'Atelier', icon: Hammer, accent: 'inventaire', items: [
     { to: '/purchases',    icon: ShoppingBag, label: 'Achats' },

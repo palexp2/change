@@ -4,8 +4,9 @@ import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
 import { getCentralControllers } from '../utils/centralController.js';
 import { CC_PERMISSION_SELECT, CC_PERMISSIONS_JOIN } from '../utils/ccPermissions.js';
-import { emitCompany } from '../services/realtimeEmitters.js';
+import { emitCompany, emitCompanyContactsChanged } from '../services/realtimeEmitters.js';
 import { findCompanyDuplicates } from '../utils/duplicateMatch.js';
+import { findDuplicateGroups, mergePreview, mergeCompanies, dismissDuplicates } from '../services/companyMerge.js';
 import { readRelation } from '../services/customFieldsView.js'
 import { RETURN_COMPANY_SQL } from '../services/returnCompany.js'
 import { parsePage } from '../utils/pagination.js'
@@ -30,6 +31,38 @@ router.get('/duplicates', (req, res) => {
   const { name, email, exclude_id } = req.query;
   const matches = findCompanyDuplicates(db, { name, email, excludeId: exclude_id });
   res.json({ matches });
+})
+
+// Outil « Doublons » de la liste des entreprises : groupes suspects, aperçu des
+// champs en conflit, fusion, et « pas un doublon ». Avant GET /:id.
+router.get('/duplicate-groups', (req, res) => {
+  res.json({ data: findDuplicateGroups() })
+})
+
+router.get('/merge-preview', (req, res) => {
+  const drops = String(req.query.drop || '').split(',').filter(Boolean)
+  const preview = mergePreview(req.query.keep, drops)
+  if (!preview) return res.status(404).json({ error: 'Company not found' })
+  res.json(preview)
+})
+
+router.post('/merge', (req, res) => {
+  const { keep_id, drop_ids, pick } = req.body || {}
+  try {
+    const result = mergeCompanies({ keepId: keep_id, dropIds: drop_ids, pick, userId: req.user?.id })
+    emitCompany('updated', result.keep_id, req.user?.id)
+    for (const id of result.dropped) emitCompany('deleted', id, req.user?.id)
+    emitCompanyContactsChanged([result.keep_id], req.user?.id)
+    res.json(result)
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+router.post('/duplicate-dismissals', (req, res) => {
+  const n = dismissDuplicates(req.body?.ids, req.user?.id)
+  if (n < 2) return res.status(400).json({ error: 'Deux entreprises au moins' })
+  res.json({ ok: true })
 })
 
 // GET /api/companies

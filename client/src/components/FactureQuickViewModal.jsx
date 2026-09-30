@@ -24,6 +24,7 @@ const STATUS_COLORS = {
 }
 
 import { fmtMoney } from '../utils/formatters.js'
+import ThinkingOrb from './ThinkingOrb'
 
 function buildStripeUrl(facture) {
   if (facture.lien_stripe) return facture.lien_stripe
@@ -73,7 +74,7 @@ export function FactureQuickViewModal({ factureId, isOpen, onClose }) {
     <Modal isOpen={isOpen} onClose={onClose} title={title} size="lg">
       {loading && (
         <div className="flex items-center justify-center py-10">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" />
+          <ThinkingOrb size={32} />
         </div>
       )}
 

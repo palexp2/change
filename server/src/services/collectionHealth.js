@@ -30,12 +30,13 @@ function oneLine(text) {
 
 /**
  * État de chaque compte de collecte actif.
- * `state` ∈ ok | session_a_envoyer | session_vieillie | casse | jamais_tourne
+ * `state` ∈ ok | a_configurer | session_a_envoyer | session_vieillie | casse | jamais_tourne
  */
 export function collectionHealth() {
   const accounts = db.prepare(`
     SELECT id, vendor, label, last_status, last_error, last_run_at, last_imported,
-           storage_state_at, (storage_state_enc IS NOT NULL) AS has_session
+           storage_state_at, (storage_state_enc IS NOT NULL) AS has_session,
+           (password_enc IS NOT NULL) AS has_password
     FROM scraper_accounts
     WHERE deleted_at IS NULL AND enabled = 1
     ORDER BY vendor
@@ -59,6 +60,13 @@ export function collectionHealth() {
       // nom, la tournée échouerait avant de commencer.
       state = 'sans_collecteur'
       detail = "Aucun collecteur ne porte ce nom — compte à retirer de la liste."
+    } else if (!a.has_session && !a.has_password) {
+      // Portail ajouté automatiquement, pas encore configuré : ce n'est pas une
+      // panne, c'est un geste qui reste à faire.
+      state = 'a_configurer'
+      detail = needsSession
+        ? 'Portail à brancher — envoyer la session depuis le module de navigateur.'
+        : 'Portail à brancher — saisir les identifiants, ou envoyer la session.'
     } else if (needsSession && !a.has_session) {
       state = 'session_a_envoyer'
       detail = 'Ce portail refuse toute connexion automatique — envoyer la session depuis le module de navigateur.'

@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling-h">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <text x="320" y="56" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#475569">6 ft or less</text>
+  <path d="M190 268V200C190 146 248 114 320 114C392 114 450 146 450 200V268Z" fill="#eaf7f8"/>
+  <path d="M190 217V200C190 146 248 114 320 114C392 114 450 146 450 200V217" fill="none" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <g fill="none" stroke="#b9e2e4" stroke-width="2.6" stroke-linecap="round">
+    <path d="M254 217V202C254 168 284 146 320 146"/>
+    <path d="M386 217V202C386 168 356 146 320 146"/>
+  </g>
+  <g>
+    <use href="#seedling-h" transform="translate(250 266) scale(1.5)"/>
+    <use href="#seedling-h" transform="translate(320 266) scale(1.5)"/>
+    <use href="#seedling-h" transform="translate(390 266) scale(1.5)"/>
+  </g>
+  <g fill="none" stroke="#94a3b8" stroke-width="3" stroke-dasharray="9 9" stroke-linecap="round">
+    <path d="M190 219V266"/>
+    <path d="M450 219V266"/>
+  </g>
+  <g fill="#fff" stroke="#7ecdd0" stroke-width="4">
+    <rect x="180" y="205" width="20" height="14" rx="7"/>
+    <rect x="440" y="205" width="20" height="14" rx="7"/>
+  </g>
+  <g fill="none" stroke="#94a3b8" stroke-width="2.6" stroke-linecap="round">
+    <path d="M150 212V268"/>
+    <path d="M140 212H186"/>
+    <path d="M140 268H186"/>
+  </g>
+  <path d="M60 268H580" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+</svg>

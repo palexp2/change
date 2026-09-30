@@ -194,6 +194,38 @@ export async function fetchQbLedgerCleared(qbAccountIds, startDate, endDate) {
   return [...kept.values()].flat()
 }
 
+// Même rapport, TOUTES les écritures d'un compte QB avec leur marqueur de
+// compensation (« R » = déjà rapprochée, « C » = compensée, vide = jamais vue
+// à la banque) : le robot « Rapprocher » (qbReconcileRobot.js) y lit ce qui est
+// encore à cocher et à quelle date / quel montant QuickBooks l'affiche.
+export async function fetchQbLedgerForReconcile(qbAccountId, startDate, endDate) {
+  const cols = 'tx_date,txn_type,debt_amt,credit_amt,nat_foreign_amount,is_cleared'
+  const d = await qbGet(
+    `/reports/GeneralLedger?start_date=${startDate}&end_date=${endDate}&account=${qbAccountId}&columns=${cols}`
+  )
+  const colKeys = (d.Columns?.Column || []).map((c) => c.MetaData?.find((m) => m.Name === 'ColKey')?.Value)
+  const idx = (k) => colKeys.indexOf(k)
+  const [iDate, iType, iDebit, iCredit, iForeign, iCleared] =
+    ['tx_date', 'txn_type', 'debt_amt', 'credit_amt', 'nat_foreign_amount', 'is_cleared'].map(idx)
+  const entries = []
+  for (const cols2 of walkRows(d.Rows?.Row, [])) {
+    const date = cols2[iDate]?.value || ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue
+    let amount = Number(cols2[iDebit]?.value || 0) - Number(cols2[iCredit]?.value || 0)
+    const foreign = iForeign >= 0 ? Number(cols2[iForeign]?.value || 0) : 0
+    if (foreign) amount = Math.sign(amount || foreign) * Math.abs(foreign)
+    if (!amount) continue
+    entries.push({
+      date,
+      qbId: cols2[iType]?.id ? String(cols2[iType].id) : null,
+      type: cols2[iType]?.value || null,
+      amount: Math.round(amount * 100) / 100,
+      cleared: String(cols2[iCleared]?.value || '').trim().toUpperCase() || null,
+    })
+  }
+  return entries
+}
+
 // `linkAccountToQb` a été RETIRÉ le 2026-09-15. Il appariait au montant exact,
 // à ±4 jours, sur le seul compte du relevé — et déclarait « absente de
 // QuickBooks » toute écriture qui sortait de ce cadre : 83 des 94 anomalies du

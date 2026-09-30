@@ -14,7 +14,11 @@ import bell from './bell.js'
 import digikey from './digikey.js'
 import simplex from './simplex.js'
 import fedex from './fedex.js'
+import pishop from './pishop.js'
+import newark from './newark.js'
+import bellBusiness from './bellBusiness.js'
 import { nowIso } from '../../utils/datetime.js'
+import { SESSION_ONLY_TARGETS } from './bridgeSessions.js'
 import { uploadsPath } from '../../config/uploads.js'
 
 // ── Collecteurs de portails fournisseurs ──────────────────────────────────────
@@ -23,7 +27,12 @@ import { uploadsPath } from '../../config/uploads.js'
 // (session, 2FA, dédup, ingestion, journalisation, artefacts de diagnostic) est
 // mutualisé ici : ajouter un fournisseur = écrire `login` + `collect`.
 
-export const SCRAPERS = { amazon, wix, bell, digikey, simplex, fedex }
+export const SCRAPERS = {
+  amazon, wix, bell, digikey, simplex, fedex, pishop, newark,
+  // Clé distincte de `bell` : le Libre-service Affaires est un autre portail,
+  // un autre compte et d'autres factures que MyBell.
+  bellbusiness: bellBusiness,
+}
 export const VENDOR_LABELS = Object.fromEntries(
   Object.entries(SCRAPERS).map(([k, v]) => [k, v.label])
 )
@@ -33,7 +42,8 @@ export const VENDOR_LABELS = Object.fromEntries(
 // domaine interrogeable.
 export const VENDOR_DOMAINS = {
   amazon: 'amazon.', wix: 'wix.com', bell: 'bell.ca', digikey: 'digikey.ca',
-  simplex: 'simplexwireless.com', fedex: 'fedex.com',
+  simplex: 'simplexwireless.com', fedex: 'fedex.com', pishop: 'pishop.ca',
+  newark: 'newark.com', bellbusiness: 'business.bell.ca',
 }
 
 // Domaines RÉELS à interroger pour récupérer les témoins, par collecteur — ce
@@ -46,6 +56,11 @@ export const BRIDGE_DOMAINS = {
   digikey: ['digikey.ca'],
   simplex: ['simplexwireless.com'],
   fedex: ['fedex.com'],
+  pishop: ['pishop.ca', 'www.pishop.ca'],
+  newark: ['canada.newark.com', 'newark.com'],
+  bellbusiness: ['business.bell.ca', 'bell.ca'],
+  // Pas un collecteur : session du robot « Rapprocher » (voir bridgeSessions.js).
+  quickbooks: SESSION_ONLY_TARGETS.quickbooks.domains,
 }
 
 const artifactsRoot = uploadsPath('scrapers')
@@ -76,6 +91,60 @@ export function reapOrphanRuns() {
   `).run(nowIso())
   if (orphans.changes) console.log(`♻️ scrapers : ${orphans.changes} tournée(s) orpheline(s) close(s)`)
   db.prepare(`UPDATE scraper_accounts SET last_status='cancelled' WHERE last_status='running'`).run()
+}
+
+// ── Le compte se crée tout seul ───────────────────────────────────────────────
+// Ajouter un portail à l'ERP ne devrait rien demander à personne : dès qu'un
+// collecteur existe, son compte apparaît dans « Collecte de factures », prêt à
+// recevoir une session ou des identifiants. Sans ça, chaque nouveau portail
+// obligeait à remplir un formulaire avant même de pouvoir envoyer sa session —
+// et il restait invisible du module de navigateur (qui ne liste que les
+// comptes existants).
+//
+// Un compte neuf n'a ni mot de passe ni session : il ne part donc jamais en
+// tournée (voir le garde-fou « à configurer »), il attend simplement.
+function linkVendorProfile(vendorKey, label) {
+  const target = String(label || vendorKey).toLowerCase()
+  const rows = db.prepare(
+    'SELECT id, name, aliases FROM vendor_profiles WHERE deleted_at IS NULL'
+  ).all()
+  const hits = rows.filter((r) => {
+    let aliases = []
+    try { aliases = JSON.parse(r.aliases || '[]') } catch { aliases = [] }
+    return [r.name, ...aliases].some((n) => {
+      const v = String(n || '').toLowerCase()
+      return v && (v === target || v === vendorKey || target.startsWith(v) || v.startsWith(target))
+    })
+  })
+  // Égalité entre deux fiches fournisseur : on ne devine pas, le lien se fait
+  // à la main sur la page.
+  return hits.length === 1 ? hits[0].id : null
+}
+
+export function ensureCollectorAccounts() {
+  let created = 0
+  for (const [vendor, scraper] of Object.entries(SCRAPERS)) {
+    const exists = db.prepare(
+      'SELECT 1 FROM scraper_accounts WHERE vendor=? AND deleted_at IS NULL'
+    ).get(vendor)
+    if (exists) continue
+    db.prepare(`
+      INSERT INTO scraper_accounts (id, vendor, label, enabled, vendor_profile_id)
+      VALUES (?, ?, ?, 1, ?)
+    `).run(newRecordId(), vendor, scraper.label, linkVendorProfile(vendor, scraper.label))
+    created++
+  }
+  // Un compte sans fiche fournisseur ne reçoit jamais de travail : on retente
+  // le lien à chaque démarrage, la fiche a pu naître entre-temps.
+  for (const a of db.prepare(
+    'SELECT id, vendor FROM scraper_accounts WHERE deleted_at IS NULL AND vendor_profile_id IS NULL'
+  ).all()) {
+    const id = linkVendorProfile(a.vendor, SCRAPERS[a.vendor]?.label)
+    if (id) db.prepare('UPDATE scraper_accounts SET vendor_profile_id=?, updated_at=? WHERE id=?')
+      .run(id, nowIso(), a.id)
+  }
+  if (created) console.log(`🧾 collecte de factures : ${created} portail(s) ajouté(s) automatiquement`)
+  return created
 }
 
 export function getAccount(id) {
@@ -172,6 +241,20 @@ async function execute({ accountId, trigger, userId }) {
     // et surtout inutile de le faire chaque nuit en laissant croire à un
     // sélecteur cassé. Sans session importée, la tournée s'arrête ici avec le
     // geste à faire.
+    // Compte créé automatiquement et jamais configuré : ni identifiants, ni
+    // session. Ce n'est pas une panne, c'est un portail qui attend — la tournée
+    // s'arrête sans rien marquer en rouge.
+    if (!storageState && !account.password_enc) {
+      updateRun(runId, {
+        status: 'cancelled', finished_at: nowIso(), duration_ms: Date.now() - t0,
+        error: 'Portail à configurer — saisir les identifiants ou envoyer la session',
+        log: JSON.stringify(logLines),
+      })
+      db.prepare(`UPDATE scraper_accounts SET last_run_at=?, last_status='cancelled', last_error=NULL, updated_at=? WHERE id=?`)
+        .run(nowIso(), nowIso(), accountId)
+      return { status: 'skipped', runId, reason: 'a_configurer' }
+    }
+
     if (!storageState && scraper.requiresImportedSession) {
       throw new Error(`${scraper.label} bloque toute connexion automatisée (case « je ne suis pas un robot ») — envoyer la session depuis le module de navigateur`)
     }
@@ -378,13 +461,18 @@ async function execute({ accountId, trigger, userId }) {
  */
 export async function runAllScrapers(trigger = 'scheduled', { userId = null, onlyWithSession = false } = {}) {
   const accounts = db.prepare(
-    'SELECT id, vendor, label, storage_state_enc FROM scraper_accounts WHERE deleted_at IS NULL AND enabled=1'
+    'SELECT id, vendor, label, storage_state_enc, password_enc FROM scraper_accounts WHERE deleted_at IS NULL AND enabled=1'
   ).all()
   const results = []
   for (const a of accounts) {
     const label = a.label || VENDOR_LABELS[a.vendor] || a.vendor
     // Le bouton « Tout récolter » ne relance pas les portails à captcha qui
     // n'ont pas reçu de session : ce serait repartir pour le même échec.
+    // Portail jamais configuré : rien à tenter, et surtout rien à signaler.
+    if (!a.storage_state_enc && !a.password_enc) {
+      results.push({ vendor: a.vendor, label, status: 'skipped', error: 'portail à configurer' })
+      continue
+    }
     const needsSession = SCRAPERS[a.vendor]?.requiresImportedSession
     if (!a.storage_state_enc && (needsSession || onlyWithSession)) {
       results.push({ vendor: a.vendor, label, status: 'skipped', error: 'session absente' })

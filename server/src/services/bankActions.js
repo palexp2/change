@@ -18,6 +18,7 @@
  * l'historique se contredit, on le dit au lieu de trancher en silence.
  */
 import db from '../db/database.js'
+import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { newRecordId } from '../utils/recordId.js'
 import { buildEntryDraft, vendorHistory, vendorFromPastPurchases } from './bankEntryDraft.js'
 import { stampRule } from './bankRules/store.js'
@@ -50,11 +51,6 @@ function accountOf(id) {
   return db.prepare('SELECT * FROM bank_accounts WHERE id=? AND deleted_at IS NULL').get(id)
 }
 
-// Premier segment de `qb_account_id` : un compte ERP peut couvrir plusieurs
-// comptes QB (compte scindé côté QuickBooks), le premier est le principal.
-// Même convention que prepaid.js et bankQbLink.js.
-const mainQbAccount = (account) =>
-  account?.qb_account_id ? String(account.qb_account_id).split(',')[0].trim() : null
 
 // ── Ajouter : ce qu'on propose ───────────────────────────────────────────────
 
@@ -72,6 +68,7 @@ export function suggestAddDefaults(txn, account) {
   return {
     vendor: f.vendor.value,
     vendor_profile_id: draft.vendor_profile_id,
+    vendor_category: draft.vendor_category,
     source: f.vendor.source,
     label: draft.label,
     amount: round2(Math.abs(txn.amount)),

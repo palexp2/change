@@ -173,7 +173,7 @@ export function SearchableSelect({
   const showEmpty = emptyOption !== undefined && !search.trim()
 
   return (
-    <div className="relative w-full">
+    <div className="relative min-w-0 max-w-full w-full">
       <button
         ref={btnRef}
         type="button"
@@ -182,7 +182,7 @@ export function SearchableSelect({
         onClick={() => !disabled && setOpen(o => !o)}
         onKeyDown={onKeyDown}
         title={selected ? titleOf(selected) : undefined}
-        className={`${className} flex items-center justify-between gap-1 text-left ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        className={`${className} min-w-0 max-w-full flex items-center justify-between gap-1 text-left ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
       >
         {/* `renderValue` produit du JSX (icône + libellé) : il porte lui-même sa
             troncature, un `truncate` inline autour d'une rangée flex ne coupe

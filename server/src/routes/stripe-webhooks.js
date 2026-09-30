@@ -1,12 +1,15 @@
 import { decryptCredentials } from '../utils/encryption.js'
+import { companyIdForStripeCustomer } from '../services/stripeCustomerCompany.js'
 import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import db from '../db/database.js'
 import { logSystemRun } from '../services/systemAutomations.js'
+import { ensureSoumissionSystemBuilder, AUTOMATION_ID as SOUMISSION_BUILDER_ID } from '../services/soumissionSystemBuilder.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
+import { linkFactureToProject } from '../services/stripeProjectLink.js'
 import {
   extractItemsFromStripeSub,
   getCurrentItemsSnapshot,
@@ -14,7 +17,7 @@ import {
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
 import { recomputeFactureBalance } from '../services/factureBalance.js'
-import { emitFacture, emitFacturePaymentsChanged } from '../services/realtimeEmitters.js'
+import { emitFacture, emitFacturePaymentsChanged, emitSubscription } from '../services/realtimeEmitters.js'
 import { resolveStripeInvoiceFields, applyStripeCustomFieldColumns } from '../services/stripeFactureFieldMap.js'
 import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
 import { logSync } from '../services/syncLog.js'
@@ -54,7 +57,7 @@ async function handleSubscriptionWebhook(event) {
   let sub = event.data.object
   const customerId = typeof sub.customer === 'string' ? sub.customer : sub.customer?.id
   const companyId = customerId
-    ? db.prepare('SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1').get(customerId)?.id || null
+    ? companyIdForStripeCustomer(customerId)
     : null
 
   // Le payload du webhook ne contient pas latest_invoice expandé — or notre
@@ -133,6 +136,7 @@ async function handleSubscriptionWebhook(event) {
       intervalType,
     )
   }
+  emitSubscription(existing ? 'updated' : 'created', subRowId)
 
   // Classification de l'événement. category=null → pas un mouvement à
   // enregistrer (ex. transition active↔past_due, modification neutre).
@@ -301,6 +305,8 @@ async function upsertFactureFromStripeInvoice(invoice) {
 
   // Champs personnalisés mappés via la modale « Mapping Stripe »
   applyStripeCustomFieldColumns(factureId, invoice)
+  // Payée depuis le PDF d'une soumission → projet de la soumission.
+  linkFactureToProject(factureId, invoice)
 
   if (!pdfAlreadyDownloaded && invoice.invoice_pdf) {
     const pdfT0 = Date.now()
@@ -337,11 +343,7 @@ async function upsertFactureFromStripeInvoice(invoice) {
 // se contente d'upsert la facture dans factures via upsertFactureFromStripeInvoice.)
 
 function findCompanyByStripeCustomerId(stripeCustomerId) {
-  if (!stripeCustomerId) return null
-  const row = db.prepare(
-    'SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1'
-  ).get(stripeCustomerId)
-  return row?.id || null
+  return companyIdForStripeCustomer(stripeCustomerId)
 }
 
 // charge.refunded → crée une ligne payments négative (direction='out') sur la facture
@@ -382,7 +384,8 @@ async function handleChargeRefunded({ req: _req, res, event, secretKey: _secretK
     // sub avec collection_method=charge_automatically pré-configuré, etc.).
     // On cherche la facture par customer + montant + période proche (±35 jours).
     if (!origFacture && stripeCustomerId) {
-      const company = db.prepare('SELECT id FROM companies WHERE stripe_customer_id = ?').get(stripeCustomerId)
+      const companyId = companyIdForStripeCustomer(stripeCustomerId)
+      const company = companyId ? { id: companyId } : null
       if (company) {
         const chargeAmount = (charge.amount || 0) / 100
         const chargeDate = charge.created ? new Date(charge.created * 1000).toISOString().slice(0, 10) : null
@@ -550,6 +553,14 @@ async function handleWebhook(req, res) {
     const session = event.data.object
     const pendingId = session.metadata?.erp_pending_invoice_id || null
     const stripeInvoiceId = typeof session.invoice === 'string' ? session.invoice : session.invoice?.id || null
+
+    // Soumission payée : System builder créé même si le client ferme l'onglet
+    // avant le retour de Stripe (le retour le retrouvera, un seul par session).
+    const soumissionId = session.metadata?.erp_soumission_id
+    if (soumissionId && session.status === 'complete' && ['paid', 'no_payment_required'].includes(session.payment_status)) {
+      try { ensureSoumissionSystemBuilder({ soumissionId, session, source: 'webhook' }) }
+      catch (e) { logSystemRun(SOUMISSION_BUILDER_ID, { status: 'error', error: e.message, triggerData: { source: 'webhook', session_id: session.id, soumission_id: soumissionId } }) }
+    }
 
     // No pending_invoice attached → nothing to reconcile, just log success.
     if (!pendingId) {

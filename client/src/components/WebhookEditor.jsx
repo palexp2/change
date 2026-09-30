@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Plus, Trash2, Copy, RotateCcw, Play, Check } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { SearchableSelect } from './SearchableSelect.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 // Tables que le moteur de webhooks peut lire/écrire. Doit rester aligné avec
 // WEBHOOK_TABLES côté serveur (services/webhookEngine.js & routes/automations.js).
@@ -293,7 +294,7 @@ export function WebhookEditor({
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-sm font-semibold">Tester (simulation, aucune écriture)</h2>
             <button onClick={runTest} disabled={testing} className="px-3 py-1.5 text-sm bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 flex items-center gap-1.5">
-              {testing ? <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> …</> : <><Play size={14} /> Simuler</>}
+              {testing ? <><ThinkingOrb size={12} ink className="text-white" /> …</> : <><Play size={14} /> Simuler</>}
             </button>
           </div>
           <label className={lbl}>Params simulés (JSON)</label>

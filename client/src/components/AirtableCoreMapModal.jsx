@@ -100,7 +100,8 @@ const DIR_OPTIONS = [
 // petit menu où l'utilisateur choisit pull / push / both (autosave immédiat).
 // `compact` : sans padding vertical, pour une rangée déjà centrée (tableau des
 // champs de /champs/:table) plutôt que la grille alignée en haut du CoreMapPane.
-export function DirectionControl({ module, fieldKey, direction, configurable, mapped, onChange, compact, lockTitle }) {
+// `noPush` : pas d'« ERP → Airtable » (rattachement requis à l'import).
+export function DirectionControl({ module, fieldKey, direction, configurable, mapped, onChange, compact, lockTitle, noPush }) {
   const [open, setOpen] = useState(false)
   const current = DIRECTIONS[direction] || DIRECTIONS.pull
   const CurIcon = current.Icon
@@ -138,7 +139,7 @@ export function DirectionControl({ module, fieldKey, direction, configurable, ma
             className="absolute z-20 top-8 left-1/2 -translate-x-1/2 w-60 bg-white border border-slate-200 rounded-lg shadow-lg p-1"
             data-testid={`coremap-${module}-${fieldKey}-direction-menu`}
           >
-            {DIR_OPTIONS.map(opt => {
+            {DIR_OPTIONS.filter(opt => !(noPush && opt.value === 'push')).map(opt => {
               const OptIcon = opt.Icon
               const active = direction === opt.value
               return (
@@ -193,9 +194,7 @@ export function useCoreMap(module, onSaved) {
   const draftRef = useRef(draft)
   useEffect(() => { draftRef.current = draft }, [draft])
 
-  // `moduleRef` : garde contre la réponse d'un module qu'on a quitté entre-temps
-  // (l'ancien effet le faisait avec un drapeau `alive` ; `load` est maintenant
-  // rappelable à la demande par « Rafraîchir »).
+  // `moduleRef` : garde contre la réponse d'un module qu'on a quitté entre-temps.
   const moduleRef = useRef(module)
   useEffect(() => { moduleRef.current = module }, [module])
   const load = useCallback(() => {
@@ -213,17 +212,18 @@ export function useCoreMap(module, onSaved) {
       .catch(e => { if (moduleRef.current === module) setLoadError(e.message) })
   }, [module])
 
-  // Modification venue d'une autre session ou de l'API : on relit le mapping
-  // sans écraser les brouillons. Une clé dont le brouillon diffère du dernier
-  // état serveur connu reste telle quelle ; si le serveur a changé cette même
-  // clé entre-temps, elle est signalée en conflit.
+  // Relecture sans écraser les brouillons (modification venue d'une autre
+  // session ou de l'API, ou « Rafraîchir » des champs). Une clé dont le
+  // brouillon diffère du dernier état serveur connu reste telle quelle ; si le
+  // serveur a changé cette même clé entre-temps, elle est signalée en conflit.
+  // Lève en cas d'échec — l'appelant décide quoi en faire.
   const dataRef = useRef(data)
   useEffect(() => { dataRef.current = data }, [data])
   const pendingDirs = useRef(new Set())
   const mergeRemote = useCallback(() => {
-    if (!module) return
+    if (!module) return Promise.resolve()
     invalidate(`/connectors/airtable/module-fields/${module}/core-map`)
-    api.airtable.moduleCoreMap(module)
+    return api.airtable.moduleCoreMap(module)
       .then(d => {
         if (moduleRef.current !== module) return
         const base = dataRef.current?.field_map || {}
@@ -249,9 +249,9 @@ export function useCoreMap(module, onSaved) {
         })
         writeStale(coreMapCacheKey(module), d)
       })
-      .catch(() => {})
   }, [module])
-  useRealtimeChannel(module ? `airtable_core_map:${module}` : null, mergeRemote)
+  const onRemoteChange = useCallback(() => { mergeRemote().catch(() => {}) }, [mergeRemote])
+  useRealtimeChannel(module ? `airtable_core_map:${module}` : null, onRemoteChange)
 
   // Changement de module : on repart de SON dernier état connu (sinon les
   // cellules afficheraient un instant le mapping du module précédent).
@@ -266,12 +266,12 @@ export function useCoreMap(module, onSaved) {
 
   // « Rafraîchir » du bas du sélecteur de champ : le serveur oublie les
   // métadonnées Airtable mémorisées, puis on relit — un champ créé à l'instant
-  // dans la table apparaît dans la liste.
+  // dans la table apparaît dans la liste, les choix non enregistrés restent.
   const refreshFields = useCallback(async () => {
     if (!module) return
     await refreshAirtableSchema(module)
-    await load()
-  }, [module, load])
+    await mergeRemote()
+  }, [module, mergeRemote])
 
   // Choix du sens de sync d'un champ — autosave immédiat (revert visuel si échec).
   async function changeDirection(fieldKey, direction) {
@@ -361,7 +361,7 @@ export function useCoreMap(module, onSaved) {
   return {
     data, loadError, draft, setDraft, dirs, conflicts: openConflicts, changeDirection, dirty, options,
     save, saveField, saving, saveError, savedMsg, setSavedMsg, resyncAfter, setResyncAfter,
-    reload: load, refreshFields,
+    refreshFields,
   }
 }
 

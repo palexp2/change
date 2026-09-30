@@ -1,6 +1,10 @@
-function Furnace({ x }) {
+import { useDiscoveryTr } from '../lib/discoveryLang.js'
+// Au-delà de 2, les fournaises rapetissent et se posent au sol pour tenir
+// sous l'arche (jusqu'à 5).
+const FURNACE_SCALE = { 3: 0.75, 4: 0.65, 5: 0.55 }
+function Furnace({ x, scale = 1 }) {
   return (
-    <g transform={`translate(${x} 65)`}>
+    <g transform={scale === 1 ? `translate(${x} 65)` : `translate(${x} ${119 - 54 * scale}) scale(${scale})`}>
       <path d="M-14 0 V-13 M14 0 V-13" className="stroke-slate-400" strokeWidth="2" />
       <rect x="-24" width="48" height="38" rx="4" className="fill-slate-200 stroke-slate-500" strokeWidth="2" />
       <circle cx="-6" cy="19" r="12" className="fill-slate-50 stroke-slate-500" strokeWidth="1.5" />
@@ -12,6 +16,7 @@ function Furnace({ x }) {
 }
 
 export function FurnaceIllustration({ count = 1, label, className = 'w-full h-32', style, variant }) {
+  const tr = useDiscoveryTr()
   const showWire = variant === 'control-wire'
   return (
     <svg viewBox="0 0 240 150" className={className} style={style} role={label ? 'img' : undefined} aria-label={label} aria-hidden={label ? undefined : true}>
@@ -24,19 +29,22 @@ export function FurnaceIllustration({ count = 1, label, className = 'w-full h-32
         <rect x="174" y="54" width="12" height="8" rx="1.5" className="fill-brand-600" />
         <circle cx="180" cy="70" r="3" className="fill-slate-500" />
       </> : <>
-        {Array.from({ length: count }, (_, i) => <Furnace key={i} x={count === 1 ? 120 : 82 + i * 76} />)}
-        <text x="120" y="144" textAnchor="middle" fontSize="14" className="fill-slate-700 font-semibold">{count === 0 ? 'Aucune' : String(count)}</text>
+        {Array.from({ length: count }, (_, i) => count <= 2
+          ? <Furnace key={i} x={count === 1 ? 120 : 82 + i * 76} />
+          : <Furnace key={i} x={120 + (i - (count - 1) / 2) * (150 / count)} scale={FURNACE_SCALE[count] || 0.55} />)}
+        <text x="120" y="144" textAnchor="middle" fontSize="14" className="fill-slate-700 font-semibold">{count === 0 ? tr('Aucune') : String(count)}</text>
       </>}
     </svg>
   )
 }
 
 export default function FurnaceCountChoice({ count, checked, onChange, name }) {
-  const label = count === 0 ? 'Aucune' : String(count)
+  const tr = useDiscoveryTr()
+  const label = count === 0 ? tr('Aucune') : String(count)
   return (
     <label className={`relative block cursor-pointer rounded-lg border p-2 focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
       <input type="radio" name={name} value={count} className="sr-only" checked={checked} onChange={onChange} aria-label={label} />
-      <FurnaceIllustration count={count} />
+      <FurnaceIllustration count={count} className="w-full h-auto" />
     </label>
   )
 }

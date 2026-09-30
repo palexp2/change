@@ -44,9 +44,9 @@ export const INSTAGRAM_INTAKE_DEFAULT_CONFIG = {
 }
 
 export const INSTAGRAM_SLACK_DEFAULT_CONFIG = {
-  send_weekday: '1',          // ISO : 1=lundi … 7=dimanche. 1 = lundi.
-  send_hour: '7',             // heure locale de Montréal. Les minutes (7h30)
-                              // viennent du cron : ce champ ne porte que l'heure.
+  send_weekday: '6',          // ISO : 1=lundi … 7=dimanche. 6 = samedi.
+  send_hour: '20',            // plus lu par aucun horaire : la liste part seulement
+                              // après la reconnexion Instagram (instagramRefresh.js).
   slack_webhook_url: '',      // URL collée ici = aucun besoin de toucher server/.env
   slack_webhook_env: 'SLACK_WEBHOOK_PHILIPPE',
   recipient: 'Philippe',
@@ -539,6 +539,20 @@ export function unnotifiedProspects() {
 }
 
 /**
+ * Ce qui mérite d'être annoncé à Philippe : les gens encore à traiter. Les
+ * fiches déjà traitées, les réponses de story et les robots sont marqués
+ * « annoncés » avec les autres, mais ne gonflent plus les chiffres du message.
+ */
+export function stillToHandle(prospects) {
+  if (!prospects.length) return prospects
+  const skip = new Set(db.prepare(`
+    SELECT id FROM instagram_prospects
+    WHERE contacted = 1 OR COALESCE(segment,'commentaire') IN ('story','robot')
+  `).all().map(r => r.id))
+  return prospects.filter(p => !skip.has(p.id))
+}
+
+/**
  * Sépare les non-annoncés entre ceux de la semaine couverte par l'envoi et
  * l'arriéré (captés avant, jamais annoncés — envoi manqué, marquage tardif...).
  * Le message ne doit chiffrer que la semaine ; l'arriéré est mentionné à part
@@ -550,10 +564,6 @@ export function splitByWeek(prospects, weekKey) {
   return { ofWeek, backlog }
 }
 
-const WEEKDAY_LABELS = {
-  1: 'le lundi', 2: 'le mardi', 3: 'le mercredi', 4: 'le jeudi',
-  5: 'le vendredi', 6: 'le samedi', 7: 'le dimanche',
-}
 
 function erpProspectsUrl() {
   const base = APP_URL
@@ -689,7 +699,7 @@ function alreadySentThisWeek(dayIso) {
  * bien `send_hour` envoie, et `alreadySentThisWeek` sert de ceinture.
  * `force` court-circuite jour, heure et idempotence (bouton « Exécuter »).
  */
-export async function runWeeklyProspectDigest({ force = false, trigger = 'schedule', today = null, hour = null } = {}) {
+export async function runWeeklyProspectDigest({ force = false, weekly = false, trigger = 'schedule', today = null, hour = null } = {}) {
   const t0 = Date.now()
   try {
     if (!isSystemAutomationActive(INSTAGRAM_SLACK_AUTOMATION_ID)) return { skipped: 'inactive' }
@@ -699,9 +709,11 @@ export async function runWeeklyProspectDigest({ force = false, trigger = 'schedu
     const sendDay = Math.min(7, Math.max(1, Number(cfg.send_weekday) || 1))
     const sendHour = Math.min(23, Math.max(0, Number(cfg.send_hour) || 0))
 
+    // `weekly` : l'envoi de la semaine, déclenché par une reconnexion plutôt
+    // que par l'horloge — n'importe quel jour, mais une seule fois par semaine.
     if (!force) {
-      if (isoWeekday(dayIso) !== sendDay) return { ok: true, sent: false, reason: "pas le jour d'envoi" }
-      if (nowHour !== sendHour) return { ok: true, sent: false, reason: "pas l'heure d'envoi" }
+      if (!weekly && isoWeekday(dayIso) !== sendDay) return { ok: true, sent: false, reason: "pas le jour d'envoi" }
+      if (!weekly && nowHour !== sendHour) return { ok: true, sent: false, reason: "pas l'heure d'envoi" }
       if (alreadySentThisWeek(dayIso)) return { ok: true, sent: false, reason: 'déjà envoyé cette semaine' }
     }
 
@@ -710,7 +722,7 @@ export async function runWeeklyProspectDigest({ force = false, trigger = 'schedu
     try { await reconcileAirtable() } catch (e) { console.error('instagram reconcile:', e.message) }
 
     const prospects = unnotifiedProspects()
-    const { ofWeek, backlog } = splitByWeek(prospects, coveredWeek(dayIso))
+    const { ofWeek, backlog } = splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
     const message = buildWeeklyMessage(ofWeek, {
       dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl(), backlogCount: backlog.length,
     })
@@ -769,7 +781,7 @@ export function previewWeeklyProspectDigest() {
   const cfg = getSlackConfig()
   const dayIso = localDay()
   const prospects = unnotifiedProspects()
-  const { ofWeek, backlog } = splitByWeek(prospects, coveredWeek(dayIso))
+  const { ofWeek, backlog } = splitByWeek(stillToHandle(prospects), coveredWeek(dayIso))
   const target = resolveSlackTarget({ url: cfg.slack_webhook_url, envName: cfg.slack_webhook_env })
   const canal = target.url
     ? (target.fallback
@@ -780,11 +792,7 @@ export function previewWeeklyProspectDigest() {
     summary: `${ofWeek.length} prospect(s) de la semaine` +
       (backlog.length ? ` + ${backlog.length} d'arriéré` : '') +
       ` à annoncer à ${cfg.recipient} · ` +
-      // Les minutes ne sont pas dans la config : elles viennent du cron (7h30
-      // le lundi). On les affiche telles quelles pour ne pas laisser croire
-      // que l'envoi part à l'heure pile.
-      `envoi ${WEEKDAY_LABELS[cfg.send_weekday] || `jour ISO ${cfg.send_weekday}`} vers ${cfg.send_hour} h ` +
-      `(heure de Montréal) · ${canal}`,
+      `envoi après la reconnexion Instagram · ${canal}`,
     apercu: buildWeeklyMessage(ofWeek, {
       dayIso, url: airtableUrl(), erpUrl: erpProspectsUrl(), backlogCount: backlog.length,
     }),

@@ -49,6 +49,23 @@ export function emitSubscriptionEvent(verb, eventId, subscriptionId, actorUserId
   })
 }
 
+// Re-diffuse toutes les lignes d'un abonnement après un changement qui touche
+// leurs colonnes jointes (ex. entreprise). Canal liste seulement : la fiche
+// abonnement reçoit déjà `subscription:updated`.
+export function emitSubscriptionEventsOf(subscriptionId, actorUserId) {
+  const ids = db.prepare('SELECT id FROM subscription_events WHERE subscription_id = ?').pluck().all(subscriptionId)
+  for (const id of ids) {
+    const payload = buildSubscriptionEventRow(id)
+    if (!payload) continue
+    emit('subscription_events:list', {
+      type: 'subscription_event:updated',
+      payload,
+      actorUserId: actorUserId || null,
+      ts: Date.now(),
+    })
+  }
+}
+
 // Catégories utilisées par le panel "Mouvements d'abonnements" du dashboard
 // et la page Mouvements. Source unique de vérité côté serveur.
 // Doit rester aligné avec client/src/lib/subscriptionEvents.js.

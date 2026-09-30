@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Upload, FileText, Download, Trash2, Loader2, Paperclip } from 'lucide-react'
+import { Upload, FileText, Download, Trash2, Paperclip, Pencil } from 'lucide-react'
 import { api } from '../lib/api'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useConfirm } from './ConfirmProvider.jsx'
@@ -7,6 +7,7 @@ import { useConfirm } from './ConfirmProvider.jsx'
 import { formatBytes } from '../utils/formatters.js'
 import Spinner from './Spinner.jsx'
 import AttachmentPreview, { AttachmentPreviewModal, attachmentKind } from './AttachmentPreview.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 // URL de service du fichier. `usePrivateFile` (dans AttachmentPreview) sait
 // récupérer les chemins `/erp/api/…` avec le jeton et en faire une blob: URL —
@@ -22,8 +23,27 @@ function fileUrl(entityType, entityId, attId) {
 // Les formats qu'on ne sait pas dessiner (doc, zip…) gardent l'icône
 // générique et téléchargent au clic : rien à montrer en modale, et on évite de
 // rapatrier un gros fichier juste pour afficher « aperçu indisponible ».
-function AttachmentRow({ att, entityType, entityId, onDownload, onDelete }) {
+// `onRename` (optionnel) : crayon → champ en ligne ; Entrée ou sortie du champ
+// enregistre, Échap annule.
+function AttachmentRow({ att, entityType, entityId, onDownload, onDelete, onRename }) {
   const [open, setOpen] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const editRef = useRef()
+  useEffect(() => {
+    if (!editing || !editRef.current) return
+    const el = editRef.current
+    const dot = draft.lastIndexOf('.')
+    el.focus()
+    el.setSelectionRange(0, dot > 0 ? dot : draft.length)
+  }, [editing]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function startEdit() { setDraft(att.file_name || ''); setEditing(true) }
+  function commit() {
+    setEditing(false)
+    const next = draft.trim()
+    if (next && next !== att.file_name) onRename(next)
+  }
   const url = fileUrl(entityType, entityId, att.id)
   const kind = attachmentKind({ fileName: att.file_name, contentType: att.content_type })
   const previewable = kind === 'image' || kind === 'pdf' || kind === 'sheet'
@@ -50,20 +70,40 @@ function AttachmentRow({ att, entityType, entityId, onDownload, onDelete }) {
         </span>
       )}
       <div className="min-w-0 flex-1">
-        <button
-          onClick={() => (previewable ? setOpen(true) : onDownload())}
-          className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
-          title={att.file_name}
-          data-testid="attachment-name"
-        >
-          {att.file_name}
-        </button>
+        {editing ? (
+          <input
+            ref={editRef}
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === 'Enter') { e.preventDefault(); commit() }
+              else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setEditing(false) }
+            }}
+            className="input text-sm w-full py-0.5"
+            data-testid="attachment-name-input"
+          />
+        ) : (
+          <button
+            onClick={() => (previewable ? setOpen(true) : onDownload())}
+            className="text-sm text-slate-800 hover:text-brand-700 hover:underline truncate block max-w-full text-left"
+            title={att.file_name}
+            data-testid="attachment-name"
+          >
+            {att.file_name}
+          </button>
+        )}
         <div className="text-xs text-slate-400 mt-0.5">
           {formatBytes(att.file_size)}
           {att.uploaded_by_name ? ` · ${att.uploaded_by_name}` : ''}
         </div>
       </div>
       <div className="flex gap-1 flex-shrink-0">
+        {onRename && (
+          <button onClick={startEdit} className="text-slate-400 hover:text-brand-600 p-1" title="Renommer" data-testid="attachment-rename">
+            <Pencil size={14} />
+          </button>
+        )}
         <button onClick={onDownload} className="text-slate-400 hover:text-brand-600 p-1" title="Télécharger">
           <Download size={14} />
         </button>
@@ -94,8 +134,10 @@ function AttachmentRow({ att, entityType, entityId, onDownload, onDelete }) {
  *  - entityId   : id de l'enregistrement cible
  *  - title      : titre de section (défaut « Pièces jointes »)
  *  - compact    : variante condensée (sans carte/titre) pour insertion en sidebar
+ *  - renamable  : crayon « Renommer » sur chaque fichier
+ *  - children   : contenu propre à la page, posé sous la liste (ex. notes)
  */
-export default function Attachments({ entityType, entityId, title = 'Pièces jointes', compact = false }) {
+export default function Attachments({ entityType, entityId, title = 'Pièces jointes', compact = false, renamable = false, children = null }) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [uploading, setUploading] = useState(false)
@@ -162,6 +204,18 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
     }
   }
 
+  async function handleRename(att, fileName) {
+    const prevName = att.file_name
+    setItems(prev => prev.map(x => (x.id === att.id ? { ...x, file_name: fileName } : x)))
+    try {
+      const updated = await api.attachments.rename(entityType, entityId, att.id, fileName)
+      setItems(prev => prev.map(x => (x.id === att.id ? updated : x)))
+    } catch (e) {
+      setItems(prev => prev.map(x => (x.id === att.id ? { ...x, file_name: prevName } : x)))
+      addToast({ message: `Renommage échoué : ${e.message}`, type: 'error' })
+    }
+  }
+
   const dropZone = (
     <div
       data-testid="attachment-dropzone"
@@ -183,7 +237,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
       />
       {uploading ? (
         <div className="flex items-center justify-center gap-2 text-slate-600">
-          <Loader2 size={16} className="text-brand-500 animate-spin" />
+          <ThinkingOrb size={16} ink className="text-brand-500" />
           <span className="text-sm font-medium">Téléversement en cours…</span>
         </div>
       ) : (
@@ -212,6 +266,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
             entityId={entityId}
             onDownload={() => handleDownload(att)}
             onDelete={() => handleDelete(att)}
+            onRename={renamable ? name => handleRename(att, name) : undefined}
           />
         ))}
       </ul>
@@ -223,6 +278,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
       <div className="space-y-3" data-testid="attachments">
         {dropZone}
         {list}
+        {children}
       </div>
     )
   }
@@ -238,6 +294,7 @@ export default function Attachments({ entityType, entityId, title = 'Pièces joi
       </div>
       {dropZone}
       <div className="mt-3">{list}</div>
+      {children && <div className="mt-4">{children}</div>}
     </div>
   )
 }

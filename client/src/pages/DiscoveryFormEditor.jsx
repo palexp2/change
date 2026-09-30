@@ -25,7 +25,7 @@ function ProductThumbLink({ product, id }) {
   return (
     <Link to={`/products/${id}`} title={product?.name_fr || 'Fiche'} className="shrink-0">
       {product?.image_url
-        ? <TableThumb src={product.image_url} alt={product.name_fr || ''} fit="contain" className="border border-slate-200" />
+        ? <TableThumb src={product.image_url} alt={product.name_fr || ''} fit="contain" className="border border-slate-200 p-1 bg-fixed-white" />
         : <div className={`${TABLE_THUMB_CLASS} rounded border border-dashed border-slate-300`} />}
     </Link>
   )

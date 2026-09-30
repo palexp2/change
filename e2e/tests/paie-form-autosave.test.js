@@ -71,7 +71,7 @@ describe('PaieForm — autosave en mode édition', () => {
 
     // Le formulaire d'édition est dans la modale ; on attend un champ connu.
     const dialog = page.getByRole('dialog')
-    const deadline = dialog.locator('input[placeholder="ex. Mardi 11h AM"]')
+    const deadline = dialog.locator('input[type="datetime-local"]')
     await deadline.waitFor({ timeout: 10000 })
 
     // RÈGLE : aucun bouton « Enregistrer » en édition (autosave), mais un « Fermer ».
@@ -81,8 +81,8 @@ describe('PaieForm — autosave en mode édition', () => {
     )
     assert.ok(await dialog.getByRole('button', { name: 'Fermer' }).count() > 0, 'un bouton Fermer doit exister')
 
-    // 1) Champ texte → persistance au blur.
-    const newDeadline = `E2E ${uniqNumber}`
+    // 1) Date + heure → persistance au blur.
+    const newDeadline = '2031-01-07T11:00'
     await deadline.fill(newDeadline)
     await deadline.blur()
 

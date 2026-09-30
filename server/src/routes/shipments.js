@@ -22,6 +22,7 @@ import { buildExternalLinks } from '../services/externalLinks.js'
 import { APP_URL } from '../config/appUrl.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { resolveInstallationDocsLang } from './orders.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -175,7 +176,12 @@ router.get('/:id', (req, res) => {
     `).all(row.order_id)
   }
 
-  res.json({ ...row, order_items, items_fallback, external_links: shipmentExternalLinks(row) })
+  // Langue proposée pour les documents d'installation : contact de l'adresse
+  // de l'envoi d'abord, puis la commande (même chaîne que la fiche Commande).
+  const order = row.order_id ? db.prepare('SELECT * FROM orders WHERE id = ?').get(row.order_id) : null
+  const docs_lang = order ? resolveInstallationDocsLang(row.address_id ? { ...order, address_id: row.address_id } : order) : null
+
+  res.json({ ...row, order_items, items_fallback, docs_lang, external_links: shipmentExternalLinks(row) })
 })
 
 // POST /api/shipments

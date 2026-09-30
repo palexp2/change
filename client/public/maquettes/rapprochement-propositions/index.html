@@ -1,0 +1,127 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Propositions dans le rapprochement</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Newsreader:ital,wght@0,400;0,600;1,400;1,600&family=Courier+Prime:wght@400;700&family=Source+Sans+3:wght@400;600;700&display=swap">
+<style>
+body{margin:0;padding:32px;font-family:'Source Sans 3',system-ui,sans-serif;color:#1e293b;background:#e2e8f0}
+h1{margin:0 0 28px;font-size:30px}h2{margin:0 0 4px;font-size:22px}.sub{margin:0 0 12px;color:#64748b}
+section{margin-bottom:56px}
+.lg{--paper:#f6f1e4;--head:#ece4d1;--rule:#d9cfb9;--ink:#2b2a26;--muted:#8a8270;--green:#d3e5c8;--yellow:#f1e3a8;--blue:#d6e2ef;--pen:#b3261e;--sug:#6b4fbb;
+  width:1200px;background:var(--paper);color:var(--ink);font-family:'Newsreader',Georgia,serif;border:1px solid var(--rule);border-radius:10px;overflow:hidden;box-shadow:0 8px 30px rgba(15,23,42,.15)}
+.bar{display:flex;align-items:center;gap:18px;padding:12px 18px;border-bottom:1px solid var(--rule);font-size:15px}
+.bar .t{font-size:22px;font-weight:600;margin-right:auto}
+.q{color:var(--muted)}.q.on{color:var(--ink);font-style:italic;font-weight:600;border-bottom:2px solid var(--ink)}
+.cnt{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border:2px solid var(--pen);border-radius:50%;color:var(--pen);font:700 11px 'Courier Prime',monospace;margin-left:4px}
+.cnt.s{border-color:var(--sug);color:var(--sug)}
+table{width:100%;border-collapse:collapse;font-size:15px}
+th{background:var(--head);border-bottom:2px solid var(--ink);color:var(--muted);text-transform:uppercase;letter-spacing:.07em;font:600 11.5px 'Source Sans 3',sans-serif;text-align:left;padding:8px 10px;border-right:1px solid var(--rule)}
+td{padding:9px 10px;border-bottom:1px solid var(--rule);border-right:1px solid var(--rule);vertical-align:middle}
+.n{font-family:'Courier Prime',monospace;font-size:14px;text-align:right;white-space:nowrap}
+.d{font-family:'Courier Prime',monospace;font-size:14px;white-space:nowrap}
+tr.g{background:var(--green)}tr.y{background:var(--yellow)}tr.b{background:var(--blue)}
+.sub2{display:block;color:var(--muted);font-size:12.5px}
+.chip{display:inline-flex;align-items:center;gap:8px;border:1.5px dashed var(--sug);color:var(--sug);border-radius:6px;padding:2px 8px;font-style:italic;font-size:14px;white-space:nowrap}
+.btn{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:5px;font:700 13px 'Source Sans 3',sans-serif;cursor:pointer;border:1px solid var(--rule);background:#fff}
+.ok{color:#2f6b2f}.no{color:var(--pen)}
+.big{border:0;border-radius:6px;padding:6px 14px;font:600 14px 'Source Sans 3',sans-serif;cursor:pointer}
+.pri{background:#2b2a26;color:#f6f1e4}.sec{background:#fff;border:1px solid var(--rule);color:var(--ink)}
+.expand td{background:#fbf8f0;padding:14px 18px}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:6px;overflow:hidden;font:600 13px 'Source Sans 3',sans-serif}
+.seg span{padding:5px 12px;color:var(--muted)}.seg span.on{background:var(--ink);color:var(--paper)}
+.f{display:inline-flex;flex-direction:column;gap:2px;margin-right:22px;font-size:14px}
+.f b{font:600 11px 'Source Sans 3',sans-serif;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.f i{border-bottom:1.5px dashed var(--sug);color:var(--sug)}
+.why{margin-top:10px;color:var(--muted);font-size:13.5px;font-style:italic}
+.auto{font:700 10.5px 'Source Sans 3',sans-serif;color:#2f6b2f;border:1px solid #2f6b2f;border-radius:4px;padding:0 4px;margin-left:6px;letter-spacing:.04em}
+.undo{color:var(--muted);font:600 12.5px 'Source Sans 3',sans-serif;text-decoration:underline;margin-left:8px}
+.tabs{display:flex;background:var(--head);border-top:2px solid var(--ink);padding-left:48px;height:40px;font-size:14px}
+.tabs span{padding:10px 18px;color:var(--muted)}.tabs span.on{background:var(--paper);color:var(--ink);font-style:italic;font-weight:600;margin-top:-2px;border-left:1px solid var(--rule);border-right:1px solid var(--rule)}
+.rail{display:flex}.rail>div:first-child{flex:1}
+.side{width:330px;border-left:1px solid var(--rule);background:#fbf8f0;padding:14px}
+.card{background:#fff;border:1px solid var(--rule);border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:14px}
+.card .top{display:flex;justify-content:space-between;font-weight:600}
+.card .act{display:flex;gap:6px;margin-top:8px}
+</style></head><body>
+<h1>Propositions → dans le rapprochement</h1>
+
+<section><h2>P1 + P4 · Retenu</h2><p class="sub">Suggestion après le libellé ; les sûres déjà posées, « AUTO · annuler ».</p>
+<div class="lg" id="p14"></div></section>
+
+<section><h2>P1 · Suggestion sur la ligne</h2><p class="sub">✓ / ✕ directement dans la colonne Document.</p>
+<div class="lg" id="p1"></div></section>
+
+<section><h2>P2 · Ligne dépliée pré-remplie</h2><p class="sub">Un clic sur la ligne : tout est déjà rempli, tu confirmes.</p>
+<div class="lg" id="p2"></div></section>
+
+<section><h2>P3 · File « Suggestions »</h2><p class="sub">Une 4ᵉ file, avec « Tout accepter » pour les sûres.</p>
+<div class="lg" id="p3"></div></section>
+
+<section><h2>P4 · Les sûres se posent seules</h2><p class="sub">Déjà appliquées, marquées « auto », annulables.</p>
+<div class="lg" id="p4"></div></section>
+
+<section><h2>P5 · Rail de suggestions à droite</h2><p class="sub">Le relevé à gauche, les suggestions en cartes à droite.</p>
+<div class="lg" id="p5"></div></section>
+
+<script>
+const R=[
+ {d:'2026-09-25',l:'NOVO EXPRESS',s:'PMTS ENTREPRISES',m:106.72,sug:'Paiement émis · Novo Express',safe:1},
+ {d:'2026-09-25',l:'VISA DESJ US',s:'COMPTE DIVERS',m:645.20,sug:'Paiement émis · Visa USD',safe:1},
+ {d:'2026-09-24',l:'STRIPE',s:'DEPOT',m:-2310.40,doc:'Versement Stripe',c:'g'},
+ {d:'2026-09-23',l:'BDC',s:'DPA ENTREPRISE',m:8617.96,sug:'Versement · Prêt BDC',safe:1},
+ {d:'2026-09-22',l:'BELL CANADA (CR)',s:'VERDUN QC',m:103.42,sug:'Dépense · Bell Canada → Télécom'},
+ {d:'2026-09-19',l:'HYDRO-QUEBEC',s:'PMTS ENTREPRISES',m:212.08,doc:'Facture Hydro',c:'y'},
+ {d:'2026-09-18',l:'ANTHROPIC',s:'SAN FRANCISCO CA',m:147.04,sug:'Dépense · Anthropic → Logiciels'},
+ {d:'2026-09-15',l:'MAXI QUEBEC MYRAND',s:'QUEBEC QC',m:60.95,sug:'Dépense · Maxi → Repas'},
+ {d:'2026-09-15',l:'PCBWay',s:'',m:590.67,sug:'Dépense · PCBWay → Pièces'},
+ {d:'2026-09-12',l:'AMAZON.CA',s:'',m:88.13},
+];
+const fm=n=>n.toLocaleString('fr-CA',{minimumFractionDigits:2});
+const cnt=R.filter(r=>r.sug).length, rev=R.filter(r=>!r.c).length;
+const bar=(extra='')=>`<div class="bar"><span class="t">BNC — Opérations</span>${extra}<span class="q on">À réviser <span class="cnt">${rev}</span></span><span class="q">Catégorisées</span><span class="q">Exclues</span></div>`;
+const tabs=`<div class="tabs"><span class="on">BNC CAD</span><span>MasterCard BNC</span><span>Visa Desjardins US</span></div>`;
+const head=`<tr><th style="width:110px">Date</th><th>Libellé</th><th style="width:100px">Débit</th><th style="width:100px">Crédit</th><th style="width:330px">Document</th></tr>`;
+const cells=r=>`<td class="d">${r.d}</td><td>${r.l}<span class="sub2">${r.s}</span></td><td class="n">${r.m>0?fm(r.m):''}</td><td class="n">${r.m<0?fm(-r.m):''}</td>`;
+
+// P1 + P4
+const X={
+ 'NOVO EXPRESS':{auto:1,t:'Paiement émis · Novo Express',f:['2026-09-25','106,72 $']},
+ 'VISA DESJ US':{auto:1,t:'Paiement émis · Visa USD',f:['2026-09-24','645,20 $','1 jour d’écart']},
+ 'BDC':{auto:1,t:'Versement · Prêt BDC',f:['échéance 2026-09-23']},
+ 'BELL CANADA (CR)':{t:'Dépense · Bell Canada',f:['→ Télécommunications','TPS/TVQ','comme les 6 derniers'],qb:1},
+ 'ANTHROPIC':{t:'Dépense · Anthropic',f:['→ Logiciels et abonnements','taxe US'],qb:1},
+ 'MAXI QUEBEC MYRAND':{t:'Dépense · Maxi',f:['→ Repas','TPS/TVQ'],qb:1},
+ 'PCBWay':{t:'Dépense · PCBWay',f:['→ Pièces','sans taxe'],qb:1},
+};
+document.getElementById('p14').innerHTML=bar()+`<table><tr><th style="width:110px">Date</th><th style="width:230px">Libellé</th><th>Suggestion</th><th style="width:100px">Débit</th><th style="width:100px">Crédit</th></tr>${R.map(r=>{
+ const x=X[r.l];
+ let cell='';
+ if(x&&x.auto) cell=`${x.t}<span class="auto">AUTO</span><span class="undo">annuler</span>`;
+ else if(x) cell=`<span class="chip" style="white-space:normal">${x.t}<span style="font-style:normal;color:var(--muted)"> · ${x.f.join(' · ')}</span></span>${x.qb?' <b style="font:700 10.5px Source Sans 3,sans-serif;color:#b45309">QB</b>':''} <span class="btn ok">✓</span> <span class="btn no">✕</span>`;
+ else if(r.doc) cell=`<span style="color:var(--muted)">${r.doc}</span>`;
+ const cls=x&&x.auto?'g':(r.c||'');
+ return `<tr class="${cls}"><td class="d">${r.d}</td><td>${r.l}<span class="sub2">${r.s}</span></td><td>${cell}</td><td class="n">${r.m>0?fm(r.m):''}</td><td class="n">${r.m<0?fm(-r.m):''}</td></tr>`}).join('')}</table>`+tabs;
+
+// P1
+document.getElementById('p1').innerHTML=bar()+`<table>${head}${R.map(r=>`<tr class="${r.c||''}">${cells(r)}<td>${r.doc?r.doc:r.sug?`<span class="chip">${r.sug} <span class="btn ok">✓</span><span class="btn no">✕</span></span>`:''}</td></tr>`).join('')}</table>`+tabs;
+
+// P2
+document.getElementById('p2').innerHTML=bar()+`<table>${head}${R.slice(3,6).map((r,i)=>`<tr class="${r.c||''}">${cells(r)}<td>${r.doc||(r.sug?`<span class="chip">${r.sug}</span>`:'')}</td></tr>`+(i==1?`<tr class="expand"><td colspan="5">
+ <span class="seg"><span>Virement</span><span class="on">Dépense</span><span>Apparier</span></span>
+ <div style="margin-top:12px"><span class="f"><b>Fournisseur</b><i>Bell Canada</i></span><span class="f"><b>Compte</b><i>Télécommunications</i></span><span class="f"><b>Taxe</b><i>TPS/TVQ</i></span><span class="f"><b>Date</b>2026-09-22</span><span class="f"><b>Mémo</b><i>Internet bureau</i></span>
+ <button class="big pri" style="float:right">Confirmer</button><button class="big sec" style="float:right;margin-right:8px">Ignorer</button></div>
+ <div class="why">Comme les 6 derniers débits Bell Canada.</div></td></tr>`:'')).join('')}</table>`+tabs;
+
+// P3
+document.getElementById('p3').innerHTML=`<div class="bar"><span class="t">BNC — Opérations</span><span class="q on">Suggestions <span class="cnt s">${cnt}</span></span><span class="q">À réviser <span class="cnt">${rev-cnt}</span></span><span class="q">Catégorisées</span><span class="q">Exclues</span><button class="big pri">Accepter les 3 sûres</button></div><table>${head}${R.filter(r=>r.sug).map(r=>`<tr>${cells(r)}<td><span class="chip">${r.sug}${r.safe?' ★':''} <span class="btn ok">✓</span><span class="btn no">✕</span></span></td></tr>`).join('')}</table>`+tabs;
+
+// P4
+document.getElementById('p4').innerHTML=bar()+`<table>${head}${R.map(r=>{
+ if(r.safe) return `<tr class="g">${cells(r)}<td>${r.sug.split(' · ')[1]}<span class="auto">AUTO</span><span class="undo">annuler</span></td></tr>`;
+ return `<tr class="${r.c||''}">${cells(r)}<td>${r.doc?r.doc:r.sug?`<span class="chip">${r.sug} <span class="btn ok">✓</span><span class="btn no">✕</span></span>`:''}</td></tr>`}).join('')}</table>`+tabs;
+
+// P5
+document.getElementById('p5').innerHTML=bar()+`<div class="rail"><div><table><tr><th style="width:110px">Date</th><th>Libellé</th><th style="width:100px">Débit</th><th style="width:100px">Crédit</th></tr>${R.map((r,i)=>`<tr class="${r.c||''}" style="${i==4?'outline:2px solid var(--sug);outline-offset:-2px':''}">${cells(r)}</tr>`).join('')}</table></div>
+<div class="side"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px"><b style="font-size:17px">Suggestions <span class="cnt s">${cnt}</span></b><button class="big pri" style="padding:4px 10px">Accepter les sûres</button></div>
+${R.filter(r=>r.sug).map((r,i)=>`<div class="card" style="${i==3?'border-color:var(--sug);border-width:2px':''}"><div class="top"><span>${r.l}</span><span class="n">${fm(r.m)}</span></div><div style="color:var(--sug);font-style:italic">${r.sug}${r.safe?' ★':''}</div><div class="act"><button class="big pri" style="padding:3px 10px">✓</button><button class="big sec" style="padding:3px 10px">✕</button></div></div>`).join('')}
+</div></div>`+tabs;
+</script>
+</body></html>

@@ -20,6 +20,7 @@ import { reconcileFacturesForOrder } from './quickbooks.js'
 import { logSystemRun } from './systemAutomations.js'
 import { uploadsPath } from '../config/uploads.js'
 import { periodStartFromFields } from './paiePeriod.js'
+import { mergedCompanyForAirtableId } from './companyMerge.js'
 
 // Cache live SQLite columns per table — read once at module level, refreshed
 // only when an UPDATE/INSERT references an unknown column (rare, indicates a
@@ -94,7 +95,12 @@ export function lookupCompany(fields, fieldName) {
   const raw = fields[fieldName]
   const linkedId = Array.isArray(raw) ? raw[0] : null
   if (linkedId) {
-    const co = db.prepare('SELECT id FROM companies WHERE airtable_id=? LIMIT 1').get(linkedId)
+    const co = db.prepare('SELECT id, deleted_at FROM companies WHERE airtable_id=? LIMIT 1').get(linkedId)
+    if (co && !co.deleted_at) return co.id
+    // Entreprise fusionnée dans Boréal : le lien Airtable vers l'absorbée
+    // retombe sur la fiche gardée.
+    const merged = mergedCompanyForAirtableId(linkedId)
+    if (merged) return merged
     if (co) return co.id
   }
   // Fallback: text match
@@ -1233,9 +1239,13 @@ export async function syncInstagramProspects(changes = null) {
           // booléens et la colonne est un INTEGER. On horodate au passage pour
           // que la coche faite dans Airtable soit datée comme celle de l'ERP.
           if (key === 'contacted') {
-            payload.contacted = val === true || val === 1 || val === '1' ? 1 : 0
-            if (payload.contacted && !existingRow?.contacted_at) payload.contacted_at = new Date().toISOString()
-            if (!payload.contacted) payload.contacted_at = null
+            // Une case vide dans Airtable ne dé-traite jamais une fiche traitée
+            // dans Boréal : sinon elle ressurgit dans « à traiter » au prochain sync.
+            const v = val === true || val === 1 || val === '1' ? 1 : 0
+            if (!v && existingRow?.contacted) continue
+            payload.contacted = v
+            if (v && !existingRow?.contacted_at) payload.contacted_at = new Date().toISOString()
+            if (!v) payload.contacted_at = null
             continue
           }
           payload[key] = val === '' ? null : val
@@ -1601,6 +1611,26 @@ export function currencyFromCountry(country) {
   return 'CAD'
 }
 
+// PDF d'une soumission venue d'Airtable : l'URL gardée en `pdf_url` expire en
+// quelques heures (410). On relit donc le record pour une URL fraîche et on
+// recopie la pièce jointe dans uploads/soumissions/ (même nommage que l'import
+// historique). Renvoie le chemin relatif à uploads, ou null sans pièce jointe.
+export async function mirrorSoumissionPdf(airtableId) {
+  const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='soumissions'").get()
+  const fm = config?.field_map ? JSON.parse(config.field_map) : {}
+  if (!config?.base_id || !config?.table_id || !fm.pdf) return null
+  const accessToken = await getAccessToken()
+  const [rec] = await fetchAllRecords(config.base_id, config.table_id, accessToken, null, [airtableId])
+  const att = (rec?.fields?.[fm.pdf] || []).find(a => a?.url)
+  if (!att) return null
+  const safe = String(att.filename || 'soumission.pdf').replace(/[/\\]/g, '_')
+  const rel = path.join('soumissions', `${airtableId}_${att.id}_${safe}`)
+  const dest = path.join(uploadsPath(), rel)
+  if (!existsSync(dest)) await downloadImage(att.url, dest)
+  db.prepare('UPDATE soumissions SET generated_pdf_path = ?, pdf_url = ? WHERE airtable_id = ?').run(rel, att.url, airtableId)
+  return rel
+}
+
 export async function syncSoumissions(changes = null) {
   const config = db.prepare("SELECT * FROM airtable_module_config WHERE module='soumissions'").get()
   if (!config?.base_id || !config?.table_id) return
@@ -1812,7 +1842,11 @@ export async function syncAdresses(changes = null) {
     let imported = 0, updated = 0
     db.transaction((recs) => {
       for (const rec of recs) {
+        // Une adresse n'est liée à l'entreprise que par UN des trois liens
+        // Airtable, selon son type : livraison, ferme ou facturation.
         const companyId = lookupCompany(rec.fields, fm.company)
+          ?? lookupCompany(rec.fields, 'Entreprise (adresse de la ferme)')
+          ?? lookupCompany(rec.fields, 'Entreprise (adresse de factuation)')
         const contactId = lookupContact(firstLinked(rec.fields, fm.contact))
         const line1 = getVal(rec.fields, fm.line1)
         const city = getVal(rec.fields, fm.city)

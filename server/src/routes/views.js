@@ -39,6 +39,8 @@ const ALLOWED_TABLES = new Set([
   'activity_log', 'activity_codes', 'changelog', 'mapaq_import', 'vendor_profiles',
   // Revenus perçus d'avance : lignes calculées mois par mois, aucune table SQL.
   'revenus_reportes',
+  // File de travaux (/travaux) : items du store de l'agent, aucune table SQL.
+  'travaux_prompts',
 ])
 
 // Clés de vue DataTable dont la table SQL sous-jacente porte un autre nom :

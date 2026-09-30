@@ -76,6 +76,7 @@ export const RECORD_REGISTRY = {
       'end_date', 'office_key', 'insurance_id', 'nethris_username', 'is_salesperson', 'is_consultant',
       'accounting_department', 'hours_per_week', 'last_raise_date', 'group_insurance',
       'address_verified', 'banking_info', 'issues', 'peer_reviews', 'vacation_days_per_year',
+      'commission_rate', 'vacation_pct', 'vacation_ref_date', 'vacation_ref_balance',
     ],
     nonNullable: new Set(),
     coerce: {},

@@ -124,7 +124,9 @@ export function ChangelogContent() {
         const dominantType = TYPE_RANK.find((t) => types.includes(t)) || 'improved'
         return {
           id: `${entry.date}-${i}`,
-          date: entry.date,
+          // `at` (horodatage ISO, facultatif) porte l'heure de l'entrée : sans
+          // lui, un format « + heure » choisi pour la colonne n'a rien à montrer.
+          date: entry.at || entry.date,
           title: entry.title,
           category: entry.category || '',
           dominantType,

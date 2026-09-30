@@ -34,6 +34,7 @@
 //      Vendor sur cette ligne (JournalEntryLineDetail.Entity =
 //      { Type: 'Vendor', EntityRef: { value } }), sinon QB refuse.
 import db from '../db/database.js'
+import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { qbPost, qbGet, qbRequest } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum, resolveTaxCodeIdsByName, findOrCreateVendor } from './quickbooks.js'
 import { getCarmConfig } from './carmAccount.js'
@@ -297,7 +298,7 @@ function paymentAccountFor(g, ids) {
            OR LOWER(bt.description) LIKE '%border services%' OR LOWER(bt.description) LIKE '%frontalier%')
     ORDER BY ABS(julianday(bt.txn_date) - julianday(?)) LIMIT 1
   `).get(total, g.date, g.date)
-  const id = hit?.qb_account_id && !String(hit.qb_account_id).includes(',') ? String(hit.qb_account_id) : null
+  const id = mainQbAccount(hit)
   return { accountId: id || ids.card, source: id ? `relevé bancaire (${hit.name})` : 'carte configurée' }
 }
 

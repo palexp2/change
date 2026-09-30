@@ -12,6 +12,7 @@ import { resolveServicePeriod, annotateItemsWithPeriod, annotateDescriptionWithP
 import { autoLinkReceiptItems } from './purchaseLiaMatch.js'
 import { applyAwsInvoice } from './awsInvoice.js'
 import { applyMealTaxCodeNames, reconcileMealAmounts, isTipLine } from './mealReceipt.js'
+import { applyMixedTaxCodeNames, stripTaxableFlags } from './lineTaxCodes.js'
 import { round2Safe as round2 } from '../utils/money.js'
 import { consolidateSingleItemCharges, extractChargeLines } from './saleReceiptSingleItem.js'
 import { canonicalVendorName, isAmazonStoreDocument, AMAZON_STORE_VENDOR } from './vendorIdentity.js'
@@ -32,6 +33,26 @@ const TX_TYPE_CATALOG = TRANSACTION_TYPES
   .filter(t => t.side !== 'vente')
   .map(t => `- "${t.key}" : ${t.label}. ${t.note}`)
   .join('\n')
+
+// Argent reçu → compte crédité par défaut (n° de compte QB) : un crédit d'impôt ou
+// une subvention encaissé solde la créance déjà inscrite à l'actif. Compte
+// bancaire par défaut : chèques BNC. Toujours modifiable avant publication.
+const DEPOSIT_CREDIT_ACCTNUM = {
+  credit_impot: '15001', // Crédits d'impôt à recevoir
+  subvention: '12400', // Subventions à recevoir
+  interets: '80500', // Revenus d'intérêts
+  remboursement_taxes: '25100', // TPS/TVH - à payer
+}
+const DEPOSIT_BANK_ACCTNUM = '10000'
+export function depositDraftFor(category) {
+  return { creditAcctNum: DEPOSIT_CREDIT_ACCTNUM[category] || null }
+}
+// Nature d'une ligne d'argent reçu : celle lue par l'IA, sinon les intérêts se
+// reconnaissent à leur libellé (« Intérêt sur remboursement »).
+export function depositLineCategory(item) {
+  if (/\b(int[ée]r[êe]ts?|interest)\b/i.test(item?.description || '')) return 'interets'
+  return DEPOSIT_CREDIT_ACCTNUM[item?.deposit_category] ? item.deposit_category : null
+}
 
 const SYSTEM_PROMPT = `Tu es un assistant spécialisé dans l'extraction de données de reçus, factures et relevés que NOTRE entreprise a REÇUS de ses fournisseurs/marchands.
 
@@ -54,7 +75,7 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
   "receipt_number": "numéro de reçu/facture ou null",
   "general_description": "résumé d'UNE seule ligne décrivant l'objet PRINCIPAL du document — ce qui a été acheté, en termes généraux — ou null",
   "service_period": "période de service couverte par la facture, libellé concis, ou null",
-  "items": [{"description": "...", "quantity": 1, "unit_price": 0.00, "total": 0.00}],
+  "items": [{"description": "...", "quantity": 1, "unit_price": 0.00, "total": 0.00, "taxable": true}],
   "shipments": [{"carrier": "...", "destination_province": "QC|ON|...|null", "destination_country": "CA|US|...", "total": 0.00, "taxes": [{"label": "TPS|TVQ|TVH|PST|...", "amount": 0.00}]}],
   "subtotal": 0.00,
   "tps": 0.00,
@@ -69,6 +90,8 @@ Extrait toutes les informations disponibles et retourne un JSON valide avec exac
   "due_date": "YYYY-MM-DD ou null",
   "payment_terms_days": 0,
   "transaction_type": "clé de classification fiscale TPS/TVQ (voir la règle dédiée) ou null",
+  "document_kind": "achat ou encaissement — voir la RÈGLE ARGENT REÇU",
+  "deposit_category": "credit_impot | subvention | interets | remboursement_taxes | autre — seulement si document_kind = encaissement, sinon null",
   "notes": "autres informations pertinentes ou null"
 }
 
@@ -121,6 +144,13 @@ RÈGLE — ESCOMPTE ET TRANSPORT GLOBAUX SUR UN ACHAT DE PLUSIEURS PIÈCES (ex. 
 - Renseigne plutôt "discount_amount" (montant total de l'escompte, en positif, 0 si aucun) et "freight_amount" (montant total des frais de transport globaux, en positif, 0 si aucun). Le système répartit ensuite ce montant AU PRORATA du poids de chaque pièce automatiquement — n'essaie pas de le faire toi-même ligne par ligne.
 - Dans ce cas précis, "subtotal" reste la somme des items[].total AVANT escompte/transport — l'invariant subtotal+taxes=total peut alors ne PAS tenir, c'est normal et attendu. "total" demeure le MONTANT TOTAL DÛ réellement imprimé sur la facture (après escompte/transport).
 
+RÈGLE — "taxable" (LA LIGNE A-T-ELLE SUPPORTÉ LA TAXE ?) :
+- "taxable" vaut true si cette ligne a supporté la TPS/TVQ, false si elle n'en a pas supporté (aliment de base détaxé, article exonéré), null si c'est vraiment indéterminable.
+- Cas habituel (facture de fournisseur, taxes = 14,975 % du sous-total) : toutes les lignes sont "taxable": true. Document sans aucune taxe : toutes à false.
+- ÉPICERIE / PHARMACIE / DÉPANNEUR : le panier MÉLANGE des lignes taxées et des lignes détaxées, et le reçu imprime un INDICATEUR de taxe à côté de chaque ligne (une ou plusieurs lettres, souvent « F », « T », « TX », « MRJ », « HJ », « M », ou un astérisque). Sers-t'en : seules les lignes portant un indicateur de taxe sont taxables.
+- À défaut d'indicateur lisible : les aliments de base sont DÉTAXÉS (fruits, légumes, viande, poisson, œufs, lait et produits laitiers, pain, pâtes, riz, conserves, condiments, café, jus) ; sont TAXABLES les aliments préparés prêts-à-manger (salade en barquette, sandwich, repas chaud), les grignotines, friandises, boissons gazeuses et énergisantes, l'alcool, et tout produit non alimentaire (nettoyants, papier, piles, articles de maison).
+- VÉRIFICATION OBLIGATOIRE avant de répondre : la somme des items[].total marqués "taxable": true, multipliée par 14,975 % (ou par 5 % si seule la TPS est facturée), doit retomber sur les taxes imprimées, au cent près. Si ça ne balance pas, c'est que tu as mal réparti : reprends la liste des indicateurs ligne par ligne. Exemple : reçu d'épicerie de 59,82 $ avec TPS 0,38 et TVQ 0,75 → la base taxable est 7,50 $ (1,13 ÷ 14,975 %), donc UNE SEULE ligne de 7,50 $ est taxable, toutes les autres sont détaxées.
+
 RÈGLE — POURBOIRE (repas au restaurant, traiteur, livraison de repas) :
 - Un reçu de restaurant arrive souvent en DEUX coupons photographiés côte à côte : l'ADDITION (les plats, le sous-total, la TPS, la TVQ, un « TOTAL » taxes incluses) et le coupon du TERMINAL de paiement (« MONTANT », « POURBOIRE », « TOTAL », approbation de la carte). Lis les DEUX : ce sont deux parties du même reçu, pas deux reçus.
 - Le POURBOIRE (« POURBOIRE », « TIP », « Gratuity », « Frais de service ») n'apparaît que sur le coupon du terminal. Il doit devenir un ARTICLE à part entière dans "items", avec la description exacte « Pourboire », quantity et unit_price à null, et "total" = le montant du pourboire.
@@ -154,6 +184,13 @@ ${TX_TYPE_CATALOG}
 - Cohérence obligatoire avec les taxes du document : un type au statut Taxable suppose que des taxes (TPS et/ou TVQ) sont facturées ; un type Détaxé/Exonéré/Hors-champ suppose 0 $ de taxe. Si ta classification contredit les montants que tu as extraits, reconsidère-la.
 - Indices utiles : fournisseur canadien qui facture TPS + TVQ → "achat_local_taxable" (ou "repas_representation" si restaurant/traiteur/livraison de repas). Fournisseur étranger, aucune taxe → "achat_etranger_bien_etranger" pour un bien physique expédié de l'étranger, "achat_num_etranger_non_inscrit" pour un service numérique. Fournisseur numérique (SaaS/cloud) qui facture 0 $ en mentionnant nos numéros de TPS/TVQ, « reverse charge » ou « tax exempt » → "achat_num_inscrit_b2b_exempte". Douanes/courtier qui perçoit la TPS 5 % seule à l'importation → "achat_pieces_etranger_douane".
 - En cas de doute réel entre plusieurs types, mets null — ne devine pas.
+
+RÈGLE — ARGENT REÇU ("document_kind") :
+- Par défaut "achat" : nous payons un fournisseur.
+- "encaissement" quand le document annonce de l'argent VERSÉ À Orisha sans être une note de crédit d'un fournisseur : avis de remboursement ou de cotisation de l'Agence du revenu du Canada / Revenu Québec (crédit d'impôt RS&DE, CDAE, crédit remboursable, remboursement de TPS/TVQ), versement de subvention (PARI-CNRC, MEI, DEC, Emploi-Québec…), intérêts versés par une banque, tout autre dépôt reçu.
+- Pour un encaissement : "company" = l'organisme QUI PAIE (ex. « Agence du revenu du Canada », « Revenu Québec », « Banque Nationale ») ; "total" = le montant reçu, en POSITIF ; "subtotal" = "total" ; tps, tvq et other_taxes = 0 ; "items" = une ligne par montant versé (ex. « Crédit d'impôt RS&DE — année 2025 ») ; "transaction_type" = null.
+- "deposit_category" : "credit_impot" (crédit d'impôt, quelle que soit l'année visée), "subvention", "interets", "remboursement_taxes" (remboursement de TPS/TVQ ou d'impôt payé en trop), sinon "autre" — c'est la nature du montant PRINCIPAL.
+- Chaque ligne de "items" porte AUSSI son propre "deposit_category" : un avis de l'ARC qui verse un crédit d'impôt ET des « Intérêts sur remboursement » donne deux lignes, la 1re "credit_impot", la 2e "interets".
 
 DOCUMENT MULTIPAGE :
 - Le document peut comporter PLUSIEURS pages (plusieurs images et/ou plusieurs pages de PDF). Elles forment UN SEUL reçu/facture. Consolide TOUTES les pages en un seul JSON : fusionne les articles de chaque page dans le tableau "items", et prends les totaux (subtotal/tps/tvq/total) du document complet (généralement sur la dernière page). Ne produis pas un objet par page.
@@ -737,6 +774,12 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
           total: extracted.total || 0,
         }
         console.log(`Extraction ${saleReceiptId}: escompte/transport réparti au prorata des lignes (sous-total ramené à ${discFreight.subtotal} $) — répartition CTB « Pro rata transport »`)
+        // Trace lue par la fiche : ce qui a été réparti, ligne de frais par ligne de frais.
+        extracted.prorata = {
+          freight: round2((Number(extracted.freight_amount) || 0) + (fromLines ? charges.freight : 0)),
+          discount: round2((Number(extracted.discount_amount) || 0) + (fromLines ? charges.discount : 0)),
+          lines: fromLines ? charges.labels : [],
+        }
       }
     }
     // Période de service. Les factures de transport (shipments) sont ponctuelles par
@@ -848,6 +891,65 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
         }
       }
     }
+    // TAXATION MIXTE (épicerie, pharmacie, dépanneur) : les taxes imprimées ne portent
+    // que sur une partie du panier. On pose le code de taxe PAR LIGNE — « Détaxé » sur
+    // les aliments de base, le code taxable sur le reste — pour que la déclaration de
+    // TPS/TVQ n'annonce pas tout l'achat comme fourniture taxable. Voir lineTaxCodes.js.
+    {
+      const current = amounts || {
+        subtotal: extracted.subtotal || 0, tps: extracted.tps || 0, tvq: extracted.tvq || 0,
+        other_taxes: extracted.other_taxes || 0, total: extracted.total || 0,
+      }
+      const mixed = shipments.length ? null : applyMixedTaxCodeNames({ items, ...current })
+      if (mixed) {
+        let nameToId = new Map()
+        try {
+          const { resolveTaxCodeIdsByName } = await import('./quickbooks.js')
+          nameToId = await resolveTaxCodeIdsByName(mixed.items.map(it => it.tax_code_name))
+        } catch (e) {
+          console.warn(`Taxation mixte ${saleReceiptId}: résolution codes QB indisponible (${e.message}) — codes laissés vides`)
+        }
+        items = mixed.items.map(({ tax_code_name, ...it }) => ({
+          ...it,
+          tax_code_id: it.tax_code_id || (tax_code_name ? (nameToId.get(tax_code_name) || null) : null),
+        }))
+        console.log(`Extraction ${saleReceiptId}: taxation mixte — ${mixed.taxableBase} $ taxable sur ${round2(current.subtotal)} $, codes posés par ligne`)
+      }
+      items = stripTaxableFlags(items)
+    }
+    // ARGENT REÇU (crédit d'impôt, subvention, intérêts…) : montants en positif,
+    // sans taxes, brouillon posé en « Dépôt » vers le bon compte (seulement si
+    // rien n'a encore été choisi) — c'est ce type qui fait chercher une ENTRÉE au relevé.
+    const depositDraft = extracted.document_kind === 'encaissement' ? depositDraftFor(extracted.deposit_category) : null
+    if (depositDraft) {
+      const received = round2(Math.abs(Number(amounts ? amounts.total : extracted.total) || 0))
+      amounts = { subtotal: received, tps: 0, tvq: 0, other_taxes: 0, total: received }
+      items = (items || []).map(it => ({ ...it, total: Math.abs(Number(it?.total) || 0), unit_price: it?.unit_price == null ? it?.unit_price : Math.abs(Number(it.unit_price) || 0), tax_code_id: null }))
+      if (!items.length) items = [{ description: extracted.general_description || company || 'Dépôt', quantity: 1, unit_price: received, total: received }]
+      try {
+        const { resolveAccountByAcctNum } = await import('./quickbooks.js')
+        // Ligne d'une AUTRE nature que le montant principal (les intérêts d'un
+        // remboursement d'impôt) : elle reçoit son propre compte.
+        const docAcct = depositDraft.creditAcctNum
+        for (const it of items) {
+          const lineAcct = depositDraftFor(depositLineCategory(it)).creditAcctNum
+          if (lineAcct && lineAcct !== docAcct && !it.expense_account_id) it.expense_account_id = await resolveAccountByAcctNum(lineAcct) || null
+          delete it.deposit_category
+        }
+        const creditId = depositDraft.creditAcctNum ? await resolveAccountByAcctNum(depositDraft.creditAcctNum) : null
+        const bankId = await resolveAccountByAcctNum(DEPOSIT_BANK_ACCTNUM)
+        db.prepare(`
+          UPDATE sale_receipts SET
+            quickbooks_type=COALESCE(quickbooks_type, 'deposit'),
+            expense_account_id=COALESCE(expense_account_id, ?),
+            payment_account_id=COALESCE(payment_account_id, ?)
+          WHERE id=? AND quickbooks_id IS NULL
+        `).run(creditId || null, bankId || null, saleReceiptId)
+      } catch (e) {
+        console.warn(`Extraction ${saleReceiptId}: comptes du dépôt non résolus (${e.message})`)
+      }
+      console.log(`Extraction ${saleReceiptId}: argent reçu (${extracted.deposit_category || 'autre'}) — ${received} $ en dépôt`)
+    }
     db.prepare(`
       UPDATE sale_receipts SET
         status='done',
@@ -883,7 +985,7 @@ export async function runExtractionAndUpdate({ saleReceiptId, filePath, fileExt,
       dueDate,
       termsDays,
       profile?.id || null,
-      extractedTxType,
+      depositDraft ? null : extractedTxType,
       saleReceiptId,
     )
     // La facture est peut-être déjà appariée à sa ligne de relevé : sa date

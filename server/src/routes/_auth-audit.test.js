@@ -45,6 +45,8 @@ const PUBLIC_ROUTES = new Map([
   ['GET /api/track/email/:emailId.gif',              'Email open-tracking pixel (incremented counter only)'],
   ['GET /api/public/installation-feedback/',         'Public customer feedback button from install follow-up email'],
   ['GET /erp/pay/:pendingId',                        'Permanent customer payment link — redirects to a fresh Stripe Checkout Session'],
+  ['GET /erp/pay/soumission/:id/:kind',              'Boutons « S’abonner » / « Acheter » du PDF de soumission — redirige vers une session Stripe Checkout neuve'],
+  ['GET /erp/pay/soumission/:id/paye',               'Retour de Stripe après paiement — session validée via l’API Stripe (payée + metadata soumission), redirige vers le System builder'],
   ['GET /api/email-tracking/:emailId.gif',           'Invoice email open-tracking pixel (counter only)'],
   ['GET /api/customer/post-payment/:sessionId',      'Customer onboarding wizard — auth via Stripe Checkout Session id (validated via Stripe API)'],
   ['POST /api/customer/post-payment/:sessionId/save',     'Customer onboarding autosave (Stripe session id auth)'],

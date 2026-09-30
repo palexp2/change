@@ -15,6 +15,7 @@ import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { InlineTextarea } from '../components/InlineFields.jsx'
 import NovoxpressLabelModal from '../components/NovoxpressLabelModal.jsx'
+import InstallationDocsAction from '../components/InstallationDocsAction.jsx'
 import NovoxpressPickupModal from '../components/NovoxpressPickupModal.jsx'
 import NovoxpressPickupDetails from '../components/NovoxpressPickupDetails.jsx'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
@@ -324,6 +325,9 @@ export default function EnvoisDetail({ recordId, onClose }) {
               <button onClick={() => setShowSendTracking(true)} className="btn-secondary flex items-center gap-1.5 text-sm">
                 <Mail size={14} /> Envoyer le suivi
               </button>
+            )}
+            {envoi.order_id && itemRows.length > 0 && (
+              <InstallationDocsAction orderId={envoi.order_id} shipmentId={envoi.id} docsLang={envoi.docs_lang} />
             )}
             {/* Plus de bouton « Bon de livraison » ici : le BL est une pièce
                 jointe de la fiche (comme l'étiquette) — la vignette et la

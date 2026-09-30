@@ -180,8 +180,9 @@ if [ "$NEED_RESTART" = "1" ]; then
     echo "❌ pm2 introuvable dans le PATH ($PATH) — serveur NON redémarré."
     echo "   Le build front est en place mais server/src n'est pas rechargé."
     DEPLOY_INCOMPLETE=1
-  elif ! pm2 restart erp-server; then
-    echo "❌ 'pm2 restart erp-server' a échoué — serveur possiblement non rechargé."
+  # Sans coupure : un relais répond le temps du redémarrage (voir le script).
+  elif ! server/scripts/restart.sh; then
+    echo "❌ Le redémarrage d'erp-server a échoué — serveur possiblement non rechargé."
     DEPLOY_INCOMPLETE=1
   fi
 else

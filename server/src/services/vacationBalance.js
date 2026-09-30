@@ -1,42 +1,46 @@
 import db from '../db/database.js'
 
-// Compte les jours ouvrables (lundi→vendredi) d'une période [start, end] inclusive,
-// bornée à l'année civile `year`. Les dates sont en 'YYYY-MM-DD'. Retourne 0 si une
-// borne manque, si la plage est inversée, ou si l'intersection avec l'année est vide.
-// La logique miroir côté client vit dans client/src/lib/vacationBalance.js — garder
-// les deux identiques.
-export function businessDaysInYear(start, end, year) {
-  if (!start || !end) return 0
-  const yStart = `${year}-01-01`
-  const yEnd = `${year}-12-31`
-  const s = start < yStart ? yStart : start
-  const e = end > yEnd ? yEnd : end
-  if (e < s) return 0
-  const sd = new Date(`${s}T00:00:00Z`)
-  const ed = new Date(`${e}T00:00:00Z`)
-  if (isNaN(sd) || isNaN(ed)) return 0
-  let count = 0
-  for (const d = new Date(sd); d <= ed; d.setUTCDate(d.getUTCDate() + 1)) {
-    const wd = d.getUTCDay()
-    if (wd !== 0 && wd !== 6) count++
-  }
-  return count
-}
+// Salaire brut d'une ligne de paie, base de l'accumulation des vacances :
+// heures régulières ET fériées × taux, férié 1/20, paie de vacances, commission.
+// Les remboursements de dépenses n'en sont pas. Une paie de vacances fait donc
+// elle-même croître la banque (pour les vacances suivantes).
+const GROSS_SQL = `
+  COALESCE(pi.hourly_rate, 0) * (COALESCE(pi.regular_hours, 0) + COALESCE(pi.holiday_hours, 0))
+  + COALESCE(pi.holiday_1_20, 0) + COALESCE(pi.vacation, 0) + COALESCE(pi.commission, 0)`
 
-// Solde de vacances payées d'un employé pour une année civile.
-// Seules les périodes `paid = 1` décomptent du droit annuel.
+// Date d'une ligne de paie : fin de période de la paie, sinon début de la ligne.
+const ITEM_DATE_SQL = `COALESCE(p.period_end, pi.start_date)`
+
+// Banque de vacances d'un employé, en dollars.
+// Sans point de référence : Σ (brut de chaque paie × %) − paies de vacances
+// versées (`paie_items.vacation`).
+// Avec point de référence (« au 2026-09-24, la banque valait X $ ») : X + la
+// même somme limitée aux paies postérieures à cette date. Le % a changé dans le
+// passé sans historique : seul le point de référence fait foi pour l'avant.
+// `since` (facultatif) remplace la date enregistrée — la fiche l'envoie pendant
+// la saisie, avant que l'autosave ne l'ait écrite.
+// `gross` et `paid_out` sont renvoyés tels quels pour que la fiche recalcule
+// la banque à l'instant où l'on change le % ou le montant de référence.
 // Retourne null si l'employé n'existe pas.
-export function vacationBalance(employeeId, year = new Date().getFullYear()) {
-  const emp = db.prepare('SELECT vacation_days_per_year FROM employees WHERE id = ?').get(employeeId)
+export function vacationBalance(employeeId, since) {
+  const emp = db.prepare('SELECT vacation_pct, vacation_ref_date, vacation_ref_balance FROM employees WHERE id = ?').get(employeeId)
   if (!emp) return null
-  const rows = db.prepare('SELECT start_date, end_date, paid FROM vacations WHERE employee_id = ?').all(employeeId)
-  let used = 0
-  for (const r of rows) {
-    if (!r.paid) continue
-    used += businessDaysInYear(r.start_date, r.end_date, year)
+  const refDate = (since === undefined ? emp.vacation_ref_date : since) || null
+  const sums = db.prepare(`
+    SELECT COALESCE(SUM(${GROSS_SQL}), 0) AS gross,
+           COALESCE(SUM(COALESCE(pi.vacation, 0)), 0) AS paid_out
+      FROM paie_items pi LEFT JOIN paies p ON p.id = pi.paie_id
+     WHERE pi.employee_id = ?
+       ${refDate ? `AND ${ITEM_DATE_SQL} > ?` : ''}
+  `).get(employeeId, ...(refDate ? [refDate] : []))
+  const pct = Number(emp.vacation_pct) || 0
+  const r2 = n => Math.round(n * 100) / 100
+  const refBalance = refDate ? r2(Number(emp.vacation_ref_balance) || 0) : 0
+  const accrued = r2(sums.gross * pct / 100)
+  const balance = r2(refBalance + accrued - sums.paid_out)
+  return {
+    pct, gross: r2(sums.gross), accrued, paid_out: r2(sums.paid_out),
+    ref_date: refDate, ref_balance: refBalance,
+    balance, over_limit: balance < 0,
   }
-  used = Math.round(used * 100) / 100
-  const allowance = Number(emp.vacation_days_per_year) || 0
-  const remaining = Math.round((allowance - used) * 100) / 100
-  return { year, allowance, used_days: used, remaining, over_limit: remaining < 0 }
 }

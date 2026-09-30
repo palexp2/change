@@ -23,13 +23,24 @@ const REFRESH_MINUTES = 60      // filet horaire : les sessions ne vieillissent 
 const TARGETS_TTL_MS = 3600_000 // la liste des portails change rarement
 const REFRESH_ALARM = 'orisha-refresh-sessions'
 
+// Une promesse qui ne se termine jamais (onglet endormi, ERP muet) ne doit
+// jamais bloquer l'envoi : au-delà de `ms`, on abandonne.
+function withTimeout(ms, promise) {
+  let timer
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`délai dépassé (${Math.round(ms / 1000)} s)`)), ms) }),
+  ]).finally(() => clearTimeout(timer))
+}
+
 export async function settings() {
   const { erpUrl = '', token = '', auto = true } =
     await chrome.storage.local.get(['erpUrl', 'token', 'auto'])
   return { erpUrl, token, auto }
 }
 
-async function call(path, { method = 'GET', body = null } = {}) {
+// `timeoutMs: 0` = pas de limite (la collecte peut être longue).
+async function call(path, { method = 'GET', body = null, timeoutMs = 20000 } = {}) {
   const { erpUrl, token } = await settings()
   if (!erpUrl || !token) throw new Error('Réglages incomplets — ouvrir les options du module')
   const origin = normalizeErpUrl(erpUrl)
@@ -47,8 +58,10 @@ async function call(path, { method = 'GET', body = null } = {}) {
       cache: 'no-store',
       headers: { Authorization: `Bearer ${validToken}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
       body: body ? JSON.stringify(body) : undefined,
+      ...(timeoutMs ? { signal: AbortSignal.timeout(timeoutMs) } : {}),
     })
-  } catch {
+  } catch (e) {
+    if (e?.name === 'TimeoutError') throw new Error(`L’ERP n’a pas répondu en ${Math.round(timeoutMs / 1000)} s`)
     throw new Error(`Connexion à ${origin} impossible — vérifiez que ce site s’ouvre dans votre navigateur et que l’extension est autorisée à y accéder.`)
   }
   const text = await res.text()
@@ -107,9 +120,10 @@ async function originsFor(domains) {
   try { tabs = await chrome.tabs.query({ url: patterns }) } catch { return [] }
   const byOrigin = new Map()
   for (const tab of tabs) {
-    if (!tab.id) continue
+    // Onglet mis en veille par Edge : executeScript n'y revient jamais.
+    if (!tab.id || tab.discarded || tab.frozen) continue
     try {
-      const [res] = await chrome.scripting.executeScript({
+      const [res] = await withTimeout(3000, chrome.scripting.executeScript({
         target: { tabId: tab.id },
         func: () => {
           const out = []
@@ -121,17 +135,78 @@ async function originsFor(domains) {
           } catch { /* stockage bloqué sur cette origine */ }
           return { origin: location.origin, localStorage: out }
         },
-      })
+      }))
       if (res?.result?.localStorage?.length) byOrigin.set(res.result.origin, res.result)
-    } catch { /* onglet protégé (page interne, PDF…) */ }
+    } catch { /* onglet protégé (page interne, PDF…) ou muet */ }
   }
   return [...byOrigin.values()]
+}
+
+// ── Découverte ───────────────────────────────────────────────────────────────
+//
+// Le module voit les sites ouverts dans le navigateur (permission « tabs »). Il
+// en envoie les NOMS DE DOMAINE à l'ERP — rien d'autre — et l'ERP répond
+// lesquels il sait collecter : leur session part dans la foulée, même si le
+// portail n'avait jamais été saisi dans l'ERP. Les domaines inconnus y restent
+// comme « portails repérés », à brancher un jour ; aucun témoin ne les
+// accompagne.
+export const ALL_SITES = 'https://*/*'
+
+export async function hasAllSites() {
+  try { return await chrome.permissions.contains({ origins: [ALL_SITES] }) } catch { return false }
+}
+
+async function openDomains() {
+  let tabs = []
+  try { tabs = await chrome.tabs.query({}) } catch { return [] }
+  const byDomain = new Map()
+  for (const tab of tabs) {
+    if (!tab.url?.startsWith('https://')) continue
+    let host
+    try { host = new URL(tab.url).hostname } catch { continue }
+    const domain = host.replace(/^www\./, '')
+    if (!byDomain.has(domain)) byDomain.set(domain, { domain, title: tab.title || null })
+  }
+  return [...byDomain.values()]
+}
+
+/** Portails ouverts que l'ERP sait collecter, y compris ceux qu'il ne suivait pas. */
+async function discover() {
+  const domains = await openDomains()
+  if (!domains.length) return []
+  try {
+    const out = await call('/discover', { method: 'POST', body: { domains } })
+    return out?.known || []
+  } catch {
+    return []
+  }
+}
+
+// Liste de travail : les portails suivis par l'ERP, plus ceux qu'on vient de
+// voir ouverts. Un portail découvert dont le module n'a pas le droit de lire
+// les témoins est signalé plutôt qu'oublié.
+async function workList({ fresh = false } = {}) {
+  const base = await targets({ fresh }).catch(() => [])
+  const found = await discover()
+  const merged = new Map(base.map(t => [String(t.account_id), t]))
+  for (const t of found) {
+    const key = String(t.account_id)
+    if (!merged.has(key)) merged.set(key, { ...t, label: t.label || t.vendor, discovered: true })
+  }
+  return [...merged.values()]
 }
 
 /** Envoie la session d'UN portail. */
 async function pushOne(t) {
   const cookies = await cookiesFor(t.domains || [])
-  if (!cookies.length) return { ...t, state: 'absent', detail: 'pas de session ouverte dans ce navigateur' }
+  if (!cookies.length) {
+    // Un portail repéré hors de la liste d'origine du module demande la
+    // permission « tous les sites » : sans elle, ses témoins restent illisibles.
+    const detail = t.discovered && !(await hasAllSites())
+      ? 'autoriser « tous les sites » dans les réglages du module'
+      : 'pas de session ouverte dans ce navigateur'
+    return { ...t, state: 'absent', detail }
+  }
   const origins = await originsFor(t.domains || [])
   const out = await call('/push', { method: 'POST', body: { account_id: t.account_id, cookies, origins } })
   const extra = out.origins ? ` + ${out.origins} page(s)` : ''
@@ -156,24 +231,25 @@ export async function runBridge() {
   await setRun({ running: true, sent: [], error: null, collect: null })
   let list = []
   try {
-    list = await targets({ fresh: true })
+    list = await workList({ fresh: true })
   } catch (e) {
     await setRun({ running: false, error: e.message })
     return
   }
-  const sent = []
-  for (const t of list) {
-    try { sent.push(await pushOne(t)) }
-    catch (e) { sent.push({ ...t, state: 'erreur', detail: e.message }) }
-    await setRun({ sent })
+  if (!list?.length) {
+    await setRun({ running: false, error: 'L’ERP n’a aucun portail à envoyer' })
+    return
   }
+  // Tous les portails en même temps, chacun borné : un seul portail lent ne
+  // retient plus les autres.
+  await setRun({ sent: list.map(t => ({ ...t, state: 'wait', detail: 'envoi…' })) })
+  const sent = await Promise.all(list.map(t =>
+    withTimeout(30000, pushOne(t)).catch(e => ({ ...t, state: 'erreur', detail: e.message }))))
   // Même si un portail n'a pas de session, les autres valent le déplacement.
-  try {
-    const collect = await call('/collect', { method: 'POST' })
-    await setRun({ running: false, sent, collect })
-  } catch (e) {
-    await setRun({ running: false, sent, error: e.message })
-  }
+  // La collecte est lancée sans l'attendre : le bouton redevient libre.
+  await setRun({ running: false, sent, collect: { started: true } })
+  call('/collect', { method: 'POST', timeoutMs: 0 })
+    .catch(e => setRun({ error: e.message }))
 }
 
 // ── Envoi automatique ────────────────────────────────────────────────────────
@@ -209,7 +285,13 @@ chrome.cookies.onChanged.addListener(async ({ cookie, removed }) => {
   let list = []
   try { list = await targets() } catch { return }
   const hit = list.find(t => domainMatches(cookie.domain, t.domains))
-  if (hit) schedulePush(hit)
+  if (hit) return schedulePush(hit)
+  // Portail que l'ERP suit depuis peu (ou qu'il vient d'apprendre) : la liste
+  // en cache ne le connaît pas encore, on demande.
+  if (!(await hasAllSites())) return
+  const found = await discover()
+  const late = found.find(t => domainMatches(cookie.domain, t.domains))
+  if (late) schedulePush({ ...late, discovered: true })
 })
 
 // Filet horaire : une session valide mais jamais retouchée finirait par dormir
@@ -226,11 +308,17 @@ async function pushAll() {
   const { auto } = await settings()
   if (!auto) return
   let list = []
-  try { list = await targets({ fresh: true }) } catch { return }
-  for (const t of list) { try { await pushOne(t) } catch { /* on réessaiera */ } }
+  try { list = await workList({ fresh: true }) } catch { return }
+  for (const t of list) { try { await withTimeout(30000, pushOne(t)) } catch { /* on réessaiera */ } }
 }
 chrome.runtime.onStartup?.addListener(pushAll)
 chrome.runtime.onInstalled?.addListener(pushAll)
+
+// Un envoi en cours ne survit pas au recyclage du service ou au rechargement du
+// module : sans ça, la fenêtre garderait le bouton désactivé pour toujours.
+chrome.storage.local.get('lastRun').then(({ lastRun }) => {
+  if (lastRun?.running) return chrome.storage.local.set({ lastRun: { ...lastRun, running: false } })
+}).catch(() => {})
 
 // On répond TOUT DE SUITE : la fenêtre suit ensuite l'avancement dans le
 // stockage. Attendre la fin ici laissait le bouton figé sur « Envoi… » quand le

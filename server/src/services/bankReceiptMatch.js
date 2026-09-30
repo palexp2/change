@@ -156,6 +156,7 @@ function scoreDates(doc, txnDate) {
     let pts
     if (gap < -3) pts = -25
     else if (gap < 0) pts = 6
+    else if (gap <= 2) pts = 18
     else if (gap <= 7) pts = 12
     else if (gap <= 45) pts = 8
     else if (gap <= WINDOW_DAYS) pts = 3
@@ -261,10 +262,11 @@ export function candidatePool(txn, { sources = ['receipt', 'achat'], windowDays 
     const rows = db.prepare(`
       SELECT id, company, receipt_date, order_date, due_date, total, bank_charged_total,
              currency, receipt_number, card_last4, payment_method, status, quickbooks_id,
-             archived_at, vendor_profile_id
+             archived_at, vendor_profile_id, quickbooks_type
       FROM sale_receipts
       WHERE deleted_at IS NULL
-        AND ((:dir < 0 AND COALESCE(total, 0) >= 0) OR (:dir > 0 AND total < 0))
+        AND ((:dir < 0 AND COALESCE(total, 0) >= 0 AND COALESCE(quickbooks_type, '') <> 'deposit')
+          OR (:dir > 0 AND (total < 0 OR quickbooks_type = 'deposit')))
         AND (:any = 1 OR COALESCE(receipt_date, order_date, due_date) BETWEEN :from AND :to)
         AND (:any = 1
           OR ABS(ABS(COALESCE(bank_charged_total, total)) - :amt) <= :tol
@@ -279,7 +281,9 @@ export function candidatePool(txn, { sources = ['receipt', 'achat'], windowDays 
       out.push({
         type: 'receipt', id: String(r.id), label: r.company || '(sans fournisseur)',
         company: r.company, date: r.receipt_date, order_date: r.order_date, due_date: r.due_date,
-        total: r.total, bank_charged_total: r.bank_charged_total, currency: r.currency,
+        // Un dépôt s'affiche en positif mais reste de l'argent qui ENTRE.
+        total: r.quickbooks_type === 'deposit' ? -Math.abs(r.total || 0) : r.total,
+        bank_charged_total: r.bank_charged_total, currency: r.currency,
         doc_number: r.receipt_number, card_last4: r.card_last4, payment_method: r.payment_method,
         status: r.status, quickbooks_id: r.quickbooks_id, archived: !!r.archived_at,
         names: [r.company, profile?.name, ...(profile?.aliases || [])].filter(Boolean),
@@ -375,6 +379,54 @@ function dedupe(list) {
   return out
 }
 
+// ── Abonnements : la facture du bon mois ─────────────────────────────────────
+// Un abonnement mensuel dépose chaque mois la même facture, au même montant,
+// chez le même fournisseur. Toutes se ressemblaient donc au point de se
+// neutraliser : la bonne arrivait bien en tête, mais talonnée de quatre points
+// par celle du mois précédent, aucune n'était jamais « sûre » et la ligne
+// restait à traiter alors que la pièce dormait dans l'extracteur (cas CapCut,
+// signalé par Charles le 2026-09-29).
+//
+// Quand plusieurs pièces ne se distinguent QUE par leur période, la date du
+// débit tranche : celle qui colle garde sa note, les autres reculent. Une pièce
+// déjà liée ailleurs ne peut pas servir de référence — sinon la facture en
+// retard, seule encore libre, se ferait déclasser par celle qui est réglée.
+const PERIOD_MALUS = 25
+const PERIOD_SLACK_DAYS = 2
+
+function docGap(doc, txnDate) {
+  const gaps = [doc.date, doc.order_date, doc.due_date]
+    .map(d => daysBetween(d, txnDate))
+    .filter(g => g != null)
+    .map(Math.abs)
+  return gaps.length ? Math.min(...gaps) : null
+}
+
+export function demoteOtherPeriods(scored, txnDate) {
+  const groups = []
+  for (const c of scored) {
+    const g = groups.find(grp => sameVendor(grp[0].company, c.company)
+      && Math.abs(Math.abs(grp[0].total || 0) - Math.abs(c.total || 0)) <= AMOUNT_EPS)
+    if (g) g.push(c); else groups.push([c])
+  }
+  for (const group of groups) {
+    if (group.length < 2) continue
+    const gaps = new Map(group.map(c => [c, docGap(c, txnDate)]))
+    const reference = group
+      .filter(c => !c.taken && gaps.get(c) != null)
+      .reduce((best, c) => (best == null || gaps.get(c) < gaps.get(best) ? c : best), null)
+    if (!reference) continue
+    const bestGap = gaps.get(reference)
+    for (const c of group) {
+      const gap = gaps.get(c)
+      if (c === reference || gap == null || gap <= bestGap + PERIOD_SLACK_DAYS) continue
+      c.score -= PERIOD_MALUS
+      c.reasons.push('une autre facture du même fournisseur colle mieux à la date')
+    }
+  }
+  return scored
+}
+
 // Candidates triées, chacune avec sa note, ses raisons et son verdict.
 export function findDocCandidates(txn, account, { q = null, limit = 6, sources = ['receipt', 'achat'], windowDays = WINDOW_DAYS, excludeTxnId = null } = {}) {
   if (!txn || !Number(txn.amount)) return { candidates: [], ambiguous: false }
@@ -401,9 +453,13 @@ export function findDocCandidates(txn, account, { q = null, limit = 6, sources =
       r.reasons.push('pré-autorisation : la ligne postée la porte')
     }
     return { ...d, score: r.score, reasons: r.reasons, nameHit: r.nameHit }
+  })
+
+  demoteOtherPeriods(scored, txn.txn_date)
+
   // À note égale (même fournisseur, même montant : le cas des abonnements), la
   // plus ancienne d'abord — c'est celle qui reste à régler.
-  }).sort((a, b) => b.score - a.score
+  scored.sort((a, b) => b.score - a.score
     || String(a.date || '').localeCompare(String(b.date || ''))
     || String(a.id).localeCompare(String(b.id)))
 

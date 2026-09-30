@@ -58,7 +58,7 @@ Il n'y a plus de suite de tests end-to-end dans le repo. La vérification passe 
    ```
 3. **Restart serveur** si `server/src/` touché :
    ```bash
-   pm2 restart erp-server
+   /home/ec2-user/erp/server/scripts/restart.sh
    ```
 4. **Lint** :
    ```bash

@@ -21,9 +21,9 @@ const CONTROL_LABELS = { spring_loaded: 'Spring loaded', open_close: 'Signaux ou
 
 // Résumé d'une louvre en une ligne, y compris pour les réponses plus anciennes
 // qui ne tombent sur aucune combinaison offerte.
-export function louverSummary(louver = {}) {
+export function louverSummary(louver = {}, tr = s => s) {
   const voltage = louver.control_type === 'other' ? '' : louver.voltage === 'other' ? (louver.voltage_other || '') : louver.voltage ? `${louver.voltage} V` : ''
-  return [CONTROL_LABELS[louver.control_type], voltage].filter(Boolean).join(' · ')
+  return [tr(CONTROL_LABELS[louver.control_type]), voltage].filter(Boolean).join(' · ')
 }
 
 // Cadre de la louvre, vue de face, commun aux trois images.

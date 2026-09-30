@@ -487,7 +487,7 @@ function formulaReadRelation(erpTable) {
 
 export function previewFormula(erpTable, formulaExpr, limit = 5) {
   if (!SAFE_IDENT.test(erpTable)) throw new Error('Nom de table invalide')
-  const sqlExpr = validateFormulaExpr(formulaExpr)
+  const sqlExpr = compileFormulaExpr(formulaExpr, erpTable)
   const rel = formulaReadRelation(erpTable)
   const cols = db.pragma(`table_info(${rel})`).map(c => c.name)
   if (!cols.includes('id')) throw new Error(`Table ${erpTable} sans colonne id — aperçu non supporté`)
@@ -586,6 +586,15 @@ export function validateFormulaExpr(expr) {
   return sql
 }
 
+// Variante limitée aux problèmes opérations, pour l'aperçu comme pour les vues
+// persistées. Ne réécrit ni les chaînes ni les identifiants entre délimiteurs.
+function compileFormulaExpr(expr, erpTable) {
+  const sql = validateFormulaExpr(expr)
+  if (erpTable !== 'ops_issues') return sql
+  return sql.replace(/'(?:[^']|'')*'|`(?:[^`]|``)*`|\[[^\]]*\]|\bDATETIME_FORMAT(?=\s*\()/gi,
+    token => /^DATETIME_FORMAT$/i.test(token) ? '_DATETIME_FORMAT_WEEKS' : token)
+}
+
 // Valide que toutes les colonnes référencées par une formule existent réellement
 // sur la table source — sinon la formule créerait une VUE cassée silencieusement.
 // On laisse SQLite faire l'autorité : on compile (sans exécuter) un SELECT de
@@ -602,7 +611,7 @@ export function validateFormulaReferences(formulaExpr, erpTable) {
   // (route) annule la transaction si le champ sauvegardé se retrouve en erreur.
   const rel = formulaReadRelation(erpTable)
   // Même normalisation que la compilation de la vue (guillemets doubles → texte).
-  const sqlExpr = validateFormulaExpr(formulaExpr)
+  const sqlExpr = compileFormulaExpr(formulaExpr, erpTable)
   try {
     db.prepare(`SELECT (${sqlExpr}) AS _probe FROM ${rel} LIMIT 0`)
   } catch (e) {
@@ -731,7 +740,7 @@ function limitedLookupExpr(cf, erpTable, n, dir) {
 // dégrade. column_name est supposé déjà validé SAFE_IDENT par l'appelant.
 function buildVirtualColumn(cf, erpTable, alias) {
   if (cf.kind === 'formula') {
-    const sqlExpr = validateFormulaExpr(cf.formula_expr)
+    const sqlExpr = compileFormulaExpr(cf.formula_expr, erpTable)
     return { selectExpr: `(${sqlExpr}) AS ${cf.column_name}`, joins: [] }
   }
   if (cf.kind === 'lookup') {
@@ -1406,7 +1415,7 @@ export function regenerateView(erpTable) {
         // calculées dans innerSql (couches inférieures). On sonde l'expression
         // contre cette sous-requête : si une référence reste introuvable, dégrade.
         try {
-          const sqlExpr = validateFormulaExpr(cf.formula_expr)
+          const sqlExpr = compileFormulaExpr(cf.formula_expr, erpTable)
           db.prepare(`SELECT (${sqlExpr}) AS _probe FROM (${innerSql}) LIMIT 0`)
           exprs.push(`(${sqlExpr}) AS ${cf.column_name}`)
           errorsById.set(cf.id, null)

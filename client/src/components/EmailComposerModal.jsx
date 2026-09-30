@@ -29,6 +29,8 @@ export default function EmailComposerModal({
   draft: draftProp,     // brouillon fourni directement (quand la page l'a déjà)
   headerExtra = null,   // ex. sélecteur du compte expéditeur
   allowBcc = false,     // ajoute un champ Cci (copie conforme invisible)
+  attachmentSize = 'compact', // taille des vignettes de pièces jointes (AttachmentPreview)
+  bodyClassName = '',   // classes ajoutées à la zone du corps (ex. paragraphes espacés)
   sendLabel = 'Envoyer',
   undoMessage = to => `Envoi à ${to}…`,
   successMessage = to => `Courriel envoyé à ${to}`,
@@ -248,7 +250,7 @@ export default function EmailComposerModal({
             contentEditable={editing}
             aria-label="Contenu du courriel"
             suppressContentEditableWarning
-            className="border border-slate-200 rounded-xl bg-white px-4 py-3 text-sm overflow-y-auto focus:outline-none focus:border-brand-400"
+            className={`border border-slate-200 rounded-xl bg-white px-4 py-3 text-sm overflow-y-auto focus:outline-none focus:border-brand-400 ${bodyClassName}`}
             style={{ maxHeight: 360, minHeight: 160 }}
             data-testid="email-composer-body"
           />
@@ -265,7 +267,7 @@ export default function EmailComposerModal({
                     url={url}
                     fileName={name}
                     contentType={a.contentType || a.content_type}
-                    size="compact"
+                    size={attachmentSize}
                     overModal
                     testId={`email-composer-attachment-${i}`}
                   />

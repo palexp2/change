@@ -6,14 +6,14 @@ import { useTravauxQuick } from './TravauxQuickPanel.jsx'
 
 // Jauges IA de la barre de gauche : une mince barre par compte IA qui répond,
 // remplie au plus consommé de ses plafonds. Un clic (ou le survol, avec `to`) ouvre le détail, avec la même
-// lecture que Travaux : la barre montre ce qui est CONSOMMÉ, le chiffre ce qui RESTE.
+// lecture que Travaux : la barre et le chiffre montrent ce qui est CONSOMMÉ.
 // Toujours affiché (c'est aussi l'accès à Travaux) : un compte qui ne répond pas
 // garde sa dernière lecture connue (navigateur), grisée ; jamais lu → barre vide.
 // Données : caches serveur (GET /api/ai-usage).
 
 const POLL_MS = 60_000
 const STORE_KEY = 'ai-usage-last'
-const KNOWN = [{ key: 'claude', name: 'Claude' }, { key: 'codex', name: 'Codex' }]
+const KNOWN = [{ key: 'claude', name: 'Claude' }]
 
 const readStore = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {} } catch { return {} } }
 
@@ -46,7 +46,7 @@ function Detail({ accounts }) {
       {accounts.map(a => (
         <div key={a.key} className={`py-2.5 first:pt-0 last:pb-0 ${a.stale ? 'opacity-60' : ''}`}>
           <div className="font-semibold text-slate-800 mb-1.5">
-            {a.name}{a.stale && <span className="ml-1.5 font-normal text-slate-400">{a.windows.length ? 'hors ligne' : 'indisponible'}</span>}
+            {a.name}{a.owner && <span className="font-normal text-slate-500"> · {a.owner}</span>}{a.stale && <span className="ml-1.5 font-normal text-slate-400">{a.windows.length ? 'hors ligne' : 'indisponible'}</span>}
           </div>
           <div className="grid grid-cols-[auto_5rem_auto_auto] items-center gap-x-2.5 gap-y-1.5">
             {a.windows.map(w => (
@@ -54,7 +54,7 @@ function Detail({ accounts }) {
                 <span className="text-slate-500 whitespace-nowrap">{w.label}</span>
                 <Bar w={w} className="h-1.5" />
                 <span className={`font-semibold tabular-nums whitespace-nowrap ${usageTone(w.pct, w.severity).text}`}>
-                  reste {100 - w.pct} %
+                  utilisé {w.pct} %
                 </span>
                 <span className="text-slate-400 tabular-nums whitespace-nowrap"
                   title={w.resetsAt ? `Réinitialisation : ${formatResetFull(w.resetsAt)}` : undefined}>
@@ -70,9 +70,11 @@ function Detail({ accounts }) {
 }
 
 // `to` (rail seulement) : le détail s'ouvre au survol et le clic mène à `to`.
-// `runningBadge` : pastille du nombre de tâches Travaux en cours d'exécution.
+// `runningBadge` : pastille du nombre de tâches dans la file Travaux (en cours + en attente).
 export function AiUsageRail({ wide = false, to, runningBadge = false }) {
-  const running = useTravauxQuick()?.runningCount || 0
+  const quick = useTravauxQuick()
+  const running = quick?.runningCount || 0
+  const inQueue = Math.max(running, quick?.activeCount || 0)
   const [accounts, setAccounts] = useState(() => withLastKnown(null))
   const [open, setOpen] = useState(false)
   const [pos, setPos] = useState(null)
@@ -136,19 +138,25 @@ export function AiUsageRail({ wide = false, to, runningBadge = false }) {
           ? 'w-full px-2.5 py-1.5 space-y-2 rounded-lg hover:bg-slate-50 text-left'
           : `relative flex flex-col items-center gap-2 w-11 py-1.5 rounded-lg transition-colors ${open ? 'bg-slate-100' : 'hover:bg-slate-100'}`}
       >
-        {runningBadge && running > 0 && (
-          <span data-testid="ai-usage-running" title={`${running} en cours`}
+        {runningBadge && inQueue > 0 && (
+          <span data-testid="ai-usage-running" title={`${running} en cours · ${inQueue - running} en attente`}
             className="absolute -top-1.5 -right-0.5 inline-flex items-center justify-center min-w-[15px] h-[15px] px-1 rounded-full bg-brand-600 text-white text-[9px] font-semibold leading-none">
-            {running > 99 ? '99+' : running}
+            {inQueue > 99 ? '99+' : inQueue}
           </span>
         )}
         {accounts.map(a => (
           <span key={a.key} data-testid={`ai-usage-${a.key}`}
             className={`${wide ? 'flex items-center gap-2' : 'flex flex-col items-center gap-[3px]'} ${a.stale ? 'opacity-50' : ''}`}>
             <span className={wide
-              ? 'text-[12px] font-medium text-slate-600 w-14'
-              : 'text-[9px] font-semibold uppercase tracking-wide text-slate-400'}>
+              ? 'text-[12px] font-medium text-slate-600 min-w-14 whitespace-nowrap'
+              : 'flex items-baseline gap-1 text-[9px] font-semibold uppercase tracking-wide text-slate-400'}>
               {wide ? a.name : a.name.slice(0, 2)}
+              {/* Rail : ce qui est CONSOMMÉ, toujours visible (même lecture que le détail). */}
+              {!wide && worst(a) && (
+                <span data-testid={`ai-usage-${a.key}-used`} className={`text-[10px] normal-case tracking-normal tabular-nums ${usageTone(worst(a).pct, worst(a).severity).text}`}>
+                  {worst(a).pct}%
+                </span>
+              )}
             </span>
             <Bar w={worst(a)} className={`h-[3px] ${wide ? 'flex-1' : 'w-8'}`} />
           </span>

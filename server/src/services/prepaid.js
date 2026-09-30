@@ -10,6 +10,7 @@
 // et préparation de l'écriture Dr dépense / Cr 13000 du mois, publiée dans QB
 // seulement après approbation dans l'interface.
 import db from '../db/database.js'
+import { mainQbAccount } from '../utils/qbBankAccount.js'
 import { newRecordId } from '../utils/recordId.js'
 import { qbGet, qbPost, qbEntityUrl } from '../connectors/quickbooks.js'
 import { resolveAccountByAcctNum } from './quickbooks.js'
@@ -112,10 +113,8 @@ export function detectTwilioBankRecharges() {
   if (!bankAccount) return []
   // L'argent sort réellement de Venn USD ici (pas de la carte utilisée par les
   // recharges historiques) : le compte de paiement QB est celui du compte
-  // bancaire lui-même, pas une reprise de l'historique. `qb_account_id` peut
-  // contenir plusieurs ids séparés par virgule (compte scindé côté QB) — on
-  // prend le premier, comme ailleurs dans le module de rapprochement.
-  const paymentAccountId = bankAccount.qb_account_id ? bankAccount.qb_account_id.split(',')[0].trim() : null
+  // bancaire lui-même, pas une reprise de l'historique.
+  const paymentAccountId = mainQbAccount(bankAccount)
   const expenseAccountId = lastTwilioExpenseAccountId()
 
   const candidates = db.prepare(`

@@ -13,7 +13,9 @@ import { DataTable } from './DataTable.jsx'
 import { Badge } from './Badge.jsx'
 import { AbonnementDetailModal } from './AbonnementDetailModal.jsx'
 import { RachatPicker } from './RachatPicker.jsx'
+import { useToast } from './ui/ToastProvider.jsx'
 import api from '../lib/api.js'
+import { getIsOffline } from '../lib/serverStatus.js'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { CATEGORY_LABELS, CATEGORY_COLORS } from '../lib/subscriptionEvents.js'
 import { fmtDate } from '../lib/formatDate.js'
@@ -48,6 +50,7 @@ export function AbonnementEventsTable({
   }, [data])
   const [selectedAbo, setSelectedAbo] = useState(null)
   const [loadingAboId, setLoadingAboId] = useState(null)
+  const { addToast } = useToast()
 
   async function openAbo(subscriptionId) {
     if (!subscriptionId || loadingAboId) return
@@ -55,8 +58,12 @@ export function AbonnementEventsTable({
     try {
       const sub = await api.abonnements.get(subscriptionId)
       setSelectedAbo(sub)
-    } catch {
-      // sub introuvable — silencieux côté UI
+    } catch (err) {
+      // L'écran « Connexion perdue » couvre déjà la panne réseau : pas de doublon.
+      if (getIsOffline()) return
+      addToast(err?.status === 404
+        ? { message: 'Abonnement introuvable', type: 'error' }
+        : { message: 'Abonnement non ouvert', type: 'error', action: { label: 'Réessayer', onClick: () => openAbo(subscriptionId) } })
     } finally {
       setLoadingAboId(null)
     }

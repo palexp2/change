@@ -2,6 +2,7 @@ import { hasRole } from '../../shared/roles.mjs'
 import { Routes, Route, Navigate, useLocation, useParams } from 'react-router-dom'
 import { useEffect, useRef } from 'react'
 import { AuthProvider, useAuth } from './lib/auth.jsx'
+import { isPhoneScreen, MOBILE_CAPTURE_HOME, useMobileCaptureHome } from './lib/useMobileCaptureHome.js'
 import { NavPrefsProvider } from './lib/navPrefs.jsx'
 import { DecimalPrefsProvider } from './lib/decimalPrefs.jsx'
 import { notifyNavigation } from './lib/pageLoadTracker.js'
@@ -48,6 +49,7 @@ import Envois from './pages/Envois.jsx'
 import Automations from './pages/Automations.jsx'
 import AutomationDetail from './pages/AutomationDetail.jsx'
 import Tasks from './pages/Tasks.jsx'
+import SoumissionCreate from './pages/SoumissionCreate.jsx'
 import RelanceQualification from './pages/RelanceQualification.jsx'
 import QualificationCall from './pages/QualificationCall.jsx'
 import AchatsFournisseurs from './pages/AchatsFournisseurs.jsx'
@@ -71,7 +73,7 @@ import StockMovements from './pages/StockMovements.jsx'
 import Fournitures from './pages/Fournitures.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import ReglesBancaires from './pages/ReglesBancaires.jsx'
-import Propositions from './pages/Propositions.jsx'
+import QbReconcile from './pages/QbReconcile.jsx'
 import Employees from './pages/Employees.jsx'
 import FeuilleDeTemps from './pages/FeuilleDeTemps.jsx'
 import CodesActivite from './pages/CodesActivite.jsx'
@@ -143,8 +145,9 @@ function DiscoveryFormPage() {
 }
 
 function AppRoutes() {
-  const { user } = useAuth()
+  const { user, isLoading } = useAuth()
   const location = useLocation()
+  useMobileCaptureHome({ user, isLoading })
   useFavicon()
   useTrackRecentVisit()
 
@@ -163,11 +166,12 @@ function AppRoutes() {
     }
   }, [user])
 
-  // Page d'accueil par défaut, personnalisable par utilisateur.
-  // pap@orisha.io (id ci-dessous) atterrit sur /agent ; tout le monde sur /dashboard.
+  // Sur téléphone (portrait ou paysage), l'accueil ouvre la capture de facture.
+  // Sur ordinateur, conserver la page d'accueil propre à l'utilisateur.
   // On cible par id car le JWT ne porte pas l'email (payload = { id, role, name }).
   const PAP_USER_ID = '5637ebf2-74e8-4245-9f1e-64d80b53b216'
-  const homePath = user?.id === PAP_USER_ID ? '/travaux' : '/dashboard'
+  const homePath = isPhoneScreen() ? MOBILE_CAPTURE_HOME
+    : user?.id === PAP_USER_ID ? '/travaux' : '/dashboard'
 
   // ── Fiches : toujours en panneau, jamais en pleine page ───────────────────
   // Aucune route ne monte de fiche : quand l'URL courante est celle d'un
@@ -180,6 +184,9 @@ function AppRoutes() {
   const recordDef = recordMatch ? PEEK_ROUTES[recordMatch.resource] : null
   const backgroundRef = useRef(null)
   if (!recordMatch) backgroundRef.current = location
+  // state.overList : la page quittée ne doit pas rester dessous (ex. création
+  // de soumission → retour au projet) — la fiche s'ouvre sur sa liste.
+  else if (location.state?.overList) backgroundRef.current = null
   // Fermer le panneau = revenir en arrière quand on venait d'une page de l'app,
   // sinon retomber sur la liste (pas d'historique à remonter).
   const canGoBack = !!backgroundRef.current
@@ -228,6 +235,7 @@ function AppRoutes() {
       <Route path="/orders/:id" element={<ProtectedRoute><OrderDetailPage /></ProtectedRoute>} />
       <Route path="/products" element={<ProtectedRoute><Products /></ProtectedRoute>} />
       <Route path="/tasks" element={<ProtectedRoute><Tasks /></ProtectedRoute>} />
+      <Route path="/soumissions/nouvelle" element={<ProtectedRoute><SoumissionCreate /></ProtectedRoute>} />
       <Route path="/relance-qualification" element={<ProtectedRoute><RelanceQualification /></ProtectedRoute>} />
       <Route path="/qualification-call" element={<ProtectedRoute><QualificationCall /></ProtectedRoute>} />
       <Route path="/discovery-forms" element={<ProtectedRoute><DiscoveryForms /></ProtectedRoute>} />
@@ -290,7 +298,9 @@ function AppRoutes() {
       <Route path="/achats-fournitures" element={<Navigate to="/fournitures" replace />} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/regles-bancaires" element={<ProtectedRoute><ReglesBancaires /></ProtectedRoute>} />
-      <Route path="/propositions" element={<ProtectedRoute><Propositions /></ProtectedRoute>} />
+      {/* Propositions : intégrées à Transactions (colonne Suggestion) — l'ancienne adresse y mène. */}
+      <Route path="/propositions" element={<Navigate to="/rapprochement" replace />} />
+      <Route path="/rapprochement-qbo" element={<ProtectedRoute><QbReconcile /></ProtectedRoute>} />
       <Route path="/employees" element={<ProtectedRoute><Employees /></ProtectedRoute>} />
       <Route path="/feuille-de-temps" element={<ProtectedRoute><FeuilleDeTemps /></ProtectedRoute>} />
       <Route path="/codes-activite" element={<ProtectedRoute hrOnly><CodesActivite /></ProtectedRoute>} />

@@ -114,7 +114,7 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, sele
       return <RatingInput value={value} disabled={saving} onChange={commit} testId={`cf-input-${field.key}`} />
     case 'single_select': {
       const choices = parseSelectChoices(field.field)
-      const pill = o => <ChoiceBadge color={colorForChoice(choices, o.label)}>{o.label}</ChoiceBadge>
+      const pill = o => <ChoiceBadge color={colorForChoice(choices, o.label)} className="single-select-label">{o.label}</ChoiceBadge>
       return (
         <SearchableSelect
           value={value ?? ''}

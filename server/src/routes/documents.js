@@ -6,9 +6,33 @@ import path from 'path'
 import fs from 'fs'
 import { fileURLToPath } from 'url'
 import PDFDocument from 'pdfkit'
-import { emitEntity, emitOrder } from '../services/realtimeEmitters.js'
+import { emitEntity } from '../services/realtimeEmitters.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { buildSoumissionHtml, renderSoumissionPdf } from '../services/soumissionPdf.js'
+import { sendEmail as sendGmail } from '../services/gmail.js'
+import { mirrorSoumissionPdf } from '../services/airtable.js'
+import { purchasePct, soumissionDiscounts, storeSoumissionTotals } from '../services/soumissionTotals.js'
+import { recomputeProjectValeurCad } from '../services/projectValeur.js'
+
+// Prix achat / abo de la soumission (colonnes des listes), puis la valeur du
+// projet qui en découle.
+function syncSoumissionTotals(id) {
+  storeSoumissionTotals(db, id)
+  const projectId = db.prepare('SELECT project_id FROM soumissions WHERE id = ?').get(id)?.project_id
+  if (projectId) recomputeProjectValeurCad(projectId).catch(e => console.error('[valeur_cad_calc]', projectId, e.message))
+}
+
+// Numéro QTE-Z-n : séquentiel, unique, jamais réattribué après suppression.
+// `peek` = le prochain numéro sans le réserver (aperçu du PDF).
+function nextQuoteNumber({ peek = false } = {}) {
+  const seq = db.prepare(`SELECT value FROM sequences WHERE name = 'quote'`).get()?.value || 0
+  const max = db.prepare('SELECT COALESCE(MAX(quote_number), 0) AS m FROM soumissions').get().m
+  const n = Math.max(seq, max) + 1
+  if (!peek) db.prepare(`INSERT INTO sequences (name, value) VALUES ('quote', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value`).run(n)
+  return n
+}
+const quoteTitle = n => `QTE-Z-${n}`
 
 // Reuse the LIST query shape so realtime payload matches what the
 // soumissions list page consumes (Soumissions.jsx).
@@ -45,9 +69,54 @@ function fmtDate(d, lang = 'French') {
   return new Date(d).toLocaleDateString(locale, { year: 'numeric', month: 'long', day: 'numeric' })
 }
 
+// Rabais nommés d'une soumission. Chacun retire `pct` % des deux colonnes
+// (Service = mensuel, Achat = prix fixe) plus des montants fixes par colonne.
+// Sans liste (soumissions d'avant), le rabais global unique en tient lieu.
+// `until` (AAAA-MM-JJ, facultatif) : fin d'application du rabais.
+// `pct_purchase` : % propre à l'Achat (absent : `pct`, ou 0 si `only: 'monthly'`,
+// le % ne touchant alors que l'abonnement — ex. Head start plan) ;
+// `preset` : rabais standard coché dans l'éditeur.
+function sanitizeDiscounts(list) {
+  if (!Array.isArray(list)) return null
+  const n = v => Math.max(0, parseFloat(v) || 0)
+  const day = v => (/^\d{4}-\d{2}-\d{2}$/.test(v) ? v : undefined)
+  return list
+    .map(d => ({
+      name: String(d?.name || '').trim() || 'Rabais', pct: Math.min(100, n(d?.pct)), monthly: n(d?.monthly), amount: n(d?.amount), until: day(d?.until),
+      pct_purchase: d?.pct_purchase == null || d.pct_purchase === '' ? undefined : Math.min(100, n(d.pct_purchase)),
+      only: d?.only === 'monthly' ? 'monthly' : undefined, preset: typeof d?.preset === 'string' ? d.preset : undefined,
+    }))
+    .filter(d => d.pct || d.pct_purchase || d.monthly || d.amount)
+}
+function discountTotals(discounts, monthlyBase, purchaseBase) {
+  const lines = discounts.map(d => ({
+    name: d.name,
+    until: d.until,
+    monthly: monthlyBase * (d.pct || 0) / 100 + (d.monthly || 0),
+    amount: purchaseBase * purchasePct(d) / 100 + (d.amount || 0),
+  }))
+  const sum = k => lines.reduce((t, l) => t + l[k], 0)
+  return { lines, monthly: Math.max(0, monthlyBase - sum('monthly')), amount: Math.max(0, purchaseBase - sum('amount')) }
+}
+
 // ── PDF generation ────────────────────────────────────────────────────────────
 
+// PDF client (gabarit de l'ancien outil, imprimé par Chromium). Sans Chromium
+// ou en cas d'échec, repli sur l'ancien rendu pdfkit : jamais de soumission
+// sans PDF.
 async function generateSoumissionPdf(soumission, items, company, contact, tenant) {
+  try {
+    const html = buildSoumissionHtml({ soumission, items, discounts: soumissionDiscounts(soumission), company, contact, mode: 'file' })
+    const filepath = path.join(uploadsDir(), `soumission-${soumission.id}.pdf`)
+    fs.writeFileSync(filepath, await renderSoumissionPdf(html))
+    return filepath
+  } catch (e) {
+    console.error('[soumission] rendu Chromium échoué, repli pdfkit :', e.message)
+    return generateSoumissionPdfLegacy(soumission, items, company, contact, tenant)
+  }
+}
+
+async function generateSoumissionPdfLegacy(soumission, items, company, contact, tenant) {
   return new Promise((resolve, reject) => {
     const lang = soumission.language === 'English' ? 'English' : 'French'
     const isFr = lang !== 'English'
@@ -139,10 +208,11 @@ async function generateSoumissionPdf(soumission, items, company, contact, tenant
 
     // ── Items table ───────────────────────────────────────────────────────────
     const COL = {
-      desc: { x: 50, w: 280 },
-      qty:  { x: 340, w: 60 },
-      unit: { x: 410, w: 90 },
-      total:{ x: 465, w: 85 },
+      desc: { x: 50, w: 250 },
+      qty:  { x: 300, w: 40 },
+      month:{ x: 340, w: 70 },
+      unit: { x: 410, w: 70 },
+      total:{ x: 480, w: 70 },
     }
 
     // Table header
@@ -150,13 +220,28 @@ async function generateSoumissionPdf(soumission, items, company, contact, tenant
     doc.fillColor(GRAY).fontSize(8).font('Helvetica-Bold')
     doc.text(isFr ? 'DESCRIPTION' : 'DESCRIPTION', COL.desc.x + 4, y + 7)
     doc.text(isFr ? 'QTÉ' : 'QTY', COL.qty.x, y + 7, { width: COL.qty.w, align: 'center' })
-    doc.text(isFr ? `PRIX UNIT. (${currency})` : `UNIT PRICE (${currency})`, COL.unit.x, y + 7, { width: COL.unit.w, align: 'right' })
+    doc.text(isFr ? '$/MOIS' : '$/MONTH', COL.month.x, y + 7, { width: COL.month.w, align: 'right' })
+    doc.text(isFr ? `PRIX (${currency})` : `PRICE (${currency})`, COL.unit.x, y + 7, { width: COL.unit.w, align: 'right' })
     doc.text(isFr ? 'TOTAL' : 'TOTAL', COL.total.x, y + 7, { width: COL.total.w, align: 'right' })
     y += 22
 
     // Items
     let subtotal = 0
+    let monthlyTotal = 0
+    let currentGroup
     for (const item of items) {
+      // Lignes rangées par serre : un bandeau à chaque changement de groupe.
+      if (item.group_name && item.group_name !== currentGroup) {
+        if (y > doc.page.height - 120) { doc.addPage(); y = 50 }
+        doc.rect(50, y, doc.page.width - 100, 22).fill('#dbeafe')
+        doc.fillColor(SLATE).fontSize(9.5).font('Helvetica-Bold')
+           .text(item.group_name, COL.desc.x + 4, y + 7, { width: COL.desc.w, lineBreak: false })
+        y += 22
+      }
+      currentGroup = item.group_name
+      if (y > doc.page.height - 120) { doc.addPage(); y = 50 }
+      const monthly = (item.qty || 1) * (item.unit_monthly_price || 0)
+      monthlyTotal += monthly
       const name = isFr
         ? (item.description_fr || item.name_fr || '')
         : (item.description_en || item.name_en || '')
@@ -168,6 +253,7 @@ async function generateSoumissionPdf(soumission, items, company, contact, tenant
       doc.fillColor(SLATE).fontSize(9.5).font('Helvetica')
          .text(name, COL.desc.x + 4, y + 8, { width: COL.desc.w - 8, lineBreak: false })
       doc.text(String(item.qty || 1), COL.qty.x, y + 8, { width: COL.qty.w, align: 'center' })
+      doc.text(monthly ? fmt(monthly) : '—', COL.month.x, y + 8, { width: COL.month.w, align: 'right' })
       doc.text(fmt(item.unit_price_cad || 0), COL.unit.x, y + 8, { width: COL.unit.w, align: 'right' })
       doc.text(fmt(lineTotal), COL.total.x, y + 8, { width: COL.total.w, align: 'right' })
       y += rowH
@@ -181,47 +267,43 @@ async function generateSoumissionPdf(soumission, items, company, contact, tenant
 
     y += 10
 
-    // ── Totals ────────────────────────────────────────────────────────────────
-    const totalW = 200
+    // ── Totals : Service (mensuel) | Achat, un rabais nommé par ligne ─────────
+    const totalW = 280
     const totalX = doc.page.width - 50 - totalW
+    const tColW = 80
+    const svcX = totalX + totalW - 2 * tColW
+    const buyX = totalX + totalW - tColW
+    const totals = discountTotals(soumissionDiscounts(soumission), monthlyTotal, subtotal)
+    if (y > doc.page.height - 160 - 18 * totals.lines.length) { doc.addPage(); y = 50 }
 
-    doc.moveTo(totalX, y).lineTo(doc.page.width - 50, y).strokeColor(LINE).lineWidth(1).stroke()
-    y += 10
-
-    // Subtotal + global discount
-    const discPct = soumission.discount_pct || 0
-    const discAmt = soumission.discount_amount || 0
-    const totalDiscount = Math.min(subtotal, subtotal * discPct / 100 + discAmt)
-    const netTotal = Math.max(0, subtotal - totalDiscount)
-
-    doc.fillColor(GRAY).fontSize(9).font('Helvetica')
-       .text(isFr ? 'Sous-total' : 'Subtotal', totalX, y, { width: totalW - 80, align: 'left' })
-    doc.fillColor(SLATE)
-       .text(fmt(subtotal), totalX + totalW - 80, y, { width: 80, align: 'right' })
-    y += 18
-
-    if (totalDiscount > 0) {
-      const discParts = []
-      if (discPct > 0) discParts.push(`-${discPct}%`)
-      if (discAmt > 0) discParts.push(`-${fmt(discAmt)}`)
-      doc.fillColor('#ef4444').fontSize(9).font('Helvetica')
-         .text(isFr ? `Rabais (${discParts.join(' + ')})` : `Discount (${discParts.join(' + ')})`,
-               totalX, y, { width: totalW - 80, align: 'left' })
-      doc.fillColor('#ef4444')
-         .text(`-${fmt(totalDiscount)}`, totalX + totalW - 80, y, { width: 80, align: 'right' })
-      y += 18
-    }
-
-    doc.fillColor(GRAY).fontSize(8)
-       .text(isFr ? '* Taxes non incluses' : '* Taxes not included', totalX, y)
+    doc.fillColor(SLATE).fontSize(9).font('Helvetica-Bold')
+    doc.text(isFr ? 'Service' : 'Service', svcX, y, { width: tColW, align: 'right' })
+    doc.text(isFr ? 'Achat' : 'Purchase', buyX, y, { width: tColW, align: 'right' })
     y += 16
+    const totalRow = (label, monthly, amount, color, bold) => {
+      doc.fillColor(color).fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica')
+      doc.text(label, totalX, y, { width: totalW - 2 * tColW - 8 })
+      doc.text(monthly, svcX, y, { width: tColW, align: 'right' })
+      doc.text(amount, buyX, y, { width: tColW, align: 'right' })
+      y += Math.max(16, doc.heightOfString(label, { width: totalW - 2 * tColW - 8 }) + 4)
+    }
+    totalRow(isFr ? 'Prix du système' : 'System price', fmt(monthlyTotal), fmt(subtotal), SLATE)
+    const off = n => (n ? `-${fmt(n)}` : '—')
+    const until = l => (l.until ? ` (${isFr ? 'jusqu’au' : 'until'} ${fmtDate(`${l.until}T12:00:00`, lang)})` : '')
+    for (const l of totals.lines) totalRow(`${l.name}${until(l)}`, off(l.monthly), off(l.amount), '#be123c')
+    doc.moveTo(totalX, y).lineTo(doc.page.width - 50, y).strokeColor(LINE).lineWidth(1).stroke()
+    y += 6
 
     // Grand total box
     doc.rect(totalX, y, totalW, 28).fill(INDIGO)
     doc.fillColor(WHITE).fontSize(11).font('Helvetica-Bold')
-       .text(isFr ? 'TOTAL (avant taxes)' : 'TOTAL (before tax)', totalX + 8, y + 8, { width: totalW - 90 })
-    doc.text(fmt(netTotal), totalX + totalW - 88, y + 8, { width: 80, align: 'right' })
-    y += 44
+       .text(isFr ? 'Total' : 'Total', totalX + 8, y + 8, { width: totalW - 2 * tColW - 16 })
+    doc.text(`${fmt(totals.monthly)}${isFr ? '/mois' : '/mo'}`, svcX - 20, y + 8, { width: tColW + 20, align: 'right' })
+    doc.text(fmt(totals.amount), buyX, y + 8, { width: tColW - 6, align: 'right' })
+    y += 34
+    doc.fillColor(GRAY).fontSize(8).font('Helvetica')
+       .text(isFr ? '* Taxes non incluses' : '* Taxes not included', totalX, y)
+    y += 20
 
     // ── Notes ─────────────────────────────────────────────────────────────────
     if (soumission.notes) {
@@ -308,7 +390,7 @@ router.get('/soumissions/:id', (req, res) => {
 })
 
 const ITEMS_QUERY = `
-  SELECT di.*, p.name_fr, p.name_en
+  SELECT di.*, p.name_fr, p.name_en, p.sku, p.image_url
   FROM document_items di
   LEFT JOIN products p ON di.catalog_product_id = p.id
   WHERE di.document_id = ? AND di.document_type = 'soumission'
@@ -316,21 +398,54 @@ const ITEMS_QUERY = `
 `
 const INSERT_ITEM = `
   INSERT INTO document_items
-    (id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order)
-  VALUES (?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    (id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order, group_name, unit_monthly_price)
+  VALUES (?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
+
+// Contact d'un projet, pour la couverture du PDF : le lien direct, sinon le
+// contact lié côté Airtable, sinon le premier contact de l'entreprise.
+function projectContactId(projectId) {
+  const p = projectId ? db.prepare('SELECT contact_id, contact_lie, company_id FROM projects WHERE id = ?').get(projectId) : null
+  if (!p) return null
+  if (p.contact_id) return p.contact_id
+  const firstLinked = String(p.contact_lie || '').split(/[,\s]+/).find(Boolean)
+  const linked = firstLinked && db.prepare('SELECT id FROM contacts WHERE airtable_id = ?').get(firstLinked)
+  if (linked) return linked.id
+  return p.company_id ? db.prepare('SELECT id FROM contacts WHERE company_id = ? ORDER BY created_at LIMIT 1').get(p.company_id)?.id || null : null
+}
+
+// Aperçu en direct du PDF, pendant la saisie : même corps que la création,
+// rien n'est enregistré. Renvoie le HTML du gabarit (rendu dans une iframe).
+router.post('/soumissions/preview', (req, res) => {
+  const { project_id, company_id, contact_id, language = 'French', currency = 'CAD', items = [] } = req.body
+  const project = project_id ? db.prepare('SELECT company_id FROM projects WHERE id = ?').get(project_id) : null
+  const companyId = company_id || project?.company_id
+  const contactId = contact_id || projectContactId(project_id)
+  const next_num = nextQuoteNumber({ peek: true })
+  const product = db.prepare('SELECT name_fr, name_en, sku, image_url FROM products WHERE id = ?')
+  const html = buildSoumissionHtml({
+    soumission: {
+      language, currency, title: quoteTitle(next_num),
+      expiration_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+    },
+    items: (Array.isArray(items) ? items : []).map(it => ({ ...it, ...(it.catalog_product_id ? product.get(it.catalog_product_id) : {}),
+      description_fr: it.description_fr, description_en: it.description_en })),
+    discounts: sanitizeDiscounts(req.body.discounts) || [],
+    company: companyId ? db.prepare('SELECT name FROM companies WHERE id = ?').get(companyId) : null,
+    contact: contactId ? db.prepare('SELECT first_name, last_name FROM contacts WHERE id = ?').get(contactId) : null,
+  })
+  res.json({ html })
+})
 
 router.post('/soumissions', async (req, res) => {
   const {
     company_id, contact_id, project_id, language = 'French', currency = 'CAD',
     notes, discount_pct = 0, discount_amount = 0, items = []
   } = req.body
+  const discounts = sanitizeDiscounts(req.body.discounts)
+  // Contact du projet par défaut : son nom figure sur la couverture du PDF.
+  const contactId = contact_id || projectContactId(project_id)
 
-  // Auto-number: next quote_number for this tenant
-  const { next_num } = db.prepare(
-    `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions`
-  ).get()
-  const autoTitle = `QTE-Z-${next_num}`
   const autoExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   const id = newRecordId()
@@ -339,27 +454,31 @@ router.post('/soumissions', async (req, res) => {
   const insertSoumission = db.prepare(`
     INSERT INTO soumissions
       (id, company_id, contact_id, project_id, language, currency, status, title, notes,
-       expiration_date, quote_number, discount_pct, discount_amount)
-    VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
+       expiration_date, quote_number, discount_pct, discount_amount, discounts)
+    VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?, ?)
   `)
   const insertItem = db.prepare(INSERT_ITEM)
   db.transaction(() => {
-    insertSoumission.run(id, company_id || null, contact_id || null, project_id || null,
-           language, currency, autoTitle, notes || null, autoExpiry, next_num,
-           discount_pct, discount_amount)
+    const next_num = nextQuoteNumber()
+    insertSoumission.run(id, company_id || null, contactId, project_id || null,
+           language, currency, quoteTitle(next_num), notes || null, autoExpiry, next_num,
+           discounts ? 0 : discount_pct, discounts ? 0 : discount_amount,
+           discounts ? JSON.stringify(discounts) : null)
     for (let i = 0; i < items.length; i++) {
       const it = items[i]
       insertItem.run(newRecordId(), id, it.catalog_product_id || null,
                      it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
-                     it.description_fr || null, it.description_en || null, i)
+                     it.description_fr || null, it.description_en || null, i,
+                     it.group_name || null, it.unit_monthly_price ?? 0)
     }
   })()
+  syncSoumissionTotals(id)
 
   try {
     const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(id)
     const allItems = db.prepare(ITEMS_QUERY).all(id)
     const company = company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(company_id) : null
-    const contact = contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(contact_id) : null
+    const contact = contactId ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(contactId) : null
     const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
     const pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
     const relPath = path.relative(uploadsPath(), pdfPath)
@@ -378,6 +497,13 @@ router.put('/soumissions/:id', async (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
   const { language, currency, status, notes, discount_pct, discount_amount, discount_valid_until, items } = req.body
+  // Rabais nommés : remplacés s'ils sont envoyés ; effacés si la fiche modifie
+  // le rabais global (sinon le PDF garderait les anciens).
+  const prev = db.prepare('SELECT discounts, discount_pct, discount_amount FROM soumissions WHERE id = ?').get(req.params.id)
+  let discountsJson = prev.discounts
+  if (Array.isArray(req.body.discounts)) discountsJson = JSON.stringify(sanitizeDiscounts(req.body.discounts))
+  else if ((discount_pct != null && Number(discount_pct) !== Number(prev.discount_pct || 0)) ||
+           (discount_amount != null && Number(discount_amount) !== Number(prev.discount_amount || 0))) discountsJson = null
 
   // Update du header + remplacement des lignes dans une seule transaction : un échec
   // au milieu de la ré-insertion ne doit pas laisser la soumission sans ses items.
@@ -390,6 +516,7 @@ router.put('/soumissions/:id', async (req, res) => {
       discount_pct = COALESCE(?, discount_pct),
       discount_amount = COALESCE(?, discount_amount),
       discount_valid_until = ?,
+      discounts = ?,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `)
@@ -397,7 +524,7 @@ router.put('/soumissions/:id', async (req, res) => {
   const insertItem = db.prepare(INSERT_ITEM)
   db.transaction(() => {
     updateSoumission.run(language ?? null, currency ?? null, status ?? null, notes ?? null,
-           discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, req.params.id)
+           discount_pct ?? null, discount_amount ?? null, discount_valid_until ?? null, discountsJson, req.params.id)
 
     if (Array.isArray(items)) {
       deleteItems.run(req.params.id)
@@ -405,10 +532,12 @@ router.put('/soumissions/:id', async (req, res) => {
         const it = items[i]
         insertItem.run(newRecordId(), req.params.id, it.catalog_product_id || null,
                        it.qty || 1, it.unit_price_cad ?? 0, it.discount_pct ?? 0, it.discount_amount ?? 0,
-                       it.description_fr || null, it.description_en || null, i)
+                       it.description_fr || null, it.description_en || null, i,
+                       it.group_name || null, it.unit_monthly_price ?? 0)
       }
     }
   })()
+  syncSoumissionTotals(req.params.id)
 
   try {
     const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
@@ -455,10 +584,8 @@ router.delete('/soumissions/:id', (req, res) => {
 
 // ── PDF download ──────────────────────────────────────────────────────────────
 
-router.get('/soumissions/:id/pdf', async (req, res) => {
-  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
-  if (!soumission) return res.status(404).json({ error: 'Not found' })
-
+// Chemin du PDF d'une soumission, régénéré s'il manque (throw si échec).
+async function ensureSoumissionPdf(soumission) {
   let pdfPath
   if (soumission.generated_pdf_path) {
     // Essaie uploads-relative (nouvelles soumissions), puis cwd-relative (legacy)
@@ -467,30 +594,156 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
     const fromCwd     = path.resolve(process.cwd(), soumission.generated_pdf_path)
     pdfPath = fs.existsSync(fromUploads) ? fromUploads : fromCwd
   }
+  if (pdfPath && fs.existsSync(pdfPath)) return pdfPath
+  // Soumission Airtable : son PDF est la pièce jointe Airtable, jamais un
+  // rendu local (elle n'a pas de lignes ici).
+  if (soumission.airtable_id) {
+    const rel = await mirrorSoumissionPdf(soumission.airtable_id)
+    if (!rel) throw Object.assign(new Error('Aucun PDF'), { status: 404 })
+    return path.join(uploadsPath(), rel)
+  }
+  const allItems = db.prepare(ITEMS_QUERY).all(soumission.id)
+  const company = soumission.company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(soumission.company_id) : null
+  const contact = soumission.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(soumission.contact_id) : null
+  const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
+  pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
+  db.prepare('UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?').run(path.relative(uploadsPath(), pdfPath), soumission.id)
+  return pdfPath
+}
 
-  // Regenerate if missing
-  if (!pdfPath || !fs.existsSync(pdfPath)) {
-    const allItems = db.prepare(ITEMS_QUERY).all(req.params.id)
-    const company = soumission.company_id ? db.prepare('SELECT * FROM companies WHERE id = ?').get(soumission.company_id) : null
-    const contact = soumission.contact_id ? db.prepare('SELECT * FROM contacts WHERE id = ?').get(soumission.contact_id) : null
-    const tenant = db.prepare('SELECT * FROM tenants LIMIT 1').get()
-    try {
-      pdfPath = await generateSoumissionPdf(soumission, allItems, company, contact, tenant)
-      const relPath = path.relative(uploadsPath(), pdfPath)
-      db.prepare("UPDATE soumissions SET generated_pdf_path = ? WHERE id = ?").run(relPath, req.params.id)
-    } catch {
-      return res.status(500).json({ error: 'PDF generation failed' })
-    }
+function soumissionPdfFilename(soumission) {
+  const docNum = soumission.document_number || soumission.id.slice(0, 8).toUpperCase()
+  return soumission.language === 'English' ? `Quote-${docNum}.pdf` : `Soumission-${docNum}.pdf`
+}
+
+router.get('/soumissions/:id/pdf', async (req, res) => {
+  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
+  if (!soumission) return res.status(404).json({ error: 'Not found' })
+
+  let pdfPath
+  try {
+    pdfPath = await ensureSoumissionPdf(soumission)
+  } catch (e) {
+    if (e.status === 404) return res.status(404).json({ error: 'Aucun PDF' })
+    console.error('Soumission PDF:', e.message)
+    return res.status(500).json({ error: 'PDF generation failed' })
   }
 
-  const docNum = soumission.document_number || soumission.id.slice(0, 8).toUpperCase()
-  const lang = soumission.language === 'English' ? 'English' : 'French'
-  const filename = lang === 'English' ? `Quote-${docNum}.pdf` : `Soumission-${docNum}.pdf`
-
+  const filename = soumissionPdfFilename(soumission)
   const disposition = req.query.download ? 'attachment' : 'inline'
   res.setHeader('Content-Type', 'application/pdf')
   res.setHeader('Content-Disposition', `${disposition}; filename="${filename}"`)
   fs.createReadStream(pdfPath).pipe(res)
+})
+
+// ── Envoi au client ───────────────────────────────────────────────────────────
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
+
+// Courriel générique, dans la langue du contact, personnalisé par son prénom.
+function soumissionEmailTemplate({ language, firstName, title, senderName }) {
+  const en = String(language || '').toLowerCase().startsWith('en')
+  const hi = firstName ? ` ${esc(firstName)}` : ''
+  const sign = senderName ? `${esc(senderName)}<br>Orisha` : 'Orisha'
+  return en ? {
+    subject: `Your Orisha quote ${title}`,
+    bodyHtml: `<p>Hi${hi},</p><p>Please find attached your quote <strong>${esc(title)}</strong>.</p>`
+      + `<p>Feel free to reach out if you have any questions.</p><p>Best regards,<br>${sign}</p>`,
+  } : {
+    subject: `Votre soumission Orisha ${title}`,
+    bodyHtml: `<p>Bonjour${hi},</p><p>Vous trouverez ci-joint votre soumission <strong>${esc(title)}</strong>.</p>`
+      + `<p>N'hésitez pas à me contacter pour toute question.</p><p>Au plaisir,<br>${sign}</p>`,
+  }
+}
+
+// Contacts proposés : celui de la soumission (sinon celui du projet) en tête,
+// puis les autres contacts de l'entreprise qui ont un courriel.
+function soumissionRecipients(soumission) {
+  const mainId = soumission.contact_id || projectContactId(soumission.project_id)
+  const main = mainId ? db.prepare('SELECT id, first_name, last_name, email, language, company_id FROM contacts WHERE id = ?').get(mainId) : null
+  const companyId = soumission.company_id || main?.company_id ||
+    (soumission.project_id ? db.prepare('SELECT company_id FROM projects WHERE id = ?').get(soumission.project_id)?.company_id : null)
+  const others = companyId ? db.prepare(`
+    SELECT id, first_name, last_name, email, language FROM contacts
+    WHERE company_id = ? AND deleted_at IS NULL AND email LIKE '%@%'
+    ORDER BY first_name, last_name
+  `).all(companyId) : []
+  const seen = new Set()
+  return [main, ...others].filter(c => c?.email && !seen.has(c.email.toLowerCase()) && seen.add(c.email.toLowerCase()))
+}
+
+// GET /api/documents/soumissions/:id/email — brouillon (rien n'est envoyé).
+router.get('/soumissions/:id/email', (req, res) => {
+  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
+  if (!soumission) return res.status(404).json({ error: 'Not found' })
+  const senderName = db.prepare('SELECT name FROM users WHERE id = ?').get(req.user?.id)?.name || ''
+  const title = soumission.title || soumissionPdfFilename(soumission).replace(/\.pdf$/, '')
+  const recipients = soumissionRecipients(soumission).map(c => ({
+    contact_id: c.id,
+    email: c.email,
+    name: [c.first_name, c.last_name].filter(Boolean).join(' ') || c.email,
+    ...soumissionEmailTemplate({ language: c.language || soumission.language, firstName: c.first_name, title, senderName }),
+  }))
+  const first = recipients[0]
+  const fallback = soumissionEmailTemplate({ language: soumission.language, title, senderName })
+  res.json({
+    to: first?.email || '',
+    subject: (first || fallback).subject,
+    bodyHtml: (first || fallback).bodyHtml,
+    recipients,
+    attachments: [{
+      name: soumissionPdfFilename(soumission),
+      url: `/erp/api/documents/soumissions/${soumission.id}/pdf?v=${encodeURIComponent(soumission.updated_at || '')}`,
+      contentType: 'application/pdf',
+    }],
+  })
+})
+
+// POST /api/documents/soumissions/:id/send-email — PDF en pièce jointe, envoyé
+// depuis le Gmail de l'utilisateur (ou `from_account`). Consigne l'interaction
+// et passe la soumission « Envoyée ».
+router.post('/soumissions/:id/send-email', async (req, res) => {
+  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
+  if (!soumission) return res.status(404).json({ error: 'Not found' })
+  const { to, cc, bcc, subject, body_html, from_account } = req.body || {}
+  if (!to || !String(to).includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
+  if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Objet requis' })
+
+  let result
+  try {
+    const pdfPath = await ensureSoumissionPdf(soumission)
+    result = await sendGmail(to, String(subject).trim(), String(body_html || ''), {
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      attachments: [{ filename: soumissionPdfFilename(soumission), content: fs.readFileSync(pdfPath), contentType: 'application/pdf' }],
+      userId: req.user?.id,
+      accountEmail: from_account || undefined,
+    })
+  } catch (e) {
+    console.error('Soumission send-email error:', e.message)
+    return res.status(502).json({ error: e.message })
+  }
+
+  const contactId = db.prepare('SELECT id FROM contacts WHERE lower(email) = lower(?) AND deleted_at IS NULL').get(to)?.id || soumission.contact_id || null
+  const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(result.account_email)?.id || req.user?.id || null
+  const interactionId = newRecordId()
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+      VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(interactionId, contactId, soumission.company_id || null, senderUserId)
+    db.prepare(`
+      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, bcc, gmail_message_id, gmail_thread_id, automated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(newRecordId(), interactionId, String(subject).trim(), String(body_html || ''), result.account_email, to, cc || null, bcc || null, result.message_id, result.thread_id)
+    if (soumission.status === 'Brouillon') {
+      db.prepare(`UPDATE soumissions SET status = 'Envoyée', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(soumission.id)
+    }
+  })()
+
+  const updated = db.prepare(SOUMISSION_LIST_SELECT).get(soumission.id)
+  emitEntity('soumission', 'updated', soumission.id, updated, req.user?.id)
+  res.json({ success: true, interaction_id: interactionId, soumission: updated })
 })
 
 // ── Duplicate ─────────────────────────────────────────────────────────────────
@@ -500,33 +753,29 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
   if (!src) return res.status(404).json({ error: 'Not found' })
 
   const newId = newRecordId()
-  // Auto-number for the copy
-  const { next_num: copyNum } = db.prepare(
-    `SELECT COALESCE(MAX(quote_number), 0) + 1 AS next_num FROM soumissions`
-  ).get()
+  // La copie a son propre numéro, jamais « Copie de … »
+  const copyNum = nextQuoteNumber()
   const copyExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   db.prepare(`
     INSERT INTO soumissions
       (id, project_id, company_id, contact_id, language, currency, status, title, notes,
-       expiration_date, quote_number, discount_pct, discount_amount)
-    VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?)
+       expiration_date, quote_number, discount_pct, discount_amount, discounts)
+    VALUES (?, ?, ?, ?, ?, ?, 'Brouillon', ?, ?, ?, ?, ?, ?, ?)
   `).run(newId, src.project_id, src.company_id, src.contact_id,
          src.language, src.currency || 'CAD',
-         `Copie de ${src.title || 'soumission'}`, src.notes,
-         copyExpiry, copyNum, src.discount_pct || 0, src.discount_amount || 0)
+         quoteTitle(copyNum), src.notes,
+         copyExpiry, copyNum, src.discount_pct || 0, src.discount_amount || 0, src.discounts || null)
 
   // Copy items
   const srcItems = db.prepare(`
     SELECT * FROM document_items WHERE document_id = ? AND document_type = 'soumission' ORDER BY sort_order
   `).all(req.params.id)
-  const insertItem = db.prepare(`
-    INSERT INTO document_items (id, document_type, document_id, catalog_product_id, qty, unit_price_cad, discount_pct, discount_amount, description_fr, description_en, sort_order)
-    VALUES (?, 'soumission', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
+  const insertItem = db.prepare(INSERT_ITEM)
   for (const it of srcItems) {
-    insertItem.run(newRecordId(), newId, it.catalog_product_id, it.qty, it.unit_price_cad, it.discount_pct ?? 0, it.discount_amount ?? 0, it.description_fr, it.description_en, it.sort_order)
+    insertItem.run(newRecordId(), newId, it.catalog_product_id, it.qty, it.unit_price_cad, it.discount_pct ?? 0, it.discount_amount ?? 0, it.description_fr, it.description_en, it.sort_order, it.group_name, it.unit_monthly_price ?? 0)
   }
+  syncSoumissionTotals(newId)
 
   // Generate PDF
   try {
@@ -545,76 +794,6 @@ router.post('/soumissions/:id/duplicate', async (req, res) => {
   const dupRow = db.prepare(SOUMISSION_LIST_SELECT).get(newId)
   emitEntity('soumission', 'created', newId, dupRow, req.user?.id)
   res.json(dupRow)
-})
-
-// ── Convert to order (quote-to-cash) ────────────────────────────────────────────
-// Crée une commande à partir d'une soumission, en un clic. Les lignes du devis
-// (document_items) deviennent des order_items. Note : order_items est cost-centric
-// (le revenu vient des factures), donc le prix de vente du devis n'a pas
-// d'équivalent direct. Le coût se lit sur le produit, et la
-// description de ligne du devis est conservée dans `notes` (utile pour les lignes
-// personnalisées sans produit). La commande pointe vers la soumission
-// (orders.soumission_id) pour la traçabilité quote-to-cash.
-router.post('/soumissions/:id/convert-to-order', (req, res) => {
-  const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
-  if (!soumission) return res.status(404).json({ error: 'Not found' })
-
-  // Idempotence douce : ne pas créer une 2e commande si cette soumission a déjà
-  // été convertie. On renvoie la commande existante avec un flag plutôt que de
-  // dupliquer silencieusement.
-  const existing = db.prepare(
-    'SELECT id, order_number FROM orders WHERE soumission_id = ? AND deleted_at IS NULL'
-  ).get(req.params.id)
-  if (existing) {
-    return res.json({ id: existing.id, order_number: existing.order_number, already_converted: true })
-  }
-
-  const items = db.prepare(`
-    SELECT di.*
-    FROM document_items di
-    WHERE di.document_id = ? AND di.document_type = 'soumission'
-    ORDER BY di.sort_order
-  `).all(req.params.id)
-
-  const orderId = newRecordId()
-  const { m } = db.prepare('SELECT MAX(order_number) as m FROM orders').get()
-  const orderNumber = (m || 0) + 1
-  const refLabel = soumission.title || (soumission.quote_number ? `QTE-Z-${soumission.quote_number}` : req.params.id)
-
-  const insertOrder = db.prepare(`
-    INSERT INTO orders (id, order_number, company_id, project_id, status, notes, soumission_id)
-    VALUES (?, ?, ?, ?, 'Commande vide', ?, ?)
-  `)
-  const insertItem = db.prepare(`
-    INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes, sort_order)
-    VALUES (?, ?, ?, ?, 'Facturable', ?, ?)
-  `)
-  // Commande + lignes + accusé de conversion sur la soumission dans une seule
-  // transaction : pas de commande à moitié peuplée si une ligne échoue.
-  db.transaction(() => {
-    insertOrder.run(orderId, orderNumber, soumission.company_id || null,
-      soumission.project_id || null, `Convertie depuis la soumission ${refLabel}`, req.params.id)
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i]
-      const lang = soumission.language === 'English' ? 'English' : 'French'
-      const desc = lang === 'English'
-        ? (it.description_en || it.description_fr || '')
-        : (it.description_fr || it.description_en || '')
-      insertItem.run(newRecordId(), orderId, it.catalog_product_id || null,
-        it.qty || 1, desc || null, i)
-    }
-    // Convertir un devis = il est accepté. On promeut Brouillon/Envoyée → Acceptée.
-    if (soumission.status === 'Brouillon' || soumission.status === 'Envoyée') {
-      db.prepare("UPDATE soumissions SET status = 'Acceptée', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?")
-        .run(req.params.id)
-    }
-  })()
-
-  emitOrder('created', orderId, req.user?.id)
-  const updatedSoumission = db.prepare(SOUMISSION_LIST_SELECT).get(req.params.id)
-  if (updatedSoumission) emitEntity('soumission', 'updated', req.params.id, updatedSoumission, req.user?.id)
-
-  res.status(201).json({ id: orderId, order_number: orderNumber, item_count: items.length })
 })
 
 export default router

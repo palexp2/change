@@ -7,6 +7,10 @@ import { routeSync, ENGINE_ONLY_SYNCS } from '../services/airtableMirrorEngine.j
 import { getAccessToken, airtablePost, airtablePatch, airtableDelete } from '../connectors/airtable.js'
 import { emit } from '../services/realtime.js'
 import { newRecordId } from '../utils/recordId.js'
+import { makeUpload } from '../utils/upload.js'
+import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
+import fs from 'fs'
+import path from 'path'
 
 // Achats de fournitures (bureau, entretien, emballage) — miroir des tables
 // Airtable « Fournitures » et « Achats fournitures » (cf. migration 086).
@@ -179,6 +183,67 @@ router.patch('/:id', requireAuth, patchMirrored({
   cols: { name: text, supplier: text, reference_price: amount, unit: text, web_url: text, notes: text },
   required: ['name'],
 }))
+
+// Image de la fiche. Même copie locale que celle du miroir (dossier des images
+// produits) ; le préfixe `local-` la protège de la synchro suivante, qui sinon
+// la remplacerait par la pièce jointe Airtable (cf. piecesPrepareImages).
+const IMAGE_EXT = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.svg']
+const imageUpload = makeUpload({
+  destination: (req, file, cb) => { try { cb(null, ensureUploadsDir('products')) } catch (e) { cb(e) } },
+  filename: (req, file) => `local-fourniture-${req.params.id}${path.extname(file.originalname).toLowerCase()}`,
+  fileSize: 10 * 1024 * 1024,
+  allowedExt: IMAGE_EXT,
+  rejectMessage: ext => `Image non supportée : ${ext || 'sans extension'}`,
+}).single('file')
+
+// Seuls les dépôts manuels sont à nous : une copie du miroir reste sur disque.
+function unlinkLocalImage(imageUrl) {
+  const name = String(imageUrl || '').split('/').pop()
+  if (!name.startsWith('local-')) return
+  try { fs.unlinkSync(path.join(uploadsPath('products'), name)) } catch { /* déjà parti */ }
+}
+
+function setImage(id, imageUrl) {
+  db.prepare("UPDATE fournitures SET image_url = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?").run(imageUrl, id)
+  return db.prepare('SELECT * FROM fournitures WHERE id = ?').get(id)
+}
+
+router.post('/:id/image', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT id, image_url FROM fournitures WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Fourniture introuvable' })
+  imageUpload(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message })
+    if (!req.file) return res.status(400).json({ error: 'Aucun fichier' })
+    const imageUrl = `/erp/api/product-images/${req.file.filename}`
+    if (row.image_url && row.image_url !== imageUrl) unlinkLocalImage(row.image_url)
+    res.json(setImage(row.id, imageUrl))
+  })
+})
+
+// Retrait : la pièce jointe Airtable est vidée aussi, sinon le sync suivant la
+// ramènerait.
+router.delete('/:id/image', requireAuth, async (req, res) => {
+  const row = db.prepare('SELECT id, airtable_id, image_url FROM fournitures WHERE id = ?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Fourniture introuvable' })
+  const t0 = Date.now()
+  try {
+    if (row.airtable_id) {
+      const cfg = db.prepare("SELECT base_id, table_id, field_map FROM airtable_module_config WHERE module='fournitures'").get()
+      let fieldMap = {}
+      try { fieldMap = JSON.parse(cfg?.field_map || '{}') } catch { /* config illisible → rien à vider */ }
+      if (cfg?.base_id && cfg?.table_id && fieldMap.image) {
+        const token = await getAccessToken()
+        await airtablePatch(`/${cfg.base_id}/${cfg.table_id}/${row.airtable_id}`, token, { fields: { [fieldMap.image]: [] } })
+        logSync('fournitures', 'erp-update', { status: 'success', modified: 1, durationMs: Date.now() - t0 })
+      }
+    }
+    unlinkLocalImage(row.image_url)
+    res.json(setImage(row.id, null))
+  } catch (e) {
+    logSync('fournitures', 'erp-update', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+    res.status(502).json({ error: e.message })
+  }
+})
 
 // Suppression : d'abord dans Airtable (sinon le sync suivant la ramènerait),
 // puis ici. Ses achats restent, sans fourniture (comme dans Airtable).

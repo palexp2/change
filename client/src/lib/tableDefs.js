@@ -33,6 +33,7 @@ export const TABLE_LABELS = {
   company_projects: 'Projets (entreprise)',
   company_orders: 'Commandes (entreprise)',
   company_tickets: 'Support (entreprise)',
+  company_discovery_forms: 'System builder (entreprise)',
   company_factures: 'Factures (entreprise)',
   company_abonnements: 'Abonnements (entreprise)',
   company_envois: 'Envois (entreprise)',
@@ -74,8 +75,9 @@ export const TABLE_LABELS = {
   activity_codes: "Codes d'activité",
   ops_issues: "Problèmes d'opérations",
   payments: 'Paiements',
-  bank_transactions: 'Rapprochement bancaire',
+  bank_transactions: 'Transactions bancaires',
   revenus_reportes: "Revenus perçus d'avance",
+  travaux_prompts: 'Travaux',
 }
 
 // Chaque entrée : { id, label, field, type?, options?, sortable?, filterable?, groupable?, defaultVisible?, description? }
@@ -175,6 +177,22 @@ export const TABLE_COLUMN_META = {
     { id: 'type',      label: 'Nature',     field: 'type',      type: 'single_select', options: ['Nouveauté', 'Amélioration', 'Correction'] },
     { id: 'requester', label: 'Demandé par', field: 'requester', type: 'user' },
     { id: 'summary',   label: 'Détail',     field: 'summary' },
+  ],
+
+  // File de travaux (/travaux) — items du store de l'agent. `section` (File /
+  // Complété) et `ordre` (rang dans la file) sont dérivés côté client : ce sont
+  // eux que filtrent et trient les deux vues par défaut (server/src/db/schema.js).
+  travaux_prompts: [
+    { id: 'etat',            label: 'État',     field: 'etat', width: 130 },
+    { id: 'title',           label: 'Titre',    field: 'title', width: 420 },
+    { id: 'created_by_name', label: 'Par',      field: 'created_by_name', width: 150 },
+    { id: 'page',            label: 'Page',     field: 'page', width: 160 },
+    { id: 'model',           label: 'Modèle',   field: 'model_label', width: 100 },
+    { id: 'created_at',      label: 'Créé',    field: 'created_at', type: 'date', width: 120 },
+    { id: 'completed_at',    label: 'Terminé',  field: 'completed_at', type: 'date', width: 120 },
+    { id: 'duree',           label: 'Temps',    field: 'duree', type: 'number', width: 110 },
+    { id: 'section',        label: 'Section',  field: 'section', type: 'single_select', options: ['File', 'Complété'], defaultVisible: false },
+    { id: 'ordre',           label: 'Rang',     field: 'ordre', type: 'number', defaultVisible: false },
   ],
 
   // Revenus perçus d'avance (/revenus-reportes) — lignes calculées par le
@@ -823,6 +841,15 @@ export const TABLE_COLUMN_META = {
     { id: 'user_name',      label: 'Utilisateur',    field: 'user_name',      type: 'user', defaultVisible: false },
   ],
 
+  // Vacances d'un employé, sur sa fiche (bloc « Vacances ») : table manipulable.
+  // « Type » est dérivé de `paid` (1/0) par la page, qui le retraduit à l'écriture.
+  employee_vacations: [
+    { id: 'start_date', label: 'Du',    field: 'start_date', type: 'date' },
+    { id: 'end_date',   label: 'Au',    field: 'end_date',   type: 'date' },
+    { id: 'paid_type',  label: 'Type',  field: 'paid_type',  type: 'single_select', options: [{ value: 'Congé payé', color: 'green' }, { value: 'Sans solde', color: 'gray' }] },
+    { id: 'notes',      label: 'Notes', field: 'notes' },
+  ],
+
   // Historique des mouvements de stock affiché sur la fiche produit (un seul produit) :
   // pas de colonnes produit (SKU/nom) puisque la fiche concerne déjà un produit unique.
   product_movements: [
@@ -1012,6 +1039,14 @@ export const TABLE_COLUMN_META = {
     { id: 'titre',     label: 'Titre',  field: 'titre' },
     { id: 'cf_statut', label: 'Statut', field: 'cf_statut', type: 'single_select' },
     { id: 'cf_date',   label: 'Date',   field: 'cf_date', type: 'date' },
+  ],
+
+  company_discovery_forms: [
+    { id: 'form_number',     label: '#',          field: 'sys_number' },
+    { id: 'status',          label: 'Statut',     field: 'status', type: 'single_select', options: ['in_progress', 'submitted'] },
+    { id: 'num_greenhouses', label: 'Nb serres',  field: 'num_greenhouses', type: 'number' },
+    { id: 'submitted_at',    label: 'Soumis le',  field: 'submitted_at', type: 'date' },
+    { id: 'created_at',      label: 'Créé le',    field: 'created_at', type: 'date' },
   ],
 
   company_factures: [

@@ -1,5 +1,6 @@
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
+import { resolveVendorFromBankLabel } from './scrapers/vendorFromBankLabel.js'
 
 // Profils fournisseurs : fiche unique par fournisseur, éditable dans /fournisseurs.
 // Elle porte à la fois
@@ -108,6 +109,37 @@ export function findVendorProfile(name) {
     if (parseAliases(row.aliases).some(a => strippedVendorKey(a) === stripped)) return serializeProfile(row)
   }
   return null
+}
+
+/**
+ * La fiche d'un fournisseur pour un nom APPROCHANT — le nom saisi dans une ligne de
+ * relevé vient du libellé de la banque, d'une facture ou d'un achat passé, presque
+ * jamais du nom canonique de la fiche. Trois passes, de la plus sûre à la plus large :
+ *
+ *  1. findVendorProfile : nom/alias exact, puis sans les suffixes légaux ;
+ *  2. la reconnaissance du relevé (motifs déclarés, alias, nom) — elle refuse déjà de
+ *     deviner quand deux fiches se valent ; couvre le nom PLUS LONG que la fiche
+ *     (« Takachi Electronics Enclosure » → « Takachi ») ;
+ *  3. le sens inverse, nom PLUS COURT que la fiche (« Premier Farnell » →
+ *     « Newark (Premier Farnell) ») : une seule fiche doit le contenir, sinon rien —
+ *     « Bell » vaut pour trois fiches, on n'en désigne aucune.
+ *
+ * Jamais de correspondance partielle ambiguë : se tromper de fournisseur ici
+ * comptabiliserait la dépense d'un tiers.
+ */
+export function resolveProfileByName(name) {
+  const exact = findVendorProfile(name)
+  if (exact) return exact
+  const hit = resolveVendorFromBankLabel(name)
+  if (hit) {
+    const row = db.prepare('SELECT * FROM vendor_profiles WHERE id=? AND deleted_at IS NULL').get(hit.profile.id)
+    if (row) return serializeProfile(row)
+  }
+  const key = normalizeVendorKey(name)
+  if (key.length < 4) return null
+  const rows = db.prepare('SELECT * FROM vendor_profiles WHERE deleted_at IS NULL').all()
+    .filter(row => [row.name, ...parseAliases(row.aliases)].some(n => normalizeVendorKey(n).includes(key)))
+  return rows.length === 1 ? serializeProfile(rows[0]) : null
 }
 
 /**

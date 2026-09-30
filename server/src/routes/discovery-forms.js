@@ -15,6 +15,7 @@ import { discoveryAddresses, airtableTwinAddress } from '../services/discoveryAd
 
 import { Router } from 'express'
 import { JWT_ROLES, isJwtProduct } from '../../../client/src/lib/discoveryEquipmentCatalog.js'
+import { unknownAnswers } from '../../../client/src/lib/discoveryUnknownAnswers.js'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
@@ -25,6 +26,8 @@ import { normalizeDiscoveryOptions, discoveryOptionsFromRow } from '../services/
 import { calculateDiscoveryEquipment } from '../services/discoveryEquipment.js'
 import { queueDiscoveryOrderMirror } from '../services/discoveryOrderAirtable.js'
 import { emitOrder } from '../services/realtimeEmitters.js'
+import { buildPartialUpdate } from './customer-post-payment.js'
+import { applyOrderItemDefaults } from '../services/orderItemDefaults.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -45,6 +48,8 @@ function shapeForm(row) {
     form_number: row.form_number ?? null,
     company_id: row.company_id,
     company_name: row.company_name || null,
+    project_id: row.project_id || null,
+    project_name: row.project_name ?? (row.project_id ? db.prepare('SELECT name FROM projects WHERE id=?').get(row.project_id)?.name || null : null),
     qualification_call_id: row.qualification_call_id,
     stripe_subscription_id: row.stripe_subscription_id,
     stripe_session_id: row.stripe_session_id,
@@ -71,6 +76,7 @@ function shapeForm(row) {
     custom_answers: row.custom_answers_json ? JSON.parse(row.custom_answers_json) : {},
     form_options: discoveryOptionsFromRow(row),
     verification: row.verification_json ? JSON.parse(row.verification_json) : {},
+    technical_notes: row.technical_notes || '',
     generated_order_id: row.generated_order_id || null,
     generated_order_number: row.generated_order_number ?? null,
     submitted_at: row.submitted_at,
@@ -230,18 +236,23 @@ router.get('/:id/equipment-preview', (req, res) => {
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
   const response = shapeForm(row)
   const result = calculateDiscoveryEquipment(response, schemaRules())
-  // Vignette et type par rôle : l'image à côté du nom, le type pour regrouper.
-  const product = db.prepare('SELECT image_url, type FROM products WHERE id=?')
+  // Vignette, type, nom et fiche par rôle : l'image à côté du nom, le type pour
+  // regrouper, le nom du catalogue affiché, l'id pour ouvrir le produit.
+  const product = db.prepare(`SELECT id, COALESCE(NULLIF(name_fr, ''), name_en) AS name, image_url, type FROM products WHERE id=?`)
   const productImages = {}
   const productTypes = {}
+  const productIds = {}
+  const productNames = {}
   for (const line of result.orderItems) {
     const p = product.get(line.product_id)
     for (const s of line.sources) {
       if (p?.image_url) productImages[s.role] = p.image_url
       if (p?.type) productTypes[s.role] = p.type
+      if (p?.id) productIds[s.role] = p.id
+      if (p?.name) productNames[s.role] = p.name
     }
   }
-  res.json({ ...result, productImages, productTypes })
+  res.json({ ...result, productImages, productTypes, productIds, productNames })
 })
 
 router.patch('/:id/verification', (req, res) => {
@@ -251,6 +262,16 @@ router.patch('/:id/verification', (req, res) => {
   db.prepare("UPDATE customer_onboarding_responses SET verification_json=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
     .run(JSON.stringify(next), row.id)
   res.json({ ok: true, verification: next })
+})
+
+// Notes internes : modifiables même après la création de la commande.
+router.patch('/:id/notes', (req, res) => {
+  const row = db.prepare('SELECT id FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  const notes = typeof req.body?.technical_notes === 'string' ? req.body.technical_notes : ''
+  db.prepare("UPDATE customer_onboarding_responses SET technical_notes=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?")
+    .run(notes, row.id)
+  res.json({ ok: true, technical_notes: notes })
 })
 
 // Options achetées et extras par serre, modifiables par Orisha tant qu'aucune
@@ -263,6 +284,45 @@ router.patch('/:id/options', (req, res) => {
     .run(JSON.stringify(normalizeDiscoveryOptions(req.body?.form_options)), row.id)
   const updated = db.prepare('SELECT r.*, c.name AS company_name FROM customer_onboarding_responses r LEFT JOIN companies c ON c.id = r.company_id WHERE r.id=?').get(row.id)
   res.json(shapeForm(updated))
+})
+
+// Réponses corrigées par Orisha depuis la fiche, tant qu'aucune commande n'existe.
+// `answers` : champs racine (mêmes clés que l'autosave du formulaire public) ;
+// `greenhouse` : { index, values } fusionné dans la carte (values.custom aussi) ;
+// `custom_answers` : fusionné dans les réponses aux questions ajoutées.
+const LOCKED_GREENHOUSE_KEYS = new Set(['permission_level'])
+router.patch('/:id/answers', (req, res) => {
+  const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  if (row.generated_order_id) return res.status(409).json({ error: 'Une commande a déjà été créée pour ce formulaire' })
+  const body = req.body || {}
+  const next = { ...(body.answers && typeof body.answers === 'object' ? body.answers : {}) }
+  for (const key of ['greenhouses', 'num_greenhouses', 'custom_answers']) delete next[key]
+  const gh = body.greenhouse
+  if (gh && typeof gh === 'object') {
+    const greenhouses = row.greenhouses_json ? JSON.parse(row.greenhouses_json) : []
+    const index = Number(gh.index)
+    if (!Number.isInteger(index) || !greenhouses[index]) return res.status(400).json({ error: 'Serre introuvable' })
+    const values = Object.fromEntries(Object.entries(gh.values && typeof gh.values === 'object' ? gh.values : {}).filter(([key]) => !LOCKED_GREENHOUSE_KEYS.has(key)))
+    const current = greenhouses[index]
+    if (values.custom && typeof values.custom === 'object') values.custom = { ...(current.custom || {}), ...values.custom }
+    greenhouses[index] = { ...current, ...values }
+    next.greenhouses = greenhouses
+  }
+  if (body.custom_answers && typeof body.custom_answers === 'object' && !Array.isArray(body.custom_answers)) {
+    next.custom_answers = { ...(row.custom_answers_json ? JSON.parse(row.custom_answers_json) : {}), ...body.custom_answers }
+  }
+  const { updates, values } = buildPartialUpdate(next)
+  if (!updates.length) return res.status(400).json({ error: 'Aucune réponse à enregistrer' })
+  db.prepare(`UPDATE customer_onboarding_responses SET ${updates.join(', ')}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=? AND generated_order_id IS NULL`)
+    .run(...values, row.id)
+  res.json(shapeForm(db.prepare(`
+    SELECT r.*, c.name AS company_name, o.order_number AS generated_order_number
+      FROM customer_onboarding_responses r
+      LEFT JOIN companies c ON c.id = r.company_id
+      LEFT JOIN orders o ON o.id = r.generated_order_id
+     WHERE r.id=?
+  `).get(row.id)))
 })
 
 router.patch('/:id/addresses', (req, res) => {
@@ -288,11 +348,25 @@ router.patch('/:id/addresses', (req, res) => {
   res.json(shapeForm(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)))
 })
 
+router.patch('/:id/project', (req, res) => {
+  const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
+  const id = req.body?.project_id || null
+  if (id && !db.prepare('SELECT 1 FROM projects WHERE id=? AND company_id=?').get(id, row.company_id)) {
+    return res.status(400).json({ error: 'Choisissez un projet de cette entreprise' })
+  }
+  db.prepare("UPDATE customer_onboarding_responses SET project_id=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?").run(id, row.id)
+  res.json(shapeForm(db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(row.id)))
+})
+
 router.post('/:id/create-order', async (req, res) => {
   const row = db.prepare('SELECT * FROM customer_onboarding_responses WHERE id=?').get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Formulaire introuvable' })
   if (row.generated_order_id) return res.status(409).json({ error: 'Une commande a déjà été créée pour ce formulaire', order_id: row.generated_order_id })
-  const calc = calculateDiscoveryEquipment(shapeForm(row), schemaRules())
+  const form = shapeForm(row)
+  const unknown = unknownAnswers(form)
+  if (unknown.length) return res.status(422).json({ error: `Réponses « Je ne sais pas » à corriger : ${unknown.map(u => (u.greenhouse ? `Serre #${u.greenhouse} · ${u.label}` : u.label)).join(', ')}`, unknown })
+  const calc = calculateDiscoveryEquipment(form, schemaRules())
   if (!calc.calculationComplete) return res.status(422).json({ error: `Dimensionnement incomplet : ${calc.warnings.map(w => w.message).join(' ')}`, warnings: calc.warnings })
   const orderId = newRecordId()
   const orderNumber = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
@@ -307,8 +381,8 @@ router.post('/:id/create-order', async (req, res) => {
     addresses.shipping_address_id = shipping?.id || null
     addresses.farm_address = farm
     addresses.farm_address_id = farm?.id || null
-    db.prepare("INSERT INTO orders (id, order_number, company_id, farm_address_id, address_id, status, notes, date_commande) VALUES (?,?,?,?,?,'Commande vide',?,date('now'))")
-      .run(orderId, orderNumber, row.company_id || null, addresses.farm_address_id, addresses.shipping_address_id, [`System Builder #${row.id}`, ...calc.orderNotes].join('\n'))
+    db.prepare("INSERT INTO orders (id, order_number, company_id, project_id, farm_address_id, address_id, assigned_to, status, notes, date_commande) VALUES (?,?,?,?,?,?,?,'Commande vide',?,date('now'))")
+      .run(orderId, orderNumber, row.company_id || null, row.project_id || null, addresses.farm_address_id, addresses.shipping_address_id, req.user?.id || null, calc.orderNotes.join('\n'))
     // Colonnes miroir des liens Airtable « Adresse de livraison » et « Adresse
     // de la ferme (pour coordonnées géographiques) ».
     const orderCols = new Set(db.pragma('table_info(orders)').map(c => c.name))
@@ -316,15 +390,18 @@ router.post('/:id/create-order', async (req, res) => {
       if (orderCols.has(column)) db.prepare(`UPDATE orders SET ${column}=? WHERE id=?`).run(address?.id ? JSON.stringify([address.airtable_id || address.id]) : '', orderId)
     }
     // Réseau Wi-Fi du client → champs « Wi-Fi name » / « Wi-Fi password » de la commande.
-    const known = v => (v && String(v).trim() !== 'Je ne sais pas' ? String(v).trim() : null)
+    // « Non fourni » : Orisha a accepté de s'en passer, rien à reporter.
+    const known = v => (v && !['Je ne sais pas', 'Non fourni'].includes(String(v).trim()) ? String(v).trim() : null)
     for (const [column, value] of [['wi_fi_name', known(row.wifi_ssid)], ['wi_fi_password', known(row.wifi_password)]]) {
       if (orderCols.has(column) && value) db.prepare(`UPDATE orders SET ${column}=? WHERE id=?`).run(value, orderId)
     }
     const claim = db.prepare("UPDATE customer_onboarding_responses SET generated_order_id=? WHERE id=? AND generated_order_id IS NULL").run(orderId, row.id)
     if (claim.changes !== 1) throw new Error('Une commande a déjà été créée pour ce formulaire')
     for (const item of calc.orderItems) {
+      const itemId = newRecordId()
       db.prepare("INSERT INTO order_items (id, order_id, product_id, qty, item_type, notes) VALUES (?,?,?,?,'Facturable',?)")
-        .run(newRecordId(), orderId, item.product_id, item.qty, item.label)
+        .run(itemId, orderId, item.product_id, item.qty, item.label)
+      applyOrderItemDefaults(itemId)
     }
   })()
   emitOrder('created', orderId, req.user?.id)

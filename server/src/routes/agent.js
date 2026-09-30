@@ -7,7 +7,6 @@ import { fileURLToPath } from 'url'
 import { requireAdmin } from '../middleware/auth.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import { getClaudeUsage } from '../services/claudeUsage.js'
-import { getCodexUsage } from '../services/codexUsage.js'
 import { KNOWN_MODELS } from '../services/agentModel.js'
 import { getQuotaFloors, QUOTA_FLOOR_CHOICES, QUOTA_FLOOR_KEYS, QUOTA_FLOOR_PCT, syncQuotaGuard } from '../services/quotaGuard.js'
 import {
@@ -36,6 +35,7 @@ const TASKS_TMP  = TASKS_FILE + '.tmp'
 // Instructions projet de l'agent (repo root /home/ec2-user/erp/CLAUDE.md).
 const CLAUDE_MD_FILE = resolve(fileURLToPath(import.meta.url), '../../../../CLAUDE.md')
 const CLAUDE_MD_TMP  = CLAUDE_MD_FILE + '.tmp'
+const FAB_DEFAULT_MODELS = ['auto', 'opus']
 
 function readTasks() {
   try { return JSON.parse(readFileSync(TASKS_FILE, 'utf8')) } catch { return [] }
@@ -92,6 +92,15 @@ router.put('/settings', (req, res) => {
       return res.status(400).json({ error: `preferredModel invalide — choix possibles : ${KNOWN_MODELS.join(', ')}` })
     }
     patch.preferredModel = model
+  }
+  // Modèle présélectionné dans la fenêtre « Modifier le système » (sélecteur de
+  // /travaux) : 'auto' = modèle Anthropic selon la complexité, ou Opus imposé.
+  if ('fabDefaultModel' in req.body) {
+    const model = String(req.body.fabDefaultModel || '').toLowerCase()
+    if (!FAB_DEFAULT_MODELS.includes(model)) {
+      return res.status(400).json({ error: `fabDefaultModel invalide — choix possibles : ${FAB_DEFAULT_MODELS.join(', ')}` })
+    }
+    patch.fabDefaultModel = model
   }
   // Seuils du garde-fou de quota (sélecteurs du bandeau quotas) : marge restante sous
   // laquelle la file se met en pause, UN SEUIL PAR PLAFOND (fenêtre de 5 h, semaine).
@@ -258,11 +267,10 @@ router.get('/usage', async (req, res) => {
   try {
     // Une page regarde les jauges : réponse immédiate (cache servi même périmé) et
     // cache entretenu en fond tant qu'on l'interroge — voir claudeUsage.js.
-    const [usage, codex] = await Promise.all([getClaudeUsage({ keepWarm: true }), getCodexUsage()])
+    const usage = await getClaudeUsage({ keepWarm: true })
     const at = getSessionLimitResetAt()
     res.json({
       ...usage,
-      codex,
       schedulerLimitResetAt: at > Date.now() ? new Date(at).toISOString() : null,
       // Garde-fou de quota : un seuil par plafond (fenêtre 5 h, semaine) + les choix
       // possibles, pour ses sélecteurs dans le bandeau (quotaGuard.js). `keys` dit au
@@ -273,8 +281,7 @@ router.get('/usage', async (req, res) => {
         default: QUOTA_FLOOR_PCT,
         keys: QUOTA_FLOOR_KEYS,
       },
-      // Modèle de l'agent : le préféré (fable), celui réellement actif (opus quand le
-      // plafond hebdomadaire de fable est épuisé) et les quotas par modèle en cours.
+      // Modèle de l'agent : le préféré, s'il est utilisable, et les quotas épuisés.
       agentModel: getAgentModelState(),
     })
   } catch (err) {

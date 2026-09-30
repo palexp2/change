@@ -681,12 +681,15 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
   // apparaîtrait deux fois, dont une comme un changement de type fictif.
   const originalType = normalizeFieldType(column?.type)
   const originalLabel = column?.label || column?.id || ''
+  // Décimales d'origine de la colonne (tableDefs.js), 2 à défaut — la valeur
+  // qu'affiche un champ Devise tant que personne n'a choisi autre chose.
+  const originalDecimals = Number.isInteger(column?.decimals) ? column.decimals : 2
 
   useEffect(() => {
     if (!isOpen || !column) return
     const l = override?.label || originalLabel
     const t = override?.type || originalType
-    const d = Number.isInteger(override?.decimals) ? override.decimals : 2
+    const d = Number.isInteger(override?.decimals) ? override.decimals : originalDecimals
     const cc = override?.country_code === 'show' ? 'show' : 'hide'
     setLabel(l)
     setType(t)
@@ -869,6 +872,9 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     if (cur.label === ls.label && cur.type === ls.type && cur.decimals === ls.decimals && cur.countryCode === ls.countryCode) return
     const labelChanged = cur.label !== originalLabel
     const typeIsOverridden = cur.type !== originalType
+    const isNumeric = cur.type === 'number' || cur.type === 'currency' || cur.type === 'percent'
+    // Un champ Devise garde son type mais peut changer de nombre de décimales.
+    const decimalsIsOverridden = !typeIsOverridden && cur.type === 'currency' && cur.decimals !== originalDecimals
     // Préférence d'indicatif applicable seulement si le champ s'affiche en
     // téléphone. Baseline 'hide' → seul 'show' constitue un override.
     const isPhone = cur.type === 'phone'
@@ -876,13 +882,13 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
     setError(null)
     setSaving(true)
     try {
-      if (!labelChanged && !typeIsOverridden && !ccIsOverridden && !hasOptionsConfig() && !hasDescription()) {
+      if (!labelChanged && !typeIsOverridden && !decimalsIsOverridden && !ccIsOverridden && !hasOptionsConfig() && !hasDescription()) {
         // Tout est revenu aux valeurs d'origine → on retire l'override.
         if (hasOverride) {
           await api.fieldOverrides.reset(table, column.id)
           setHasOverride(false)
         }
-      } else if (!labelChanged && !typeIsOverridden && !ccIsOverridden) {
+      } else if (!labelChanged && !typeIsOverridden && !decimalsIsOverridden && !ccIsOverridden) {
         // Plus rien de personnalisé SAUF les choix de la Sélection et/ou la
         // description : on efface les autres aspects sans toucher à ceux-là.
         await api.fieldOverrides.save(table, column.id, {
@@ -894,7 +900,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
         await api.fieldOverrides.save(table, column.id, {
           label: labelChanged ? cur.label : null,
           type: typeIsOverridden ? cur.type : null,
-          decimals: typeIsOverridden && (cur.type === 'number' || cur.type === 'currency' || cur.type === 'percent') ? cur.decimals : null,
+          decimals: (typeIsOverridden && isNumeric) || decimalsIsOverridden ? cur.decimals : null,
           country_code: isPhone ? cur.countryCode : null,
         })
         setHasOverride(true)
@@ -917,7 +923,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
       await api.fieldOverrides.reset(table, column.id)
       setLabel(originalLabel)
       setType(originalType)
-      setDecimals(2)
+      setDecimals(originalDecimals)
       setCountryCode('hide')
       setNativePercentDisplay('percent')
       setNativeDateFormat('iso_date')
@@ -927,7 +933,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
       setDescription('')
       lastSavedDescription.current = ''
       setHasOverride(false)
-      lastSaved.current = { label: originalLabel, type: originalType, decimals: 2, countryCode: 'hide' }
+      lastSaved.current = { label: originalLabel, type: originalType, decimals: originalDecimals, countryCode: 'hide' }
       addToast({ message: 'Champ réinitialisé', type: 'success' })
       onSaved?.()
     } catch (e) {
@@ -1025,7 +1031,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
           <DateFormatSelect value={nativeDateFormat} onChange={persistDateFormat} name="field-override-date-format" />
         )}
 
-        {typeChanged && (type === 'number' || type === 'currency' || type === 'percent') && (
+        {(type === 'currency' || (typeChanged && (type === 'number' || type === 'percent'))) && (
           <div>
             <label className="label">Décimales (0 à 5)</label>
             <input
@@ -1113,7 +1119,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
 //   - lookup  : valeur tirée d'une table liée via FK
 //   - auto    : champ système lecture seule (created_time, last_modified_time, created_by, last_modified_by)
 // En mode édition, le kind est figé.
-function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot, formulaColumns, formulaLabelSearch = false }) {
+function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot, formulaColumns, formulaLabelSearch = false, showFormulaSyntaxHelp = true, showFormulaAutocompleteHint = true, showFormulaKeyboardHint = true }) {
   const { addToast } = useToast()
   const [kind, setKind] = useState('data')
   const [name, setName] = useState('')
@@ -1755,6 +1761,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         rollup_target_column: rollupAgg === 'COUNT' ? null : rollupColumn,
         rollup_agg: rollupAgg,
         result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
+        ...(!isArrayAgg(rollupAgg) && resultType === 'number' ? { decimals } : {}),
       })
     } else if (kind === 'button') {
       const lab = buttonLabel.trim()
@@ -1979,6 +1986,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           // (le tri/filtre/affichage numérique n'a pas de sens sur une liste).
           result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
           ...(!isArrayAgg(rollupAgg) && resultType === 'currency' ? { options: { currency: currencySymbol } } : {}),
+          ...(!isArrayAgg(rollupAgg) && resultType === 'number' ? { decimals } : {}),
           ...descPayload,
         })
       } else if (kind === 'auto') {
@@ -2294,6 +2302,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
               sourceColumns={meta?.source_columns || []}
               displayColumns={formulaColumns}
               labelSearchOnly={formulaLabelSearch}
+              showSyntaxHelp={showFormulaSyntaxHelp}
+              showAutocompleteHint={showFormulaAutocompleteHint}
+              showKeyboardHint={showFormulaKeyboardHint}
               functions={meta?.formula_functions || []}
             />
             <ResultTypeSelect value={resultType} onChange={changeResultType} />
@@ -2492,6 +2503,21 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
               </div>
             )}
             <ResultTypeSelect value={resultType} onChange={changeResultType} />
+            {resultType === 'number' && !isArrayAgg(rollupAgg) && (
+              <div>
+                <label className="label">Décimales (0 à 5)</label>
+                <input
+                  type="number" min={0} max={5}
+                  value={decimals}
+                  onChange={e => setDecimals(Math.max(0, Math.min(5, parseInt(e.target.value) || 0)))}
+                  onBlur={() => {
+                    if (editing && !converting && decimals !== lastSaved.current.decimals) autosave({ decimals })
+                  }}
+                  className="input text-sm w-24"
+                  data-testid="cf-rollup-decimals"
+                />
+              </div>
+            )}
           </>
         )}
 
@@ -2784,7 +2810,7 @@ function displayToExpr(text, byToken) {
 // d'interface entre accolades et s'affichent en mauve, l'autocomplete propose
 // champs et fonctions. La formule STOCKÉE reste en noms de colonnes SQL (seuls
 // compris par la VUE) : la traduction se fait aux frontières de l'éditeur.
-function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [], displayColumns, labelSearchOnly = false }) {
+function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [], displayColumns, labelSearchOnly = false, showSyntaxHelp = true, showAutocompleteHint = true, showKeyboardHint = true }) {
   const taRef = useRef(null)
   const mirrorRef = useRef(null)
   const pendingCaret = useRef(null)
@@ -3066,11 +3092,11 @@ function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [],
         <button type="button" onClick={() => { setShowFns(v => !v); setShowFields(false) }} className="text-[11px] link-record">
           {showFns ? 'Masquer les fonctions' : `Fonctions disponibles${functions.length ? ` (${functions.length})` : ''}`}
         </button>
-        <span className="text-[11px] text-slate-400 ml-auto">Tape <code className="font-mono">{'{'}</code> ou un nom de champ pour l&apos;autocomplete.</span>
+        {showAutocompleteHint && <span className="text-[11px] text-slate-400 ml-auto">Tape <code className="font-mono">{'{'}</code> ou un nom de champ pour l&apos;autocomplete.</span>}
       </div>
-      <p className="text-[11px] text-slate-400 mt-1">
+      {showSyntaxHelp && <p className="text-[11px] text-slate-400 mt-1">
         Un champ s&apos;écrit entre accolades, sous le nom qu&apos;il porte dans l&apos;app : <code className="font-mono text-violet-600">{'{Numéro de suivi}'}</code>. Un texte fixe se met entre guillemets : <code className="font-mono text-slate-500">&quot;https://exemple.com/&quot;</code> ou <code className="font-mono text-slate-500">&apos;Gagné&apos;</code>.
-      </p>
+      </p>}
 
       {showFields && (
         // Liste complète des champs de la table, sous leur nom d'interface :
@@ -3134,9 +3160,9 @@ function FormulaEditor({ value, onChange, onBlur, sourceColumns, functions = [],
         </div>
       )}
 
-      <p className="text-[11px] text-slate-400 mt-2">
+      {showKeyboardHint && <p className="text-[11px] text-slate-400 mt-2">
         <kbd className="bg-slate-100 px-1 rounded">Entrée</kbd> passe à la ligne en ajoutant une indentation · <kbd className="bg-slate-100 px-1 rounded">Tab</kbd> / <kbd className="bg-slate-100 px-1 rounded">Maj+Tab</kbd> indente ou désindente · <kbd className="bg-slate-100 px-1 rounded">Maj+Entrée</kbd> passe à la ligne sans indenter.
-      </p>
+      </p>}
     </div>
   )
 }

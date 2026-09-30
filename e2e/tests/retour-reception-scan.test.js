@@ -69,11 +69,19 @@ describe('RetourDetail — section Réception', () => {
       })
       return (await r.json()).data[0].id
     })
+    const me = await page.evaluate(async () => {
+      const r = await fetch('/erp/api/auth/me', {
+        headers: { Authorization: `Bearer ${localStorage.getItem('erp_token')}` },
+      })
+      const j = await r.json()
+      return (j.user || j).name
+    })
     await page.goto(`${BASE}/retours/${returnId}`, { waitUntil: 'domcontentloaded' })
 
     const section = page.locator('[data-testid="retour-reception"]')
     await section.waitFor({ timeout: 15000 })
-    assert.equal(await section.locator('[data-testid="reception-person"]').inputValue(), 'Martin')
+    // Réceptionniste par défaut = l'utilisateur connecté.
+    assert.equal((await section.locator('[data-testid="reception-person"]').innerText()).trim(), me)
     assert.equal(await section.locator('[data-testid="reception-date"]').inputValue(), todayISO())
 
     await section.locator('[data-testid="manual-scan-input"]').fill('TH0001')
@@ -81,7 +89,7 @@ describe('RetourDetail — section Réception', () => {
 
     await section.locator('[data-testid="reception-message"]').waitFor({ timeout: 10000 })
     assert.match(await section.locator('[data-testid="reception-message"]').innerText(), /étagère d'analyse/)
-    assert.equal(posted.received_by, 'Martin')
+    assert.equal(posted.received_by, me)
     assert.equal(posted.received_at, todayISO())
     assert.equal(posted.code, 'TH0001')
   })

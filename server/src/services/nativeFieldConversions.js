@@ -587,10 +587,20 @@ const CONVERSIONS = [
   { table: 'employees', column: 'banking_info', name: 'Coord. bancaires', kind: 'data', type: 'text', source: 'airtable', config: {} },
   { table: 'employees', column: 'peer_reviews', name: 'Éval. par pairs', kind: 'data', type: 'long_text', source: 'airtable', config: {} },
   { table: 'employees', column: 'issues', name: 'Problèmes', kind: 'data', type: 'long_text', source: 'airtable', config: {} },
-  // Seule colonne d'employé que l'ERP possède : le droit annuel de vacances,
+  // Colonne d'employé que l'ERP possède : le droit annuel de vacances,
   // saisi dans le bloc « Vacances » de la fiche. Hors plan cœur du miroir,
   // d'où source='native'.
   { table: 'employees', column: 'vacation_days_per_year', name: 'Vacances (j/an)', kind: 'data', type: 'number', source: 'native', config: {} },
+  // Taux de commission habituel (en pourcents), propre à l'ERP lui aussi :
+  // pré-rempli dans « Ajouter une commission » de la fiche projet.
+  { table: 'employees', column: 'commission_rate', name: 'Commission (%)', kind: 'data', type: 'number', source: 'native', config: {} },
+  // Pourcentage de vacances accumulé à chaque paie, saisi dans le bloc
+  // « Vacances » de la fiche.
+  { table: 'employees', column: 'vacation_pct', name: 'Vacances (%)', kind: 'data', type: 'number', source: 'native', config: {} },
+  // Point de référence de la banque de vacances (date + montant), saisi lui
+  // aussi dans le bloc « Vacances ».
+  { table: 'employees', column: 'vacation_ref_date', name: 'Banque vacances — date réf.', kind: 'data', type: 'date', source: 'native', config: {} },
+  { table: 'employees', column: 'vacation_ref_balance', name: 'Banque vacances — montant réf.', kind: 'data', type: 'currency', source: 'native', config: {} },
 ]
 
 const CONFIG_COLUMNS = [

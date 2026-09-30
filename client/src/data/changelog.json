@@ -1,6 +1,1323 @@
 {
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
+    { "date": "2026-09-30", "at": "2026-09-30T19:48:22+00:00", "title": "Portail Stripe depuis la fiche entreprise",
+      "category": "Ventes", "requester": "Charles",
+      "changes": [ { "type": "new", "text": "La fiche d'une entreprise cliente Stripe offre un lien « Portail Stripe » qui ouvre son portail de facturation." } ] },
+    { "date": "2026-09-30", "at": "2026-09-30T19:47:50+00:00", "title": "Quotas Claude : pourcentage utilisé",
+      "category": "Travaux", "requester": "Pierre-Alexandre Papillon",
+      "changes": [ { "type": "improved", "text": "Les quotas Claude (Travaux et indicateur du menu de gauche) affichent maintenant le pourcentage utilisé plutôt que ce qui reste." } ] },
+    { "date": "2026-09-30", "at": "2026-09-30T19:46:20+00:00", "title": "Facture : quantités entières",
+      "category": "Ventes", "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans « Créer une facture », la quantité d'un article n'accepte plus que des nombres entiers." }
+      ] },
+    { "date": "2026-09-30", "at": "2026-09-30T19:36:33+00:00", "title": "Paiement d'une soumission dans une autre devise",
+      "category": "Ventes", "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "Les boutons de paiement du PDF fonctionnent même quand le client a déjà payé dans une autre devise (ex. soumission USD pour un client CAD)." },
+        { "type": "improved", "text": "La page d'erreur de paiement et le PDF des soumissions renvoient maintenant vers info@orisha.io." }
+      ] },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:33:52+00:00",
+      "title": "Champs lien : synchronisation bidirectionnelle avec Airtable",
+      "category": "Airtable",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le sens de synchronisation d'un champ lien (Retour, Numéro de série, Entreprise, Produit…) se choisit maintenant dans la page des champs : un lien modifié dans Boréal est renvoyé vers Airtable." },
+        { "type": "improved", "text": "Les champs lien déjà réglés en « Bidirectionnel » sont désormais réellement renvoyés vers Airtable." },
+        { "type": "improved", "text": "« Retour » d'un article de retour reste toujours importé : il ne peut pas passer en « Boréal → Airtable » seul." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:22:45+00:00",
+      "title": "Article de retour modifiable en place",
+      "category": "Logistique",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans le panneau d’un article de retour, les champs modifiables (raison, précisions, catégorie, réception, analyse…) s’éditent directement et s’enregistrent seuls." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:15:55+00:00",
+      "title": "Fiche entreprise : plus de plantage après l'envoi d'une facture",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "Après l'envoi d'une facture (ou toute mise à jour en direct de l'entreprise), la fiche entreprise n'affiche plus « Une erreur est survenue »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:15:08+00:00",
+      "title": "Retours : réceptionniste = utilisateur Boréal",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "« Réceptionné par » propose les utilisateurs Boréal (avec recherche) et choisit vous-même par défaut." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:14:01+00:00",
+      "title": "Retours : section « Instructions de retour »",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un retour, la section « Étiquette de retour » s'appelle maintenant « Instructions de retour »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:08:02+00:00",
+      "title": "Modifier le système : plus de choix de portée",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fenêtre « Modifier le système » n'affiche plus le choix « Cette page / Toute l'app »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:07:14+00:00",
+      "title": "Réceptionner les articles cochés",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiche retour : cocher les articles reçus puis « Réceptionner » pose sur chacun la date et le réceptionniste choisis dans la section Réception." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:04:37+00:00",
+      "title": "Bouton « Envoyer les instructions au client »",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un retour, le bouton « Vérifier le courriel » s'appelle maintenant « Envoyer les instructions au client »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:04:05+00:00",
+      "title": "Bouton « Créer une étiquette de retour »",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un retour, le bouton « Continuer » sous l'adresse du client s'appelle maintenant « Créer une étiquette de retour »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:02:23+00:00",
+      "title": "Raisons du retour affichées",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "La colonne « Raisons du retour » de la liste des retours affiche maintenant les raisons de ses articles (sans doublon)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:58:17+00:00",
+      "title": "Onglet « Travaux »",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "L'onglet « Ma file de prompts » de la page Travaux s'appelle maintenant « Travaux »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:55:05+00:00",
+      "title": "Agent : tout sur Opus 5.5",
+      "category": "Travaux",
+      "requester": "Charles",
+      "changes": [
+        { "type": "improved", "text": "L'agent de la file de travaux tourne sur Opus 5.5 par défaut ; Fable n'est plus proposé et n'est plus utilisé en repli." },
+        { "type": "improved", "text": "La jauge « Semaine Fable » et l'alerte de repli disparaissent du bandeau des quotas." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:53:40+00:00",
+      "title": "Modifier le système : plus de choix du départ",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fenêtre « Modifier le système » n'affiche plus le choix « Maintenant / ce soir » : la demande part dès qu'un poste est libre." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:48:19+00:00",
+      "title": "Envoi de soumission : courriel aéré",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans la fenêtre d'envoi d'une soumission, les paragraphes du courriel sont maintenant espacés." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:46:36+00:00",
+      "title": "Facture : plusieurs rabais",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "La création de facture accepte plusieurs rabais (% ou $), chacun avec son libellé et sa ligne dans les totaux." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:40:00+00:00",
+      "title": "Opus partout : choix de modèle retirés",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Plus de sélecteur de modèle dans « Modifier le système » ni sur /travaux : toutes les demandes tournent sur Opus." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:31:50+00:00",
+      "title": "Travaux : Auto n'utilise plus Haiku",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "En mode Auto, une demande part au minimum sur Sonnet (Standard) : Haiku n'est plus choisi automatiquement. « Rapide » reste sélectionnable à la main." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:29:13+00:00",
+      "title": "System builder : fil au pied par appareil",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Commande créée depuis un System builder : le fil au pied donne une ligne par fournaise ou valve (ex. 4 lignes de 150 pi) au lieu d'une seule ligne de 600 pi." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:24:22+00:00",
+      "title": "Responsable des commandes du System builder",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Une commande créée depuis le System builder a maintenant pour responsable l'utilisateur connecté." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:22:54+00:00",
+      "title": "Commandes : le projet lié ne s'efface plus",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Le projet lié depuis la fiche d'une commande reste en place et est aussi reporté dans Airtable." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:19:44+00:00",
+      "title": "Systèmes : la commande créée s'ouvre aussitôt",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Créer la commande depuis un système ouvre directement sa fiche." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:18:55+00:00",
+      "title": "Problèmes d'opérations : l'heure s'affiche dès qu'on la demande",
+      "category": "Opérations",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Passer une colonne Date au format « + heure » affiche aussitôt l'heure ; une date sans heure enregistrée indique 00:00." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:13:26+00:00",
+      "title": "Travaux : le modèle toujours affiché",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "La colonne « Modèle » montre le modèle qui a réellement tourné, même pour un travail laissé en « Auto » ; « Auto » tant qu'il n'a pas démarré." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:20:00+00:00",
+      "title": "System builder : la fiche s'ouvre",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "Ouvrir un system builder n'affiche plus une page d'erreur ; le projet lié se choisit de nouveau dans la liste." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:09:00+00:00",
+      "title": "Liste des factures : plus d'erreur",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "La liste des factures s'affiche de nouveau : envoyer une facture par courriel ne fait plus planter la page." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:03:07+00:00",
+      "title": "Paiement d'une soumission : rattaché au projet",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un client qui s'abonne ou achète depuis le PDF d'une soumission : la facture Stripe et le System builder créés sont liés d'office au projet de la soumission." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T18:00:19+00:00",
+      "title": "System builder : lier à un projet",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un system builder se lie à un projet, choisi parmi les projets de l'entreprise seulement." },
+        { "type": "improved", "text": "La commande créée depuis le system builder reprend son projet." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:55:44+00:00",
+      "title": "Articles de commande : Installation par défaut",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Tout nouvel article de commande prend « Installation » comme type de document, sauf les lignes de remplacement ; une copie garde le type de l'original." },
+        { "type": "fixed", "text": "Les articles sans type des commandes pas encore envoyées sont passés à « Installation »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:46:00+00:00",
+      "title": "Diamètre tuyau guide : libellé corrigé",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Formulaire de découverte : le libellé « Entre 3/4 po et 1 1/4 po » s'affiche correctement." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:45:20+00:00",
+      "title": "Filage fournaise : 4 × 150 pi",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche système : un filage de fournaise sur mesure s'affiche « 4 × 150 pi » au lieu du total (600 pi)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:40:17+00:00",
+      "title": "Équipements du système : noms du catalogue",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La liste des équipements d'un système affiche le nom de chaque produit tel qu'il est dans le catalogue." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:39:46+00:00",
+      "title": "Renommer les documents techniques",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Formulaires de découverte : un crayon à côté de chaque document technique permet de renommer le fichier (Entrée pour valider, Échap pour annuler)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:36:23+00:00",
+      "title": "Travaux : bouton « + » pour ajouter une vue",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un petit « + » au bout des onglets de vues de la page Travaux crée une nouvelle vue (admin)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:29:33+00:00",
+      "title": "System builder : inverseur Harnois 8ZE142L",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Toits ouvrants et toiles thermiques : le modèle d'inverseur 8ZE142L est proposé ; il envoie les mêmes produits que le 8ZE141L." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:22:27+00:00",
+      "title": "Factures : suppression de l'onglet « Convertir une soumission »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "L'onglet « Convertir une soumission » de la modale de facturation a été supprimé." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:20:38+00:00",
+      "title": "Rabais sur une nouvelle facture Stripe",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "La modale « Nouvelle facture » d'une entreprise offre un rabais en % ou en $, avec un libellé, déduit avant les taxes et affiché au client dans Stripe." },
+        { "type": "improved", "text": "En convertissant une soumission, ses rabais d'achat encore valides sont repris automatiquement." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:16:56+00:00",
+      "title": "Factures : bouton « Void »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Une facture non payée s'annule d'un clic (« Void » en tête de la fiche) : le lien de paiement cesse de fonctionner, et une facture Stripe est aussi annulée dans Stripe." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T17:11:17+00:00",
+      "title": "Travaux : tableau pleine largeur",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La page Travaux occupe toute la largeur de l'écran : le tableau affiche plus de colonnes sans défilement." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:42:12+00:00",
+      "title": "Travaux : colonne Page",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le tableau des travaux affiche la page d'où la demande a été faite." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:39:52+00:00",
+      "title": "Type de projet en couleurs",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un projet, le champ Type utilise les mêmes couleurs que le tableau des projets." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:37:14+00:00",
+      "title": "Factures en attente dans les projets",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "La section « Factures » d'un projet ne montre plus les factures en attente des autres clients : seules celles issues d'une soumission du projet y figurent." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:34:38+00:00",
+      "title": "Vendeur dans « Nouveau projet »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le formulaire « Nouveau projet » offre le choix du vendeur, présélectionné sur vous." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:27:17+00:00",
+      "title": "Nouveau projet : type déduit",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le formulaire « Nouveau projet » n'a plus de champ Type : c'est « Expansion » si l'entreprise a déjà un projet gagné, sinon « Nouveau client »." },
+        { "type": "improved", "text": "Les options « Ajouts mineurs » et « Pièces de rechange » ne sont plus proposées à la création." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:25:00+00:00",
+      "title": "Statut d'une paie modifiable",
+      "category": "RH",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le statut d'une paie se change directement dans sa fiche, même après « Envoyés »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:24:39+00:00",
+      "title": "Nouvelle paie en un clic",
+      "category": "RH",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "« Nouvelle paie » crée directement la paie suivante (2 semaines, fin le samedi) et l'ouvre, sans formulaire." },
+        { "type": "new", "text": "Les congés fériés de la période sont comptés automatiquement : fériés du Québec + 26 décembre." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:21:37+00:00",
+      "title": "Projets créés : comparaison avec l'an dernier",
+      "category": "Dashboard",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le graphique « Projets créés » de la vue globale affiche, pour chaque mois, la barre de l'année précédente à côté de la barre actuelle." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:20:05+00:00",
+      "title": "File de travaux : sélecteur de personne retiré",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le sélecteur « Tout le monde » est retiré de la file ; utilise les filtres (colonne « Créé par »)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:14:14+00:00",
+      "title": "Travaux : colonne « Temps »",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le tableau des travaux affiche le temps d'exécution de chaque tâche : il avance en direct pendant qu'elle tourne, puis reste figé sur sa durée une fois terminée." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:06:42+00:00",
+      "title": "Travaux : contenu centré",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le contenu de la page Travaux est centré à l'écran au lieu d'être collé à gauche." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:06:24+00:00",
+      "title": "Travaux : une seule version pour tous",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La page Travaux est la même pour toute l'équipe : quatre onglets (file, suggestions, idées, récurrents) et les commandes du modèle, de pause et de réglages." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T16:02:49+00:00",
+      "title": "Travaux : utilisation du CPU",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "En haut de la page Travaux, l'utilisation du processeur du serveur s'affiche en direct (% et tendance des 5 dernières minutes, en couleur selon la charge)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:58:04+00:00",
+      "title": "Paramètres : onglet Architecture retiré",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "L'onglet « Architecture » n'apparaît plus dans les Paramètres." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:50:01+00:00",
+      "title": "Projets créés dans Boréal : aussi dans Airtable",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un projet créé dans Boréal est créé dans Airtable dans la foulée, rattaché à son client ; si Airtable ne répond pas, le prochain enregistrement de la fiche le crée." },
+        { "type": "fixed", "text": "La probabilité d'un projet modifiée dans Boréal arrive dans Airtable avec la bonne valeur (50 % et non 5 000 %)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:49:06+00:00",
+      "title": "QuickBooks : fin des erreurs « Objet introuvable » en boucle",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Les écritures déjà signalées comme supprimées dans QuickBooks ne sont plus redemandées à chaque vérification : elles ne remplissent plus les erreurs récentes de Paramètres › Système." },
+        { "type": "improved", "text": "Une anomalie « écriture QB supprimée » se ferme seule dès que le reçu est rattaché à une autre écriture." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:43:29+00:00",
+      "title": "Nouveau projet : sans date de clôture",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le formulaire « Nouveau projet » ne demande plus la date de clôture prévue." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:41:02+00:00",
+      "title": "Nouveau projet : plus de nom",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le formulaire « Nouveau projet » ne demande plus de nom : le projet est identifié par son entreprise et son type." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:35:06+00:00",
+      "title": "Rabais : % distinct abonnement / achat",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Nouvelle soumission : chaque rabais a maintenant son propre % et son propre montant pour l'abonnement et pour l'achat, sous les libellés « Abonnement » et « Achat »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:30:38+00:00",
+      "title": "Rabais standard « Head start plan »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Nouvelle soumission : une case « Head start plan » ajoute d'un clic 100 % de rabais sur l'abonnement jusqu'au 1er mars 2027 (le prix d'achat n'est pas touché)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:30:01+00:00",
+      "title": "Soumissions : la copie s'ouvre en modification",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "« Dupliquer » ouvre directement la copie dans l'éditeur de soumission, avec ses serres, extras et rabais, prête à modifier." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:22:59+00:00",
+      "title": "Soumissions : numéro unique pour chaque copie",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Une soumission dupliquée reçoit son propre numéro QTE-Z-n au lieu de « Copie de … »." },
+        { "type": "improved", "text": "Les numéros de soumission sont uniques et ne sont jamais réutilisés, même après une suppression." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:21:18+00:00",
+      "title": "Travaux : la file et les travaux complétés en tableau",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La file et les travaux complétés s'affichent dans un tableau, avec une vue « File » et une vue « Travaux complétés ». Un clic sur une ligne ouvre la conversation et ses actions." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:19:34+00:00",
+      "title": "Soumission payée → System builder prêt à remplir",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Quand un client paie une soumission sur Stripe, un System builder est créé avec ses serres (Chef de culture / Assistant), les extras de chaque serre et ceux du site, et le client arrive directement sur le formulaire à remplir." },
+        { "type": "new", "text": "Les lignes sur mesure sont notées dans les notes techniques du formulaire. Historique et interrupteur : automation « Soumission payée → System builder »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:15:46+00:00",
+      "title": "Retour au projet depuis une nouvelle soumission",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La flèche retour (et Annuler / Créer) de la nouvelle soumission ferme la page et rouvre le projet en panneau latéral sur la liste des projets." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:07:53+00:00",
+      "title": "Langue et devise d'une nouvelle soumission",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Une nouvelle soumission part dans la langue du contact (sinon de l'entreprise) et dans la devise de l'entreprise du projet." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:04:20+00:00",
+      "title": "Prix achat et abo des soumissions Boréal",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Les soumissions créées dans Boréal affichent leur prix achat et leur prix abo (rabais déduits) au lieu de 0 $, y compris les soumissions existantes." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:04:19+00:00",
+      "title": "Supprimer une soumission garde son projet ouvert",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Après la suppression d'une soumission, le projet associé reste (ou s'ouvre) à l'écran au lieu de revenir à la liste des projets." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T15:00:19+00:00",
+      "title": "Soumission ouverte depuis un projet",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Fermer une soumission ouverte depuis la fiche d'un projet laisse le panneau du projet ouvert, sans le fermer puis le rouvrir." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T14:55:42+00:00",
+      "title": "PDF des soumissions Airtable",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Les soumissions venues d'Airtable affichent de nouveau leur PDF dans la fiche, au lieu de « Aucun PDF »." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T14:40:02+00:00",
+      "title": "Travaux : courbe des lignes de code sur 1 an",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "À côté du nombre de lignes de code, un petit graphique montre l'évolution jour par jour sur un an ; survoler la courbe affiche la valeur du jour." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T14:38:39+00:00",
+      "title": "Paramètres › Système s'ouvre instantanément",
+      "category": "Performance",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le tableau de bord système s'affiche en quelques millisecondes au lieu de 0,3 à 1 s : la mesure du disque et la liste des processus se font en arrière-plan et s'actualisent à la volée." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T14:00:45+00:00",
+      "title": "Toutes les pages répondent plus vite",
+      "category": "Performance",
+      "requester": "Charles Joachim",
+      "changes": [
+        { "type": "improved", "text": "La pastille des travaux, qui se rafraîchit depuis n'importe quelle page, ne relit plus tout l'historique : elle ne fige plus le reste de l'app pendant qu'elle travaille." },
+        { "type": "improved", "text": "La page Travaux se charge sur deux fois moins de données." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T12:46:14+00:00",
+      "title": "Facture : copier le lien de paiement",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un petit bouton à côté de « Lien de paiement » copie le lien dans le presse-papier." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T12:45:15+00:00",
+      "title": "Lien de paiement : expéditeur, Cc et Cci",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fenêtre d'envoi du lien de paiement (création de facture depuis une entreprise) affiche le courriel expéditeur et offre des champs Cc et Cci." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T12:22:55+00:00",
+      "title": "État des résultats : lignes en alternance",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Vue globale : une ligne sur deux est teintée dans l'état des résultats pour faciliter la lecture." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T23:14:25+00:00",
+      "title": "Correspondance Airtable : « Rafraîchir » garde vos choix",
+      "category": "Connecteurs",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Rafraîchir la liste des champs Airtable ne remet plus à zéro les correspondances choisies mais pas encore enregistrées ; un conflit avec une valeur changée ailleurs reste signalé." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T23:07:20+00:00",
+      "title": "Fiche abonnement : plus de détails d'un autre abonnement",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "En passant vite d'un abonnement à l'autre, les produits, l'historique et les factures affichés sont toujours ceux de l'abonnement ouvert." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T23:02:58+00:00",
+      "title": "Adresses : « Revérifier » signale ses échecs",
+      "category": "Adresses",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "« Revérifier » lance toujours la vérification et affiche un message si elle échoue, au lieu de ne rien faire." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:59:33+00:00",
+      "title": "Mouvements d'abonnements : entreprise à jour",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Changer l'entreprise d'un abonnement met à jour tout de suite ses mouvements, sur la page Mouvements et au tableau de bord, pour tout le monde." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:57:36+00:00",
+      "title": "Fiche abonnement à jour en direct",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "La fiche abonnement ouverte suit maintenant les changements des collègues et de Stripe (statut, montant, dates, entreprise) sans la rouvrir." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:57:03+00:00",
+      "title": "Code de taxe par ligne sur les paniers mixtes",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        { "type": "fixed", "text": "Un reçu d'épicerie dont seule une partie des articles est taxée reçoit maintenant le bon code par ligne — détaxé sur les aliments de base, taxable sur le reste — sans changer le total de taxes." },
+        { "type": "fixed", "text": "Le reçu Maxi du 15 septembre (60,95 $) est corrigé : QuickBooks ne déclare plus que 7,50 $ d'achat taxable au lieu de 59,82 $." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:53:44+00:00",
+      "title": "Compte BNC USD : écritures dans 10021",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        { "type": "fixed", "text": "Tout ce que Boréal comptabilise sur le compte BNC en dollars US part maintenant dans 10021 « Compte USD BNC », plus dans son parent 10020." },
+        { "type": "fixed", "text": "Le paiement de la Visa US du 25 septembre n'est plus en double : il ne reste qu'une écriture, dans 10021." },
+        { "type": "improved", "text": "Un compte bancaire scindé en deux comptes QuickBooks ne bloque plus la proposition du compte de paiement sur un reçu ou un versement de douanes." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:50:11+00:00",
+      "title": "Fiche abonnement : un seul calcul du total",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le montant de l'en-tête, la ligne « Rabais » et le « Total avant taxes » viennent du même calcul ; pastilles de statut et chargement alignés sur le reste de l'app." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:47:56+00:00",
+      "title": "Filtre « est l'un des » sur les listes de choix",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Filtrer sur un champ à choix (ex. « Type » dans l'inventaire) propose maintenant « Est l'un des » / « N'est aucun des », avec la liste des choix à cocher." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:44:55+00:00",
+      "title": "Message supprimé par erreur remis dans le fil",
+      "category": "Contacts",
+      "requester": "Charles Bédard",
+      "changes": [
+        { "type": "fixed", "text": "Le courriel de confirmation du virement de 10 000 $ est de retour dans les interactions du contact." },
+        { "type": "new", "text": "Un message supprimé par erreur peut maintenant être remis dans le fil." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:43:26+00:00",
+      "title": "Tableau de bord : « Clients par région » retiré",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La section « Clients par région » n'apparaît plus sur le tableau de bord." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:42:16+00:00",
+      "title": "Tableau de bord : « Meilleurs vendeurs » retiré",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La section « Meilleurs vendeurs » n'apparaît plus sur le tableau de bord." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T14:50:00+00:00",
+      "title": "Vue globale : carte « Produits sous le seuil » retirée",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La carte « Produits sous le seuil » n'apparaît plus sur la vue globale du tableau de bord." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:32:17+00:00",
+      "title": "Vue globale : carte « Revenus expédiés » retirée",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La carte « Revenus expédiés » (hors taxes, 16 semaines) n'apparaît plus sur la vue globale du tableau de bord." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:45:00+00:00",
+      "title": "Transactions : le fournisseur se choisit tout seul",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "improved", "text": "En dépliant une ligne, le fournisseur de la fiche est reconnu et sélectionné même quand la banque écrit son autre nom — « PREMIER FARNELL » ouvre « Newark (Premier Farnell) », « Takachi Electronics Enclosure » ouvre « Takachi »." },
+        { "type": "improved", "text": "Une fois le fournisseur reconnu, son compte de dépense, sa taxe, son type d'écriture et son échéance se remplissent depuis sa fiche ; à défaut, le compte est déduit du numéro écrit dans sa catégorie comptable." },
+        { "type": "improved", "text": "Rien n'est deviné quand deux fournisseurs ou deux comptes pourraient convenir : le champ reste vide." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:26:45+00:00",
+      "title": "Vue globale : carte « Livraisons » retirée",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La carte « Livraisons » (colis envoyés sur 16 semaines) n'apparaît plus sur la vue globale du tableau de bord." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:26:29+00:00",
+      "title": "Soldes par compte : petits soldes masqués",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la vue globale, les comptes dont le solde est entre -500 $ et 500 $ ne sont plus listés dans « Soldes par compte » (sous-totaux inchangés)." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:20:40+00:00",
+      "title": "Soldes par compte : écart de change retiré",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la vue globale, le compte « Variation de change non matérialisée » n'apparaît plus dans la liste des soldes par compte." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:20:25+00:00",
+      "title": "État des résultats : autres dépenses dans les dépenses",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la vue globale, « Autres dépenses » n'est plus une section à part : ses comptes forment une sous-section « Autres » de « Dépenses », dont le total les inclut." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:25:00+00:00",
+      "title": "Demande de factures : réponse dans le fil",
+      "category": "Comptabilité",
+      "requester": "Charles Bureau",
+      "changes": [
+        { "type": "improved", "text": "Le message des factures manquantes invite à répondre directement dans le fil Slack ou à écrire à factures@orisha.io, et les fournisseurs sans fiche s'y affichent sans la ville ni la province collées au libellé." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:18:30+00:00",
+      "title": "L'alerte bancaire surveille le solde, plus les transactions",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "Plus de fausse alerte « la banque ne livre plus rien » : les transactions viennent du fichier de suivi, c'est voulu." },
+        { "type": "new", "text": "L'alerte prévient maintenant si le solde bancaire dont vit la projection de trésorerie n'a pas été relu depuis 8 h, ou si la connexion doit être réautorisée." },
+        { "type": "improved", "text": "La page Connecteurs signale un solde non relu au lieu d'un silence de transactions." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:15:52+00:00",
+      "title": "État des résultats : totaux sur les titres",
+      "category": "Dashboard",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Vue globale : les lignes « Total de … » disparaissent, chaque titre de section porte son total." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:13:57+00:00",
+      "title": "Travaux : compteur de lignes de code",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "La page Travaux affiche à droite du titre le nombre de lignes de code de Boréal." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:40:00+00:00",
+      "title": "Le module de navigateur repère les portails tout seul",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "new", "text": "Le module de navigateur reconnaît les portails ouverts dans le navigateur et leur envoie la session sans qu'aucun compte n'ait été saisi d'avance." },
+        { "type": "new", "text": "Les sites ouverts qu'aucun collecteur ne couvre s'affichent dans la collecte de factures, prêts à être demandés d'un clic ou écartés." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:09:29+00:00",
+      "title": "Travaux : bouton « Nouveau prompt » retiré",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton « Nouveau prompt » n'apparaît plus en haut de la page Travaux." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:07:01+00:00",
+      "title": "Soumission : payer depuis le PDF",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Dans le PDF envoyé au client, « S'abonner » et « Acheter » ouvrent maintenant une page de paiement Stripe (abonnement mensuel ou paiement unique), avec les lignes, rabais et taxes de la soumission." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:04:28+00:00",
+      "title": "Soumission : date de fin d'un rabais",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Chaque rabais d'une nouvelle soumission peut recevoir une date de fin (« Jusqu'au »), ex. 100 % jusqu'au 1er mars 2027 ; elle apparaît sur la soumission envoyée au client." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:12:00+00:00",
+      "title": "La bulle du fournisseur reconnaît les noms approchants",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "fixed", "text": "Dans Transactions, la fiche au survol s'affiche même quand la transaction porte un nom plus long ou plus court que la fiche — « Takachi Electronics Enclosure » ouvre la fiche « Takachi », « Newark » celle de « Newark (Premier Farnell) »." },
+        { "type": "improved", "text": "Quand plusieurs fournisseurs pourraient correspondre, la bulle reste vide au lieu d'en montrer un au hasard." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:59:49+00:00",
+      "title": "Soumission : plus de bouton « Éditer »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fiche d'une soumission n'affiche plus le bouton « Éditer » : une soumission n'est pas modifiable." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:05:00+00:00",
+      "title": "Collecte de factures : les portails s'ajoutent tout seuls",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "improved", "text": "Chaque portail connu apparaît désormais de lui-même dans la collecte de factures, marqué « À brancher » : il ne reste qu'à envoyer la session ou saisir les identifiants." },
+        { "type": "improved", "text": "Un portail pas encore branché n'est plus compté comme en panne et ne part plus en tournée pour rien." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:46:50+00:00",
+      "title": "Soumission : sans page de dos",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le PDF de soumission (et son aperçu) se termine maintenant sur la page des témoignages : la dernière page, une simple photo de plants de tomates, est retirée." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T22:05:00+00:00",
+      "title": "Factures manquantes : demander sur Slack",
+      "category": "Comptabilité",
+      "requester": "Charles Bureau",
+      "changes": [
+        { "type": "new", "text": "Transactions : cocher des lignes propose maintenant « À réviser », « Signet » et « Facture manquante » en plus de Confirmer et Ignorer." },
+        { "type": "new", "text": "Les lignes marquées « Facture manquante » forment une liste (pastille « N demandées ») ; le panneau montre le message et l'envoie sur Slack en un clic, et décocher une facture la sort de l'envoi sans la sortir de la liste." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:41:43+00:00",
+      "title": "Soumission : libellés des prix",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Nouvelle soumission : les cases de prix des lignes sur mesure et des rabais sont titrées « Abonnement » et « Achat »." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:52:00+00:00",
+      "title": "La fiche du fournisseur au survol, dans Transactions",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "new", "text": "Dans Transactions, quand on déplie une ligne pour la comptabiliser, une pastille à côté de « Fournisseur » affiche au survol sa fiche : devise, mode de paiement, catégorie, description, particularités, compte de dépense, taxes, échéance et façon de payer." },
+        { "type": "new", "text": "La bulle propose de créer la fiche quand le fournisseur n'en a pas encore." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:38:52+00:00",
+      "title": "Soumission : kit de prolongation retiré",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Nouvelle soumission : le « Kit de prolongation de la portée » n'est plus proposé." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:38:18+00:00",
+      "title": "Soumission : extras du site en quantité",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Nouvelle soumission : accès internet mobile, protections contre la pluie et le vent et capteur solaire se comptent (− n +) au lieu d'une case à cocher." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:35:32+00:00",
+      "title": "Aperçu de soumission sans clignotement",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "En modifiant une soumission, l'aperçu ne devient plus noir : seules les lignes touchées et les totaux changent, et la position de défilement reste la même." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:34:00+00:00",
+      "title": "Newark et le Libre-service Bell Affaires dans la collecte de factures",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "new", "text": "Newark (canada.newark.com) s'ajoute aux portails de la collecte automatique : la facture de chaque commande est récupérée toute seule." },
+        { "type": "new", "text": "Le Libre-service Bell Affaires (business.bell.ca) s'ajoute aussi, en plus de MyBell : ce sont deux comptes et deux séries de factures." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:30:06+00:00",
+      "title": "Soumission : contrôleur central retiré",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Création d'une soumission : le contrôleur central n'est plus proposé dans les extras des serres." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:22:36+00:00",
+      "title": "Soumission : deux options retirées",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Création d'une soumission : les options « Orisha dans la serre » et « Prévention des maladies » ne sont plus proposées." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:20:29+00:00",
+      "title": "Soumission : images sans fond",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Création d'une soumission : les images des produits n'ont plus de carré blanc autour, elles se fondent dans la page." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:16:24+00:00",
+      "title": "Soumission : total toujours visible",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Création d'une soumission : le total (service et achat, rabais compris) est affiché en haut à gauche et reste visible en défilant dans les extras ; il se met à jour à chaque changement." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:14:40+00:00",
+      "title": "Travaux : Claude seulement",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Codex est retiré de la file de travaux : plus de bandeau « Quotas Codex », plus de choix Codex, toutes les tâches tournent sur Claude (y compris la revue de l'app et les anciennes tâches Codex en attente)." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:13:00+00:00",
+      "title": "Maquettes : factures manquantes",
+      "category": "Comptabilité",
+      "requester": "Charles Bureau",
+      "changes": [
+        { "type": "new", "text": "Maquette retenue pour marquer plusieurs transactions d'un coup (à réviser, signet, facture manquante), avec le panneau des factures demandées — on peut en sortir une de l'envoi sans la retirer de la liste — et le message Slack : /maquettes/facture-manquante/." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:10:15+00:00",
+      "title": "Modifier le système : Auto / Opus",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fenêtre « Modifier le système » : Astra est retiré ; le choix « Auto » laisse l'agent prendre le modèle Anthropic adapté à la complexité de la demande (Haiku, Sonnet ou Opus). Même choix Auto / Opus pour le défaut réglé sur /travaux." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:05:26+00:00",
+      "title": "Soumission : image retirée du titre des serres",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Création d'une soumission : le nom de chaque serre ne s'accompagne plus de l'image du contrôleur." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T21:03:05+00:00",
+      "title": "Logo : ouvre la vue globale",
+      "category": "Dashboard",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Un clic sur le logo du menu de gauche ouvre le tableau de bord directement en « Vue globale »." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T20:56:35+00:00",
+      "title": "Soumissions : envoi au client par courriel",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Bouton « Envoyer » sur la création et la fiche d'une soumission : courriel prérempli pour le contact du projet (son prénom, sa langue), autre contact de l'entreprise au choix, Cc et Cci, objet et texte modifiables, PDF joint avec sa vignette. La soumission passe « Envoyée »." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T20:55:39+00:00",
+      "title": "Transactions : la bande verte de ce qui a été trouvé",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "new", "text": "Une ligne dépliée annonce en vert ce que Boréal a déjà trouvé : la proposition prête, la facture ou le reçu retrouvé, le virement reconnu, la règle appliquée." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T20:49:22+00:00",
+      "title": "Soumission : bouton « Créer »",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton « Créer et générer PDF » de la nouvelle soumission s'appelle maintenant « Créer »." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T20:47:50+00:00",
+      "title": "Transactions : la ligne dépliée façon QuickBooks",
+      "category": "Comptabilité",
+      "requester": "Charles",
+      "changes": [
+        { "type": "improved", "text": "Une ligne dépliée ressemble maintenant aux opérations bancaires de QuickBooks : trois onglets (Catégoriser, Trouver une correspondance, Enregistrer comme transfert), celui qui convient déjà ouvert." },
+        { "type": "improved", "text": "Les champs sont côte à côte sur une ligne, avec « Ajouter » au bout à droite." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T20:47:00+00:00",
+      "title": "PiShop.ca dans la collecte de factures, et la bonne facture d'abonnement",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        { "type": "new", "text": "PiShop.ca s'ajoute aux portails de la collecte automatique de factures : la facture de chaque commande est récupérée toute seule." },
+        { "type": "fixed", "text": "Un abonnement mensuel retrouve enfin sa facture : la ligne CapCut et les autres prélèvements récurrents s'apparient au document du bon mois au lieu de rester à traiter." }
+      ]
+    },
+    {
+      "date": "2026-09-29",
+      "at": "2026-09-29T18:57:00+00:00",
+      "title": "Paiements émis : loupe et factures payées dans QuickBooks",
+      "category": "Comptabilité",
+      "requester": "Charles Joachim",
+      "changes": [
+        { "type": "new", "text": "Une loupe en haut de la page Paiements et virements émis cherche par fournisseur, numéro de facture, référence ou montant — dans les paiements comme dans les factures, même déjà payées." },
+        { "type": "fixed", "text": "Une facture réglée directement dans QuickBooks apparaît maintenant comme paiement en vol dans le fil, au lieu de disparaître de la page." }
+      ]
+    },
     {
       "date": "2026-09-24",
       "title": "Système : adresses lisibles en entier",

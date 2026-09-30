@@ -7,6 +7,8 @@ import { useListData } from '../lib/useListData.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import { Badge } from '../components/Badge.jsx'
+import LinkCellEditor from '../components/LinkCellEditor.jsx'
+import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -29,7 +31,17 @@ const RENDERS = {
   created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
 }
 
-const COLUMNS = TABLE_COLUMN_META.ops_issues.map(meta => ({ ...meta, render: RENDERS[meta.id] }))
+const EDITABLE_FIELDS = new Set([
+  'title', 'occurred_at', 'area', 'severity', 'status',
+  'reported_by_name', 'description', 'resolution',
+])
+const COLUMNS = TABLE_COLUMN_META.ops_issues.map(meta => ({
+  ...meta,
+  render: RENDERS[meta.id],
+  editable: EDITABLE_FIELDS.has(meta.field),
+  // Format « + heure » choisi : une date sans heure s'affiche à 00:00.
+  dateOnlyAsMidnight: meta.type === 'date',
+}))
 
 const today = () => new Date().toISOString().slice(0, 10)
 
@@ -48,8 +60,18 @@ const FORM_FIELDS = [
 // Journal des problèmes d'opérations : ce qui a coincé, où, et si c'est réglé.
 export default function OpsIssues() {
   const { user } = useAuth()
+  const { addToast } = useToast()
   const undoableDelete = useUndoableDelete()
   const users = useTable('users')
+  const columns = useMemo(() => {
+    const reporterColumn = { linkTarget: 'users', linkIdentity: 'erp', linkOptions: users.map(u => ({ id: u.id, label: u.name })) }
+    return COLUMNS.map(col => col.id === 'reported_by_name' ? {
+      ...col,
+      renderEditor: ({ row, commit, cancel }) => (
+        <LinkCellEditor col={reporterColumn} value={row.reported_by} onCommit={commit} onCancel={cancel} showCurrent={false} />
+      ),
+    } : col)
+  }, [users])
 
   const { rows, loading, setRows, reload } = useListData({
     fetch: (page, limit) => api.opsIssues.list({ limit, offset: limit === 'all' ? 0 : (page - 1) * limit }),
@@ -61,7 +83,7 @@ export default function OpsIssues() {
   // d'un billet : la route ne joint rien.
   const issues = useMemo(() => {
     const byId = new Map(users.map(u => [u.id, u.name]))
-    return rows.map(r => ({ ...r, reported_by_name: byId.get(r.reported_by) || r.reported_by_name }))
+    return rows.map(r => ({ ...r, reported_by_name: r.reported_by ? byId.get(r.reported_by) || r.reported_by_name : null }))
   }, [rows, users])
 
   const openCount = useMemo(() => issues.filter(i => i.status !== 'Résolu').length, [issues])
@@ -69,6 +91,27 @@ export default function OpsIssues() {
   async function handleCreate(form) {
     await api.opsIssues.create({ reported_by: user?.id || null, ...form })
     await reload()
+  }
+
+  async function handleCellEdit(row, col, value) {
+    try {
+      let field = col.field
+      if (field === 'reported_by_name') {
+        field = 'reported_by'
+        // Le picker fournit un id ; un collage peut fournir un nom.
+        if (value) {
+          const matches = users.filter(u => String(u.id) === String(value) || u.name === value)
+          if (matches.length !== 1) throw new Error('Choisis une personne dans la liste « Signalé par ».')
+          value = matches[0].id
+        } else value = null
+      }
+      const updated = await api.opsIssues.update(row.id, { [field]: value })
+      // Inclut les champs calculés et la date de résolution renvoyés par l’API.
+      setRows(prev => prev.map(r => r.id === row.id ? { ...r, ...updated } : r))
+    } catch (error) {
+      addToast({ message: error.message || 'Modification impossible', type: 'error' })
+      throw error
+    }
   }
 
   return (
@@ -90,8 +133,15 @@ export default function OpsIssues() {
         <DataTable
           table="ops_issues"
           formulaUseColumnLabels
+          showFormulaSyntaxHelp={false}
+          showFormulaAutocompleteHint={false}
+          showFormulaKeyboardHint={false}
           manageViews
-          columns={COLUMNS}
+          columns={columns}
+          onCellEdit={handleCellEdit}
+          dateCellPicker
+          selectedSelectChevron
+          selectedSelectClickOpens
           data={issues}
           loading={loading}
           searchFields={['title', 'description', 'resolution', 'area', 'reported_by_name']}

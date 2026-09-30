@@ -186,6 +186,14 @@ router.post('/', (req, res) => {
 // formule « Quantité en inventaire » (et ses automatisations) vivent encore.
 const AIRTABLE_ADJUSTMENT_COLUMNS = ['ajustement_manuel', 'raison_de_l_ajustement_manuel'];
 
+// Liens PDF (installation / remplacement) : éditables depuis la fiche et
+// repoussés vers Airtable, sinon le prochain sync les écraserait. Colonnes
+// créées par le miroir : on ne retient que celles qui existent.
+function docUrlColumns() {
+  const cols = new Set(db.prepare('PRAGMA table_info(products)').all().map(c => c.name));
+  return INSTALLATION_DOC_FIELDS.map(f => f.url).filter(c => cols.has(c));
+}
+
 // PUT /api/products/:id — partial update
 router.put('/:id', async (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
@@ -198,20 +206,24 @@ router.put('/:id', async (req, res) => {
     }
   }
 
+  const docCols = docUrlColumns();
+  const docCoerce = Object.fromEntries(docCols.map(c => [c, v => (v ? String(v).trim() || null : null)]));
   const { setClause, values, error } = buildPartialUpdate(req.body, {
     allowed: ['sku', 'name_fr', 'name_en', 'type', 'unit_cost', 'price_cad', 'price_usd',
-      'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'min_stock', 'order_qty',
+      'monthly_price_cad', 'monthly_price_usd', 'is_sellable', 'quote_farm_wide', 'min_stock', 'order_qty',
       'location', 'supplier', 'supplier_company_id', 'buy_via_po', 'procurement_type',
       'weight_lbs', 'notes', 'active', 'manufacturier', 'order_email',
-      'role', 'purchase_snooze_until', ...AIRTABLE_ADJUSTMENT_COLUMNS],
+      'role', 'purchase_snooze_until', ...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols],
     nonNullable: new Set(['name_fr']),
     coerce: {
       is_sellable: v => v ? 1 : 0,
+      quote_farm_wide: v => v ? 1 : 0,
       buy_via_po: v => v ? 1 : 0,
       active: v => v ? 1 : 0,
       order_email: v => v ? String(v).trim() : null,
       ajustement_manuel: v => (v === null || v === '' ? null : parseFiniteInt(v)),
       raison_de_l_ajustement_manuel: v => (v ? String(v) : null),
+      ...docCoerce,
     },
   });
   if (error) return res.status(400).json({ error });
@@ -222,7 +234,7 @@ router.put('/:id', async (req, res) => {
 
   // Attendu (et non fire-and-forget) : un échec Airtable doit se voir dans la
   // fiche, sinon l'ajustement resterait local et serait écrasé au prochain sync.
-  const pushCols = AIRTABLE_ADJUSTMENT_COLUMNS.filter(c => c in req.body);
+  const pushCols = [...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols].filter(c => c in req.body);
   const airtable = pushCols.length ? await writeBackRecord('pieces', req.params.id, pushCols) : undefined;
 
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);

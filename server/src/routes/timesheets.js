@@ -117,6 +117,75 @@ router.get('/', (req, res) => {
   res.json({ data: result })
 })
 
+// GET /api/timesheets/users — RH : employés dont on peut ouvrir la feuille
+// (la liste admin des comptes n'est pas accessible à un RH sans droit admin).
+router.get('/users', (req, res) => {
+  if (!isHR(req.user)) return res.status(403).json({ error: 'Accès refusé' })
+  res.json(db.prepare(`SELECT id, name FROM users WHERE deleted_at IS NULL AND active = 1 ORDER BY name COLLATE NOCASE`).all())
+})
+
+// Périodes de paie : 14 jours du dimanche au samedi, ancrées au 30 août 2026
+// (13 → 26 septembre 2026, etc.). Même ancre que la page Feuille de temps.
+const PAY_PERIOD_ANCHOR = '2026-08-30'
+function payPeriodStartOf(dateStr) {
+  const days = Math.round((Date.parse(dateStr + 'T00:00:00Z') - Date.parse(PAY_PERIOD_ANCHOR + 'T00:00:00Z')) / 86400000)
+  return addDays(PAY_PERIOD_ANCHOR, Math.floor(days / 14) * 14)
+}
+function hhmmToMin(t) {
+  const [h, m] = String(t).split(':').map(n => parseInt(n, 10) || 0)
+  return h * 60 + m
+}
+
+// GET /api/timesheets/period-totals?periods=6 — RH : heures payables de chaque
+// employé par période de paie (jours + semaines déclarées d'un seul chiffre).
+router.get('/period-totals', (req, res) => {
+  if (!isHR(req.user)) return res.status(403).json({ error: 'Accès refusé' })
+  const count = Math.min(26, Math.max(1, parseInt(req.query.periods, 10) || 6))
+  const today = new Date().toISOString().slice(0, 10)
+  const current = payPeriodStartOf(today)
+  const periods = Array.from({ length: count }, (_, i) => addDays(current, -14 * i))
+  const from = periods[periods.length - 1]
+  const to = addDays(current, 13)
+
+  const totals = new Map() // user_id → { period_start → minutes }
+  const add = (userId, date, minutes) => {
+    if (!minutes) return
+    if (!totals.has(userId)) totals.set(userId, {})
+    const p = payPeriodStartOf(date)
+    const row = totals.get(userId)
+    row[p] = (row[p] || 0) + minutes
+  }
+
+  const days = db.prepare(`
+    SELECT d.id, d.user_id, d.date, d.mode, d.start_time, d.end_time, d.break_minutes,
+      (SELECT COALESCE(SUM(e.duration_minutes), 0) FROM timesheet_entries e
+         LEFT JOIN activity_codes ac ON e.activity_code_id = ac.id
+        WHERE e.day_id = d.id AND (ac.payable IS NULL OR ac.payable = 1)) AS entries_minutes
+    FROM timesheet_days d
+    WHERE d.deleted_at IS NULL AND d.date >= ? AND d.date <= ?
+  `).all(from, to)
+  for (const d of days) {
+    let min = 0
+    if (d.mode === 'detailed') min = Number(d.entries_minutes) || 0
+    else if (d.start_time && d.end_time) min = Math.max(0, hhmmToMin(d.end_time) - hhmmToMin(d.start_time) - (Number(d.break_minutes) || 0))
+    add(d.user_id, d.date, min)
+  }
+  const weeks = db.prepare(`
+    SELECT user_id, week_start, minutes FROM timesheet_weeks
+    WHERE deleted_at IS NULL AND week_start >= ? AND week_start <= ?
+  `).all(from, to)
+  for (const w of weeks) add(w.user_id, w.week_start, Number(w.minutes) || 0)
+
+  const ids = [...totals.keys()]
+  const names = new Map(ids.length
+    ? db.prepare(`SELECT id, name FROM users WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(u => [u.id, u.name])
+    : [])
+  const users = ids
+    .map(id => ({ user_id: id, name: names.get(id) || '—', totals: totals.get(id) }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'fr'))
+  res.json({ periods, users })
+})
+
 // GET /api/timesheets/day?user_id=X&date=YYYY-MM-DD  (upsert-style: ne crée pas si absent)
 router.get('/day', (req, res) => {
   const target = resolveTargetUserId(req, req.query.user_id)

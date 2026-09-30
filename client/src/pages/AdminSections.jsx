@@ -5,7 +5,7 @@ import { rolesOf } from '../../../shared/roles.mjs'
 // entière qui exportent déjà leur contenu embarquable.
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock } from 'lucide-react'
+import { Plus, Settings, Server, Cpu, HardDrive, RefreshCw, AlertTriangle, CheckCircle, XCircle, Clock, Eye, EyeOff } from 'lucide-react'
 import api from '../lib/api.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { Badge } from '../components/Badge.jsx'
@@ -85,7 +85,6 @@ export function SystemeContent() {
   if (!data) return null
 
   const pm2StatusColor = { online: 'green', stopped: 'red', errored: 'red', stopping: 'amber', launching: 'amber' }
-  const whisperTotal = Object.values(data.whisper).reduce((a, b) => a + b, 0)
 
   return (
     <div className="space-y-6">
@@ -113,27 +112,48 @@ export function SystemeContent() {
 
         {data.diskBreakdown?.length > 0 && data.disk && (
           <div>
-            <p className="text-xs font-medium text-slate-500 mb-3 flex items-center gap-1"><HardDrive size={11} /> Répartition de l'espace disque</p>
-            <div className="space-y-2">
+            <p className="text-xs font-medium text-slate-500 mb-1 flex items-center gap-1"><HardDrive size={11} /> Répartition de l’espace utilisé</p>
+            <p className="text-xs text-slate-400 mb-3">
+              {fmt(data.disk.used)} utilisés · {fmt(data.disk.available)} disponibles · % de l’espace utilisé
+            </p>
+            <div className="space-y-3">
               {data.diskBreakdown.filter(c => c.bytes > 0).map(c => {
-                const pct = Math.round(c.bytes / data.disk.total * 100)
-                const colors = [
-                  'bg-blue-500','bg-violet-500','bg-emerald-500','bg-amber-500','bg-rose-500','bg-cyan-500','bg-orange-500'
-                ]
-                const idx = data.diskBreakdown.filter(x => x.bytes > 0).indexOf(c)
+                const pct = data.disk.used ? c.bytes / data.disk.used * 100 : 0
+                const share = pct > 0 && pct < 1 ? '< 1' : Math.round(pct)
                 return (
-                  <div key={c.label}>
-                    <div className="flex justify-between text-xs text-slate-500 mb-0.5">
-                      <span>{c.label}</span>
-                      <span className="tabular-nums">{fmt(c.bytes)} <span className="text-slate-400">({pct}%)</span></span>
-                    </div>
-                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                      <div className={`h-1.5 rounded-full ${colors[idx % colors.length]}`} style={{ width: `${Math.max(pct, 0.5)}%` }} />
+                  <div key={c.id || c.label}>
+                  <details>
+                    <summary className="cursor-pointer rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-brand-500 text-xs text-slate-600">
+                      <span className="inline-flex w-[calc(100%-1rem)] flex-wrap items-baseline justify-between gap-x-3 gap-y-1 align-top">
+                        <span>{c.label}</span>
+                        <span className="tabular-nums whitespace-nowrap">{fmt(c.bytes)} <span className="text-slate-400">({share} %)</span></span>
+                      </span>
+                    </summary>
+                    {c.description && <p className="text-xs text-slate-500 mt-2 ml-4">{c.description}</p>}
+                    {c.details?.length > 0 && (
+                      <ul className="mt-2 ml-4 space-y-1 text-xs text-slate-500">
+                        {c.details.map(detail => (
+                          <li key={detail.label} className="flex flex-wrap justify-between gap-x-3 gap-y-1">
+                            <span className="break-all">{detail.label}</span>
+                            <span className="tabular-nums whitespace-nowrap">{fmt(detail.bytes)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </details>
+                    <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden mt-1.5" aria-hidden="true">
+                      <div className="h-1.5 rounded-full bg-blue-500" style={{ width: `${Math.min(pct, 100)}%` }} />
                     </div>
                   </div>
                 )
               })}
             </div>
+            {data.diskMeasurement && (
+              <p className="text-xs text-slate-400 mt-3">
+                Mesure disque : {fmtDateTime(data.diskMeasurement.at)} · actualisée chaque minute.
+                {data.diskMeasurement.partial && ' Certains dossiers sont inaccessibles ; leur espace reste non ventilé.'}
+              </p>
+            )}
           </div>
         )}
 
@@ -173,29 +193,6 @@ export function SystemeContent() {
               </div>
             </div>
           ))}
-        </div>
-
-        {/* DB + Whisper */}
-        <div className="grid grid-cols-2 gap-4 pt-1">
-          <div className="bg-slate-50 rounded-xl p-4">
-            <p className="text-xs text-slate-500 mb-1">Base de données SQLite</p>
-            <p className="text-xl font-bold text-slate-800">{fmt(data.dbSize)}</p>
-          </div>
-          <div className="bg-slate-50 rounded-xl p-4">
-            <p className="text-xs text-slate-500 mb-2">Transcriptions Whisper</p>
-            <div className="flex flex-wrap gap-2 text-xs">
-              <span className="text-green-600 font-medium">{data.whisper.done || 0} ok</span>
-              <span className="text-amber-600 font-medium">{(data.whisper.pending || 0) + (data.whisper.processing || 0)} en attente</span>
-              {data.whisper.error > 0 && <span className="text-red-600 font-medium">{data.whisper.error} erreurs</span>}
-            </div>
-            {whisperTotal > 0 && (
-              <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden flex mt-2">
-                <div className="bg-green-500 h-full" style={{ width: `${(data.whisper.done || 0) / whisperTotal * 100}%` }} />
-                <div className="bg-amber-400 h-full" style={{ width: `${((data.whisper.pending || 0) + (data.whisper.processing || 0)) / whisperTotal * 100}%` }} />
-                <div className="bg-red-400 h-full" style={{ width: `${(data.whisper.error || 0) / whisperTotal * 100}%` }} />
-              </div>
-            )}
-          </div>
         </div>
 
         {/* Dernières erreurs */}
@@ -328,6 +325,7 @@ function UserForm({ initial = {}, onSave, onClose, isNew, isSelf }) {
   })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -358,7 +356,13 @@ function UserForm({ initial = {}, onSave, onClose, isNew, isSelf }) {
       </div>
       <div>
         <label className="label">{isNew ? 'Mot de passe *' : 'Nouveau mot de passe (laisser vide pour conserver)'}</label>
-        <input type="password" value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} className="input" required={isNew} placeholder={isNew ? undefined : 'Laisser vide pour ne pas changer'} />
+        <div className="relative">
+          <input type={showPassword ? 'text' : 'password'} value={form.password} onChange={e => setForm(f => ({ ...f, password: e.target.value }))} className="input pr-9" required={isNew} placeholder={isNew ? undefined : 'Laisser vide pour ne pas changer'} />
+          <button type="button" onClick={() => setShowPassword(v => !v)} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+            title={showPassword ? 'Cacher' : 'Afficher'} aria-label={showPassword ? 'Cacher le mot de passe' : 'Afficher le mot de passe'}>
+            {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+          </button>
+        </div>
       </div>
       <div>
         <span className="label">Accès</span>

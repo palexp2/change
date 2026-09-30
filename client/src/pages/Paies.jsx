@@ -9,7 +9,7 @@ import { DataTable } from '../components/DataTable.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { useAuth } from '../lib/auth.jsx'
@@ -21,9 +21,13 @@ function bool(row, key) {
 
 const num = (n, digits = 2) => fmtNumber(n, { minimumFractionDigits: 0, maximumFractionDigits: digits })
 
+// Date limite FdT : « YYYY-MM-DDTHH:MM » (valeur d'un input datetime-local).
+// Les anciennes valeurs Airtable sont du texte libre (« Mardi 11h AM »).
+const isDeadlineDT = v => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(v || '')
+
 const RENDERS_PAIES = {
   period_end: row => <span className="text-slate-700">{fmtDate(row.period_end)}</span>,
-  timesheets_deadline: row => <span className="text-slate-500">{row.timesheets_deadline || '—'}</span>,
+  timesheets_deadline: row => <span className="text-slate-500">{isDeadlineDT(row.timesheets_deadline) ? fmtDateTime(row.timesheets_deadline) : (row.timesheets_deadline || '—')}</span>,
   total_with_charges_and_reimb: row => <span className="font-medium">{fmtMoney(row.total_with_charges_and_reimb)}</span>,
   total_regular_amount: row => <span className="text-slate-700">{fmtMoney(row.total_regular_amount)}</span>,
   total_regular_hours: row => <span className="text-slate-700">{num(row.total_regular_hours)}</span>,
@@ -200,7 +204,11 @@ function PaieForm({ paie, onClose, onSaved, onDeleted }) {
           </div>
           <div>
             <label className="label">Date limite correction FdT</label>
-            <input value={form.timesheets_deadline || ''} onChange={f('timesheets_deadline')} onBlur={blurSave('timesheets_deadline')} className="input" />
+            <input type="datetime-local" value={isDeadlineDT(form.timesheets_deadline) ? form.timesheets_deadline.slice(0, 16) : ''}
+              onChange={f('timesheets_deadline')} onBlur={blurSave('timesheets_deadline')} className="input" />
+            {form.timesheets_deadline && !isDeadlineDT(form.timesheets_deadline) && (
+              <div className="text-xs text-slate-400 mt-1">{form.timesheets_deadline}</div>
+            )}
           </div>
           <div>
             <label className="label">Total paie (optionnel)</label>
@@ -403,6 +411,17 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
     }
   }
 
+  async function changeStatus(status) {
+    const prev = detail.status
+    setDetail(d => ({ ...d, status }))
+    try {
+      await api.paies.update(paie.id, { status })
+    } catch (err) {
+      setDetail(d => ({ ...d, status: prev }))
+      addToast({ message: err.message, type: 'error' })
+    }
+  }
+
   async function handleImport() {
     setImporting(true)
     setImportResult(null)
@@ -443,7 +462,12 @@ function PaieDetail({ paie, onEdit, onDeleted }) {
         </div>
         <div>
           <div className="text-xs text-slate-500">Statut</div>
-          <div className="font-medium">{detail.status || '—'}</div>
+          {isHR ? (
+            <select value={detail.status || ''} onChange={e => changeStatus(e.target.value)} className="input font-medium" data-testid="paie-status-select">
+              {!detail.status && <option value="" />}
+              {[...new Set([...STATUSES, detail.status].filter(Boolean))].map(st => <option key={st}>{st}</option>)}
+            </select>
+          ) : <div className="font-medium">{detail.status || '—'}</div>}
         </div>
         <div>
           <div className="text-xs text-slate-500">Total paie (Airtable)</div>
@@ -536,11 +560,27 @@ export default function Paies() {
   const isHR = hasRole(user, 'rh')
   const [editing, setEditing] = useState(null)
   const [showForm, setShowForm] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [openId, setOpenId] = useState(null)
+  const { addToast } = useToast()
   const { rows: paies, loading, reload: load } = useListData({ fetch: () => api.paies.list({ limit: 500 }), realtime: 'paie' })
+  const clearOpenId = useCallback(() => setOpenId(null), [])
 
-  function openCreate() {
-    setEditing(null)
-    setShowForm(true)
+  // Pas de formulaire : la paie suivante (2 semaines, fin le samedi, fériés
+  // comptés) est créée directement puis ouverte dans le panneau latéral.
+  async function createNext() {
+    setCreating(true)
+    try {
+      const paie = await api.paies.createNext()
+      const feries = paie.holidays?.length ? ` · ${paie.holidays.map(h => h.name).join(', ')}` : ''
+      addToast({ message: `Paie ${fmtDate(paie.period_start)} → ${fmtDate(paie.period_end)}${feries}`, type: 'success' })
+      await load()
+      setOpenId(paie.id)
+    } catch (err) {
+      addToast({ message: err.message, type: 'error' })
+    } finally {
+      setCreating(false)
+    }
   }
 
   function openEdit(paie) {
@@ -558,8 +598,8 @@ export default function Paies() {
     <ListPage
       title={isHR ? 'Paies' : 'Mes bulletins de paie'}
       actions={isHR && (
-        <button onClick={openCreate} className="btn-primary flex items-center gap-2">
-          <Plus size={15} /> Nouvelle paie
+        <button onClick={createNext} disabled={creating} className="btn-primary flex items-center gap-2">
+          {creating ? <Spinner size="sm" color="white" /> : <Plus size={15} />} Nouvelle paie
         </button>
       )}
     >
@@ -570,6 +610,8 @@ export default function Paies() {
         data={paies}
         loading={loading}
         peek={{
+          openId,
+          onOpenConsumed: clearOpenId,
           title: row => `Paie — ${fmtDate(row.period_end)}${row.number ? ` (#${row.number})` : ''}`,
           subtitle: row => row.status || '',
           width: 860,

@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  parseAmount, parseTxnDate, parseStatementText, labelMatchesVendor, deriveStatus,
+  parseAmount, parseTxnDate, parseStatementText, labelMatchesVendor, deriveStatus, merchantKey,
 } from './bankReconciliation.js'
 
 // ── parseAmount ──────────────────────────────────────────────────────────────
@@ -84,4 +84,12 @@ test('deriveStatus : priorités ignore > rapproché > non apparié', () => {
   assert.equal(deriveStatus({ status: 'ignore' }), 'ignore')
   assert.equal(deriveStatus({ status: 'a_traiter', reconciled_at: '2026-07-28T00:00:00Z' }), 'rapproche')
   assert.equal(deriveStatus({ status: 'a_traiter', matched_id: null }), 'a_traiter')
+})
+
+// ── merchantKey ──────────────────────────────────────────────────────────────
+
+test('merchantKey : même marchand malgré un libellé reformulé', () => {
+  assert.equal(merchantKey('PREMIER FARNELL        MISSISSAUGA   ON  CAN ON'), 'premier')
+  assert.equal(merchantKey('CPC SCP/CU903825179CA  OTTAWA'), merchantKey('CPC SCP                OTTAWA'))
+  assert.equal(merchantKey(''), '')
 })

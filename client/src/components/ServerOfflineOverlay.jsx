@@ -1,11 +1,12 @@
 import { useEffect, useState, useRef } from 'react'
-import { Loader2, ServerOff, RefreshCw, WifiOff } from 'lucide-react'
+import { ServerOff, RefreshCw, WifiOff } from 'lucide-react'
 import { subscribe, getIsOffline, getReason, getKnownBootId, markOnline, subscribeServerRestart, acceptBootId } from '../lib/serverStatus.js'
 import { sync } from '../lib/dataSync.js'
 import { connect as reconnectRealtime } from '../lib/realtime.js'
+import ThinkingOrb from './ThinkingOrb'
 
 // Fullscreen overlay shown when the server is unreachable. Pings /api/health
-// every 10 s; on success, compare the returned boot_id with the one we saw
+// every PING_EVERY_S; on success, compare the returned boot_id with the one we saw
 // before the outage:
 //   - boot_id identique ou inconnu → simple blip réseau → on masque l'overlay
 //     SANS recharger la page : un reload fermerait toute modale ouverte et
@@ -16,13 +17,13 @@ import { connect as reconnectRealtime } from '../lib/realtime.js'
 //     servi a changé (hash Vite dans index.html) :
 //       - bundle identique (pm2 restart sans rebuild client — cas fréquent) →
 //         même traitement qu'un blip : pas de reload, resync en place.
-//       - bundle différent (vrai déploiement frontend) → message "Mise à jour
-//         de l'app en cours" puis reload pour charger le nouveau code.
+//       - bundle différent (vrai déploiement frontend) → pastille « Nouvelle
+//         version » ; l'onglet se recharge seul une fois caché (sans modale).
 //       - indéterminé (le serveur redémarre encore, `/erp/` répond 502) → on
 //         réessaie, on ne recharge JAMAIS sur un doute. Voir bundleState().
 //
-// L'apparition est debouncée 400 ms côté serverStatus.js — les blips < 400 ms
-// (reconnexion WS, requête transiente) ne déclenchent jamais l'overlay.
+// L'apparition est debouncée côté serverStatus.js (DEBOUNCE_MS) — les blips
+// courts (reconnexion WS, redémarrage) ne déclenchent jamais l'overlay.
 //
 // Triggered by lib/serverStatus → see realtime.js (WS abnormal close) and
 // api.js (network error / 502 / 503 / 504).
@@ -119,11 +120,23 @@ function describeReason(reason) {
   }
 }
 
+// Ping de reprise pendant une panne. Court : un redémarrage dure quelques
+// secondes, l'écran ne doit pas rester 10 s de plus pour rien.
+const PING_EVERY_S = 2
+
+// Nouvelle version prête : on ne recharge l'onglet que lorsqu'il est caché et
+// sans modale ouverte — personne ne le voit. Sinon, clic sur la pastille.
+function reloadWhenHidden() {
+  if (document.visibilityState !== 'hidden') return
+  if (document.querySelector('[role="dialog"]')) return
+  window.location.reload()
+}
+
 export default function ServerOfflineOverlay() {
   const [offline, setOffline] = useState(getIsOffline())
   const [reason, setReason] = useState(getReason())
-  const [countdown, setCountdown] = useState(10)
-  const [restartDetected, setRestartDetected] = useState(false)
+  const [countdown, setCountdown] = useState(PING_EVERY_S)
+  const [updateReady, setUpdateReady] = useState(false)
   const pingingRef = useRef(false)
   const bundleCheckRef = useRef(false)
 
@@ -151,17 +164,18 @@ export default function ServerOfflineOverlay() {
         reconnectRealtime()
         return
       }
-      setRestartDetected(true)
-      // Laisse 1.2s pour que d'éventuelles requêtes en vol (autosave) puissent
-      // finir et afficher l'overlay « Mise à jour » avant le reload.
-      setTimeout(() => window.location.reload(), 1200)
+      // Nouvelle version : jamais de rechargement imposé (il fermait modales et
+      // fiches ouvertes à chaque déploiement). Pastille discrète, voir plus bas.
+      acceptBootId(newBootId)
+      setUpdateReady(true)
+      sync()
     }).finally(() => { bundleCheckRef.current = false })
   }), [])
 
   useEffect(() => {
     if (!offline) return
 
-    setCountdown(10)
+    setCountdown(PING_EVERY_S)
 
     const tryPing = () => {
       if (pingingRef.current) return
@@ -184,17 +198,11 @@ export default function ServerOfflineOverlay() {
             // 502 (serveur encore en train de démarrer), on réessaie plutôt
             // que de conclure au déploiement.
             const state = await resolveBundleState()
-            if (state === BUNDLE_CHANGED) {
-              // setRestartDetected DOIT précéder markOnline — sinon offline=false
-              // démonte le composant et l'écran "Mise à jour" ne s'affiche pas.
-              setRestartDetected(true)
-              setTimeout(() => { markOnline(); window.location.reload() }, 1200)
-            } else {
-              acceptBootId(bootId)
-              markOnline()
-              sync()
-              reconnectRealtime()
-            }
+            if (state === BUNDLE_CHANGED) setUpdateReady(true)
+            acceptBootId(bootId)
+            markOnline()
+            sync()
+            reconnectRealtime()
           } else {
             // Simple blip réseau (même serveur, même bundle) : masquer
             // l'overlay en place — surtout PAS de window.location.reload(),
@@ -214,30 +222,30 @@ export default function ServerOfflineOverlay() {
       setCountdown((c) => {
         if (c > 1) return c - 1
         tryPing()
-        return 10
+        return PING_EVERY_S
       })
     }, 1000)
 
     return () => clearInterval(tick)
   }, [offline])
 
-  if (!offline && !restartDetected) return null
+  useEffect(() => {
+    if (!updateReady) return
+    document.addEventListener('visibilitychange', reloadWhenHidden)
+    return () => document.removeEventListener('visibilitychange', reloadWhenHidden)
+  }, [updateReady])
 
-  if (restartDetected) {
+  if (!offline) {
+    if (!updateReady) return null
     return (
-      <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/80">
-        <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md mx-4 text-center">
-          <div className="w-14 h-14 rounded-full bg-emerald-100 flex items-center justify-center mx-auto mb-4">
-            <RefreshCw size={26} className="text-emerald-600 animate-spin" style={{ animationDuration: '1.6s' }} />
-          </div>
-          <h2 className="text-lg font-semibold text-slate-900 mb-2">
-            Mise à jour de l'app en cours
-          </h2>
-          <p className="text-sm text-slate-600">
-            Une nouvelle version vient d'être déployée. Rechargement…
-          </p>
-        </div>
-      </div>
+      <button
+        type="button"
+        onClick={() => window.location.reload()}
+        title="Recharger"
+        className="fixed bottom-3 left-1/2 -translate-x-1/2 z-[100] flex items-center gap-1.5 rounded-full bg-slate-900/85 text-white text-xs px-3 py-1.5 shadow-lg hover:bg-slate-900"
+      >
+        <RefreshCw size={12} /> Nouvelle version
+      </button>
     )
   }
 
@@ -256,7 +264,7 @@ export default function ServerOfflineOverlay() {
           {body}
         </p>
         <div className="flex items-center justify-center gap-2 text-sm text-slate-700">
-          <Loader2 size={16} className="animate-spin text-slate-500" />
+          <ThinkingOrb state="connecting" size={16} ink className="text-slate-500" />
           <span>Nouvelle tentative dans <span className="font-semibold tabular-nums">{countdown}</span>&nbsp;s</span>
         </div>
         <button

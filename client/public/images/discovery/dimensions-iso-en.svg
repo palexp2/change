@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img">
+  <defs>
+    <g id="seedling">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <polygon points="-180 288 480 288 930 153 270 153" fill="#e9f6ec"/>
+  <g>
+    <use href="#seedling" transform="translate(284.5 279.7) scale(1.4)"/>
+    <use href="#seedling" transform="translate(342.5 262.3) scale(1.4)"/>
+    <use href="#seedling" transform="translate(400.5 244.9) scale(1.4)"/>
+  </g>
+  <path d="M215 178 C254 178 280 190 280 216 V258 L570 171 V129 C570 103 544 91 505 91 Z" fill="#eaf7f8" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <g fill="none" stroke="#b9e2e4" stroke-width="2.6" stroke-linecap="round">
+    <path d="M287.5 156.3 C326.5 156.3 352.5 168.3 352.5 194.3 V236.3"/>
+    <path d="M360 134.5 C399 134.5 425 146.5 425 172.5 V214.5"/>
+    <path d="M432.5 112.8 C471.5 112.8 497.5 124.8 497.5 150.8 V192.8"/>
+    <path d="M280 216 L570 129"/>
+  </g>
+  <path d="M150 258 V216 C150 190 176 178 215 178 C254 178 280 190 280 216 V258 Z" fill="#f6fcfd" stroke="#7ecdd0" stroke-width="4" stroke-linejoin="round" stroke-linecap="round"/>
+  <path d="M195 258 V222 h40 V258" fill="#d9eef1" stroke="#7ecdd0" stroke-width="3" stroke-linejoin="round"/>
+  <g fill="none" stroke="#94a3b8" stroke-width="2.6" stroke-linecap="round">
+    <path d="M124 258 V216"/>
+    <path d="M114 258 h20M114 216 h20"/>
+  </g>
+  <text x="106" y="245" text-anchor="end" font-family="system-ui, -apple-system, sans-serif" font-size="22" font-weight="600" fill="#475569">Height</text>
+  <g fill="none" stroke="#94a3b8" stroke-width="2.6" stroke-linecap="round">
+    <path d="M205.2 145.4 L495.2 58.4"/>
+    <path d="M208.1 155 L202.4 135.9"/>
+    <path d="M498.1 68 L492.4 48.9"/>
+  </g>
+  <text x="345.6" y="86.6" transform="rotate(-16.7 345.6 86.6)" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#475569">Length</text>
+</svg>

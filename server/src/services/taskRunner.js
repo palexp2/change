@@ -6,9 +6,9 @@ import { fileURLToPath } from 'url'
 import { broadcastAll } from './realtime.js'
 import { AGENT_INTERNAL_SECRET } from '../config/secrets.js'
 import {
-  AGENT_MODEL, CLAUDE_MODELS, modelChain, resolveModel, chainAvailableAt,
+  AGENT_MODEL, CLAUDE_MODELS, normalizeModel, resolveModel, chainAvailableAt,
   noteModelLimit, nextLimitExpiryAt, purgeExpiredLimits, fetchLimitScope,
-  syncScopedModelLimit, agentModelState, preferredAgentModel, setPreferredAgentModel,
+  agentModelState, preferredAgentModel, setPreferredAgentModel,
 } from './agentModel.js'
 import { execCommand, toollessSpec, streamSpec } from './agentEngine.js'
 
@@ -19,10 +19,10 @@ const TASKS_TMP     = TASKS_FILE + '.tmp'
 const DATA_DIR      = dirname(TASKS_FILE)
 const BACKLOG_FILE  = resolve(DATA_DIR, 'agent-backlog.json')
 const SETTINGS_FILE = resolve(DATA_DIR, 'agent-settings.json')
-// ─── Deux files d'implémentation ──────────────────────────────────────────────
-// Les tâches d'implémentation sont réparties ALÉATOIREMENT en EXEC_LANES files ;
-// chaque file avance une tâche à la fois, donc jusqu'à EXEC_LANES chantiers
-// tournent ensemble.
+// ─── Postes d'implémentation ──────────────────────────────────────────────────
+// Une seule file de tâches, servie par EXEC_LANES postes : jusqu'à EXEC_LANES
+// chantiers tournent ensemble. Le poste (« file » dans le code : `exec_lane`) est
+// attribué au démarrage — c'est lui qui désigne le fichier PID.
 //
 // ⚠️ Contrepartie assumée : ces exécutions partagent le MÊME arbre de travail,
 // sans isolation. Deux tâches qui touchent le même fichier peuvent se marcher
@@ -69,12 +69,6 @@ const STEER_SETTINGS = resolve(fileURLToPath(import.meta.url), '../../../scripts
 
 // ─── Tunables (settled during the design grilling) ────────────────────────────
 const EXEC_TIMEOUT_MS    = 30 * 60_000  // hard kill an execution after 30 min
-// Codex a besoin de plus de temps sur le même chantier. Relevé le 2026-09-10 : sur
-// les 19 tâches codex de la journée, SIX ont été fauchées par le délai de 30 min
-// (aucune côté Claude, même travail, même arbre). Le délai lui est donc doublé —
-// au-delà d'une heure, c'est une exécution réellement partie en vrille.
-const CODEX_EXEC_TIMEOUT_MS = 60 * 60_000
-function execTimeoutFor(model) { return model === 'codex' ? CODEX_EXEC_TIMEOUT_MS : EXEC_TIMEOUT_MS }
 
 // ─── Plafonds de ressources d'une exécution (incident du 2026-08-27) ─────────
 // Une seule exécution `effort: high` a saturé la machine (2 vCPU / 8 Go) : +350
@@ -129,11 +123,9 @@ const EXEC_TOOLS     = 'Bash,Read,Write,Edit,Glob,Grep'
 // ─── Préréglages modèle / effort (choisis par l'utilisateur à la soumission) ──
 // Appliqués à la proposition instantanée ET à l'exécution du correctif.
 // « Approfondi » (le défaut de la file de travaux) tourne sur le modèle PRÉFÉRÉ de
-// l'agent (fable par défaut, changeable depuis le bandeau quotas — clé
-// `preferredModel` d'agent-settings.json), avec repli automatique quand son quota
-// hebdomadaire est épuisé — voir agentModel.js. Le modèle inscrit sur la tâche reste
-// le modèle SOUHAITÉ ; celui réellement utilisé est résolu au démarrage de
-// l'exécution (champ `run_model`).
+// l'agent (Opus 5.5 par défaut, changeable depuis le bandeau quotas — clé
+// `preferredModel` d'agent-settings.json). Le modèle réellement utilisé est inscrit au
+// démarrage de l'exécution (champ `run_model`).
 export const PRESETS = {
   fast:     { model: 'haiku',      effort: 'low',    label: 'Rapide' },
   standard: { model: 'sonnet',     effort: 'medium', label: 'Standard' },
@@ -141,14 +133,9 @@ export const PRESETS = {
 }
 export function presetFor(key) {
   const p = PRESETS[key] || PRESETS.standard
-  // « Approfondi » suit le modèle préféré courant, pas le fable figé du littéral.
+  // « Approfondi » suit le modèle préféré courant, pas le littéral.
   return p === PRESETS.deep ? { ...p, model: preferredAgentModel() } : p
 }
-
-// Repli maximal par tâche : la longueur de la chaîne moins le modèle préféré. Garde-fou
-// anti-boucle — une détection de quota qui se déclencherait à tort ne peut pas relancer
-// la même tâche indéfiniment.
-function maxFallbacksFor(model) { return Math.max(0, modelChain(model).length - 1) }
 
 // ─── Prompt général (préambule système, éditable depuis la page Agent) ─────────
 // Injecté en tête de CHAQUE activité (proposition instantanée / conversation / exécution).
@@ -221,7 +208,7 @@ export const DEFAULT_EXECUTION_PROMPT = [
   '\n\n=== RÈGLES IMPÉRATIVES (CLAUDE.md) ===\n',
   '- Respecte le CLAUDE.md à la racine du projet (lis-le si besoin).\n',
   '- Definition of Done frontend: toute modif dans client/src/ DOIT être suivie de `cd /home/ec2-user/erp/client && npm run build`.\n',
-  '- Toute modif serveur (server/src/) DOIT être suivie de `pm2 restart erp-server`.\n',
+  '- Toute modif serveur (server/src/) DOIT être suivie de `/home/ec2-user/erp/server/scripts/restart.sh` (redémarrage sans coupure ; jamais `pm2 restart erp-server`).\n',
   '- Si le build ou le lint échoue: corrige et relance. Au MAXIMUM 3 tentatives de correction. Si après 3 tentatives ça échoue encore, ARRÊTE, n\'invente rien, et explique clairement le blocage (ce sera marqué « bloqué »).\n\n',
   'Si tu as besoin d\'une approbation humaine pour une sous-étape, crée une sous-tâche:\n',
   'curl -s -X POST http://localhost:3004/api/agent/tasks/internal -H \'Content-Type: application/json\' -H \'X-Agent-Secret: {{internalSecret}}\' -d \'{"description":"...","priority":0}\'\n\n',
@@ -586,6 +573,9 @@ export function getSettings() {
     questionPrompt: DEFAULT_QUESTION_PROMPT,
     // Modèle préféré de l'agent (sélecteur du bandeau quotas) — voir agentModel.js.
     preferredModel: AGENT_MODEL,
+    // Modèle présélectionné dans « Modifier le système » : 'auto' (modèle
+    // Anthropic selon la complexité) ou 'opus'. Sélecteur de /travaux.
+    fabDefaultModel: 'auto',
     ...readJson(SETTINGS_FILE, {}),
   }
 }
@@ -602,7 +592,7 @@ export function setSettings(patch) {
 }
 
 // Au démarrage : recharge le modèle préféré persisté (le résolveur est en mémoire,
-// un redémarrage l'aurait sinon remis sur le défaut fable).
+// un redémarrage l'aurait sinon remis sur le défaut).
 setPreferredAgentModel(getSettings().preferredModel)
 
 // ─── Pause de la file de travaux ──────────────────────────────────────────────
@@ -610,9 +600,8 @@ setPreferredAgentModel(getSettings().preferredModel)
 // cours finit normalement (donc aucun travail perdu, aucun jeton gaspillé à
 // refaire ce qui était commencé). La reprise redémarre exactement là où la file
 // s'était arrêtée — l'item suivant n'a jamais été lancé, il n'a rien à rattraper.
-export function isQueuePaused(model = null) {
-  const settings = getSettings()
-  return !!settings.queuePaused && !(model === 'codex' && settings.quotaPauseActive)
+export function isQueuePaused() {
+  return !!getSettings().queuePaused
 }
 
 export function setQueuePaused(paused, { reason = null, quotaGuard = false } = {}) {
@@ -674,7 +663,7 @@ export function generateInstantProposal(itemId) {
   const item = readBacklog().find(i => i.id === itemId)
   if (!item) return
   const { model: wanted, effort } = presetFor(item.preset)
-  const model = resolveModel(wanted) || wanted
+  const model = normalizeModel(wanted)
   const prompt = renderTemplate(promptTemplate('instantPrompt'), {
     general: generalPrompt(),
     text: item.text,
@@ -716,9 +705,7 @@ export function generateInstantProposal(itemId) {
 // (git log, journaux) plutôt que d'explorer le repo lui-même.
 export function runToollessClaude({ prompt, model: wanted = 'sonnet', effort = 'medium', timeoutMs = 4 * 60_000 }) {
   return new Promise((resolveP) => {
-    // Même résolution que les exécutions : un quota de modèle épuisé emprunte le repli
-    // au lieu de faire échouer l'appel.
-    const model = resolveModel(wanted) || wanted
+    const model = normalizeModel(wanted)
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
     const spec = toollessSpec({ model, effort })
     const proc = spawn(spec.bin, spec.args,
@@ -959,22 +946,15 @@ export function getCurrentActivity() {
 // quelques secondes (chaque item repartait, mourait aussitôt, et affichait un message
 // d'erreur trompeur).
 //
-// Deux réactions selon le plafond touché (attribution dans handleLimitHit, registre
-// par modèle dans agentModel.js) :
-//   • plafond propre au modèle (le hebdo de fable) → la tâche repart aussitôt sur le
-//     modèle de repli (opus). Rien ne s'arrête, et fable reprend la main à sa réinit.
-//   • plafond de compte (fenêtre de 5 h, hebdo tous modèles) → l'item retourne en file,
-//     l'ordonnanceur se met en pause, et tout repart tout seul à l'heure dite.
+// L'item retourne en file, l'ordonnanceur met en pause les tâches du modèle à sec
+// (tous les modèles si c'est un plafond de compte), et tout repart tout seul à l'heure
+// dite — registre par modèle dans agentModel.js.
 const LIMIT_RE = /(?:hit your (?:session|usage|weekly) limit|usage limit reached|limit will reset)/i
 const RESET_RE = /reset(?:s)?(?:\s+at)?\s+(\d{1,2}):(\d{2})\s*(am|pm)?\s*(?:\(([^)]{1,20})\))?/i
 
 let _limitTimer = null
 
-/**
- * Instant de reprise quand l'ordonnanceur est VRAIMENT à l'arrêt, c'est-à-dire quand
- * même le modèle de repli est à sec (0 sinon). Le plafond hebdomadaire de fable seul ne
- * compte pas : le travail continue sur opus, la file n'est pas en pause.
- */
+/** Instant de reprise quand le modèle préféré est à sec (0 sinon). */
 export function getSessionLimitResetAt() { return chainAvailableAt(preferredAgentModel()) }
 
 /** État du modèle de l'agent (préféré / actif / quotas épuisés) — exposé par /agent/usage. */
@@ -1024,18 +1004,13 @@ export function detectSessionLimit(text, now = Date.now()) {
 
 /**
  * Enregistre un quota épuisé. `models` = le seul modèle concerné (plafond propre au
- * modèle → le repli prend la suite) ou tous (plafond de compte → plus rien ne passe).
+ * modèle) ou tous (plafond de compte → plus rien ne passe).
  */
 function noteLimit(models, { resetAt, label }, { source = 'run' } = {}) {
   const changed = noteModelLimit(models, { resetAt, label, source })
   if (!changed) return
   const stalled = chainAvailableAt(preferredAgentModel())
-  if (stalled) {
-    const mins = Math.round((stalled - Date.now()) / 60_000)
-    console.warn(`🤖 Agent: quotas Claude épuisés (${[].concat(models).join(', ')}) — ordonnanceur en pause ${mins} min (reprise ${label})`)
-  } else {
-    console.warn(`🤖 Agent: quota ${[].concat(models).join(', ')} épuisé jusqu'à ${label} — bascule sur le modèle de repli`)
-  }
+  console.warn(`🤖 Agent: quota Claude épuisé (${[].concat(models).join(', ')}) jusqu'à ${label}`)
   broadcastAll({
     type: 'agent:limit',
     resetAt: stalled ? new Date(stalled).toISOString() : null,
@@ -1047,8 +1022,7 @@ function noteLimit(models, { resetAt, label }, { source = 'run' } = {}) {
 /**
  * Un seul minuteur pour tous les quotas : il se réarme sur la PROCHAINE
  * réinitialisation connue. À son déclenchement, les marques périmées tombent et la file
- * repart — que ce soit fable qui revienne (retour au modèle préféré) ou le dernier
- * repli (sortie de pause).
+ * repart.
  */
 function rearmLimitTimer() {
   if (_limitTimer) { clearTimeout(_limitTimer); _limitTimer = null }
@@ -1066,48 +1040,21 @@ function rearmLimitTimer() {
 }
 
 /**
- * Exécution avortée faute de quota. Deux issues :
- *
- *   • le plafond ne visait QUE le modèle utilisé (typiquement le hebdo de fable) et un
- *     repli reste disponible → la tâche repart TOUT DE SUITE sur le modèle suivant. Rien
- *     n'attend, l'utilisateur voit juste le travail reprendre sur opus.
- *   • plus aucun modèle n'a de quota → ancien comportement : la tâche retourne en file,
- *     l'ordonnanceur se met en pause jusqu'à la réinitialisation, aucun compte-rendu
- *     trompeur n'est écrit.
+ * Exécution avortée faute de quota : la tâche retourne en file, l'ordonnanceur se met
+ * en pause jusqu'à la réinitialisation, aucun compte-rendu trompeur n'est écrit.
  */
 async function handleLimitHit(taskId, limit, sessionId) {
   const task = readTasks().find(t => t.id === taskId) || {}
-  const wanted = task.model || preferredAgentModel()
-  const ranModel = task.run_model || wanted
-  const scope = ranModel === 'codex' ? 'model' : await fetchLimitScope()
+  const ranModel = task.run_model || task.model || preferredAgentModel()
+  const scope = await fetchLimitScope()
   noteLimit(scope === 'account' ? CLAUDE_MODELS : [ranModel], limit)
-
-  const hops = task.model_fallbacks || 0
-  const fallback = resolveModel(wanted)
-  if (scope === 'model' && fallback && fallback !== ranModel && hops < maxFallbacksFor(wanted)) {
-    // Repli immédiat : la tâche redevient « approved » et kick() la relance aussitôt
-    // (la libération du poste de sa file enchaîne). Le modèle SOUHAITÉ reste inscrit tel quel — c'est
-    // resolveModel qui choisit au démarrage, donc fable reprend la main dès son retour.
-    const retried = updateTask(taskId, {
-      status: 'approved',
-      agent_result: `(quota ${ranModel} épuisé jusqu'à ${limit.label} — reprise immédiate sur ${fallback})`,
-      user_summary: null,
-      run_model: null,
-      model_fallbacks: hops + 1,
-      session_id: sessionId || null,
-      completed_at: null,
-    })
-    console.warn(`🤖 Agent: tâche ${taskId} relancée sur ${fallback} (quota ${ranModel} épuisé jusqu'à ${limit.label})`)
-    if (retried) broadcastTask(retried)
-    return
-  }
 
   const isQueue = task.kind === 'queue'
   const deferred = updateTask(taskId, {
     // Item de file : c'est la file qui le relancera (nouvelle tâche) → celle-ci sort
     // du jeu. Suggestion/backlog : le runner la reprendra lui-même.
     status: isQueue ? 'cancelled' : 'approved',
-    agent_result: `(limite ${ranModel === 'codex' ? 'Codex' : 'Claude'} atteinte — reprise automatique à ${limit.label})`,
+    agent_result: `(limite Claude atteinte — reprise automatique à ${limit.label})`,
     user_summary: null,
     run_model: null,
     session_id: sessionId || null,
@@ -1135,15 +1082,21 @@ export function runNextTask() { kick() }
 // ─── The scheduler heart: pick the next activity by priority ───────────────────
 function kick() {
   if (!getSettings().enabled) return
+  // Relais de redémarrage (ERP_ROLE=standby) : il sert les clics pendant que le
+  // principal redémarre mais ignore tout des exécutions en cours (ses postes en
+  // mémoire sont vides). Démarrer ici lançait un 3e chantier par-dessus les deux
+  // qui tournaient — « Relancer au début de la file » cliqué pendant un
+  // redémarrage. La tâche reste « approved » ; le principal la prend à son retour.
+  if (process.env.ERP_ROLE === 'standby') return
 
   // File de travaux en pause : ses tâches restent « approved » sans démarrer. Le reste
   // de l'agent (signalements de la bulle d'aide, réponses de conversation) continue —
   // la pause vise la consommation de jetons des chantiers, pas l'app entière.
-  const tasks = readTasks().filter(t => !(isQueuePaused(t.model || preferredAgentModel()) && t.kind === 'queue'))
+  const allTasks = readTasks()
+  const tasks = allTasks.filter(t => !(isQueuePaused() && t.kind === 'queue'))
   const byPriority = (a, b) => (b.priority - a.priority) || a.created_at.localeCompare(b.created_at)
-  // Quota épuisé : une tâche n'attend QUE si son modèle et tous ses replis sont à sec
-  // (un timer relance kick à la réinitialisation). Le plafond hebdomadaire de fable
-  // laisse donc la file tourner sur opus.
+  // Quota épuisé : une tâche n'attend que si SON modèle est à sec (un timer relance
+  // kick à la réinitialisation).
   const hasModel = t => !!resolveModel(t.model || preferredAgentModel())
 
   // 1. Voie lecture seule : les questions démarrent même si une implémentation
@@ -1153,15 +1106,19 @@ function kick() {
     executeTask(q, { lane: 'question' })
   }
 
-  // 2. Implémentation : UNE par file, donc jusqu'à EXEC_LANES en parallèle. Chaque
-  // tâche ne concourt qu'avec celles de sa propre file — une file occupée ne retient
-  // pas les trois autres. executeTask() prend le poste de façon synchrone, donc la
-  // boucle saute d'elle-même les tâches suivantes d'une même file.
+  // 2. Implémentation : UNE file, EXEC_LANES postes (demande de Pap, 2026-09-29).
+  // La prochaine tâche prend le premier poste libre, quel que soit celui qu'on lui
+  // avait prévu : jamais une tâche n'attend un poste occupé pendant qu'un autre chôme.
+  // executeTask() prend le poste de façon synchrone.
+  // Plafond compté AUSSI sur le store : une exécution vivante suivie hors poste
+  // (lane 'recover' après un redémarrage) occupe le serveur autant qu'une autre.
+  let live = allTasks.filter(x => x.status === 'in_progress' && x.mode !== 'question').length
   for (const t of tasks.filter(x => x.status === 'approved' && x.mode !== 'question' && hasModel(x)).sort(byPriority)) {
-    if (_execSlots.size >= EXEC_LANES) break
-    const execLane = execLaneOf(t)
-    if (_execSlots.has(execLane)) continue
+    if (Math.max(_execSlots.size, live) >= EXEC_LANES) break
+    const execLane = Array.from({ length: EXEC_LANES }, (_, i) => i).find(i => !_execSlots.has(i))
+    if (execLane === undefined) break
     executeTask(t, { lane: 'exec', execLane })
+    live++
   }
 
   // 3. Conversation replies (the user is waiting live). Lecture seule et hors des
@@ -1250,7 +1207,7 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
   const known = readTasks().find(t => t.id === taskId)
   const myLane = lane === 'exec' ? (execLane ?? execLaneOf(known)) : null
   // Délai propre au moteur : `run_model` est déjà posé quand le monitor démarre.
-  const timeoutMs = execTimeoutFor(known?.run_model || known?.model)
+  const timeoutMs = EXEC_TIMEOUT_MS
   const pidFile = lane === 'question' ? QPID_FILE(taskId) : (lane === 'recover' ? null : EPID_FILE(myLane))
   const startedAt = Date.now()
   // Le délai court depuis le VRAI départ de l'exécution, pas depuis ce monitor : sinon
@@ -1415,7 +1372,9 @@ export function monitorExecution(taskId, knownPid = null, { lane = 'exec', execL
     if (pidFile && pidFileTaskId(pidFile) === taskId) { try { unlinkSync(pidFile) } catch {} }
     setTimeout(() => streamBuffers.delete(taskId), 120_000).unref?.()
     if (lane === 'recover') {
-      // Récupération hors poste : rien à libérer, rien à relancer ici.
+      // Récupération hors poste : rien à libérer, mais elle comptait dans le
+      // plafond de kick() — une tâche en attente peut maintenant partir.
+      setImmediate(kick)
     } else if (lane === 'question') {
       // Voie parallèle : aucune file d'implémentation à rendre, on libère juste sa
       // place dans la voie lecture seule et on regarde s'il y a une autre question.
@@ -1601,14 +1560,10 @@ function executeTask(next, { lane = 'exec', execLane = null } = {}) {
     _execSlots.set(myLane, next.id)
   }
 
-  // Modèle réellement utilisable : le modèle souhaité s'il a du quota, sinon son repli
-  // (fable → opus). `run_model` garde la trace de ce qui a VRAIMENT tourné — c'est lui
-  // qu'on attribue si l'exécution se heurte à un plafond.
-  const wanted = next.model || preferredAgentModel()
-  const runModel = resolveModel(wanted) || wanted
-  if (runModel !== wanted) {
-    console.log(`🤖 Agent: tâche ${next.id} lancée sur ${runModel} (quota ${wanted} épuisé)`)
-  }
+  // `run_model` garde la trace de ce qui a VRAIMENT tourné (un modèle retiré inscrit
+  // sur une vieille tâche passe au préféré) — c'est lui qu'on attribue si l'exécution
+  // se heurte à un plafond.
+  const runModel = normalizeModel(next.model || preferredAgentModel())
 
   // started_at : horodate le passage en in_progress pour alimenter le compteur de
   // temps écoulé côté UI (timer live pendant l'exécution, durée totale une fois terminée).
@@ -1672,7 +1627,8 @@ function executeTask(next, { lane = 'exec', execLane = null } = {}) {
   runDetachedExecution(next.id, prompt, {
     model: runModel, effort: next.effort,
     tools: isQuestion ? READONLY_TOOLS : EXEC_TOOLS,
-    resumeSessionId: next.resume_session_id || null,
+    // Ancienne session Codex : illisible par Claude, on repart du brief.
+    resumeSessionId: next.model === 'codex' ? null : next.resume_session_id || null,
     lane, execLane: myLane,
   })
 }
@@ -1685,9 +1641,7 @@ export function enqueueAgentTask({
   title, description, kind = 'queue', mode = 'implement', model = preferredAgentModel(),
   effort = 'high', priority = 0, author = '', work_prompt_id = null,
   resume_session_id = null,
-  // File d'implémentation. La file de travaux impose celle de l'item (elle a été
-  // tirée au sort à sa création et ne bouge plus) ; les autres chemins (suggestion
-  // de la bulle d'aide, tâche manuelle) tirent au sort ici.
+  // Indicatif seulement : le poste réel est le premier libre au démarrage (kick).
   exec_lane = randomExecLane(),
 }) {
   const now = new Date().toISOString()
@@ -1747,11 +1701,6 @@ export function updatePendingAgentTask(id, patch = {}) {
   const allowed = ['title', 'description', 'model', 'effort', 'mode']
   const updates = {}
   for (const k of allowed) if (patch[k] !== undefined) updates[k] = patch[k]
-  // Une session Claude n'est pas réutilisable par Codex, ni l'inverse.
-  // Le brief de la file contient déjà le fil complet pour repartir sans session.
-  if (patch.model !== undefined && (patch.model === 'codex') !== (task.model === 'codex')) {
-    updates.resume_session_id = null
-  }
   if (!Object.keys(updates).length) return true
   const updated = updateTask(id, updates)
   if (updated) broadcastTask(updated)
@@ -1980,16 +1929,6 @@ export function initTaskRunner() {
   // (laisse le serveur finir de démarrer avant de spawner des subprocess).
   const backfillTimer = setTimeout(() => { backfillUserSummaries().catch(() => {}) }, 15_000)
   backfillTimer.unref?.()
-
-  // Quota hebdomadaire propre au modèle (fable) : lu directement dans les quotas de
-  // l'abonnement pour basculer sur le repli AVANT de jeter une exécution dans le mur —
-  // et pour revenir à fable dès que son plafond est réinitialisé. Toutes les 5 min ;
-  // la lecture est mise en cache 60 s côté claudeUsage, donc le coût est négligeable.
-  const syncLimits = () => syncScopedModelLimit()
-    .then(changed => { if (changed) { rearmLimitTimer(); kick() } })
-    .catch(() => {})
-  setTimeout(syncLimits, 5_000).unref?.()
-  setInterval(syncLimits, 5 * 60_000).unref?.()
 
   setImmediate(kick)
 }

@@ -7,6 +7,7 @@ import { PageTitle } from '../components/PageTitle.jsx'
 import Spinner from '../components/Spinner.jsx'
 import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { fmtMoney } from '../utils/formatters.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // ── Petits composants utilitaires ─────────────────────────────────────────
 
@@ -276,7 +277,7 @@ function RegenerateControls({ disabled, onRegenerate, loading, hasEmail }) {
       title="Générer le courriel via OpenAI avec le contexte du qualification call et les instructions IA"
     >
       {loading ? (
-        <span className="h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
+        <ThinkingOrb size={12} ink className="text-white" />
       ) : (
         <Sparkles size={12} />
       )}
@@ -426,7 +427,7 @@ function SendConfirmModal({ it, subject, body, onClose, onSent }) {
             className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white"
           >
             {sending ? (
-              <span className="h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
+              <ThinkingOrb size={12} ink className="text-white" />
             ) : (
               <Send size={12} />
             )}
@@ -661,7 +662,7 @@ function EmailCard({ it, generalRules, savedSpecific, onSavedSpecificChange, onS
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md bg-brand-600 hover:bg-brand-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-white"
             >
               {regenLoading ? (
-                <span className="h-3 w-3 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                <ThinkingOrb size={12} ink className="text-white" />
               ) : (
                 <Sparkles size={14} />
               )}

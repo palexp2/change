@@ -5,7 +5,7 @@
 // occurrence utilisée pour le sheet (fragile face aux modifications).
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { runPostImportHooks, autoMatchAccount, RECEIPT_BANK_MATCH_AUTOMATION_ID } from './bankReconciliation.js'
+import { runPostImportHooks, autoMatchAccount, purgeZeroAmountTxns, RECEIPT_BANK_MATCH_AUTOMATION_ID } from './bankReconciliation.js'
 import { isSystemAutomationActive } from './systemAutomations.js'
 import { syncItemTransactions, fetchItemBalances, listItems, itemHealth, requestTransactionsRefresh } from '../connectors/plaid.js'
 import { logSync } from './syncLog.js'
@@ -32,6 +32,7 @@ function labelsFor(txn) {
 }
 
 function upsertAdded(accountId, txn) {
+  if (!toLedgerAmount(txn.amount)) return 0 // 0 $ : rien à rapprocher
   const { description, details } = labelsFor(txn)
   const res = db.prepare(`
     INSERT OR IGNORE INTO bank_transactions
@@ -90,6 +91,8 @@ export function importPlaidTransactions(accountsByPlaidId, { added, modified, re
     }
   })
   tx()
+  // Une ligne modifiée à 0 $ (autorisation annulée) sort de la liste.
+  try { purgeZeroAmountTxns() } catch (e) { console.error('plaidSync.purgeZeroAmountTxns:', e.message) }
   // Appariement aux documents de l'ERP. Le collage manuel et la sync
   // TRX_Orisha le déclenchaient déjà, jamais Plaid : sur les comptes branchés,
   // une facture pourtant déjà extraite restait « à traiter » jusqu'à un clic
@@ -202,6 +205,8 @@ export async function syncPlaidItem(itemId, trigger = 'webhook', { balanceMinAge
 // virement on veut le chiffre MAINTENANT : ce bouton demande à Plaid
 // d'interroger la banque, relit l'item et note le solde sans l'anti-bruit de
 // 6 h — un clic est une demande explicite, il doit laisser une lecture datée.
+// Pas de produit Balance (solde en direct, facturé à l'appel) : essayé le
+// 2026-09-26, la BNC le refusait presque toujours — abandonné par Charles.
 export async function refreshTreasuryBalance() {
   const account = db.prepare(
     'SELECT id, plaid_item_id FROM bank_accounts WHERE name=? AND deleted_at IS NULL'
@@ -209,10 +214,10 @@ export async function refreshTreasuryBalance() {
   if (!account?.plaid_item_id) {
     throw new Error(`${TREASURY_BANK_ACCOUNT} n'est pas relié à la banque`)
   }
-  // Relecture refusée (produit non consenti, banque muette) : non bloquant, on
-  // lit quand même le dernier solde que Plaid détient.
+  // Relecture refusée ou muette (8 s max) : non bloquant, on lit quand même le
+  // dernier solde que Plaid détient.
   let woke = true
-  try { await requestTransactionsRefresh(account.plaid_item_id) }
+  try { await requestTransactionsRefresh(account.plaid_item_id, { timeout: 8000 }) }
   catch (e) {
     woke = false
     console.error('plaidSync.refreshTreasuryBalance/refresh:', e?.response?.data?.error_code || '', e?.response?.data?.error_message || e.message)

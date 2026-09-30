@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { companyIdForStripeCustomer } from '../services/stripeCustomerCompany.js'
 import { newRecordId } from '../utils/recordId.js'
 import Stripe from 'stripe'
 import { getStripeKey } from '../services/stripe.js'
@@ -7,6 +8,7 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
+import { linkFactureToProject } from '../services/stripeProjectLink.js'
 import { APP_URL } from '../config/appUrl.js'
 import {
   STRIPE_FACTURE_FIELDS, STRIPE_FACTURE_FIXED, getCustomFieldSpecs,
@@ -19,11 +21,7 @@ import {
 } from '../services/stripeSubscriptionFieldMap.js'
 
 function findCompanyByStripeCustomerId(stripeCustomerId) {
-  if (!stripeCustomerId) return null
-  const row = db.prepare(
-    'SELECT id FROM companies WHERE stripe_customer_id=? LIMIT 1'
-  ).get(stripeCustomerId)
-  return row?.id || null
+  return companyIdForStripeCustomer(stripeCustomerId)
 }
 
 function mapStripeStatus(stripeStatus) {
@@ -242,6 +240,7 @@ router.post('/batch-enrich', async (req, res) => {
 
         // Champs personnalisés mappés via la modale « Mapping Stripe »
         applyStripeCustomFieldColumns(factureId, inv)
+        linkFactureToProject(factureId, inv)
 
         if (!hasPdf && inv.invoice_pdf) {
           try {

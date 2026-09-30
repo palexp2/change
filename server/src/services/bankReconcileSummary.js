@@ -178,6 +178,10 @@ export function summarizeAccount(accountId) {
       balance: closing,
       balance_signed: closingSigned,
       date: statementDate,
+      // Solde IMPRIMÉ à `date`. `balance` y ajoute les lignes postérieures sans
+      // solde (solde courant) : le comparer à QuickBooks au `date` comptait ces
+      // lignes comme un écart (MasterCard, 2026-09-26 : −6 472 $ fictifs).
+      printed_balance_signed: res.anchorRow?.balance != null ? round2(direction * res.anchorRow.balance) : closingSigned,
       // Vrai si le solde de clôture vient d'une colonne « Solde » du relevé.
       from_statement: lastWithBalance != null,
     },
@@ -336,8 +340,8 @@ export async function compareWithQb(accountId, opts = {}) {
     const b = await qbBalanceAsOf(qbIds, summary.statement.date)
     balance = {
       qb_accounts: b.accounts, qb_current: b.current, qb_as_of: b.as_of,
-      statement: summary.statement.balance_signed, statement_date: summary.statement.date,
-      difference: summary.statement.balance_signed == null ? null : round2(summary.statement.balance_signed - b.as_of),
+      statement: summary.statement.printed_balance_signed, statement_date: summary.statement.date,
+      difference: summary.statement.printed_balance_signed == null ? null : round2(summary.statement.printed_balance_signed - b.as_of),
     }
   } catch (e) {
     balance = { error: e.message }

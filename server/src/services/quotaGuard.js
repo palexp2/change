@@ -19,9 +19,7 @@
 // de repli pour les deux, le temps que chacune soit réglée.
 //
 // Deux plafonds seulement sont regardés — la fenêtre glissante de 5 h et le total
-// hebdomadaire, les deux qui arrêtent VRAIMENT tout. Le plafond hebdomadaire d'un
-// modèle (ex. Fable) est volontairement ignoré : il a son repli automatique, le
-// travail continue sur l'autre modèle (voir agentModel.js).
+// hebdomadaire, les deux qui arrêtent VRAIMENT tout.
 //
 // Reprise à la main pendant la pénurie : elle gagne. Le garde-fou se met en sourdine
 // et ne repose pas sa pause — il ne redeviendra actif qu'après un retour au-dessus du

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import EmailAttachments from '../components/EmailAttachments.jsx'
+import LogInteractionModal from '../components/LogInteractionModal.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { CrmDetailLayout, CrmCard, CrmRow, CrmAdd, CrmCenterTabs, scrollCrmToTop } from '../components/CrmDetailLayout.jsx'
 import api from '../lib/api.js'
@@ -20,10 +21,11 @@ import { useAuth } from '../lib/auth.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
-import { fmtDateTime } from '../lib/formatDate.js'
+import { fmtDateTime, localISODate } from '../lib/formatDate.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { fmtPhone } from '../utils/formatters.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 function fieldTypeInput(type) {
   if (type === 'number') return 'number'
@@ -99,7 +101,7 @@ function CompanyLinks({ contactId, companies, allCompanies, onChange }) {
   return (
     <div data-testid="contact-companies" className="px-1">
       <div className="space-y-1.5">
-        {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
+        {saving && <ThinkingOrb size={12} />}
         {linked.length === 0 ? (
           <div className="text-sm text-slate-400 italic">Aucune entreprise liée</div>
         ) : linked.map(link => (
@@ -211,6 +213,21 @@ function InlineField({ field, value, saving, onSave }) {
   )
 }
 
+// Raccourcis d'échéance, comptés depuis aujourd'hui.
+const DUE_SHORTCUTS = [
+  { label: '1 j', days: 1 },
+  { label: '3 j', days: 3 },
+  { label: '1 sem', days: 7 },
+  { label: '2 sem', days: 14 },
+  { label: '1 mois', months: 1 },
+]
+function dueFromShortcut({ days = 0, months = 0 }) {
+  const d = new Date()
+  if (months) d.setMonth(d.getMonth() + months)
+  d.setDate(d.getDate() + days)
+  return localISODate(d)
+}
+
 function TaskModalContent({ contactId, contactCompanies = [], editingTask, users, taskForm, setTaskForm, savingTask, setSavingTask, onClose, onRefresh }) {
   const isEdit = !!editingTask
   const [fieldSaving, setFieldSaving] = useState({})
@@ -310,6 +327,21 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
           onChange={e => isEdit ? saveField('due_date', e.target.value) : setTaskForm(f => ({ ...f, due_date: e.target.value }))}
           className="input"
         />
+        <div className="flex flex-wrap gap-1 mt-1.5">
+          {DUE_SHORTCUTS.map(s => {
+            const v = dueFromShortcut(s)
+            return (
+              <button
+                key={s.label}
+                type="button"
+                onClick={() => isEdit ? saveField('due_date', v) : setTaskForm(f => ({ ...f, due_date: v }))}
+                className={`btn-secondary btn-sm${taskForm.due_date === v ? ' ring-1 ring-brand-500' : ''}`}
+              >
+                {s.label}
+              </button>
+            )
+          })}
+        </div>
       </div>
       <div>
         <label className="label">Responsable</label>
@@ -373,111 +405,6 @@ function TaskModalContent({ contactId, contactCompanies = [], editingTask, users
           </div>
         </form>
       )}
-    </Modal>
-  )
-}
-
-// ─── Log manuel d'une interaction ────────────────────────────────────────────
-// Ce qui n'est pas passé par l'ERP (appel sur le cellulaire, discussion à un
-// salon, SMS) n'a aucune trace dans le fil. Cette modale la crée à la main.
-const LOG_TYPES = [
-  { value: 'call',    label: 'Appel',   directional: true },
-  { value: 'sms',     label: 'SMS',     directional: true },
-  { value: 'meeting', label: 'Réunion' },
-  { value: 'note',    label: 'Note' },
-]
-
-function nowLocalInput() {
-  const d = new Date()
-  const pad = n => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function LogInteractionModal({ contactId, companyId, onClose, onSaved }) {
-  const { addToast } = useToast()
-  const [form, setForm] = useState({ type: 'call', direction: 'out', at: nowLocalInput(), notes: '' })
-  const [saving, setSaving] = useState(false)
-  const directional = LOG_TYPES.find(t => t.value === form.type)?.directional
-
-  async function submit(e) {
-    e.preventDefault()
-    setSaving(true)
-    try {
-      await api.interactions.create({
-        contact_id: contactId,
-        company_id: companyId || null,
-        type: form.type,
-        direction: directional ? form.direction : null,
-        // datetime-local est en heure du navigateur : converti en ISO UTC,
-        // la convention de stockage.
-        timestamp: form.at ? new Date(form.at).toISOString() : null,
-        notes: form.notes.trim() || null,
-      })
-      await onSaved()
-      onClose()
-    } catch (err) {
-      addToast({ message: err.message || 'Erreur', type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal isOpen={true} onClose={onClose} title="Consigner une interaction" size="sm">
-      <form onSubmit={submit} className="space-y-4">
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="label">Type</label>
-            <select
-              value={form.type}
-              onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
-              className="select"
-              data-testid="log-interaction-type"
-            >
-              {LOG_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
-          </div>
-          {directional && (
-            <div>
-              <label className="label">Sens</label>
-              <select
-                value={form.direction}
-                onChange={e => setForm(f => ({ ...f, direction: e.target.value }))}
-                className="select"
-              >
-                <option value="out">Sortant</option>
-                <option value="in">Entrant</option>
-              </select>
-            </div>
-          )}
-        </div>
-        <div>
-          <label className="label">Quand</label>
-          <input
-            type="datetime-local"
-            value={form.at}
-            onChange={e => setForm(f => ({ ...f, at: e.target.value }))}
-            className="input"
-          />
-        </div>
-        <div>
-          <label className="label">Notes</label>
-          <textarea
-            value={form.notes}
-            onChange={e => setForm(f => ({ ...f, notes: e.target.value }))}
-            className="input"
-            rows={4}
-            autoFocus
-            data-testid="log-interaction-notes"
-          />
-        </div>
-        <div className="flex justify-end gap-3 pt-1">
-          <button type="button" onClick={onClose} className="btn-secondary"><X size={14} /> Annuler</button>
-          <button type="submit" disabled={saving} className="btn-primary" data-testid="log-interaction-save">
-            <Save size={14} /> {saving ? 'Enregistrement...' : 'Enregistrer'}
-          </button>
-        </div>
-      </form>
     </Modal>
   )
 }

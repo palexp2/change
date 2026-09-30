@@ -11,8 +11,19 @@ import { emitEntity } from '../services/realtimeEmitters.js'
 import { uploadsPath } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 
+// Document extrait (/sale-receipts) qui a publié cet achat sur QB : même
+// quickbooks_id, même famille d'objet QB (les ids QB sont propres à chaque type).
+// quickbooks_type NULL = anciens reçus, publiés en Purchase.
+const SOURCE_RECEIPT_SELECT = `
+  (SELECT r.id FROM sale_receipts r
+    WHERE r.quickbooks_id = a.quickbooks_id AND r.deleted_at IS NULL
+      AND CASE WHEN a.type = 'bill' THEN r.quickbooks_type = 'bill'
+               ELSE COALESCE(r.quickbooks_type, 'purchase') IN ('purchase', 'cc_credit') END
+    ORDER BY r.created_at DESC LIMIT 1) AS source_receipt_id
+`
+
 const ACHAT_LIST_SELECT = `
-  SELECT a.*, u.name as created_by_name
+  SELECT a.*, u.name as created_by_name, ${SOURCE_RECEIPT_SELECT}
   FROM achats_fournisseurs a
   LEFT JOIN users u ON a.created_by = u.id
   WHERE a.id = ?
@@ -22,10 +33,20 @@ const router = Router()
 router.use(requireAuth)
 
 // Lien vers la transaction dans l'app QuickBooks (bill ou expense).
+// Une Dépense (Purchase QB) est réglée au moment de l'achat — carte, chèque,
+// comptant : rien n'est dû. Aucun écrivain ne remplit amount_paid_cad pour elles
+// (import QB, banque, reçus…), la colonne générée balance_due_cad valait donc
+// le total. On expose l'état réel : payé = total, solde dû = 0.
 const withQbUrl = row => ({
   ...row,
+  ...(row.type === 'purchase' ? { amount_paid_cad: row.total_cad, balance_due_cad: 0 } : {}),
   qb_url: row.quickbooks_id ? qbEntityUrl(row.type === 'bill' ? 'bill' : 'expense', row.quickbooks_id) : null,
 })
+
+const getAchat = id => {
+  const row = db.prepare(ACHAT_LIST_SELECT).get(id)
+  return row ? withQbUrl(row) : row
+}
 
 const UPLOADS_ROOT = uploadsPath()
 const QB_ATTACH_DIR = path.join(UPLOADS_ROOT, 'qb-attachments')
@@ -67,7 +88,7 @@ router.get('/', (req, res) => {
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM achats_fournisseurs a ${where}`).get(...params).c
   const rows = db.prepare(`
-    SELECT a.*, u.name as created_by_name
+    SELECT a.*, u.name as created_by_name, ${SOURCE_RECEIPT_SELECT}
     FROM achats_fournisseurs a
     LEFT JOIN users u ON a.created_by = u.id
     ${where}
@@ -80,7 +101,7 @@ router.get('/', (req, res) => {
 
 router.get('/:id', (req, res) => {
   const row = db.prepare(`
-    SELECT a.*, u.name as created_by_name
+    SELECT a.*, u.name as created_by_name, ${SOURCE_RECEIPT_SELECT}
     FROM achats_fournisseurs a
     LEFT JOIN users u ON a.created_by = u.id
     WHERE a.id = ?
@@ -125,7 +146,7 @@ router.post('/', (req, res) => {
     status || defaultStatus, notes || null, lines || null, req.user.id
   )
 
-  const created = db.prepare(ACHAT_LIST_SELECT).get(id)
+  const created = getAchat(id)
   emitEntity('achat_fournisseur', 'created', id, created, req.user?.id)
 
   // CTB - Suivi : une facture fournisseur (Bill) ajoutée à la main est une
@@ -188,7 +209,7 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id)
   }
 
-  const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
+  const updated = getAchat(req.params.id)
   if (setClause) {
     emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
     notifyCtbFacturePayee(existing.status, updated, `achat ${req.params.id} (PUT)`)
@@ -201,7 +222,7 @@ router.patch('/:id/status', (req, res) => {
   if (!existing) return res.status(404).json({ error: 'Not found' })
   db.prepare(`UPDATE achats_fournisseurs SET status=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
     .run(req.body.status, req.params.id)
-  const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
+  const updated = getAchat(req.params.id)
   emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
   notifyCtbFacturePayee(existing.status, updated, `achat ${req.params.id} (statut)`)
   res.json({ ok: true })
@@ -244,7 +265,7 @@ router.get('/:id/vendor-history', (req, res) => {
 router.post('/:id/push-to-qb', async (req, res) => {
   try {
     const qbId = await pushAchatToQB(req.params.id)
-    const updated = db.prepare(ACHAT_LIST_SELECT).get(req.params.id)
+    const updated = getAchat(req.params.id)
     if (updated) emitEntity('achat_fournisseur', 'updated', req.params.id, updated, req.user?.id)
     res.json({ ok: true, quickbooks_id: qbId, data: updated })
   } catch (e) {

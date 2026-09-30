@@ -1,6 +1,6 @@
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
-import { ExternalLink, Plus, FileDown, Trash2, ChevronUp, ChevronDown, X, FileText } from 'lucide-react'
+import { ExternalLink, Plus, FileDown, Trash2, X, FileText } from 'lucide-react'
 import { api } from '../lib/api.js'
 
 function pdfUrl(id, download = false) {
@@ -16,6 +16,10 @@ import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import FactureDetail from './FactureDetail.jsx'
+import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
+import Spinner from '../components/Spinner.jsx'
+import { PEEK_ROUTES } from '../lib/recordPeekRoutes.jsx'
+import { RecordScope } from '../lib/recordLive.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { OrderCreateModal } from '../components/OrderCreateModal.jsx'
@@ -24,9 +28,11 @@ import { useSectionNav } from '../lib/useSectionNav.js'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { InlineText, InlineTextarea, InlineNumber, InlineDate } from '../components/InlineFields.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
+import { useAuth } from '../lib/auth.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useDisabledColumns } from '../lib/useDisabledColumns.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
+import { ChoiceBadge, parseSelectChoices } from '../lib/customFieldDisplay.jsx'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
@@ -43,257 +49,29 @@ const STATUS_LABELS = { 'legacy': 'Archivé' }
 // type saisi ailleurs qui n'y figure pas reste proposé (voir typeOptions).
 const PROJECT_TYPES = TABLE_COLUMN_META.projects.find(c => c.id === 'type')?.options || []
 
-// ── Create soumission modal ───────────────────────────────────────────────────
-
-function blankItem() {
-  return { catalog_product_id: '', description_fr: '', description_en: '', qty: 1, unit_price_cad: 0 }
-}
-
-function CreateSoumissionModal({ project, onClose, onCreated }) {
-  const { addToast } = useToast()
-  const [catalog, setCatalog] = useState([])
-  const [form, setForm] = useState({
-    language: project.contact_language || 'French',
-    currency: 'CAD',
-    // Pas de « Notes » à la création : la soumission naît sans note, elle
-    // s'ajoute au besoin depuis la fiche de la soumission.
-    discount_pct: 0,
-    discount_amount: 0,
-  })
-  const [items, setItems] = useState([blankItem()])
-  const [saving, setSaving] = useState(false)
-  const [step, setStep] = useState(1)
-
-  useEffect(() => { api.catalog.list().then(setCatalog).catch(console.error) }, [])
-
-  const isFr = form.language !== 'English'
-  const _fmt = (n) => fmtMoney(n) // CAD/USD handled by currency field but fmtMoney is CAD; we'll show currency label
-
-  const removeItem = (idx) => setItems(prev => prev.filter((_, i) => i !== idx))
-  const updateItem = (idx, key, val) => setItems(prev => prev.map((it, i) => i === idx ? { ...it, [key]: val } : it))
-  const moveItem = (idx, dir) => {
-    setItems(prev => {
-      const arr = [...prev]
-      const t = idx + dir
-      if (t < 0 || t >= arr.length) return arr
-      ;[arr[idx], arr[t]] = [arr[t], arr[idx]]
-      return arr
-    })
-  }
-  const selectProduct = (idx, productId) => {
-    const product = catalog.find(p => p.id === productId)
-    if (!product) { updateItem(idx, 'catalog_product_id', ''); return }
-    const price = form.currency === 'USD' ? (product.price_usd || 0) : (product.price_cad || 0)
-    setItems(prev => prev.map((it, i) => i === idx ? {
-      ...it, catalog_product_id: product.id,
-      description_fr: product.name_fr, description_en: product.name_en,
-      unit_price_cad: price,
-    } : it))
-  }
-  const changeCurrency = (newCurrency) => {
-    setForm(f => ({ ...f, currency: newCurrency }))
-    setItems(prev => prev.map(it => {
-      if (!it.catalog_product_id) return { ...it, unit_price_cad: 0 }
-      const product = catalog.find(p => p.id === it.catalog_product_id)
-      if (!product) return it
-      return { ...it, unit_price_cad: newCurrency === 'USD' ? (product.price_usd || 0) : (product.price_cad || 0) }
-    }))
-  }
-
-  const subtotal = items.reduce((s, it) => s + (it.qty || 1) * (it.unit_price_cad || 0), 0)
-  const discPct = parseFloat(form.discount_pct) || 0
-  const discAmt = parseFloat(form.discount_amount) || 0
-  const totalDiscount = Math.min(subtotal, subtotal * discPct / 100 + discAmt)
-  const netTotal = Math.max(0, subtotal - totalDiscount)
-  const fmtP = (n) => fmtMoney(n || 0, form.currency, { locale: form.currency === 'USD' ? 'en-US' : 'fr-CA' })
-
-  const inp = 'border border-slate-200 rounded px-2 py-1 text-sm focus:outline-none focus:border-brand-400'
-
-  const save = async () => {
-    setSaving(true)
-    try {
-      // Trim des champs texte au submit pour éviter des records pollués par des espaces seuls.
-      const result = await api.documents.soumissions.create({
-        ...form,
-        project_id: project.id,
-        company_id: project.company_id || null,
-        items: items
-          .map(it => ({
-            ...it,
-            description_fr: (it.description_fr || '').trim(),
-            description_en: (it.description_en || '').trim(),
-          }))
-          .filter(it => it.description_fr || it.description_en || it.catalog_product_id)
-          .map(it => ({
-            catalog_product_id: it.catalog_product_id || null,
-            qty: it.qty, unit_price_cad: it.unit_price_cad,
-            description_fr: it.description_fr, description_en: it.description_en,
-          })),
-      })
-      onCreated(result)
-    } catch (e) {
-      addToast({ message: e.message, type: 'error' })
-    } finally {
-      setSaving(false)
-    }
-  }
-
-  return (
-    <Modal isOpen onClose={onClose} title="Nouvelle soumission" size="xl">
-      <div className="flex gap-3 mb-5">
-        {[{ n: 1, label: 'Informations' }, { n: 2, label: 'Articles' }].map(s => (
-          <button key={s.n} onClick={() => setStep(s.n)}
-            className={`px-4 py-1.5 rounded-full text-sm font-medium transition-colors ${step === s.n ? 'bg-brand-100 text-brand-700' : 'text-slate-500 hover:text-slate-700'}`}>
-            {s.n}. {s.label}
-          </button>
-        ))}
-      </div>
-
-      {step === 1 && (
-        <div className="space-y-4">
-          <div className="flex gap-4">
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Langue du client</label>
-              <select className="border rounded-lg px-3 py-2 text-sm"
-                value={form.language} onChange={e => setForm(f => ({ ...f, language: e.target.value }))}>
-                <option value="French">Français</option>
-                <option value="English">English</option>
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1">Devise</label>
-              <select className="border rounded-lg px-3 py-2 text-sm font-mono font-semibold"
-                value={form.currency} onChange={e => changeCurrency(e.target.value)}>
-                <option value="CAD">CAD</option>
-                <option value="USD">USD</option>
-              </select>
-            </div>
-          </div>
-          <div className="flex justify-end">
-            <button onClick={() => setStep(2)} className="bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700">
-              Suivant : Articles →
-            </button>
-          </div>
-        </div>
-      )}
-
-      {step === 2 && (
-        <div className="space-y-3">
-          <div className="overflow-x-auto border rounded-lg">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-slate-50 border-b text-xs text-slate-500">
-                  <th className="px-2 py-2 text-left" style={{minWidth:200}}>Produit</th>
-                  <th className="px-2 py-2 text-center" style={{width:56}}>Qté</th>
-                  <th className="px-2 py-2 text-right" style={{width:110}}>Prix ({form.currency})</th>
-                  <th className="px-2 py-2 text-right" style={{width:90}}>Total</th>
-                  <th style={{width:56}}></th>
-                </tr>
-              </thead>
-              <tbody>
-                {items.map((it, idx) => (
-                  <tr key={idx} className="border-b last:border-0">
-                    <td className="px-2 py-1.5">
-                      <LinkedRecordField
-                        name={`project_item_${idx}`}
-                        value={it.catalog_product_id || ''}
-                        options={catalog}
-                        labelFn={p => isFr ? p.name_fr : (p.name_en || p.name_fr)}
-                        getHref={p => `/products/${p.id}`}
-                        onChange={v => selectProduct(idx, v)}
-                      />
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <input type="number" min="1" className={`${inp} w-12 text-center`}
-                        value={it.qty} onChange={e => updateItem(idx, 'qty', parseInt(e.target.value) || 1)} />
-                    </td>
-                    <td className="px-2 py-1.5 text-right font-mono text-slate-600 text-sm">
-                      {fmtP(it.unit_price_cad)}
-                    </td>
-                    <td className="px-2 py-1.5 text-right font-mono font-medium text-slate-900 text-sm">
-                      {fmtP((it.qty || 1) * (it.unit_price_cad || 0))}
-                    </td>
-                    <td className="px-1 py-1.5">
-                      <div className="flex items-center gap-0.5">
-                        <button onClick={() => moveItem(idx, -1)} className="p-0.5 text-slate-300 hover:text-slate-500"><ChevronUp size={12} /></button>
-                        <button onClick={() => moveItem(idx, 1)} className="p-0.5 text-slate-300 hover:text-slate-500"><ChevronDown size={12} /></button>
-                        <button onClick={() => removeItem(idx)} className="p-0.5 text-slate-300 hover:text-red-500"><Trash2 size={12} /></button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div className="px-3 py-2 border-t">
-              <button onClick={() => setItems(prev => [...prev, blankItem()])}
-                className="flex items-center gap-1.5 text-sm text-brand-600 hover:text-brand-800 font-medium">
-                <Plus size={13} /> Ajouter une ligne
-              </button>
-            </div>
-          </div>
-
-          {/* Global discount + totals */}
-          <div className="flex items-start justify-between gap-6 pt-1">
-            <div className="space-y-2">
-              <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Rabais global</p>
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-slate-500">%</label>
-                  <div className="relative">
-                    <input type="number" min="0" max="100" step="0.1"
-                      className={`${inp} w-20 text-right pr-5`}
-                      value={form.discount_pct}
-                      onChange={e => setForm(f => ({ ...f, discount_pct: parseFloat(e.target.value) || 0 }))} />
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">%</span>
-                  </div>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <label className="text-xs text-slate-500">$</label>
-                  <input type="number" min="0" step="0.01"
-                    className={`${inp} w-28 text-right`}
-                    value={form.discount_amount}
-                    onChange={e => setForm(f => ({ ...f, discount_amount: parseFloat(e.target.value) || 0 }))} />
-                </div>
-              </div>
-            </div>
-
-            <div className="space-y-1 text-sm min-w-44">
-              <div className="flex justify-between gap-4 text-slate-500">
-                <span>{isFr ? 'Sous-total' : 'Subtotal'}</span>
-                <span className="font-mono">{fmtP(subtotal)}</span>
-              </div>
-              {totalDiscount > 0 && (
-                <div className="flex justify-between gap-4 text-red-500">
-                  <span>{isFr ? 'Rabais' : 'Discount'}</span>
-                  <span className="font-mono">-{fmtP(totalDiscount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between gap-4 font-bold text-brand-700 border-t pt-1">
-                <span>{isFr ? 'Total' : 'Total'}</span>
-                <span className="font-mono">{fmtP(netTotal)}</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between pt-1">
-            <button onClick={() => setStep(1)} className="text-slate-500 text-sm hover:text-slate-700">← Retour</button>
-            <button onClick={save} disabled={saving}
-              className="flex items-center gap-2 bg-brand-600 text-white px-5 py-2 rounded-lg text-sm font-medium hover:bg-brand-700 disabled:opacity-50">
-              {saving ? 'Génération du PDF…' : 'Créer et générer PDF'}
-            </button>
-          </div>
-        </div>
-      )}
-    </Modal>
-  )
-}
-
 // Ajout d'une commission : bénéficiaire (« vendeur ») + taux. Les deux seuls
 // champs saisissables — Airtable calcule le montant à partir des factures
 // payées du projet. La liste des bénéficiaires vient d'Airtable (table hors
 // miroir), d'où le chargement à l'ouverture.
+// Nom comparable : sans accents, casse, traits d'union ni espaces superflus.
+const normName = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+  .toLowerCase().replace(/[\s-]+/g, ' ').trim()
+
+// Bénéficiaire Airtable correspondant à l'utilisateur connecté (par le nom :
+// la table « Employés et partenaires » n'a pas de lien vers les comptes ERP).
+function beneficiaryForUser(list, userName) {
+  const target = normName(userName)
+  if (!target) return null
+  const exact = list.find(b => normName(b.label) === target)
+  if (exact) return exact
+  const tokens = target.split(' ')
+  const partial = list.filter(b => tokens.every(t => normName(b.label).split(' ').includes(t)))
+  return partial.length === 1 ? partial[0] : null
+}
+
 function AddCommissionModal({ project, onClose, onCreated }) {
   const { addToast } = useToast()
+  const { user } = useAuth()
   const [beneficiaries, setBeneficiaries] = useState([])
   const [loadingOptions, setLoadingOptions] = useState(true)
   const [beneficiaryId, setBeneficiaryId] = useState('')
@@ -302,11 +80,26 @@ function AddCommissionModal({ project, onClose, onCreated }) {
 
   useEffect(() => {
     api.projects.commissionBeneficiaries()
-      .then(r => setBeneficiaries(r.data || []))
+      .then(r => {
+        const list = r.data || []
+        setBeneficiaries(list)
+        const me = beneficiaryForUser(list, user?.name)
+        if (me) {
+          setBeneficiaryId(prev => prev || me.id)
+          if (me.commission_rate != null) setRatePercent(prev => prev || String(me.commission_rate))
+        }
+      })
       .catch(e => addToast({ message: e.message, type: 'error' }))
       .finally(() => setLoadingOptions(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Taux par défaut = celui de la fiche de l'employé relié au vendeur.
+  const pickBeneficiary = (bid) => {
+    setBeneficiaryId(bid)
+    const b = beneficiaries.find(x => x.id === bid)
+    if (b?.commission_rate != null) setRatePercent(String(b.commission_rate))
+  }
 
   const rate = parseFloat(String(ratePercent).replace(',', '.'))
   const valid = beneficiaryId && Number.isFinite(rate) && rate >= 0 && rate <= 100
@@ -336,7 +129,7 @@ function AddCommissionModal({ project, onClose, onCreated }) {
             options={beneficiaries}
             getOptionValue={b => b.id}
             getOptionLabel={b => b.label}
-            onChange={setBeneficiaryId}
+            onChange={pickBeneficiary}
             className="input text-sm w-full"
             size="sm"
             disabled={loadingOptions || saving}
@@ -408,6 +201,9 @@ export default function ProjectDetail({ recordId, onClose }) {
   const confirm = useConfirm()
   const [deleting, setDeleting] = useState(false)
   const [soumissions, setSoumissions] = useState([])
+  // Soumission ouverte en panneau empilé sur celui du projet (pas de navigation :
+  // elle démontait le panneau du projet, qui se rouvrait à la fermeture).
+  const [peekSoumission, setPeekSoumission] = useState(null)
   const [factures, setFactures] = useState([])
   // Commissions : lues en direct dans Airtable (table hors miroir), donc elles
   // peuvent échouer indépendamment du reste de la fiche — d'où leur propre état
@@ -415,7 +211,6 @@ export default function ProjectDetail({ recordId, onClose }) {
   const [commissions, setCommissions] = useState([])
   const [commissionsError, setCommissionsError] = useState(null)
   const [showAddCommission, setShowAddCommission] = useState(false)
-  const [showCreate, setShowCreate] = useState(false)
   const [showOrderCreate, setShowOrderCreate] = useState(false)
   const [linkingOrder, setLinkingOrder] = useState(false)
   const [showPdf, setShowPdf] = useState(null) // { id, title }
@@ -494,6 +289,14 @@ export default function ProjectDetail({ recordId, onClose }) {
   // Types proposés par le sélecteur. Un type déjà posé sur le projet mais absent
   // de la liste (import Airtable, ancien libellé) reste proposé — sinon le
   // champ paraîtrait vide et un simple coup d'œil l'effacerait.
+  // Couleur de chaque type : celle du champ « Type » (la même que les pastilles
+  // du tableau des projets).
+  const typeColors = useMemo(() => {
+    const f = projectFields.find(x => x.column_name === 'type')
+    return new Map(parseSelectChoices(f).map(c => [String(c.label ?? c.id), c.color]))
+  }, [projectFields])
+  const renderTypeChoice = o => <ChoiceBadge color={typeColors.get(String(o.value)) || 'gray'}>{o.label}</ChoiceBadge>
+
   const typeOptions = useMemo(() => {
     const opts = PROJECT_TYPES.map(t => ({ value: t, label: t }))
     if (project?.type && !PROJECT_TYPES.includes(project.type)) {
@@ -562,6 +365,8 @@ export default function ProjectDetail({ recordId, onClose }) {
       .then(r => setSoumissions(r.data || []))
       .catch(() => {})
   }
+
+  const closeSoumission = () => { setPeekSoumission(null); loadSoumissions() }
 
   const loadFactures = () => {
     api.factures.list({ project_id: id, limit: 'all' })
@@ -787,6 +592,8 @@ export default function ProjectDetail({ recordId, onClose }) {
                 value={project.type || ''}
                 options={typeOptions}
                 emptyOption="—"
+                renderOption={renderTypeChoice}
+                renderValue={renderTypeChoice}
                 onChange={v => saveField('type', v)}
                 className="input text-sm w-full"
                 size="sm"
@@ -884,7 +691,7 @@ export default function ProjectDetail({ recordId, onClose }) {
           registerRef={registerSection('soumissions')}
           action={
             <button
-              onClick={() => setShowCreate(true)}
+              onClick={() => navigate(`/soumissions/nouvelle?projet=${id}`)}
               className="btn-primary btn-sm"
             >
               <Plus size={14} /> Nouvelle soumission
@@ -897,7 +704,7 @@ export default function ProjectDetail({ recordId, onClose }) {
             data={soumissions}
             searchFields={['at_id', 'title', 'status', 'currency']}
             height={stackedTableHeight(soumissions.length)}
-            onRowClick={row => { if (row.status !== 'legacy' && row.id) navigate(`/soumissions/${row.id}`) }}
+            onRowClick={row => { if (row.status !== 'legacy' && row.id) setPeekSoumission(row) }}
           />
         </Section>
 
@@ -985,14 +792,6 @@ export default function ProjectDetail({ recordId, onClose }) {
         />
       )}
 
-      {showCreate && (
-        <CreateSoumissionModal
-          project={project}
-          onClose={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); loadSoumissions() }}
-        />
-      )}
-
       {/* Création d'une commande depuis le projet : formulaire standard de la
           page Commandes, projet et entreprise préremplis. La nouvelle commande
           naît vide — on ouvre sa fiche pour y poser les articles. */}
@@ -1006,6 +805,24 @@ export default function ProjectDetail({ recordId, onClose }) {
           navigate(`/orders/${order.id}`)
         }}
       />
+
+      <RecordPeekDrawer
+        open={!!peekSoumission}
+        onClose={closeSoumission}
+        title={peekSoumission ? PEEK_ROUTES.soumissions.title(peekSoumission) : ''}
+        subtitle={project.name}
+        to={peekSoumission ? `/soumissions/${peekSoumission.id}` : undefined}
+        width={PEEK_ROUTES.soumissions.width}
+        peekKey="soumissions"
+      >
+        {peekSoumission && (
+          <Suspense fallback={<div className="p-6 text-sm text-slate-400"><Spinner size="xs" label="Chargement…" /></div>}>
+            <RecordScope key={peekSoumission.id} id={peekSoumission.id}>
+              <PEEK_ROUTES.soumissions.Component recordId={peekSoumission.id} embedded onClose={closeSoumission} />
+            </RecordScope>
+          </Suspense>
+        )}
+      </RecordPeekDrawer>
 
       {showPdf && (
         <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -1038,7 +855,7 @@ export default function ProjectDetail({ recordId, onClose }) {
 // Picker pour le champ Vendeur d'un projet — fusionne employés salesperson
 // actifs et entreprises avec is_vendeur_orisha=1. Recherche live, kind affiché
 // pour distinguer un employé d'une entreprise partenaire.
-function VendeurPicker({ value, options, onChange, disabled, fallbackLabel }) {
+export function VendeurPicker({ value, options, onChange, disabled, fallbackLabel }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const selected = options.find(o => o.ref === value)

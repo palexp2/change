@@ -264,14 +264,16 @@ export function arrivalOf(p) {
   const label = String(p.capture_label || '').trim()
   if (p.first_comment_text) {
     const when = shortDate(p.first_comment_at)
+    const head = `A commenté${when ? ` le ${when}` : ''}`
     return {
-      text: `A commenté${when ? ` le ${when}` : ''} : « ${clip(p.first_comment_text)} »`,
+      text: `${head} : « ${clip(p.first_comment_text)} »`,
       url: p.first_post_url || p.capture_url || null,
+      head, quote: String(p.first_comment_text).trim(),
     }
   }
   const quoted = (label.match(/«\s*([\s\S]*?)\s*»?$/) || [])[1]
-  if (/^📝/u.test(label)) return { text: `A commenté : « ${clip(quoted)} »`, url: p.capture_url || null }
-  if (/^💬 A écrit/u.test(label)) return { text: `Écrit en DM : « ${clip(quoted)} »`, url: null }
+  if (/^📝/u.test(label)) return { text: `A commenté : « ${clip(quoted)} »`, url: p.capture_url || null, head: 'A commenté', quote: quoted || null }
+  if (/^💬 A écrit/u.test(label)) return { text: `Écrit en DM : « ${clip(quoted)} »`, url: null, head: 'Écrit en DM', quote: quoted || null }
   if (/story/i.test(label)) return { text: /Mention/i.test(label) ? 'Mention dans une story' : 'Réponse à une story', url: null }
   if (/^👤/u.test(label) || !label) return { text: 'Abonnée, n’a rien écrit', url: null }
   return { text: clip(label.replace(/^\p{Extended_Pictographic}\s*/u, '')), url: p.capture_url || null }

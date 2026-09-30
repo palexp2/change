@@ -185,13 +185,15 @@ function normalizeSelectOptions(raw, _existingIds = new Set()) {
 //   - single_select : label du choix marqué default_id dans `options`
 //   - text/number/currency/url : `default_value` (la colonne REAL coerce le
 //     texte numérique pour number/currency)
-// Exporté pour les routes de création (ex: projects POST).
-export function applyCustomFieldDefaults(erpTable, recordId) {
+// Exporté pour les routes de création (ex: projects POST). `skip` : colonnes
+// à laisser vides pour cet enregistrement.
+export function applyCustomFieldDefaults(erpTable, recordId, { skip = [] } = {}) {
   const fields = db.prepare(
     `SELECT column_name, type, default_value, options FROM custom_fields
      WHERE erp_table=? AND deleted_at IS NULL AND kind='data'`
   ).all(erpTable)
   for (const f of fields) {
+    if (skip.includes(f.column_name)) continue
     let value = null
     if (f.type === 'single_select') {
       if (!f.options) continue
@@ -752,8 +754,8 @@ router.put('/:erpTable/native/:fieldId', (req, res) => {
     try { cleanDescription = normalizeDescription(req.body.description) }
     catch (e) { return res.status(400).json({ error: e.message }) }
   }
-  if (cleanLabel == null && cleanType == null && cleanCountryCode == null && !hasOptions && !hasDescription) {
-    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type, indicatif, choix, format ou description requis' })
+  if (cleanLabel == null && cleanType == null && cleanDecimals == null && cleanCountryCode == null && !hasOptions && !hasDescription) {
+    return res.status(400).json({ error: 'Rien à enregistrer : libellé, type, décimales, indicatif, choix, format ou description requis' })
   }
 
   // Unicité du libellé dans la table : deux champs homonymes rendent tout
@@ -1105,9 +1107,11 @@ const FIELD_KINDS = {
       // Les agrégats sont numériques par défaut.
       const resultType = requireResultType(body?.result_type, { fallback: 'number' })
       validateRollup(rollup, erpTable)
+      const d = parseInt(body?.decimals)
+      const decimals = resultType === 'number' && Number.isInteger(d) && d >= 0 && d <= 5 ? d : undefined
       return {
         type: typeForResultType(resultType),
-        columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType, ...resultTypeOptions(resultType, body) },
+        columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType, decimals, ...resultTypeOptions(resultType, body) },
       }
     },
   },
@@ -1713,7 +1717,11 @@ router.put('/:id', (req, res) => {
   }
   if (!wantedKind && 'decimals' in (req.body || {})) {
     // Prend en compte un changement de type dans la même requête (ex: number → currency).
-    const effectiveType = ('type' in (req.body || {})) ? req.body.type : existing.type
+    // Champ calculé : c'est son format (result_type) qui compte — un rollup
+    // passé de « liste » à « Nombre » garde type='text' en base.
+    const effectiveType = ['formula', 'rollup'].includes(existing.kind)
+      ? (('result_type' in (req.body || {})) ? req.body.result_type : existing.result_type)
+      : (('type' in (req.body || {})) ? req.body.type : existing.type)
     if (!DECIMAL_TYPES.has(effectiveType)) return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre, devise ou pourcentage' })
     const d = parseInt(req.body.decimals)
     if (!Number.isInteger(d) || d < 0 || d > 5) return res.status(400).json({ error: 'Décimales doit être entre 0 et 5' })

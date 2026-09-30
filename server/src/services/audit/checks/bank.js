@@ -177,12 +177,12 @@ export const ecartSolde = {
     const findings = []
     for (const account of accounts) {
       const summary = summarizeAccount(account.id)
-      if (!summary?.count || summary.statement?.balance_signed == null) continue
+      if (!summary?.count || summary.statement?.printed_balance_signed == null) continue
       const qbIds = String(account.qb_account_id || '').split(',').map((s) => s.trim()).filter(Boolean)
       if (!qbIds.length) continue
       let b = null
       try { b = await qbBalanceAsOf(qbIds, summary.statement.date) } catch { continue }
-      const releve = summary.statement.balance_signed
+      const releve = summary.statement.printed_balance_signed
       const diff = round2(releve - b.as_of)
       // Marge de crédit, carte : le relevé note parfois en positif ce que
       // QuickBooks porte en négatif. Comparer tels quels donnerait un écart

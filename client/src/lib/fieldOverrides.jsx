@@ -184,7 +184,7 @@ const OVERRIDE_TO_COLUMN_TYPE = {
 // Rendu générique d'une valeur selon le type d'override — remplace le render()
 // spécifique de la page quand le type est changé (l'ancien render suppose la
 // sémantique du type d'origine, ex. fmtCad sur un montant).
-export function renderOverriddenValue(ov, value) {
+export function renderOverriddenValue(ov, value, { dateOnlyAsMidnight = false } = {}) {
   const linkTarget = linkTargetOfType(ov.type)
   if (linkTarget) {
     return (
@@ -228,7 +228,7 @@ export function renderOverriddenValue(ov, value) {
     )
   }
   if (ov.type === 'rating') return <RatingStars value={value} />
-  if (ov.type === 'date') return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(ov))}</span>
+  if (ov.type === 'date') return <span className="text-slate-500">{fmtDateWithFormat(value, dateFormatOf(ov), { dateOnlyAsMidnight })}</span>
   if (ov.type === 'url') return <UrlValue value={value} />
   if (ov.type === 'phone') return <PhoneValue value={value} countryCode={phoneCountryCodePref(ov)} />
   return <span className="text-slate-700">{String(value)}</span>
@@ -282,7 +282,7 @@ function renderNativeSelectValue(choices, value, origRender, row, multi) {
       {values.map((v, i) => {
         const c = byValue.get(v)
         return (
-          <ChoiceBadge key={i} color={c?.color || 'gray'} className="shrink-0 whitespace-nowrap">
+          <ChoiceBadge key={i} color={c?.color || 'gray'} className={multi ? 'shrink-0 whitespace-nowrap' : 'single-select-label'}>
             {c?.label || v}
           </ChoiceBadge>
         )
@@ -351,6 +351,10 @@ export function applyFieldOverrides(columns, overrides) {
         next.options = choices.map(c => c.value)
         next.render = row => renderNativeSelectValue(choices, row[col.field], origRender, row, origType === 'multi_select')
       }
+    } else if (origType === 'currency' && Number.isInteger(ov.decimals)) {
+      // Devise native dont seul le nombre de décimales change : DataTable le
+      // lit sur col.decimals (rendu monétaire standard).
+      next.decimals = ov.decimals
     } else if (origType === 'phone' && (ov.country_code === 'show' || ov.country_code === 'hide')) {
       // Champ téléphone natif dont seule la préférence d'indicatif change : on
       // remplace le rendu par PhoneValue (le render natif fmtPhone masque
@@ -359,7 +363,8 @@ export function applyFieldOverrides(columns, overrides) {
     } else if (origType === 'date' && dateFormatOf(ov) !== 'iso_date') {
       // Date native avec un format choisi (ex. + heure) : rendu générique au
       // format, à la place du rendu de la page (qui ne connaît que la date).
-      next.render = row => renderOverriddenValue({ type: 'date', options: ov.options }, row[col.field])
+      // `col.dateOnlyAsMidnight` (option de la page) : date sans heure → 00:00.
+      next.render = row => renderOverriddenValue({ type: 'date', options: ov.options }, row[col.field], { dateOnlyAsMidnight: !!col.dateOnlyAsMidnight })
     }
     return next
   })

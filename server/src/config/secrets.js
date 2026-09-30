@@ -1,6 +1,6 @@
-import dotenv from 'dotenv'
 import { randomBytes } from 'crypto'
-dotenv.config()
+import { loadEnv } from './loadEnv.js'
+loadEnv()
 
 const WEAK_DEFAULTS = new Set([
   'change-this-secret-in-production',

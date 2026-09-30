@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-labelledby="title desc">
+  <title id="title">Round pipe</title>
+  <desc id="desc">A large hollow round pipe, seen in perspective.</desc>
+  <rect width="640" height="300" fill="#fff"/>
+  <!-- Le tuyau seul, centré : aucune cote ni chiffre. -->
+  <g transform="translate(101 5)">
+    <path d="M160 63 290 40a76 76 0 0 1 0 152L160 239Z" fill="#b5e2e3" stroke="#67b6bc" stroke-width="3"/>
+    <path d="m206 200 116-35" fill="none" stroke="#67b6bc" stroke-width="3"/>
+    <circle cx="160" cy="151" r="88" fill="#7ecdd0" stroke="#67b6bc" stroke-width="3"/>
+    <circle cx="160" cy="151" r="70" fill="#355b65"/>
+    <path d="M112 202a70 70 0 0 1 97-101 70 70 0 0 0-97 101Z" fill="#24434e"/>
+  </g>
+  <rect y="289" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

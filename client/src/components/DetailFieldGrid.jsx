@@ -21,6 +21,7 @@ import { CustomFieldModal } from './CustomFieldModal.jsx'
 import { FieldAirtableMapping } from './FieldAirtableMapping.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { FieldPulse } from './FieldPulse.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 // Carte de champs d'une fiche, avec mode édition de la disposition.
 //
@@ -56,6 +57,9 @@ import { FieldPulse } from './FieldPulse.jsx'
 // Sélection montrent la pastille de couleur du choix (valeur et menu) au lieu du
 // texte nu. Par défaut non, les fiches gardent leur rendu texte.
 //
+// `shownSynced` : colonnes de sync que la fiche pose d'office (au lieu de les
+// laisser repliées dans « Ajouter un champ »). Référence stable.
+//
 // `taken` : colonnes que la fiche rend AILLEURS que dans la carte (en-tête du
 // panneau, bloc maison) ou seulement dans certains cas — elles ne doivent pas
 // revenir en double par la liste des champs personnalisés. Doit être une
@@ -82,7 +86,7 @@ function FieldLabel({ label, saving, field, recordId }) {
   return (
     <div className="text-xs font-medium text-slate-400 uppercase tracking-wide mb-1 flex items-center gap-1">
       {label}
-      {saving && <span className="inline-block w-3 h-3 border border-brand-400 border-t-transparent rounded-full animate-spin" />}
+      {saving && <ThinkingOrb size={12} />}
       <FieldPulse recordId={recordId} field={field} />
     </div>
   )
@@ -101,6 +105,7 @@ export function DetailFieldGrid({
   onSaveCustom = null,
   savingKeys = NO_SAVING,
   taken = NO_TAKEN,
+  shownSynced = NO_TAKEN,
   selectPills = false,
   // Rend les adresses web des champs texte cliquables, sur demande de la fiche.
   linkifyTextUrls = false,
@@ -198,7 +203,7 @@ export function DetailFieldGrid({
           label: f.label,
           testId: `detail-cf-${f.key}`,
           saving,
-          defaultHidden: f.defaultHidden,
+          defaultHidden: f.defaultHidden && !shownSynced.includes(f.key),
           // Ligne custom_fields brute : de quoi ouvrir la modale de champ sur
           // le bon champ (clic droit en mode édition).
           cf: f.field,
@@ -206,7 +211,7 @@ export function DetailFieldGrid({
         }
       }) : []),
     ],
-    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, linkifyTextUrls, customFieldLinkFilters],
+    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, linkifyTextUrls, customFieldLinkFilters, shownSynced],
   )
 
   const { fields, hiddenFields, applyOrder, hide, show } = useDetailFieldLayout(entityType, declared)

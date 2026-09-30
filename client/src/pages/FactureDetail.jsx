@@ -1,7 +1,7 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { ExternalLink, Send, Hourglass, Trash2 } from 'lucide-react'
+import { ExternalLink, Send, Hourglass, Trash2, Ban } from 'lucide-react'
 import api from '../lib/api.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Badge.jsx'
@@ -18,6 +18,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { invalidate } from '../lib/prefetch.js'
 import AttachmentPreview from '../components/AttachmentPreview.jsx'
+import CopyButton from '../components/CopyButton.jsx'
 
 // Les paiements sont déjà affichés dans la section dédiée sous les articles.
 const FACTURE_TAKEN_FIELDS = ['cf_paiements']
@@ -139,6 +140,9 @@ export default function FactureDetail({ recordId, onClose }) {
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState(null)
   const [retryingPdf, setRetryingPdf] = useState(false)
+  const [voidModalOpen, setVoidModalOpen] = useState(false)
+  const [voiding, setVoiding] = useState(false)
+  const [voidError, setVoidError] = useState(null)
   const [pdfRetryError, setPdfRetryError] = useState(null)
 
   async function handleDelete() {
@@ -153,6 +157,21 @@ export default function FactureDetail({ recordId, onClose }) {
       setDeleting(false)
     }
   }
+  async function handleVoid() {
+    setVoiding(true)
+    setVoidError(null)
+    try {
+      const r = await api.factures.void(id)
+      invalidate(`/projets/factures/${id}`)
+      setFacture(f => ({ ...f, status: r.status, ...(f.source === 'pending' ? { pending_status: 'cancelled' } : { balance_due: 0 }) }))
+      setVoidModalOpen(false)
+    } catch (e) {
+      setVoidError(e?.message || "Échec de l'annulation")
+    } finally {
+      setVoiding(false)
+    }
+  }
+
   async function handleRetryPdf() {
     setRetryingPdf(true)
     setPdfRetryError(null)
@@ -304,6 +323,12 @@ export default function FactureDetail({ recordId, onClose }) {
   const pending = detailPending({ loading, loadError, onRetry: load, record: facture, notFound: 'Facture introuvable.' })
   if (pending) return pending
 
+  // Annulable : lien de paiement ERP pas encore payé, ou facture Stripe
+  // finalisée impayée. Mêmes règles que POST /factures/:id/void.
+  const canVoid = facture.source === 'pending'
+    ? (facture.pending_status === 'draft' || facture.pending_status === 'sent')
+    : (String(facture.invoice_id || '').startsWith('in_') && (facture.status === 'À payer' || facture.status === 'Uncollectible'))
+
   return (
     <FieldGuardProvider context="facture" record={facture} fields={FACTURE_RULE_FIELDS}>
       <DetailShell
@@ -349,6 +374,18 @@ export default function FactureDetail({ recordId, onClose }) {
                 >
                   <ExternalLink size={12} /> Lien de paiement
                 </a>
+              )}
+              {canVoid && (
+                <button
+                  onClick={() => { setVoidError(null); setVoidModalOpen(true) }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-red-700 bg-white hover:bg-red-50 rounded-lg border border-red-200"
+                  data-testid="facture-void-button"
+                >
+                  <Ban size={12} /> Void
+                </button>
+              )}
+              {facture.source === 'pending' && facture.pay_url && (
+                <CopyButton text={facture.pay_url} title="Copier le lien de paiement" testId="copy-pay-url" />
               )}
               {/* Badge « Revenu perçu d'avance » : affichée tant que la vente n'est pas
                   constatée. L'état post-constatation est désormais visible dans
@@ -687,6 +724,29 @@ export default function FactureDetail({ recordId, onClose }) {
         onClose={() => setSendModalOpen(false)}
         onSent={handleSent}
       />
+
+      <Modal
+        isOpen={voidModalOpen}
+        onClose={() => !voiding && setVoidModalOpen(false)}
+        title="Voider cette facture ?"
+        size="sm"
+      >
+        <div className="space-y-4 text-sm text-slate-700">
+          <p>
+            <strong>{facture.document_number || 'Facture'}</strong> · {fmtMoney(facture.total_amount, facture.currency)}
+            {' — '}{facture.source === 'pending' ? 'le lien de paiement ne fonctionnera plus.' : 'annulée aussi dans Stripe.'}
+          </p>
+          {voidError && (
+            <div className="rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-red-800 text-xs">{voidError}</div>
+          )}
+          <div className="flex justify-end gap-3">
+            <button onClick={() => setVoidModalOpen(false)} disabled={voiding} className="btn-secondary">Annuler</button>
+            <button onClick={handleVoid} disabled={voiding} className="btn-danger" data-testid="facture-void-confirm">
+              {voiding ? '…' : 'Voider'}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <Modal
         isOpen={deleteModalOpen}

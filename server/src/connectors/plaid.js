@@ -141,6 +141,31 @@ function balanceRows(accounts) {
   })).filter(b => b.current != null || b.available != null)
 }
 
+// Vue globale uniquement : Balance interroge la banque en temps réel.
+// Cache court et requêtes partagées pour éviter de multiplier les appels facturés.
+const liveBalanceCache = new Map()
+const liveBalanceRequests = new Map()
+export async function fetchLiveItemBalances(itemId, { refresh = false } = {}) {
+  if (liveBalanceRequests.has(itemId)) return liveBalanceRequests.get(itemId)
+  const cached = liveBalanceCache.get(itemId)
+  if (!refresh && cached && Date.now() - cached.at < 60000) return cached.value
+  const request = (async () => {
+    const item = getItemRow(itemId)
+    if (!item) throw new Error('Connexion Plaid introuvable')
+    const resp = await getClient().accountsBalanceGet(
+      { access_token: item.accessToken }, { timeout: 30000 },
+    )
+    const value = { balances: balanceRows(resp.data.accounts), balanceAt: new Date().toISOString() }
+    liveBalanceCache.set(itemId, { at: Date.now(), value })
+    return value
+  })()
+  liveBalanceRequests.set(itemId, request)
+  try { return await request } catch (e) {
+    console.error('[plaid/live-balance]', e?.response?.data?.error_code || e.code || 'Erreur de lecture')
+    throw e
+  } finally { liveBalanceRequests.delete(itemId) }
+}
+
 // Soldes SEULS, sans toucher au curseur de transactions : /accounts/get est
 // inclus dans le produit Transactions (aucun appel à Balance, facturé à
 // l'appel). Sert quand la lecture des transactions est coupée — le fichier
@@ -291,11 +316,11 @@ export async function itemHealth(itemId) {
 // Demande à Plaid d'aller interroger la banque MAINTENANT plutôt que
 // d'attendre son prochain passage. Lecture seule, comme le reste. Utile quand
 // la banque a manqué des mises à jour : sans ça, on attend son bon vouloir.
-export async function requestTransactionsRefresh(itemId) {
+export async function requestTransactionsRefresh(itemId, { timeout } = {}) {
   const item = getItemRow(itemId)
   if (!item) throw new Error(`Item Plaid inconnu : ${itemId}`)
   const client = getClient()
-  await client.transactionsRefresh({ access_token: item.accessToken })
+  await client.transactionsRefresh({ access_token: item.accessToken }, timeout ? { timeout } : undefined)
   return true
 }
 

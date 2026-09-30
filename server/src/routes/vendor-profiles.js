@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { newRecordId } from '../utils/recordId.js'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { normalizeVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup } from '../services/vendorProfiles.js'
+import { normalizeVendorKey, serializeProfile, seedVendorProfiles, mergeVendorProfiles, findDuplicateProfileGroups, dismissDuplicateGroup, resolveProfileByName } from '../services/vendorProfiles.js'
 import { backfillProfilesFromHistory, learnBankLabelsFromMatches } from '../services/vendorLearning.js'
 
 const router = Router()
@@ -77,6 +77,22 @@ router.post('/seed', (req, res) => {
 router.get('/duplicates', (req, res) => {
   const ctx = buildContext()
   res.json({ data: findDuplicateProfileGroups().map(g => g.map(p => enrich(p, ctx))) })
+})
+
+// Fiche d'un fournisseur par son NOM (tel qu'il est saisi dans la ligne dépliée du
+// relevé) : c'est la bulle qui s'affiche au survol du champ « Fournisseur » de
+// /rapprochement — les particularités comptables sans quitter la transaction.
+// data: null (200) quand aucun profil ne correspond : l'absence de fiche n'est pas
+// une erreur, la bulle propose alors de la créer.
+router.get('/lookup', (req, res) => {
+  const name = String(req.query.name || '').trim()
+  if (!name) return res.status(400).json({ error: 'name requis' })
+  // Même rapprochement que le pré-remplissage de la ligne dépliée : nom exact,
+  // puis reconnaissance du libellé bancaire, puis le sens inverse — jamais d'ambiguïté.
+  const profile = resolveProfileByName(name)
+  if (!profile) return res.json({ data: null })
+  const ctx = buildContext()
+  res.json({ data: enrich(profile, ctx) })
 })
 
 // Marque un groupe « pas des doublons » (persistant) : il ne sera re-proposé que si

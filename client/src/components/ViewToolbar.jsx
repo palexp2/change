@@ -22,6 +22,50 @@ const TOOLTIP_DELAY_MS = 1000
 // montre que son icône ; le libellé n'apparaît qu'après TOOLTIP_DELAY_MS de
 // survol, dans une infobulle rendue en portal (position:fixed) pour ne pas être
 // clippée par les `overflow` du panneau latéral.
+// Les outils de la barre rangés derrière un seul bouton (`toolsMenu`) : la
+// page garde sa barre pour ce qu'elle a de propre. Chaque entrée ouvre le même
+// panneau que le bouton qu'elle remplace, ancré sous ce bouton-ci.
+function ToolsMenu({ items, openPanel, locked, onPick, onPrefetchFieldConfig }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+  const btnRef = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const h = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [open])
+  const active = !!openPanel || items.some(it => it.badge > 0)
+  return (
+    <div className="relative" ref={ref}>
+      <button ref={btnRef} type="button" data-tools-menu-btn aria-label="Affichage" title="Affichage"
+        aria-expanded={open} onClick={() => setOpen(v => !v)} onMouseEnter={onPrefetchFieldConfig}
+        className={`inline-flex items-center justify-center w-7 h-7 rounded-md border transition-colors ${open || active
+          ? 'bg-slate-100 border-slate-300 text-slate-700'
+          : 'border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700'}`}>
+        <SlidersHorizontal size={14} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-9 z-30 w-56 rounded-lg border border-slate-200 bg-white shadow-lg p-1">
+          {items.map(it => {
+            const off = locked && !it.unlocked
+            return (
+              <button key={it.key} type="button" disabled={off} title={off ? LOCKED_HINT : undefined}
+                data-testid={`tools-menu-${it.key}`}
+                onClick={() => { setOpen(false); onPick(it.key, btnRef.current) }}
+                className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-sm text-left disabled:opacity-40 ${openPanel === it.key ? 'bg-brand-50 text-brand-700' : 'text-slate-700 hover:bg-slate-50'}`}>
+                <span className="text-slate-400 shrink-0">{it.icon}</span>
+                <span className="flex-1 truncate">{it.label}</span>
+                {it.badge > 0 && <span className="text-[11px] tabular-nums text-brand-700">{it.badge}</span>}
+              </button>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ToolbarBtn({ icon, label, active, badge, onClick, onHover, dataPanelBtn, disabled, compact }) {
   const btnRef = useRef(null)
   const timerRef = useRef(null)
@@ -839,6 +883,7 @@ export function ViewToolbar({
   onApplyColumnWidths,      // (widths) => void — pousse des largeurs de colonnes dans l'état du DataTable (copie de config d'une vue)
   toolbarStart,             // JSX — glissé tout à gauche de la barre, avant la recherche (ex. sélecteur de compte, légende de couleurs)
   toolbarEnd,               // JSX — glissé tout à droite, après le compteur de lignes (ex. écart, bouton d'action de la page)
+  toolsMenu = false,        // true : Champs / Filtrer / Trier / Grouper / Couleur / Configurer rangés dans un seul menu, compteur de lignes masqué (page dense : relevé bancaire)
 }) {
   const [openPanel, setOpenPanel] = useState(null)
   // Élément bouton servant d'ancre au panneau (rendu en portal position:fixed).
@@ -1143,6 +1188,7 @@ export function ViewToolbar({
       const panel = e.detail?.panel
       if (!panel) return
       const btn = toolbarRef.current?.querySelector(`[data-panel-btn="${panel}"]`)
+        || toolbarRef.current?.querySelector('[data-tools-menu-btn]')
       if (btn) setPanelAnchor(btn)
       setOpenPanel(panel)
     }
@@ -1419,6 +1465,24 @@ export function ViewToolbar({
             </div>
           )}
 
+          {toolsMenu ? (
+            <ToolsMenu
+              openPanel={openPanel} locked={activeViewLocked}
+              items={[
+                visibleCols && setVisibleCols && { key: 'fields', icon: <Eye size={14} />, label: 'Champs' },
+                { key: 'filter', icon: <Filter size={14} />, label: 'Filtrer', badge: countFilterRules(filters) },
+                { key: 'sort', icon: <ArrowUpDown size={14} />, label: 'Trier', badge: sorts.length },
+                setGroupBy && { key: 'group', icon: <Layers size={14} />, label: 'Grouper', badge: Array.isArray(groupBy) ? groupBy.length : (groupBy ? 1 : 0) },
+                setColorRules && { key: 'color', icon: <Paintbrush size={14} />, label: 'Couleur', badge: Array.isArray(colorRules) ? colorRules.length : 0 },
+                onOpenFieldConfig && { key: 'field-config', icon: <SlidersHorizontal size={14} />, label: 'Configurer les champs', unlocked: true },
+              ].filter(Boolean)}
+              onPick={(key, anchor) => {
+                if (key === 'field-config') { onOpenFieldConfig(); return }
+                togglePanel(key, { currentTarget: anchor })
+              }}
+              onPrefetchFieldConfig={onPrefetchFieldConfig}
+            />
+          ) : (<>
           {visibleCols && setVisibleCols && (
             <ToolbarBtn icon={<Eye size={14} />} label="Champs" active={openPanel === 'fields'}
               dataPanelBtn="fields" disabled={activeViewLocked} compact={compact}
@@ -1469,6 +1533,7 @@ export function ViewToolbar({
               onClick={() => onOpenFieldConfig()}
             />
           )}
+          </>)}
 
           {activeViewLocked && (
             <span
@@ -1484,9 +1549,11 @@ export function ViewToolbar({
               à sa suite dans le MÊME conteneur, sinon le `ml-auto` du
               compteur avalerait l'espace et le renverrait à la ligne. */}
           <div className="ml-auto flex items-center gap-2 min-w-0">
-            <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">
-              {processedCount} ligne{processedCount !== 1 ? 's' : ''}
-            </span>
+            {!toolsMenu && (
+              <span className="text-xs text-slate-400 tabular-nums whitespace-nowrap">
+                {processedCount} ligne{processedCount !== 1 ? 's' : ''}
+              </span>
+            )}
             {toolbarEnd}
           </div>
         </div>

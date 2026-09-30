@@ -45,21 +45,21 @@ describe('Dashboard — table des matières', () => {
 
   test('cliquer un lien de la TOC scrolle vers la section', async () => {
     await page.goto(URL + '/dashboard', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-testid="toc-link-section_balance_sheet"]', { timeout: 15000 })
-    await page.click('[data-testid="toc-link-section_balance_sheet"]')
+    await page.waitForSelector('[data-testid="toc-link-section_bank_accounts"]', { timeout: 15000 })
+    await page.click('[data-testid="toc-link-section_bank_accounts"]')
     await page.waitForTimeout(1200)
-    const top = await topOfSection('section_balance_sheet')
+    const top = await topOfSection('section_bank_accounts')
     assert.ok(top !== null, 'section présente')
     assert.ok(top >= -50 && top < 200, `section scrollée en haut (top=${top})`)
     // L'URL reflète la section pour pouvoir la partager.
-    assert.match(page.url(), /\/dashboard\/bilan$/)
+    assert.match(page.url(), /\/dashboard\/soldes-bancaires$/)
   })
 
   test('le scroll-spy surligne le lien de la section en haut du viewport', async () => {
-    await page.goto(URL + '/dashboard/bilan', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-testid="toc-link-section_balance_sheet"]', { timeout: 15000 })
+    await page.goto(URL + '/dashboard/soldes-bancaires', { waitUntil: 'domcontentloaded' })
+    await page.waitForSelector('[data-testid="toc-link-section_bank_accounts"]', { timeout: 15000 })
     await page.waitForTimeout(1500)
-    const active = await page.getAttribute('[data-testid="toc-link-section_balance_sheet"]', 'data-active')
-    assert.equal(active, 'true', 'le lien Bilan est marqué actif après scroll')
+    const active = await page.getAttribute('[data-testid="toc-link-section_bank_accounts"]', 'data-active')
+    assert.equal(active, 'true', 'le lien Trésorerie est marqué actif après scroll')
   })
 })

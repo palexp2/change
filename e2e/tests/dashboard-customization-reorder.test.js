@@ -61,17 +61,16 @@ describe('Dashboard — Personnalisation : réordonner les cartes', () => {
   })
 
   test('un ordre custom dans localStorage est respecté au rendu', async () => {
-    // Place section_geo_map en premier et section_project_goal en dernier — un
+    // Place section_productivity en premier et section_project_goal en dernier — un
     // ordre clairement différent du défaut pour valider le tri.
     const customOrder = [
-      'section_geo_map',
+      'section_productivity',
       'section_subscription_events',
       'section_profitability',
       'section_replacement_rate',
       'section_projects_created',
       'section_closing',
       'section_shipments',
-      'section_shipping_costs',
       'section_top_products',
       'section_inventory_valuation',
       'section_project_goal',
@@ -91,7 +90,7 @@ describe('Dashboard — Personnalisation : réordonner les cartes', () => {
     await page.waitForSelector('[data-section-id]', { timeout: 10000 })
 
     const rendered = await page.locator('[data-section-id]').evaluateAll(els => els.map(el => el.getAttribute('data-section-id')))
-    assert.equal(rendered[0], 'section_geo_map', `1ère section attendue section_geo_map, reçu ${rendered[0]}`)
+    assert.equal(rendered[0], 'section_productivity', `1ère section attendue section_productivity, reçu ${rendered[0]}`)
     assert.equal(rendered[rendered.length - 1], 'section_project_goal', `dernière section attendue section_project_goal, reçu ${rendered[rendered.length - 1]}`)
   })
 

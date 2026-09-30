@@ -67,6 +67,7 @@ function receiptQbUrl(row) {
   if (!row.receipt_qb_id) return null
   const entity = row.receipt_qb_type === 'bill' ? 'bill'
     : row.receipt_qb_type === 'cc_credit' ? 'creditcardcredit'
+    : row.receipt_qb_type === 'deposit' ? 'deposit'
     : 'expense'
   return qbEntityUrl(entity, row.receipt_qb_id)
 }

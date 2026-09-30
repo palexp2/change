@@ -223,9 +223,27 @@ const BENEFICIARIES_TTL_MS = 5 * 60_000
 /**
  * Bénéficiaires proposables pour une commission = enregistrements de la table
  * Airtable « Employés et partenaires » (hors miroir, donc lus en direct).
- * @returns {Promise<Array<{id: string, label: string, active: boolean}>>}
+ * @returns {Promise<Array<{id: string, label: string, active: boolean,
+ *   employee_id: string|null, commission_rate: number|null}>>}
  */
 export async function listCommissionBeneficiaries() {
+  return withEmployeeRates(await loadBeneficiaries())
+}
+
+// Taux habituel de l'employé relié à chaque bénéficiaire (`employees.
+// commission_rate`, en pourcents) : relu à chaque appel, hors cache, pour
+// qu'un taux saisi sur la fiche employé soit proposé tout de suite.
+function withEmployeeRates(list) {
+  const rateOf = db.prepare('SELECT commission_rate FROM employees WHERE id = ?')
+  return list.map(b => {
+    const ref = resolveProjectVendeurRef(b.id) || resolveProjectVendeurRef(b.label)
+    const employeeId = ref?.startsWith('employee:') ? ref.slice(9) : null
+    const rate = employeeId ? rateOf.get(employeeId)?.commission_rate : null
+    return { ...b, employee_id: employeeId, commission_rate: rate ?? null }
+  })
+}
+
+async function loadBeneficiaries() {
   if (beneficiariesCache && Date.now() - beneficiariesCache.at < BENEFICIARIES_TTL_MS) {
     return beneficiariesCache.data
   }

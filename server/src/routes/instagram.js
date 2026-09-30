@@ -15,6 +15,7 @@ import {
   getScrapeConfig,
 } from '../services/instagramCommentScrape.js'
 import { isSystemAutomationActive, logSystemRun } from '../services/systemAutomations.js'
+import { getSessionStatus } from '../services/sessionHealth.js'
 import { parseLimit } from '../utils/pagination.js'
 
 /**
@@ -318,6 +319,13 @@ router.post('/conversations/:userId/send', requireAuth, async (req, res) => {
     try {
       const { dropDraftsForThread } = await import('../services/instagramDrafts.js')
       dropDraftsForThread(req.params.userId)
+      // Répondre depuis la page, c'est traiter la personne : elle sort de la pile.
+      db.prepare(`
+        UPDATE instagram_prospects SET contacted=1, contacted_at=strftime('%Y-%m-%dT%H:%M:%fZ','now'),
+          contacted_by=?, contacted_source='boreal', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        WHERE deleted_at IS NULL AND (manychat_subscriber_id = ?
+          OR id IN (SELECT prospect_id FROM manychat_threads WHERE user_id = ?))
+      `).run(req.user?.id || null, req.params.userId, req.params.userId)
     } catch { /* le message est parti, c'est l'essentiel */ }
     try { await syncThreadMessages(req.params.userId) } catch {}
     messages = db.prepare('SELECT id, direction, text, kind, sent_at, link_url FROM manychat_messages WHERE user_id=? ORDER BY sent_at').all(req.params.userId)
@@ -416,7 +424,10 @@ router.post('/scrape', requireAdmin, async (req, res) => {
 /** État du cookie de session — jamais la valeur, seulement s'il est là. */
 router.get('/session', requireAuth, (req, res) => {
   const { sessionid, dsUserId } = getSessionCookie()
-  res.json({ configured: !!sessionid, hint: sessionid ? `${sessionid.slice(0, 6)}…` : null, ds_user_id: dsUserId || null })
+  // Le cookie présent ne dit pas qu'il marche : on joint le dernier verdict de
+  // la vérification quotidienne, pour Instagram et pour ManyChat.
+  const expired = ['instagram', 'manychat'].filter(c => getSessionStatus(c)?.status === 'expired')
+  res.json({ configured: !!sessionid, expired, hint: sessionid ? `${sessionid.slice(0, 6)}…` : null, ds_user_id: dsUserId || null })
 })
 
 /** Rotation du cookie. Admin — c'est un secret de compte. */
@@ -432,7 +443,14 @@ router.put('/session', requireAdmin, (req, res) => {
     put.run('sessionid', sessionid)
     put.run('ds_user_id', dsUserId)
   })()
-  res.json({ ok: true, configured: !!sessionid })
+  // Une session fraîche ne dure pas : on en profite tout de suite pour lire,
+  // trier, écrire et envoyer la liste de la semaine à Philippe.
+  if (sessionid) {
+    import('../services/instagramRefresh.js')
+      .then(({ refreshAfterReconnect }) => refreshAfterReconnect({ trigger: 'reconnexion Instagram', sendDigest: true }))
+      .catch(e => console.error('instagram refresh:', e.message))
+  }
+  res.json({ ok: true, configured: !!sessionid, refreshing: !!sessionid })
 })
 
 // ── Messages écrits d'avance et file d'envoi ───────────────────────────────
@@ -444,6 +462,23 @@ router.get('/workbench', requireAuth, async (req, res) => {
 })
 
 /** Le type de demande choisi à la main : il ne se fait jamais réécrire. */
+/**
+ * Philippe revient de répondre dans Instagram : on relit la conversation, et si
+ * son message y est, la personne est traitée d'elle-même.
+ */
+router.post('/prospects/:id/check-sent', requireAuth, async (req, res) => {
+  const p = db.prepare('SELECT id, manychat_subscriber_id FROM instagram_prospects WHERE id=? AND deleted_at IS NULL').get(req.params.id)
+  if (!p) return res.status(404).json({ error: 'Fiche introuvable' })
+  const t = db.prepare('SELECT user_id FROM manychat_threads WHERE prospect_id=? OR user_id=?').get(p.id, p.manychat_subscriber_id || '')
+  if (!t) return res.json({ handled: false })
+  try {
+    const { syncThreadMessages } = await import('../services/manychatSync.js')
+    await syncThreadMessages(t.user_id)
+  } catch (e) { return res.json({ handled: false, error: e.message }) }
+  const { markAlreadyHandled } = await import('../services/instagramSegments.js')
+  res.json({ handled: markAlreadyHandled({ ids: [p.id] }) > 0 })
+})
+
 router.post('/prospects/:id/segment', requireAuth, async (req, res) => {
   const { setSegment } = await import('../services/instagramSegments.js')
   try { res.json(setSegment(String(req.params.id), String(req.body?.segment || ''))) }
@@ -471,6 +506,12 @@ router.post('/drafts/write', requireAuth, async (req, res) => {
     })
     res.json(out)
   } catch (e) { res.status(400).json({ error: e.message }) }
+})
+
+/** Un message tapé à la main, gardé pour qu'il soit encore là au retour. */
+router.post('/drafts/manual', requireAuth, async (req, res) => {
+  const { saveManualDraft } = await import('../services/instagramDrafts.js')
+  try { res.json({ ok: true, draft: saveManualDraft(String(req.body?.prospect_id || ''), req.body?.text) }) } catch (e) { res.status(400).json({ error: e.message }) }
 })
 
 /** Tournée d'écriture pour tout le monde qui attend encore un message. */

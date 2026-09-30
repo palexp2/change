@@ -16,7 +16,6 @@ const fmtMoney = (n, currency = 'CAD') => fmtMoneyBase(n, currency, { nullIsZero
 // d'intervalles ; Stripe plafonne à 12 mois ou 1 an.
 const FREQUENCIES = [
   { value: 'month:1', label: 'Mensuel', per: 'mois' },
-  { value: 'month:3', label: 'Trimestriel', per: 'trimestre' },
   { value: 'month:6', label: 'Semestriel', per: '6 mois' },
   { value: 'year:1', label: 'Annuel', per: 'an' },
 ]
@@ -32,7 +31,7 @@ export function CreateSubscriptionModal({ companyId, isOpen, onClose, onCreated 
   const [currency, setCurrency] = useState('CAD')
   const [collectionMethod, setCollectionMethod] = useState('send_invoice')
   const [paymentMethodId, setPaymentMethodId] = useState('')
-  const [dueDays, setDueDays] = useState(30)
+  const [dueDays, setDueDays] = useState(0)
   const [trialDays, setTrialDays] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [confirmOpen, setConfirmOpen] = useState(false)
@@ -151,7 +150,7 @@ export function CreateSubscriptionModal({ companyId, isOpen, onClose, onCreated 
         interval_count: Number(intervalCount),
         currency,
         collection_method: collectionMethod,
-        days_until_due: Number(dueDays) || 30,
+        days_until_due: Number(dueDays) || 0,
         trial_days: Number(trialDays) || 0,
         payment_method_id: collectionMethod === 'charge_automatically' ? paymentMethodId : null,
         shipping_province: shipping.province,

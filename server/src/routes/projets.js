@@ -13,9 +13,9 @@ import { qbEntityUrl, qbGet } from '../connectors/quickbooks.js'
 import { computeCanadaTaxes } from '../services/taxes.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { logSync } from '../services/syncLog.js'
-import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, emitSubscriptionEvent, safeDetectRachatForChurn, backfillRachatDetection, getRachatFailureStatus } from '../services/subscriptionEvents.js'
+import { CATEGORIES as SUBSCRIPTION_EVENT_CATEGORIES, emitSubscriptionEvent, emitSubscriptionEventsOf, safeDetectRachatForChurn, backfillRachatDetection, getRachatFailureStatus } from '../services/subscriptionEvents.js'
 import { requireAdmin } from '../middleware/auth.js'
-import { emitEntity } from '../services/realtimeEmitters.js'
+import { emitEntity, emitSubscription } from '../services/realtimeEmitters.js'
 import { getCurrentItemsSnapshot, enrichItemsWithErpProductId } from '../services/subscriptionItemsSnapshot.js'
 import { buildExternalLinks } from '../services/externalLinks.js'
 import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../services/addressCheck.js'
@@ -24,6 +24,7 @@ import { checkAddress, runAddressCheck, getAddressCheckSummary } from '../servic
 import { confirmAddressInput, confirmAddressRecord, needsConfirmation } from '../services/addressConfirm.js'
 import { getStripeKey } from '../services/stripe.js'
 import { APP_URL } from '../config/appUrl.js'
+import { pendingInvoiceTotals } from '../services/invoiceDiscount.js'
 import { uploadsPath } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
@@ -477,7 +478,12 @@ router.get('/factures', (req, res) => {
   let pwhere = "WHERE pi.status IN ('draft','sent')"
   const pparams = []
   if (company_id) { pwhere += ' AND pi.company_id = ?'; pparams.push(company_id) }
-  // No project_id filter on pending — they're not yet linked to projects.
+  // Une facture en attente n'a pas de projet propre : elle ne rejoint un projet
+  // que par la soumission dont elle est issue.
+  if (project_id) {
+    pwhere += ' AND pi.soumission_id IN (SELECT id FROM soumissions WHERE project_id = ?)'
+    pparams.push(project_id)
+  }
   // Status filter mapping: 'Draft' → status='draft', 'En attente' → status='sent'.
   if (status === 'Draft') { pwhere += " AND pi.status='draft'" }
   else if (status === 'En attente') { pwhere += " AND pi.status='sent'" }
@@ -490,23 +496,28 @@ router.get('/factures', (req, res) => {
            NULL AS due_date,
            CASE pi.status WHEN 'draft' THEN 'Draft' WHEN 'sent' THEN 'En attente' END AS status,
            pi.currency,
-           (SELECT COALESCE(SUM(json_extract(j.value, '$.qty') * json_extract(j.value, '$.unit_price')), 0)
-              FROM json_each(pi.items_json) j) AS amount_before_tax_cad,
-           (SELECT COALESCE(SUM(json_extract(j.value, '$.qty') * json_extract(j.value, '$.unit_price')), 0)
-              FROM json_each(pi.items_json) j) AS total_amount,
-           (SELECT COALESCE(SUM(json_extract(j.value, '$.qty') * json_extract(j.value, '$.unit_price')), 0)
-              FROM json_each(pi.items_json) j) AS balance_due,
+           NULL AS amount_before_tax_cad,
+           NULL AS total_amount,
+           NULL AS balance_due,
            NULL AS notes, pi.created_at, pi.updated_at,
            NULL AS generated_pdf_path, NULL AS shipping_country, NULL AS subscription_id, NULL AS airtable_pdf_path,
            co.name AS company_name, NULL AS project_name, NULL AS order_number,
            'pending' AS source,
            NULL AS payment_date,
            NULL AS payment_reference,
-           0 AS refund_amount
+           0 AS refund_amount,
+           pi.items_json, pi.discount_json
     FROM pending_invoices pi
     LEFT JOIN companies co ON pi.company_id = co.id
     ${pwhere}
   `).all(...pparams)
+  // Montants d'une facture en attente : lignes moins rabais, avant taxes.
+  for (const r of pendingRows) {
+    const { net } = pendingInvoiceTotals(r)
+    r.amount_before_tax_cad = r.total_amount = r.balance_due = net
+    delete r.items_json
+    delete r.discount_json
+  }
 
   // Merge + sort by document_date desc, paginate in JS
   const merged = [...facturesRows, ...pendingRows].sort((a, b) => {
@@ -723,8 +734,7 @@ router.get('/factures/:id', async (req, res) => {
     WHERE pi.id = ?
   `).get(req.params.id)
   if (!pending) return res.status(404).json({ error: 'Not found' })
-  const items = JSON.parse(pending.items_json || '[]')
-  const subtotal = items.reduce((s, it) => s + Number(it.qty) * Number(it.unit_price), 0)
+  const { items, net: subtotal, discount, discounts, discount_amount } = pendingInvoiceTotals(pending)
   const baseUrl = APP_URL
   res.json({
     id: pending.id,
@@ -739,6 +749,9 @@ router.get('/factures/:id', async (req, res) => {
     total_amount: subtotal,
     balance_due: subtotal,
     items,
+    discount,
+    discounts,
+    discount_amount,
     pay_url: `${baseUrl}/erp/pay/${pending.id}`,
     last_session_url: pending.last_session_url,
     last_session_expires_at: pending.last_session_expires_at,
@@ -751,7 +764,19 @@ router.get('/factures/:id', async (req, res) => {
 // que la page détail s'affiche sans attendre le round-trip Stripe.
 router.get('/factures/:id/discounts', async (req, res) => {
   const row = db.prepare('SELECT invoice_id FROM factures WHERE id = ?').get(req.params.id)
-  if (!row?.invoice_id) return res.json({ discounts: [] })
+  if (!row) {
+    // Facture en attente : rabais saisi à la création, pas encore dans Stripe.
+    const pending = db.prepare('SELECT items_json, discount_json FROM pending_invoices WHERE id = ?').get(req.params.id)
+    const t = pending && pendingInvoiceTotals(pending)
+    if (!t?.discount_amount) return res.json({ discounts: [] })
+    return res.json({
+      discounts: t.discounts.filter(d => d.amount > 0).map(d => ({
+        amount: d.amount,
+        label: d.name || (d.kind === 'percent' ? `${String(d.value).replace('.', ',')} %` : ''),
+      })),
+    })
+  }
+  if (!row.invoice_id) return res.json({ discounts: [] })
   const key = getStripeKey()
   if (!key) return res.json({ discounts: [] })
   try {
@@ -965,6 +990,55 @@ router.patch('/factures/:id', (req, res) => {
   res.json(row)
 })
 
+// Annuler (« voider ») une facture non payée. Deux cas :
+// - facture en attente (pending_invoices, lien de paiement ERP) : statut
+//   'cancelled' → /erp/pay répond « Facture annulée », et la session Checkout
+//   déjà ouverte est expirée chez Stripe pour qu'un vieux lien ne paie plus ;
+// - facture Stripe finalisée (in_…, À payer / Uncollectible) : voidInvoice
+//   chez Stripe, statut local 'Void' tout de suite (le webhook invoice.voided
+//   repassera ensuite par l'upsert habituel).
+// Une facture payée, déjà annulée ou venue d'Airtable est refusée.
+router.post('/factures/:id/void', async (req, res) => {
+  const f = db.prepare('SELECT id, invoice_id, status, company_id FROM factures WHERE id = ?').get(req.params.id)
+  const key = getStripeKey()
+
+  if (!f) {
+    const p = db.prepare('SELECT id, status, company_id, last_session_id FROM pending_invoices WHERE id = ?').get(req.params.id)
+    if (!p) return res.status(404).json({ error: 'Facture introuvable' })
+    if (p.status !== 'draft' && p.status !== 'sent') {
+      return res.status(400).json({ error: p.status === 'paid' ? 'Déjà payée' : 'Déjà annulée' })
+    }
+    if (p.last_session_id && key) {
+      try {
+        await new Stripe(key).checkout.sessions.expire(p.last_session_id)
+      } catch (e) {
+        // Session déjà expirée/complétée : sans conséquence, l'annulation
+        // locale suffit à bloquer /erp/pay.
+        console.warn(`void pending ${p.id}: expire session ${p.last_session_id} — ${e.message}`)
+      }
+    }
+    db.prepare(`UPDATE pending_invoices SET status='cancelled', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(p.id)
+    emitEntity('facture', 'updated', p.id, { id: p.id, company_id: p.company_id, status: 'Annulée', pending_status: 'cancelled' }, req.user?.id)
+    return res.json({ ok: true, status: 'Annulée' })
+  }
+
+  if (!String(f.invoice_id || '').startsWith('in_')) {
+    return res.status(400).json({ error: "Seule une facture Stripe peut être annulée d'ici" })
+  }
+  if (f.status !== 'À payer' && f.status !== 'Uncollectible') {
+    return res.status(400).json({ error: `Facture « ${f.status || '—'} » : rien à annuler` })
+  }
+  if (!key) return res.status(503).json({ error: 'Stripe non configuré' })
+  try {
+    await new Stripe(key).invoices.voidInvoice(f.invoice_id)
+  } catch (e) {
+    return res.status(502).json({ error: `Stripe : ${e.message}` })
+  }
+  db.prepare(`UPDATE factures SET status='Void', balance_due=0, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id=?`).run(f.id)
+  emitEntity('facture', 'updated', f.id, { id: f.id, company_id: f.company_id, status: 'Void', balance_due: 0 }, req.user?.id)
+  res.json({ ok: true, status: 'Void' })
+})
+
 // Suppression manuelle d'une facture (admin uniquement) — escape hatch pour
 // nettoyer les doublons créés par les deux pipelines de sync (webhook Stripe
 // vs sync Airtable, qui ne se dédupent pas entre eux sur invoice_id).
@@ -1048,10 +1122,14 @@ router.get('/retours/:id', (req, res) => {
   const empByFirstName = {}
   if (names.size) {
     const counts = {}
-    for (const e of db.prepare("SELECT id, first_name FROM employees WHERE active=1 AND first_name IS NOT NULL").all()) {
-      const k = e.first_name.trim().toLowerCase()
-      counts[k] = (counts[k] || 0) + 1
-      empByFirstName[k] = e.id
+    // Prénom (valeurs Airtable) ou nom complet (utilisateur Boréal choisi à la réception).
+    for (const e of db.prepare("SELECT id, first_name, last_name FROM employees WHERE active=1 AND first_name IS NOT NULL").all()) {
+      const first = e.first_name.trim().toLowerCase()
+      const full = `${first} ${String(e.last_name || '').trim().toLowerCase()}`.trim()
+      for (const k of new Set([first, full])) {
+        counts[k] = (counts[k] || 0) + 1
+        empByFirstName[k] = e.id
+      }
     }
     for (const k of Object.keys(counts)) if (counts[k] > 1) delete empByFirstName[k] // prénom ambigu → pas de lien
   }
@@ -1542,8 +1620,9 @@ router.patch('/abonnements/:id', (req, res) => {
     updates.push('rachat=?')
     params.push(req.body.rachat)
   }
-  if (Object.prototype.hasOwnProperty.call(req.body, 'company_id')) {
-    const companyId = req.body.company_id || null
+  const companyChanged = Object.prototype.hasOwnProperty.call(req.body, 'company_id')
+  const companyId = req.body.company_id || null
+  if (companyChanged) {
     if (companyId) {
       const co = db.prepare('SELECT id FROM companies WHERE id=? AND deleted_at IS NULL').get(companyId)
       if (!co) return res.status(400).json({ error: 'Entreprise introuvable' })
@@ -1553,9 +1632,16 @@ router.patch('/abonnements/:id', (req, res) => {
   }
   if (updates.length) {
     params.push(req.params.id)
-    db.prepare(`UPDATE subscriptions SET ${updates.join(', ')} WHERE id=?`).run(...params)
-    const sub = db.prepare(`SELECT s.*, co.name as company_name FROM subscriptions s LEFT JOIN companies co ON s.company_id = co.id WHERE s.id = ?`).get(req.params.id)
-    emitEntity('subscription', 'updated', req.params.id, sub, req.user?.id)
+    db.transaction(() => {
+      db.prepare(`UPDATE subscriptions SET ${updates.join(', ')} WHERE id=?`).run(...params)
+      // Les mouvements copient l'entreprise de l'abonnement à leur création :
+      // ils la suivent quand on la corrige.
+      if (companyChanged) {
+        db.prepare('UPDATE subscription_events SET company_id=? WHERE subscription_id=?').run(companyId, req.params.id)
+      }
+    })()
+    emitSubscription('updated', req.params.id, req.user?.id)
+    if (companyChanged) emitSubscriptionEventsOf(req.params.id, req.user?.id)
   }
   res.json({ ok: true })
 })

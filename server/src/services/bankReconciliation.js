@@ -246,6 +246,69 @@ export function applyStatesFromRows(accountId, rows) {
   return changed
 }
 
+// L'ACHAT EN ATTENTE QUI CHANGE DE DATE. La BNC date parfois l'autorisation
+// quelques jours après l'attente (Premier Farnell : « En attente » le 18,
+// « Autorisée » le 23, même montant). La dédup (date, montant) n'y voit que du
+// neuf et la ligne entrait deux fois. Une ligne passée du document retrouve
+// ici la ligne en attente qu'elle remplace : même compte, même montant exact,
+// même marchand, datée 0 à 7 jours avant — et que ce document ne liste plus en
+// attente à cette date. Rend Map(index de ligne → id de la ligne en attente).
+const PENDING_DRIFT_DAYS = 7
+export function merchantKey(description) {
+  const m = String(description || '').toLowerCase().match(/[a-z0-9]{3,}/)
+  return m ? m[0] : ''
+}
+export function findSupersededPending(accountId, rows) {
+  const out = new Map()
+  const list = rows || []
+  const stillPending = new Set(list
+    .filter((r) => r?.bank_state === 'en_attente')
+    .map((r) => `${r.txn_date}|${Number(r.amount).toFixed(2)}`))
+  const find = db.prepare(`
+    SELECT id, txn_date, description FROM bank_transactions
+    WHERE account_id=? AND deleted_at IS NULL AND bank_state='en_attente'
+      AND ABS(amount - ?) < 0.005 AND txn_date < ? AND txn_date >= date(?, ?)
+    ORDER BY txn_date, created_at
+  `)
+  // Sa version passée déjà en base : le doublon existe déjà, ne rien déplacer.
+  const already = db.prepare(`
+    SELECT 1 FROM bank_transactions
+    WHERE account_id=? AND txn_date=? AND ABS(amount - ?) < 0.005 AND COALESCE(bank_state,'') <> 'en_attente'
+  `)
+  const used = new Set()
+  list.forEach((row, i) => {
+    if (!row?.bank_state || row.bank_state === 'en_attente' || !row.txn_date || !Number(row.amount)) return
+    if (already.get(accountId, row.txn_date, row.amount)) return
+    const key = merchantKey(row.description)
+    if (!key) return
+    const hit = find.all(accountId, row.amount, row.txn_date, row.txn_date, `-${PENDING_DRIFT_DAYS} days`)
+      .find((h) => !used.has(h.id)
+        && merchantKey(h.description) === key
+        && !stillPending.has(`${h.txn_date}|${Number(row.amount).toFixed(2)}`))
+    if (!hit) return
+    used.add(hit.id)
+    out.set(i, hit.id)
+  })
+  return out
+}
+
+// La ligne en attente prend la date, la référence et l'état de sa version
+// passée : c'est la même transaction, et le prochain relevé la reconnaîtra.
+export function promoteSupersededPending(accountId, rows, superseded = findSupersededPending(accountId, rows)) {
+  const update = db.prepare(`
+    UPDATE bank_transactions
+    SET txn_date=?, reference=COALESCE(?, reference), bank_state=?, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id=? AND bank_state='en_attente'
+  `)
+  let changed = 0
+  for (const [i, id] of superseded) {
+    const row = rows[i]
+    changed += update.run(row.txn_date, row.reference || null, row.bank_state, id).changes
+  }
+  if (changed) touchBankTxns([...superseded.values()])
+  return changed
+}
+
 export function parseStatementText(text) {
   const lines = String(text || '').replace(/\r/g, '').split('\n').filter((l) => l.trim() !== '')
   return parseStatementTable(lines.map((l) => l.split('\t')))
@@ -273,6 +336,7 @@ export function importTransactions(accountId, rows, userId) {
   const counters = new Map()
   const tx = db.transaction(() => {
     for (const row of rows) {
+      if (!Number(row.amount)) continue // ligne à 0 $ : rien à rapprocher
       const sig = [row.txn_date, row.amount, (row.description || '').toLowerCase(), (row.reference || '').toLowerCase()].join('|')
       const occurrence = counters.get(sig) || 0
       counters.set(sig, occurrence + 1)
@@ -318,11 +382,23 @@ export function importTransactions(accountId, rows, userId) {
   return { batchId, rowCount: rows.length, inserted, duplicates: rows.length - inserted }
 }
 
+// Une ligne à 0 $ (autorisation annulée, carte vérifiée…) n'a rien à
+// rapprocher : elle sort de la liste. Jamais une ligne déjà liée à quelque chose.
+export function purgeZeroAmountTxns(accountId = null) {
+  return db.prepare(`
+    UPDATE bank_transactions SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE deleted_at IS NULL AND COALESCE(amount, 0) = 0
+      AND qb_txn_id IS NULL AND matched_id IS NULL AND transfer_txn_id IS NULL
+      ${accountId ? 'AND account_id = ?' : ''}
+  `).run(...(accountId ? [accountId] : [])).changes
+}
+
 // Effets de bord communs à toute source qui alimente bank_transactions
 // (collage manuel, sync TRX_Orisha, Plaid — voir services/plaidSync.js) :
 // appariement des paiements émis, détection subventions et recharges Twilio.
 // Aucun ne doit faire échouer l'import appelant.
 export function runPostImportHooks(accountId, { source: _source = 'bank' } = {}) {
+  try { purgeZeroAmountTxns(accountId) } catch (e) { console.error('purgeZeroAmountTxns:', e.message) }
   // Les paiements émis, la paie et les versements de dettes ne se cochent plus
   // tout seuls : ils PROPOSENT, et c'est un clic qui écrit. Les gestes
   // explicites (bouton « apparier au relevé », fiche de dette) écrivent encore
@@ -335,6 +411,8 @@ export function runPostImportHooks(accountId, { source: _source = 'bank' } = {})
         ...producePaieDebits(),
       ]
       reconcileAndPersist(dedupeClaims(props), { kinds: ['payment_clear', 'paie_debit'] })
+      import('./bankProposals/autoAccept.js').then((m) => m.autoAcceptSafe())
+        .catch(e => console.error('bankReconciliation.autoAccept:', e.message))
     }
   } catch (e) {
     console.error('bankReconciliation.proposeClears:', e.message)
@@ -369,6 +447,8 @@ export function runPostImportHooks(accountId, { source: _source = 'bank' } = {})
     import('./bankProposals/producers.js')
       .then(async ({ produceDebtPayments }) => {
         reconcileAndPersist(await produceDebtPayments(), { kinds: ['debt_payment'] })
+        const { autoAcceptSafe } = await import('./bankProposals/autoAccept.js')
+        await autoAcceptSafe()
       })
       .catch(e => console.error('bankReconciliation.proposeDebtPayments:', e.message))
   }
@@ -598,10 +678,12 @@ export const RECEIPT_BANK_MATCH_AUTOMATION_ID = 'sys_receipt_bank_match'
 
 export function autoMatchReceipt(receiptId) {
   const receipt = db.prepare(`
-    SELECT id, receipt_date, total, currency, status
+    SELECT id, receipt_date, total, currency, status, quickbooks_type
     FROM sale_receipts WHERE id=? AND deleted_at IS NULL
   `).get(receiptId)
   if (!receipt || receipt.status !== 'done') return null
+  // Un dépôt (argent reçu) est saisi en positif mais cherche une ENTRÉE.
+  if (receipt.quickbooks_type === 'deposit') receipt.total = -Math.abs(receipt.total || 0)
   if (!receipt.receipt_date || !Number.isFinite(receipt.total) || Math.abs(receipt.total) < 0.011) return null
 
   // Déjà rattachée (à la main ou par une tournée précédente) : on ne touche pas.

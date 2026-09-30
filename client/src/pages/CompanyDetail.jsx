@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList, LifeBuoy } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
+import LogInteractionModal from '../components/LogInteractionModal.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import { CreateSubscriptionModal } from '../components/CreateSubscriptionModal.jsx'
 import api from '../lib/api.js'
@@ -22,6 +23,7 @@ import RetourDetail from './RetourDetail.jsx'
 import TicketDetail from './TicketDetail.jsx'
 import SerialDetail from './SerialDetail.jsx'
 import FactureDetail from './FactureDetail.jsx'
+import DiscoveryFormDetail from './DiscoveryFormDetail.jsx'
 import { AchatModal } from './AchatsFournisseurs.jsx'
 import RecordPeekDrawer from '../components/RecordPeekDrawer.jsx'
 import { DataTable } from '../components/DataTable.jsx'
@@ -654,15 +656,21 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
   const [onboardingResponses, setOnboardingResponses] = useState([])
   const [qualificationCalls, setQualificationCalls] = useState([])
+  const [systemBuilders, setSystemBuilders] = useState([])
   // Colonne du centre : le fil des événements, ou le tableau complet d'un
   // groupe de records liés ouvert depuis la colonne de droite.
   const [centerView, setCenterView] = useState('fil')
+  const [showLogModal, setShowLogModal] = useState(false)
   const { record: company, setRecord: setCompany, loading, loadError, reload: load } =
     useDetailRecord(() => api.companies.get(id), [id])
 
   useRealtimeChannel(id ? `company:${id}` : null, (msg) => {
     if (msg.type === 'company:updated') {
-      setCompany(c => c ? { ...c, ...msg.payload } : c)
+      // La table `companies` garde une colonne legacy `contacts` (TEXT JSON Airtable
+      // d'IDs) : elle écraserait le vrai tableau chargé par GET /:id → crash
+      // `….map is not a function` sur la carte Contacts. On la retire du merge.
+      const { contacts: _legacyContacts, ...rest } = msg.payload || {}
+      setCompany(c => c ? { ...c, ...rest } : c)
     } else if (msg.type === 'company:deleted') {
       onClose?.()
     } else if (msg.type === 'company:contacts_changed') {
@@ -686,7 +694,14 @@ export default function CompanyDetail({ recordId, onClose }) {
     api.adresses.list({ company_id: id, limit: 'all' }).then(r => setAdresses(r.data || [])).catch(() => {})
     api.companies.onboardingResponses(id).then(r => setOnboardingResponses(r.data || [])).catch(() => {})
     api.qualificationCalls.byCompany(id).then(r => setQualificationCalls(r.data || [])).catch(() => {})
-  }, [id])
+    loadSystemBuilders()
+  }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  function loadSystemBuilders() {
+    api.discoveryForms.list({ company_id: id, limit: 'all' })
+      .then(r => setSystemBuilders((r.rows || []).map(f => ({ ...f, sys_number: f.form_number ? `SYS-${f.form_number}` : '' }))))
+      .catch(() => {})
+  }
 
 
   // Portier des champs supprimés, libellés et champs personnalisés : appliqués
@@ -746,6 +761,15 @@ export default function CompanyDetail({ recordId, onClose }) {
   // Billets : rattachés par leur champ lien « Entreprise » (tickets.company_id
   // droppée, migration 040). Colonnes = champs des billets, rendus par DataTable.
   const ticketColumns = TABLE_COLUMN_META.company_tickets
+
+  const systemBuilderColumns = useMemo(() => {
+    const RENDERS = {
+      status: row => <Badge color={row.status === 'submitted' ? 'green' : 'blue'} size="sm">{row.status === 'submitted' ? 'Soumis' : 'En cours'}</Badge>,
+      submitted_at: row => <span className="text-slate-500">{fmtDate(row.submitted_at)}</span>,
+      created_at: row => <span className="text-slate-500">{fmtDate(row.created_at)}</span>,
+    }
+    return TABLE_COLUMN_META.company_discovery_forms.map(m => ({ ...m, render: RENDERS[m.id] }))
+  }, [])
 
   const factureColumns = useMemo(() => {
     const RENDERS = {
@@ -883,15 +907,27 @@ export default function CompanyDetail({ recordId, onClose }) {
       .catch(() => {})
   }, [id])
 
-  useEffect(() => {
+  const reloadFactures = useCallback(() => {
     api.factures.list({ company_id: id, limit: 'all' }).then(r => { setFactures(r.data || []); setFacturesTotal(r.total || r.data?.length || 0) }).catch(() => {})
+  }, [id])
+
+  // Une facture voidée depuis le panneau latéral quitte (ou change dans) la
+  // liste : on la relit plutôt que d'afficher un statut périmé.
+  useRealtimeChannel('facture:list', (msg) => {
+    if (msg.type !== 'facture:updated' || msg.payload?.company_id !== id) return
+    invalidate('/projets/factures')
+    reloadFactures()
+  })
+
+  useEffect(() => {
+    reloadFactures()
     reloadAbonnements()
     api.tasks.list({ company_id: id, limit: 'all' }).then(r => setTasks(r.data || [])).catch(() => {})
     api.auth.users().then(setUsers).catch(() => {})
     api.shipments.list({ company_id: id, limit: 'all' }).then(r => { setEnvois(r.data || []); setEnvoisTotal(r.total || r.data?.length || 0) }).catch(() => {})
     api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
     api.companies.tickets(id).then(r => setTickets(r.data || [])).catch(() => {})
-  }, [id, reloadAbonnements])
+  }, [id, reloadAbonnements, reloadFactures])
 
   // Achats fournisseurs : seulement si l'entreprise est aussi un fournisseur QB.
   const isVendor = !!company?.quickbooks_vendor_id
@@ -902,6 +938,14 @@ export default function CompanyDetail({ recordId, onClose }) {
     if (!isVendor) { setAchats([]); setAchatsTotal(0); return }
     reloadAchats()
   }, [isVendor, reloadAchats])
+
+  // Après un log manuel : l'entrée neuve est la plus récente, donc en tête.
+  async function reloadInteractions() {
+    const d = await api.interactions.list({ company_id: id, limit: INTER_LIMIT, offset: 0, include: 'heavy' })
+    setInteractions(d.interactions || [])
+    setInteractionsTotal(d.total || 0)
+    setInteractionsOffset(INTER_LIMIT)
+  }
 
   async function loadMoreInteractions() {
     setLoadingMoreInteractions(true)
@@ -1047,6 +1091,31 @@ export default function CompanyDetail({ recordId, onClose }) {
       ),
     },
     {
+      key: 'system-builder', label: 'System builder', rows: systemBuilders,
+      row: r => ({
+        to: `/discovery-forms/${r.id}`,
+        primary: r.sys_number || 'System builder',
+        secondary: fmtDate(r.submitted_at || r.created_at),
+        meta: r.status === 'submitted' ? 'Soumis' : 'En cours',
+      }),
+      table: () => (
+        <DataTable
+          table="company_discovery_forms"
+          columns={systemBuilderColumns}
+          data={systemBuilders}
+          searchFields={['sys_number', 'status']}
+          peek={{
+            title: row => row.sys_number || 'System builder',
+            subtitle: () => company.name,
+            to: row => `/discovery-forms/${row.id}`,
+            render: (row, { close }) => <DiscoveryFormDetail recordId={row.id} embedded onClose={close} onDeleted={loadSystemBuilders} />,
+          }}
+          height={stackedTableHeight(systemBuilders.length)}
+          emptyState={{ icon: ClipboardList, title: 'Aucun system builder' }}
+        />
+      ),
+    },
+    {
       key: 'commandes', label: 'Commandes', rows: company.orders || [],
       row: r => ({
         to: `/orders/${r.id}`,
@@ -1104,7 +1173,12 @@ export default function CompanyDetail({ recordId, onClose }) {
         to: `/factures/${r.id}`,
         primary: r.document_number || `Facture #${r.id}`,
         secondary: fmtDate(r.document_date),
-        meta: fmtMoney(r.amount_before_tax_cad, r.currency),
+        meta: (
+          <span className="flex items-center gap-1.5">
+            {r.status && <Badge size="xs" color={FACTURE_STATUS_COLORS[r.status] || 'gray'}>{r.status}</Badge>}
+            {fmtMoney(r.amount_before_tax_cad, r.currency)}
+          </span>
+        ),
       }),
       table: () => (
         <DataTable
@@ -1325,6 +1399,16 @@ export default function CompanyDetail({ recordId, onClose }) {
               ))}
             </span>
           )}
+          {company?.stripe_customer_id && (
+            <a
+              href={`https://customer.orisha.io/create-customer-portal-session?customerId=${encodeURIComponent(company.stripe_customer_id)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 link-record"
+            >
+              <ExternalLink size={12} /> Portail Stripe
+            </a>
+          )}
           </>
         ),
         actions: (
@@ -1343,10 +1427,6 @@ export default function CompanyDetail({ recordId, onClose }) {
                   onClick={() => { setInvoiceModalMode('new'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
                   className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                 >Créer une nouvelle facture</button>
-                <button
-                  onClick={() => { setInvoiceModalMode('convert'); setInvoiceModalOpen(true); setInvoiceMenuOpen(false) }}
-                  className="w-full text-left px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
-                >Convertir une soumission en facture</button>
                 <div className="my-1 border-t border-slate-100" />
                 <button
                   onClick={() => { setSubscriptionModalOpen(true); setInvoiceMenuOpen(false) }}
@@ -1396,7 +1476,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                     ) : <span className="font-mono">—</span>}
                     <span className="ml-2 text-xs text-slate-400">adresse {cc.address}</span>
                   </div>
-                  <CentralControllerPermissions permissions={cc.permissions} />
+                  <CentralControllerPermissions permissions={cc.permissions} tiles />
                 </div>
               ))}
           </div>
@@ -1497,7 +1577,14 @@ export default function CompanyDetail({ recordId, onClose }) {
         )}
         center={(
           <>
-            <CrmCenterTabs tabs={centerTabs} active={centerView} onSelect={setCenterView} />
+            <div className="flex items-center justify-between gap-2">
+              <CrmCenterTabs tabs={centerTabs} active={centerView} onSelect={setCenterView} />
+              {centerView === 'fil' && (
+                <button onClick={() => setShowLogModal(true)} className="btn-secondary btn-sm" data-testid="log-interaction">
+                  <Plus size={14} /> Consigner
+                </button>
+              )}
+            </div>
             {openRelated ? openRelated.table()
               : centerView === 'qualification' ? <QualificationCallsPanel calls={qualificationCalls} />
               : centerView === 'onboarding' ? <OnboardingResponsesPanel responses={onboardingResponses} />
@@ -1508,6 +1595,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                   total={interactionsTotal}
                   onLoadMore={loadMoreInteractions}
                   loadingMore={loadingMoreInteractions}
+                  onLog={() => setShowLogModal(true)}
                   onTogglePin={togglePinInteraction}
                 />
               )}
@@ -1575,6 +1663,15 @@ export default function CompanyDetail({ recordId, onClose }) {
           </div>
         )}
       </RecordPeekDrawer>
+
+      {showLogModal && (
+        <LogInteractionModal
+          companyId={id}
+          contacts={company.contacts || []}
+          onClose={() => setShowLogModal(false)}
+          onSaved={reloadInteractions}
+        />
+      )}
 
       {/* Task Modal */}
       {showTaskModal && (

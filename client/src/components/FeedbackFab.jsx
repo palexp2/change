@@ -2,7 +2,7 @@ import { hasRole } from '../../../shared/roles.mjs'
 import { useAuth } from '../lib/auth.jsx'
 import { useState, useEffect, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
-import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X, Globe, File, Component } from 'lucide-react'
+import { MessageSquarePlus, Wrench, HelpCircle, MousePointerClick, Crosshair, X } from 'lucide-react'
 import { Modal } from './Modal.jsx'
 import { api } from '../lib/api.js'
 import { getIsOffline } from '../lib/serverStatus.js'
@@ -10,22 +10,10 @@ import { useToast } from '../contexts/ToastContext.jsx'
 // Ciblage d'un élément de la page + ligne de contexte : mécanisme partagé avec le
 // panneau rapide de la file de travaux (lib/pageContext.jsx).
 import { useElementPicker, buildPageContext, PickerBanner } from '../lib/pageContext.jsx'
-// Moment du départ (« maintenant / ce soir 19 h ») : bascule partagée avec la page
-// /travaux et le panneau rapide — un seul geste à apprendre, où qu'on dépose une
-// tâche. Le placement dans la file (« au début / à la fin ») a été retiré d'ici :
-// une demande déposée à la main part à la fin, comme tout le reste.
-import { StartToggle, eveningStart } from '../lib/travauxQueue.jsx'
-import { pickDefaultModel } from '../lib/modelSwitch.js'
+// Ni moment du départ (« maintenant / ce soir 19 h », retiré 2026-09-30) ni
+// placement dans la file : une demande déposée ici part dès qu'un poste est libre,
+// à la fin de la file.
 import { useAutocorrect } from '../lib/useAutocorrect.js'
-
-// Modèle qui traitera la demande, choisi ici même : deux choix seulement, Opus
-// ou Astra. Le défaut est décidé à l'ouverture selon la marge de quota de chaque
-// abonnement (lib/modelSwitch.js) — Astra si les quotas sont illisibles. Les petits modèles (Sonnet, Haiku) ne sont plus proposés —
-// personne ne les choisissait pour une demande écrite à la main. Le repli quota
-// s'applique ensuite comme d'habitude côté serveur.
-const MODELS = ['opus', 'codex']
-const MODEL_NAMES = { opus: 'Opus', codex: 'Astra' }
-const DEFAULT_MODEL = 'codex'
 
 // FAB discret « Modifier le système », monté dans Layout donc visible sur
 // toutes les pages. Une seule destination : la demande est déposée comme prompt
@@ -59,9 +47,6 @@ function readPersisted() {
 // de la demande. Utile sur les pages publiques montées hors Layout (formulaire
 // de découverte : /d/:token), dont la route seule — un jeton opaque — ne dit pas
 // à l'agent de quelle page il s'agit.
-const fmtSlack = v => (v == null ? '?' : `×${v.toFixed(1)}`)
-const autoTitle = p => `Auto — marge Opus ${fmtSlack(p.opus)} · Astra ${fmtSlack(p.codex)}`
-
 export function FeedbackFab({ contextRecord = '' }) {
   const { user } = useAuth()
   const location = useLocation()
@@ -75,24 +60,8 @@ export function FeedbackFab({ contextRecord = '' }) {
   const [element, setElement] = useState(() => readPersisted().element || '')
   // Composants React qui englobent l'élément ciblé, du plus proche au plus lointain.
   const [chain, setChain] = useState(() => readPersisted().chain || [])
-  // Portée : 'page' (défaut), 'app', ou le nom d'un composant partagé de `chain`
-  // — le changement est alors demandé sur le composant lui-même, pour partout.
-  const [scope, setScope] = useState(() => {
-    const p = readPersisted()
-    return p.scope || (p.appWide ? 'app' : 'page')
-  })
-  // Quand la tâche démarre : 'now' (défaut, dès qu'un poste est libre) ou 'evening'
-  // — elle entre dans la file tout de suite, mais ne partira qu'à 19 h.
-  const [start, setStart] = useState(() => readPersisted().start === 'evening' ? 'evening' : 'now')
-  // Modèle qui traitera la demande — choisi automatiquement tant que
-  // l'utilisateur n'a pas cliqué lui-même sur la bascule (`modelManual`).
-  const [model, setModel] = useState(() => {
-    const m = readPersisted().model
-    return MODELS.includes(m) ? m : DEFAULT_MODEL
-  })
-  const [modelManual, setModelManual] = useState(() => !!readPersisted().modelManual)
-  // Marges qui ont fait le choix automatique (infobulle de la bascule).
-  const [autoPick, setAutoPick] = useState(null)
+  // Plus de choix de portée (« Cette page » / « Toute l'app », retiré
+  // 2026-09-30) : la demande porte toujours la page courante en contexte.
   // Mode « picking » : transitoire (non persisté), bandeau + surbrillance actifs.
   const [picking, setPicking] = useState(false)
   // Le picking a-t-il été (re)lancé depuis le formulaire ? → Échap y retourne.
@@ -110,23 +79,10 @@ export function FeedbackFab({ contextRecord = '' }) {
 
   useEffect(() => {
     try {
-      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain, scope, model, modelManual, start }))
+      if (open) sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ open, text, mode, element, chain }))
       else sessionStorage.removeItem(STORAGE_KEY)
     } catch { /* stockage indisponible (mode privé strict) — dégradation silencieuse */ }
-  }, [open, text, mode, element, chain, scope, model, modelManual, start])
-
-  // À l'ouverture : modèle par défaut selon les quotas restants des deux abonnements.
-  useEffect(() => {
-    if (!open || modelManual) return
-    let alive = true
-    api.agent.getUsage().then(usage => {
-      if (!alive) return
-      const pick = pickDefaultModel(usage)
-      setAutoPick(pick)
-      setModel(pick.model)
-    }).catch(() => {})
-    return () => { alive = false }
-  }, [open, modelManual])
+  }, [open, text, mode, element, chain])
 
   // Étape « picking » — surbrillance, neutralisation des clics de la page et
   // description de l'élément choisi : lib/pageContext.jsx.
@@ -160,17 +116,11 @@ export function FeedbackFab({ contextRecord = '' }) {
     setMode('implement')
     setElement('')
     setChain([])
-    setScope('page')
-    setModel(DEFAULT_MODEL)
-    setModelManual(false)
-    setAutoPick(null)
-    setStart('now')
   }
 
   function removeElement() {
     setElement('')
     setChain([])
-    if (scope !== 'app') setScope('page')
   }
 
   function close() {
@@ -213,7 +163,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     if (!trimmed || sendingRef.current) return
     sendingRef.current = true
     const context = buildPageContext({
-      pathname: location.pathname, search: location.search, element, chain, scope,
+      pathname: location.pathname, search: location.search, element, chain,
       record: contextRecord,
     })
     // Fermeture IMMÉDIATE, sans attendre le serveur : le dépôt dans la file ne
@@ -222,7 +172,7 @@ export function FeedbackFab({ contextRecord = '' }) {
     // « Envoi… » une demi-seconde ou plus quand le serveur est occupé. Le
     // brouillon est mis de côté : si l'envoi échoue, la fenêtre revient telle
     // qu'elle était, rien n'est perdu.
-    const draft = { text, mode, element, chain, scope, model, modelManual, start }
+    const draft = { text, mode, element, chain }
     setOpen(false)
     reset()
     try {
@@ -234,19 +184,13 @@ export function FeedbackFab({ contextRecord = '' }) {
         prompt: `${trimmed}\n\nContexte (ERP) : ${context}`,
         mode,
         space: 'finance',
-        // Modèle choisi pour CETTE demande : il l'emporte sur le modèle préféré de
-        // l'agent, l'effort restant celui du calibre décidé côté serveur.
-        model,
-        // Départ programmé : l'item entre dans la file tout de suite, mais
-        // l'ordonnanceur ne le prendra pas avant cette heure (absent = tout de suite).
-        start_at: start === 'evening' ? eveningStart() : null,
+        // Opus épinglé pour toutes les demandes (plus de choix de modèle).
+        model: 'opus',
       })
       // Pas d'écran de confirmation : la fenêtre est déjà refermée, le toast
       // accuse réception dès que le serveur a confirmé le dépôt.
       addToast({
-        message: draft.start === 'evening'
-          ? 'Ajoutée à la file — départ programmé à 19 h'
-          : created?.status === 'running'
+        message: created?.status === 'running'
             ? 'Demande envoyée — l\'agent s\'y met tout de suite'
             : 'Ajoutée à la file de Travaux',
         type: 'success',
@@ -258,10 +202,6 @@ export function FeedbackFab({ contextRecord = '' }) {
       setMode(draft.mode)
       setElement(draft.element)
       setChain(draft.chain)
-      setScope(draft.scope)
-      setModel(draft.model)
-      setModelManual(draft.modelManual)
-      setStart(draft.start)
       setOpen(true)
       addToast({ message: 'Échec de l\'envoi de la suggestion', type: 'error' })
     } finally {
@@ -393,113 +333,29 @@ export function FeedbackFab({ contextRecord = '' }) {
             lang="fr"
             className="input w-full resize-y"
           />
-          {/* Sous le champ, deux réglages discrets : le modèle qui traitera la
-              demande (bascule Opus / Astra, défaut selon les quotas) et le moment du
-              départ (tout de suite, ou programmé à 19 h — même contrôle que
-              /travaux). */}
-          <div className="flex justify-end items-center gap-2 -mt-2 flex-wrap">
-            {autocorrect.corrected && (
+          {autocorrect.corrected && (
+            <div className="flex items-center -mt-2">
               <button
                 type="button"
                 data-testid="feedback-autocorrect-undo"
                 onClick={autocorrect.revert}
                 title="Annuler la correction"
-                className="mr-auto text-xs text-slate-400 hover:text-slate-600"
+                className="text-xs text-slate-400 hover:text-slate-600"
               >
                 Corrigé · annuler
               </button>
-            )}
-            <div
-              className="inline-flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg"
-              role="radiogroup"
-              aria-label="Modèle"
+            </div>
+          )}
+          <div className="flex justify-end gap-3 pt-1">
+            <button type="button" onClick={close} className="btn-secondary">Annuler</button>
+            <button
+              type="submit"
+              data-testid="feedback-fab-submit"
+              disabled={!text.trim()}
+              className="btn-primary"
             >
-              {MODELS.map(m => (
-                <button
-                  key={m}
-                  type="button"
-                  data-testid={`feedback-model-${m}`}
-                  role="radio"
-                  aria-checked={model === m}
-                  onClick={() => { setModel(m); setModelManual(true) }}
-                  title={!modelManual && autoPick?.model === m ? autoTitle(autoPick) : undefined}
-                  className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${model === m ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  {MODEL_NAMES[m]}
-                </button>
-              ))}
-            </div>
-            <StartToggle
-              testId="feedback-start"
-              value={start}
-              onChange={setStart}
-            />
-          </div>
-          <div className="space-y-2 pt-1">
-            {/* Portée : toutes les options côte à côte — la page, chaque
-                composant partagé qui englobe l'élément ciblé (le changement se
-                fait alors sur le composant, donc partout), toute l'app. */}
-            <div
-              className="flex items-center gap-0.5 p-0.5 bg-slate-100 rounded-lg flex-wrap"
-              role="radiogroup"
-              aria-label="Portée de la demande"
-            >
-              <button
-                type="button"
-                data-testid="feedback-scope-page"
-                role="radio"
-                aria-checked={scope === 'page'}
-                onClick={() => setScope('page')}
-                title="La demande concerne la page courante"
-                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium min-w-0 transition-colors ${scope === 'page' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                <File size={12} className="flex-shrink-0" />
-                <span className="font-mono truncate max-w-[10rem]">{location.pathname}{location.search}</span>
-              </button>
-              {chain.slice(0, 5).map(name => (
-                <button
-                  key={name}
-                  type="button"
-                  data-testid={`feedback-scope-component-${name}`}
-                  role="radio"
-                  aria-checked={scope === name}
-                  onClick={() => setScope(name)}
-                  title={`Modifier le composant ${name} — partout où il est utilisé`}
-                  className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${scope === name ? 'bg-white text-violet-700 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                  <Component size={12} className="flex-shrink-0" />
-                  <span className="font-mono">{name}</span>
-                </button>
-              ))}
-              <button
-                type="button"
-                data-testid="feedback-scope-app"
-                role="radio"
-                aria-checked={scope === 'app'}
-                onClick={() => setScope('app')}
-                title="La demande concerne toute l'application, pas seulement cette page"
-                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${scope === 'app' ? 'bg-white text-brand-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-              >
-                <Globe size={12} className="flex-shrink-0" />
-                Toute l'app
-              </button>
-            </div>
-            {scope !== 'page' && scope !== 'app' && (
-              <p className="text-xs text-violet-700" data-testid="feedback-scope-hint">
-                Le changement s'appliquera partout où « {scope} » est utilisé.
-              </p>
-            )}
-            <div className="flex justify-end gap-3">
-              <button type="button" onClick={close} className="btn-secondary">Annuler</button>
-              <button
-                type="submit"
-                data-testid="feedback-fab-submit"
-                disabled={!text.trim()}
-                className="btn-primary"
-              >
-                Envoyer
-              </button>
-            </div>
+              Envoyer
+            </button>
           </div>
         </form>
       </Modal>

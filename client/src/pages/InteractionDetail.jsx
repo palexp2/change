@@ -11,6 +11,7 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { fmtDateTime } from '../lib/formatDate.js'
+import { fmtPhone } from '../utils/formatters.js'
 import { fmtDurationSeconds as fmtDuration } from '../lib/duration.js'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -171,7 +172,7 @@ export default function InteractionDetail({ recordId: id, onClose }) {
 
           {item.type === 'call' && (
             <DetailField id="phone_number" label="Numéro">
-              <div className="text-sm text-slate-900 font-mono">{item.callee_number || <span className="text-slate-400 font-sans">—</span>}</div>
+              <div className="text-sm text-slate-900 font-mono">{fmtPhone(item.callee_number) || <span className="text-slate-400 font-sans">—</span>}</div>
             </DetailField>
           )}
           {item.type === 'call' && (

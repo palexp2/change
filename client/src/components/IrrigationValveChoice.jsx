@@ -1,11 +1,15 @@
+import { useDiscoveryTr } from '../lib/discoveryLang.js'
 // Choix illustré des zones d'irrigation : une zone = une valve sur la conduite,
-// de 0 à 4 (le contenu d'un bloc). Le texte est dessiné dans l'image, pour
-// qu'on puisse répondre sans rien lire dessous.
-const ZONE_LABELS = { 0: 'Aucune zone', 1: '1 zone', 2: '2 zones', 3: '3 zones', 4: '4 zones' }
+// de 0 à 8 (deux blocs). Le texte est dessiné dans l'image, pour qu'on puisse
+// répondre sans rien lire dessous.
+const zoneLabel = (n, tr) => n === 0 ? tr('Aucune zone') : n === 1 ? `1 ${tr('zone')}` : `${n} ${tr('zones')}`
 
 // Les valves se répartissent sur la conduite ; une seule se place au centre.
+// Au-delà de 4, elles occupent toute la conduite pour garder de l'espace.
 function valveX(count, i) {
-  return count === 1 ? 120 : 60 + i * (120 / (count - 1))
+  if (count === 1) return 120
+  const [from, to] = count > 4 ? [30, 210] : [60, 180]
+  return from + i * ((to - from) / (count - 1))
 }
 
 function Valve({ x }) {
@@ -21,7 +25,8 @@ function Valve({ x }) {
 }
 
 export default function IrrigationValveChoice({ count, checked, onChange, name }) {
-  const label = ZONE_LABELS[count]
+  const tr = useDiscoveryTr()
+  const label = zoneLabel(count, tr)
   return (
     <label className={`relative block cursor-pointer rounded-lg border p-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
       <input type="radio" name={name} className="sr-only" checked={checked} onChange={onChange} aria-label={label} />

@@ -5,8 +5,9 @@
 // réglages) et le panneau rapide accessible depuis n'importe quelle page
 // (TravauxQuickPanel). Tout ce qui est ici doit rester utilisable sans la page.
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Loader2, HelpCircle, Send, ChevronsDown, ChevronsUp, Zap, Moon, Clock } from 'lucide-react'
+import { HelpCircle, Send, ChevronsDown, ChevronsUp, Zap, Moon, Clock } from 'lucide-react'
 import api from './api.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 export const inputCls = 'px-2.5 py-1.5 text-sm border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-400'
 export const btnCls = 'inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-slate-200 text-slate-700 hover:bg-slate-50 disabled:opacity-50'
@@ -111,7 +112,7 @@ export function StatusPill({ p }) {
         : state === 'queued' ? "Dans la file : partira quand le poste de sa file sera libre." : undefined
   return (
     <span className={`px-2 py-0.5 text-xs font-medium rounded-full ${STATUS_STYLES[state] || 'bg-slate-100 text-slate-600'}`} title={title}>
-      {state === 'running' && <Loader2 size={11} className="inline animate-spin mr-1" />}
+      {state === 'running' && <ThinkingOrb state="working" size={11} ink className="inline mr-1" />}
       {state === 'asking' && <HelpCircle size={11} className="inline mr-1" />}
       {state === 'scheduled' && <Clock size={11} className="inline mr-1" />}
       {STATUS_LABELS[state] || state}{suffix}
@@ -218,14 +219,14 @@ export function ReplyBox({ onSend, autoFocus, rows = 2 }) {
           onClick={() => send('front')} disabled={!!sending || !text.trim()}
           title="La tâche repart tout de suite, avant le reste de la file"
         >
-          {sending === 'front' ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Relancer au début de la file
+          {sending === 'front' ? <ThinkingOrb size={14} ink /> : <Send size={14} />} Relancer au début de la file
         </button>
         <button
           className={btnCls} data-testid="travaux-reply-back"
           onClick={() => send('back')} disabled={!!sending || !text.trim()}
           title="La réponse est enregistrée et la tâche retourne en fin de file — elle reprendra quand son tour reviendra"
         >
-          {sending === 'back' ? <Loader2 size={14} className="animate-spin" /> : <ChevronsDown size={14} />} À la fin de la file
+          {sending === 'back' ? <ThinkingOrb size={14} ink /> : <ChevronsDown size={14} />} À la fin de la file
         </button>
         <span className="text-xs text-slate-400">⌘/Ctrl + Entrée</span>
       </div>
@@ -320,10 +321,10 @@ export function StartToggle({ value, onChange, testId = 'travaux-start', classNa
 
 /**
  * Voie d'exécution d'un item — même règle que le serveur (`laneOf`) : la voie
- * lecture seule des questions, ou l'une des quatre files d'implémentation.
+ * lecture seule des questions, ou la file unique des implémentations.
  */
 function laneOf(p) {
-  return p.lane || ((p.mode === 'question' && !p.same_context) ? 'question' : `exec:${p.exec_lane ?? 0}`)
+  return p.lane || ((p.mode === 'question' && !p.same_context) ? 'question' : 'exec')
 }
 
 /**
@@ -343,7 +344,7 @@ function liftToFront(prompts, id) {
     // Remis à l'ordonnanceur mais pas démarré : le serveur le lui reprend pour que
     // « premier » ne mente pas — l'écran doit le dire aussi (une exécution
     // réellement en cours, elle, n'est jamais touchée).
-    const reclaimed = p.status === 'running' && p.run_state !== 'executing' && p.space === target.space
+    const reclaimed = p.status === 'running' && p.run_state !== 'executing'
     const rank = p.wait_rank && p.wait_rank < from ? p.wait_rank + 1 : p.wait_rank
     if (!reclaimed && rank === p.wait_rank) return p
     return { ...p, wait_rank: rank, ...(reclaimed ? { status: 'queued', run_state: null } : null) }

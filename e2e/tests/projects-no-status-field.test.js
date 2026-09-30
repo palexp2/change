@@ -69,7 +69,7 @@ describe('Projets — le champ Statut a été supprimé', () => {
     await page.goto(URL + '/pipeline', { waitUntil: 'domcontentloaded' })
     await page.locator('button:has-text("Nouveau projet")').first().click()
     const modal = page.locator('.fixed').filter({ hasText: 'Nouveau projet' }).first()
-    await modal.locator('text=Nom du projet').first().waitFor({ state: 'visible', timeout: 15000 })
+    await modal.locator('text=Entreprise').first().waitFor({ state: 'visible', timeout: 15000 })
     const modalText = await modal.innerText()
     assert.ok(!/\bStatut\b/.test(modalText), `la modale ne propose plus de statut (vu : ${modalText.slice(0, 400)})`)
     assert.equal(

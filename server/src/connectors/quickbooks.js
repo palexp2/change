@@ -206,8 +206,12 @@ export async function qbRequest(method, path, body) {
     const text = await resp.text()
     // Le dump JSON complet de QB est illisible pour l'utilisateur — on en extrait
     // un message concis (le brut reste dans les logs serveur pour le debug).
-    console.error(`QB API ${method} ${path} ${resp.status}:`, text)
-    throw buildQbApiError(method, path, resp.status, text)
+    const err = buildQbApiError(method, path, resp.status, text)
+    // Lecture d'un Id supprimé dans QB (610) : réponse attendue d'un sondage
+    // d'existence, que chaque appelant traite — pas une erreur du système.
+    const log = method === 'GET' && err.qbCode === '610' ? console.log : console.error
+    log(`QB API ${method} ${path} ${resp.status}:`, text)
+    throw err
   }
   if (method !== 'GET') {
     for (const fn of qbMutationListeners) {
@@ -244,7 +248,7 @@ export function getQbRealmIdSync() {
   try { return JSON.parse(row.metadata || '{}').realm_id || null } catch { return null }
 }
 
-const QB_APP_HOST = process.env.QB_SANDBOX === 'true'
+export const QB_APP_HOST = process.env.QB_SANDBOX === 'true'
   ? 'https://app.sandbox.qbo.intuit.com'
   : 'https://app.qbo.intuit.com'
 

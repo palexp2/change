@@ -49,7 +49,9 @@ test('distance du contrôleur : validation, persistance, aperçu et commande', a
     assert.deepEqual(items, answer ? [] : [{ product_id: 'distance-controller', qty: 1 }])
     const notes = db.prepare('SELECT notes FROM orders WHERE id=?').get(order.body.id).notes
     assert.equal(notes.includes('Les contrôleurs centraux de ce client doivent être programmés en mode multi-contrôleurs.'), !answer)
-    assert.ok(notes.includes(`System Builder #${form.id}`))
+    assert.ok(!notes.includes(`System Builder #${form.id}`))
+    if (answer) assert.equal(notes, '')
+    assert.equal(db.prepare('SELECT generated_order_id FROM customer_onboarding_responses WHERE id=?').get(form.id).generated_order_id, order.body.id)
   }
   // Contrôleur internet mobile acheté : la question n'est pas posée, donc
   // la soumission passe sans réponse et l'aperçu reste complet.
@@ -110,6 +112,21 @@ test('soumission refusée pour louvre incomplète et commande sans dimensionneme
   const order = await api('POST', `/discovery-forms/${form.id}/create-order`)
   assert.equal(order.status, 422)
   assert.equal(db.prepare('SELECT generated_order_id FROM customer_onboarding_responses WHERE id=?').get(form.id).generated_order_id, null)
+})
+
+test('langue du formulaire : choisie à la création, lue par le lien public, anglais servi par le schéma', async () => {
+  const { buildForm } = await import('../../../client/src/lib/discoveryFormSchema.js')
+  const created = await api('POST', '/discovery-forms', { company_id: 'discovery-company', helper_count: 1, form_options: { lang: 'en' } })
+  assert.equal(created.body.form_options.lang, 'en')
+  const pub = await api('GET', `/customer/post-payment/by-token/${created.body.public_token}`, undefined, true)
+  assert.equal(pub.body.response.form_options.lang, 'en')
+  const fr = await api('POST', '/discovery-forms', { company_id: 'discovery-company', helper_count: 1, form_options: { lang: 'xx' } })
+  assert.equal(fr.body.form_options.lang, 'fr')
+  const en = buildForm(null, 'en')
+  assert.equal(en.t('submit.label'), 'Submit')
+  assert.equal(en.opts('greenhouse.side_vent_height_range_options').find(o => o.value === 'unknown').label, 'I don’t know')
+  assert.equal(en.tr('Je ne sais pas'), 'I don’t know')
+  assert.equal(buildForm(null).t('submit.label'), 'Soumettre')
 })
 
 test('images des questions : conservation, lecture publique et retour automatique', async () => {
@@ -194,6 +211,26 @@ test('commande de louvre inconnue : sauvegarde, envoi et signalement au vérific
   assert.equal((await api('POST', `/discovery-forms/${form.id}/create-order`)).status, 422)
 })
 
+test('formulaire envoyé : modifiable jusqu’à la création de la commande', async () => {
+  db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('edit-company', 'Edit fixture')
+  const form = (await api('POST', '/discovery-forms', { company_id: 'edit-company', helper_count: 1 })).body
+  const path = `/customer/post-payment/by-token/${form.public_token}`
+  await api('POST', path + '/save', { is_new_site: 'add_to_existing', within_central_controller_range: true, shipping_address: { line1: '1 rue A', city: 'Québec', province: 'QC' }, greenhouses: [{ has_side_vents: false }] }, true)
+  assert.equal((await api('POST', path + '/submit', undefined, true)).status, 200)
+  const submittedAt = (await api('GET', path, undefined, true)).body.response.submitted_at
+  const edited = await api('POST', path + '/save', { network_access: 'wifi' }, true)
+  assert.equal(edited.status, 200, JSON.stringify(edited.body))
+  assert.equal(edited.body.response.editable, true)
+  const again = await api('POST', path + '/submit', undefined, true)
+  assert.equal(again.body.resubmitted, true)
+  assert.equal(again.body.response.submitted_at, submittedAt)
+  db.prepare("INSERT INTO orders (id, order_number, status) VALUES ('edit-order', 99001, 'Commande vide')").run()
+  db.prepare("UPDATE customer_onboarding_responses SET generated_order_id='edit-order' WHERE id=?").run(form.id)
+  assert.equal((await api('GET', path, undefined, true)).body.response.editable, false)
+  assert.equal((await api('POST', path + '/save', { network_access: 'ethernet' }, true)).status, 409)
+  assert.equal((await api('POST', path + '/submit', undefined, true)).body.already_submitted, true)
+})
+
 test('irrigation : envoi sans paiement et ancien checkout désactivé', async () => {
   db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('irrigation-company', 'Irrigation fixture')
   for (const zones of [[0], [4], [5], [9], [3, 3], [2, 5]]) {
@@ -216,7 +253,7 @@ test('irrigation : envoi sans paiement et ancien checkout désactivé', async ()
     assert.equal(sent.body.response.extras_pending_invoice_id, null)
     const detail = await api('GET', `/discovery-forms/${created.body.id}`)
     assert.deepEqual(detail.body.greenhouses.map(g => g.irrigation_zones), zones)
-    assert.equal((await api('POST', path + '/submit', undefined, true)).body.already_submitted, true)
+    assert.equal((await api('POST', path + '/submit', undefined, true)).body.resubmitted, true)
   }
   assert.equal((await api('POST', '/customer/post-payment/by-token/missing-irrigation/valve-blocks-checkout', {}, true)).status, 404)
 })
@@ -264,9 +301,9 @@ test('JWT : association typée, persistance, aperçu mixte et programmation dans
 test('équipements supplémentaires : quantités par serre, fixées par Orisha', async () => {
   db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('additional-company', 'Additional fixture')
   const additional = [
-    { furnaces: 1, valves: 4, rollups: 0, roofs: 0 },
-    { furnaces: 0, valves: 0, rollups: 0, roofs: 2 },
-    { furnaces: 0, valves: 0, rollups: 2, roofs: 0 },
+    { furnaces: 1, valves: 4, rollups: 0, roofs: 0, screens: 0 },
+    { furnaces: 0, valves: 0, rollups: 0, roofs: 2, screens: 1 },
+    { furnaces: 0, valves: 0, rollups: 2, roofs: 0, screens: 0 },
   ]
   const created = await api('POST', '/discovery-forms', { company_id: 'additional-company', chief_count: 2, helper_count: 1, form_options: { additional_equipment: additional } })
   assert.equal(created.status, 201)
@@ -291,7 +328,38 @@ test('équipements supplémentaires : quantités par serre, fixées par Orisha',
   assert.ok(preview.warnings.some(w => w.code === 'roof_review' && w.greenhouse === 2 && w.message.startsWith('2 ')))
   assert.equal((await api('POST', `/discovery-forms/${created.body.id}/create-order`)).status, 422)
   const defaults = await api('POST', '/discovery-forms', { company_id: 'additional-company', helper_count: 1, form_options: { additional_equipment: [{ furnaces: 'x', valves: -1, rollups: 1.5, roofs: '2' }] } })
-  assert.deepEqual(defaults.body.form_options.additional_equipment, [{ furnaces: 0, valves: 0, rollups: 0, roofs: 2 }])
+  assert.deepEqual(defaults.body.form_options.additional_equipment, [{ furnaces: 0, valves: 0, rollups: 0, roofs: 2, screens: 0 }])
+  const materials = await api('POST', '/discovery-forms', { company_id: 'additional-company', chief_count: 1, form_options: { humidity_retention: true, additional_equipment: [{ humidity_valve: true, humidity_haf: 'oui' }] } })
+  assert.deepEqual(materials.body.form_options.additional_equipment, [{ furnaces: 0, valves: 0, rollups: 0, roofs: 0, screens: 0, humidity_valve: true }])
+  assert(!('humidity_retention' in materials.body.form_options))
   const legacy = await api('POST', '/discovery-forms', { company_id: 'additional-company', helper_count: 1, form_options: { additional_equipment: { furnaces: true } } })
   assert.deepEqual(legacy.body.form_options.additional_equipment, [])
+})
+
+test('réponses corrigées depuis la fiche : fusion par serre et verrou après commande', async () => {
+  db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('answers-company', 'Answers fixture')
+  const form = (await api('POST', '/discovery-forms', { company_id: 'answers-company', chief_count: 1, helper_count: 1 })).body
+  await api('POST', `/customer/post-payment/by-token/${form.public_token}/save`, { is_new_site: 'new', greenhouses: [{ permission_level: 'chief_grower', has_louvers: false, num_fans: '1', custom: { a: 'x' } }, { permission_level: 'helper', has_louvers: false }], custom_answers: { q1: 'un' } }, true)
+  const saved = await api('PATCH', `/discovery-forms/${form.id}/answers`, { answers: { network_access: 'ethernet', greenhouses: [] }, greenhouse: { index: 0, values: { num_fans: '2', permission_level: 'helper', custom: { b: 'y' } } }, custom_answers: { q2: 'deux' } })
+  assert.equal(saved.status, 200, JSON.stringify(saved.body))
+  assert.equal(saved.body.network_access, 'ethernet')
+  assert.equal(saved.body.company_name, 'Answers fixture')
+  assert.equal(saved.body.greenhouses.length, 2)
+  assert.deepEqual(saved.body.greenhouses[0], { permission_level: 'chief_grower', has_louvers: false, num_fans: '2', custom: { a: 'x', b: 'y' } })
+  assert.deepEqual(saved.body.custom_answers, { q1: 'un', q2: 'deux' })
+  assert.equal((await api('PATCH', `/discovery-forms/${form.id}/answers`, { greenhouse: { index: 5, values: {} } })).status, 400)
+  db.prepare("INSERT INTO orders (id, order_number, status) VALUES ('answers-order', 99901, 'Commande vide')").run()
+  db.prepare('UPDATE customer_onboarding_responses SET generated_order_id=? WHERE id=?').run('answers-order', form.id)
+  assert.equal((await api('PATCH', `/discovery-forms/${form.id}/answers`, { answers: { wifi_ssid: 'x' } })).status, 409)
+})
+
+test('commande refusée tant qu’il reste un « Je ne sais pas », levé une fois corrigé', async () => {
+  db.prepare('INSERT INTO companies (id, name) VALUES (?, ?)').run('unknown-company', 'Unknown fixture')
+  const form = (await api('POST', '/discovery-forms', { company_id: 'unknown-company', helper_count: 1 })).body
+  await api('POST', `/customer/post-payment/by-token/${form.public_token}/save`, { is_new_site: 'new', greenhouses: [{ permission_level: 'helper', has_louvers: false, has_existing_side_vent_motors: true, side_has_inverters: 'unknown' }] }, true)
+  const refused = await api('POST', `/discovery-forms/${form.id}/create-order`)
+  assert.equal(refused.status, 422)
+  assert.deepEqual(refused.body.unknown, [{ greenhouse: 1, label: 'Inverseurs' }])
+  await api('PATCH', `/discovery-forms/${form.id}/answers`, { greenhouse: { index: 0, values: { side_has_inverters: false } } })
+  assert.notDeepEqual((await api('POST', `/discovery-forms/${form.id}/create-order`)).body.unknown, [{ greenhouse: 1, label: 'Inverseurs' }])
 })

@@ -10,7 +10,7 @@ test('le plafond le plus serré gagne, et le plafond d\'un modèle est ignoré',
   const worst = tightestBucket({
     session: { utilizationPct: 40 },
     week: { utilizationPct: 82, resetsAt: '2026-09-05T01:59:59Z' },
-    weekScoped: { utilizationPct: 99 },   // a son repli automatique : jamais bloquant
+    weekScoped: { utilizationPct: 99 },   // plafond d'un modèle : jamais bloquant
   }, FLOORS)
   assert.equal(worst.remaining, 18)
   assert.equal(worst.label, 'semaine')

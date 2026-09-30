@@ -1,18 +1,14 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useAuth } from '../lib/auth.jsx'
-import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { RefreshCw, Database, ChevronDown, ChevronRight, Users, Plus } from 'lucide-react'
+import { Users, Plus } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import EmployeeDetail from './EmployeeDetail.jsx'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
-import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
-import { fmtDate } from '../lib/formatDate.js'
-import Spinner from '../components/Spinner.jsx'
 
 // Tous les champs de la table sont des champs personnalisés : leur rendu vient
 // du renderer commun (renderCustomFieldValue). Seule la colonne « Nom » garde un
@@ -51,159 +47,13 @@ const EMPLOYEE_FORM_FIELDS = [
   { field: 'active', label: 'Actif', visible: false, defaultValue: 1 },
 ]
 
-function SyncPanel({ onSynced }) {
-  const [open, setOpen] = useState(false)
-  const [config, setConfig] = useState(null)
-  const [bases, setBases] = useState([])
-  const [tables, setTables] = useState([])
-  const [baseId, setBaseId] = useState('')
-  const [tableId, setTableId] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
-  const [syncing, setSyncing] = useState(false)
-  const [error, setError] = useState(null)
-
-  useEffect(() => {
-    api.employees.syncConfig().then(setConfig).catch(() => {})
-  }, [])
-
-  useEffect(() => {
-    if (!open || bases.length > 0) return
-    setLoading(true)
-    setError(null)
-    api.airtable.bases()
-      .then(basesList => {
-        setBases(basesList || [])
-        if (config?.base_id) setBaseId(config.base_id)
-        if (config?.table_id) setTableId(config.table_id)
-      })
-      .catch(e => setError(e.message || 'Erreur de chargement'))
-      .finally(() => setLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open])
-
-  useEffect(() => {
-    if (!baseId) { setTables([]); return }
-    api.airtable.tables(baseId).then(t => setTables(t || [])).catch(() => setTables([]))
-  }, [baseId])
-
-  async function handleSave() {
-    setSaving(true)
-    setError(null)
-    try {
-      await api.employees.saveSyncConfig({ base_id: baseId, table_id: tableId })
-      const cfg = await api.employees.syncConfig()
-      setConfig(cfg)
-    } catch (e) { setError(e.message || 'Erreur enregistrement') }
-    finally { setSaving(false) }
-  }
-
-  async function handleSync() {
-    if (!baseId || !tableId) return
-    setSyncing(true)
-    setError(null)
-    try {
-      await api.employees.sync()
-      const start = Date.now()
-      while (Date.now() - start < 60000) {
-        await new Promise(r => setTimeout(r, 1500))
-        const status = await api.connectors.syncStatus().catch(() => ({}))
-        if (!status?.employees) break
-      }
-      const cfg = await api.employees.syncConfig()
-      setConfig(cfg)
-      onSynced?.()
-    } catch (e) { setError(e.message || 'Échec de la synchronisation') }
-    finally { setSyncing(false) }
-  }
-
-  const configured = !!(config?.base_id && config?.table_id)
-
-  return (
-    <div className="card mb-4 overflow-hidden">
-      <button
-        onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50 transition-colors"
-      >
-        {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-        <Database size={15} className="text-brand-500" />
-        <span className="font-medium">Synchronisation Airtable</span>
-        {configured ? (
-          <span className="text-xs text-slate-400 ml-2">
-            {config.last_synced_at ? `Dernière sync: ${fmtDate(config.last_synced_at)}` : 'Configurée'}
-          </span>
-        ) : (
-          <span className="text-xs text-amber-600 ml-2">Non configurée</span>
-        )}
-      </button>
-
-      {open && (
-        <div className="border-t border-slate-200 p-4 space-y-3 bg-slate-50">
-          {loading ? (
-            <p className="text-xs text-slate-400"><Spinner size="xs" label="Chargement…" /></p>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="label text-xs">Base Airtable</label>
-                  <SearchableSelect
-                    testId="employees-base-select"
-                    className="input"
-                    size="sm"
-                    value={baseId}
-                    options={bases}
-                    getOptionValue={o => o.id}
-                    getOptionLabel={o => o.name}
-                    onChange={v => { setBaseId(v); setTableId('') }}
-                    emptyOption="—"
-                    searchPlaceholder="Rechercher une base…"
-                  />
-                </div>
-                <div>
-                  <label className="label text-xs">Table</label>
-                  <SearchableSelect
-                    testId="employees-table-select"
-                    className="input"
-                    size="sm"
-                    value={tableId}
-                    options={tables}
-                    getOptionValue={o => o.id}
-                    getOptionLabel={o => o.name}
-                    onChange={v => setTableId(v)}
-                    emptyOption="—"
-                    searchPlaceholder="Rechercher une table…"
-                    disabled={!baseId}
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-slate-500">
-                Le mappage des champs (prénom, nom, courriels, téléphones, dates, matricule) est détecté automatiquement au premier import.
-              </p>
-              {error && <p className="text-xs text-red-600">{error}</p>}
-              <div className="flex items-center gap-2 pt-1">
-                <button onClick={handleSave} disabled={saving || !baseId || !tableId} className="btn-secondary btn-sm">
-                  {saving ? 'Enregistrement…' : 'Enregistrer'}
-                </button>
-                <button onClick={handleSync} disabled={syncing || !configured} className="btn-primary btn-sm flex items-center gap-1.5">
-                  <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
-                  {syncing ? 'Synchronisation…' : 'Synchroniser maintenant'}
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 export default function Employees() {
   const { user } = useAuth()
   const isHR = hasRole(user, 'rh')
   const navigate = useNavigate()
   const { peekOpenId, consumePeekOpen } = usePeekOpenId()
 
-  const { rows: employees, loading, reload: load } = useListData({
+  const { rows: employees, loading } = useListData({
     fetch: (page, limit) => api.employees.list({ limit, page }),
     realtime: 'employee',
   })
@@ -225,8 +75,6 @@ export default function Employees() {
     >
       {({ openCreate }) => (
         <>
-          {isHR && hasRole(user, 'admin') && <SyncPanel onSynced={load} />}
-
           <DataTable
             table="employees"
             manageViews

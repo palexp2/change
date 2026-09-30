@@ -35,7 +35,7 @@ function fixture(t, { status = 'queued', agentStatus = 'approved', model = 'opus
   const task = { id: 'task', status: agentStatus, model, resume_session_id: 'session' }
   const context = {
     db,
-    KNOWN_MODELS: ['fable', 'opus', 'sonnet', 'haiku', 'codex'],
+    KNOWN_MODELS: ['opus', 'sonnet', 'haiku'],
     getMaxParallelQuestions: () => 2,
     getExecLaneCount: () => 4,
     findAgentTask: () => ({ ...task }),
@@ -43,7 +43,7 @@ function fixture(t, { status = 'queued', agentStatus = 'approved', model = 'opus
     updateTask: (_id, patch) => Object.assign(task, patch),
     broadcastTask: () => {},
     broadcastAll: () => {},
-    presetFor: () => ({ model: 'fable', effort: 'high' }),
+    presetFor: () => ({ model: 'opus', effort: 'high' }),
   }
   const api = runInNewContext(`${pendingUpdate}\n${queueSource}\n({ updatePrompt, getPrompt })`, context)
   return { ...api, task }
@@ -52,27 +52,25 @@ function fixture(t, { status = 'queued', agentStatus = 'approved', model = 'opus
 for (const status of ['queued', 'paused', 'running']) {
   test(`modèle modifiable avant exécution : ${status}`, t => {
     const { updatePrompt, getPrompt, task } = fixture(t, { status })
-    const updated = updatePrompt('p', { model: 'CODEX' })
-    assert.equal(updated.model, 'codex')
-    assert.equal(getPrompt('p').model, 'codex')
+    const updated = updatePrompt('p', { model: 'HAIKU' })
+    assert.equal(updated.model, 'haiku')
+    assert.equal(getPrompt('p').model, 'haiku')
     assert.equal(updated.status, status)
     assert.equal(updated.prompt, 'Demande originale')
     assert.equal(updated.preset, 'deep')
     if (status === 'running') {
-      assert.equal(task.model, 'codex')
+      assert.equal(task.model, 'haiku')
       assert.equal(task.effort, 'high')
       assert.equal(task.description, 'Demande originale')
-      assert.equal(task.resume_session_id, null)
     }
   })
 }
 
 for (const value of [null, '']) {
   test(`retour au modèle du calibre : ${JSON.stringify(value)}`, t => {
-    const { updatePrompt, task } = fixture(t, { status: 'running', model: 'codex' })
+    const { updatePrompt, task } = fixture(t, { status: 'running', model: 'haiku' })
     assert.equal(updatePrompt('p', { model: value }).model, null)
-    assert.equal(task.model, 'fable')
-    assert.equal(task.resume_session_id, null)
+    assert.equal(task.model, 'opus')
   })
 }
 
@@ -83,15 +81,14 @@ test('un changement entre modèles Claude conserve la session', t => {
   assert.equal(task.resume_session_id, 'session')
 })
 
-test('une relance conserve le fil lors du passage à Codex', t => {
+test('une relance conserve le fil lors d’un changement de modèle', t => {
   const { updatePrompt, task } = fixture(t, { status: 'running', followUp: true })
-  updatePrompt('p', { model: 'codex' })
-  assert.equal(task.resume_session_id, null)
+  updatePrompt('p', { model: 'haiku' })
   assert.match(task.description, /Demande originale/)
   assert.match(task.description, /Complément utilisateur/)
 })
 
-for (const model of ['inconnu', false, 42, {}, undefined]) {
+for (const model of ['inconnu', 'codex', false, 42, {}, undefined]) {
   test(`modèle invalide refusé : ${JSON.stringify(model)}`, t => {
     const { updatePrompt, getPrompt } = fixture(t)
     assert.throws(() => updatePrompt('p', { model, title: 'Ne pas appliquer' }), { status: 400 })
@@ -103,12 +100,12 @@ for (const model of ['inconnu', false, 42, {}, undefined]) {
 for (const status of ['running', 'done', 'blocked', 'cancelled']) {
   test(`refus après départ ou fin : ${status}`, t => {
     const { updatePrompt, getPrompt, task } = fixture(t, { status, agentStatus: 'in_progress' })
-    assert.throws(() => updatePrompt('p', { model: 'codex' }), { status: 409 })
+    assert.throws(() => updatePrompt('p', { model: 'haiku' }), { status: 409 })
     assert.equal(getPrompt('p').model, 'opus')
     assert.equal(task.model, 'opus')
   })
 }
 
 test('tâche inconnue : aucun changement', t => {
-  assert.equal(fixture(t).updatePrompt('absente', { model: 'codex' }), null)
+  assert.equal(fixture(t).updatePrompt('absente', { model: 'haiku' }), null)
 })

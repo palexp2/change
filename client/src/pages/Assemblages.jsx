@@ -36,7 +36,7 @@ export default function Assemblages() {
     <ListPage
       title="Assemblages"
       create={{
-        label: 'Loguer un assemblage',
+        label: 'Nouvel assemblage',
         table: 'assemblages',
         fields: [
           {

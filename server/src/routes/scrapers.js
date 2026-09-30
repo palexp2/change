@@ -16,8 +16,10 @@ import db from '../db/database.js'
 import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { encryptCredentials } from '../utils/encryption.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js'
-import { SCRAPERS, VENDOR_LABELS, VENDOR_DOMAINS, BRIDGE_DOMAINS, runScraper, runAllScrapers, isRunning, getAccount, reapOrphanRuns } from '../services/scrapers/index.js'
+import { SCRAPERS, VENDOR_LABELS, VENDOR_DOMAINS, BRIDGE_DOMAINS, runScraper, runAllScrapers, isRunning, getAccount, reapOrphanRuns, ensureCollectorAccounts } from '../services/scrapers/index.js'
 import { parseSessionPayload, sessionCoversDomain } from '../services/scrapers/session.js'
+import { listSessionOnlyTargets, bridgeKeyOf, saveBridgeSession, SESSION_ONLY_TARGETS } from '../services/scrapers/bridgeSessions.js'
+import { recordSighting, listSightings, dismissSighting, collectorForDomain, normalizeDomain } from '../services/scrapers/portalSightings.js'
 import { chromiumAvailable } from '../services/scrapers/browser.js'
 import { refreshInvoiceNeeds, dueNeedsForAccount } from '../services/scrapers/invoiceNeeds.js'
 import { collectionHealth, collectionHealthSummary } from '../services/collectionHealth.js'
@@ -25,8 +27,11 @@ import { nowIso } from '../utils/datetime.js'
 import { parseLimit } from '../utils/pagination.js'
 import { uploadsPath } from '../config/uploads.js'
 
-// Au démarrage : refermer les tournées qu'un redémarrage a laissées « en cours ».
+// Au démarrage : refermer les tournées qu'un redémarrage a laissées « en cours »,
+// et faire exister un compte pour chaque portail connu — un nouveau collecteur
+// doit apparaître dans la page sans que personne ne remplisse de formulaire.
 reapOrphanRuns()
+ensureCollectorAccounts()
 
 const router = Router()
 router.use(requireAuth)
@@ -76,6 +81,8 @@ router.get('/', (req, res) => {
       'SELECT id, name FROM vendor_profiles WHERE deleted_at IS NULL ORDER BY name COLLATE NOCASE'
     ).all(),
     pending_otp: pending,
+    // Portails vus ouverts dans le navigateur, qu'aucun collecteur ne couvre.
+    sightings: listSightings(),
     chromium: chromiumAvailable(),
   })
 })
@@ -311,7 +318,43 @@ router.get('/session-bridge/targets', (req, res) => {
     session_at: r.storage_state_at,
     // Le collecteur refuse de tourner sans session importée sur ces portails.
     session_required: !!SCRAPERS[r.vendor]?.requiresImportedSession,
-  })).filter(t => t.domains.length))
+  })).filter(t => t.domains.length).concat(listSessionOnlyTargets()))
+})
+
+// Ce que le module voit d'ouvert dans le navigateur. Il envoie des NOMS DE
+// DOMAINE, rien d'autre : l'ERP répond lesquels il sait collecter (le module
+// enverra alors leur session) et retient les autres comme « portails repérés »,
+// à brancher un jour. Aucun témoin d'un site inconnu n'entre ici.
+router.post('/session-bridge/discover', (req, res) => {
+  const seen = Array.isArray(req.body?.domains) ? req.body.domains.slice(0, 200) : []
+  const known = []
+  const accounts = db.prepare(
+    'SELECT id, vendor FROM scraper_accounts WHERE deleted_at IS NULL AND enabled = 1'
+  ).all()
+  const byVendor = new Map(accounts.map(a => [a.vendor, a.id]))
+
+  for (const raw of seen) {
+    const entry = typeof raw === 'string' ? { domain: raw } : (raw || {})
+    const domain = normalizeDomain(entry.domain)
+    if (!domain) continue
+    const hit = collectorForDomain(domain)
+    if (!hit) { recordSighting(domain, { title: entry.title || null }); continue }
+    if (hit.kind === 'session') {
+      known.push({ account_id: hit.vendor, vendor: hit.vendor, domains: SESSION_ONLY_TARGETS[hit.vendor].domains })
+      continue
+    }
+    const accountId = byVendor.get(hit.vendor)
+    if (accountId) known.push({ account_id: accountId, vendor: hit.vendor, domains: BRIDGE_DOMAINS[hit.vendor] || [domain] })
+  }
+  // Doublons : plusieurs onglets du même portail.
+  const uniq = [...new Map(known.map(k => [k.account_id, k])).values()]
+  res.json({ known: uniq, sightings: listSightings().length })
+})
+
+// Portail repéré qui n'intéresse personne : on l'écarte une fois pour toutes.
+router.post('/session-bridge/sightings/dismiss', (req, res) => {
+  if (!dismissSighting(req.body?.domain)) return res.status(404).json({ error: 'Portail inconnu' })
+  res.json({ ok: true })
 })
 
 // Une session qui arrive est le seul instant où l'on est certain que le portail
@@ -336,6 +379,23 @@ function collectAfterPush(account) {
 // manuel ci-dessus — parseSessionPayload accepte déjà un tableau de cookies
 // d'extension.
 router.post('/session-bridge/push', (req, res) => {
+  // Session d'un service sans collecte (QuickBooks) : on la garde, rien d'autre.
+  const bridgeKey = bridgeKeyOf(req.body?.account_id)
+  if (bridgeKey) {
+    const { fragment } = SESSION_ONLY_TARGETS[bridgeKey]
+    let state
+    try {
+      const payload = { cookies: req.body?.cookies || [], origins: req.body?.origins || [] }
+      state = parseSessionPayload(JSON.stringify(payload), fragment)
+    } catch (e) {
+      return res.status(400).json({ error: e.message })
+    }
+    if (!sessionCoversDomain(state, fragment)) {
+      return res.status(400).json({ error: `Aucun cookie de ${fragment} — ouvrir le service et se connecter, puis recommencer` })
+    }
+    saveBridgeSession(bridgeKey, state)
+    return res.json({ ok: true, vendor: bridgeKey, cookies: state.cookies.length, origins: state.origins.length, collecting: false })
+  }
   const account = getAccount(req.body?.account_id)
   if (!account) return res.status(404).json({ error: 'Compte introuvable' })
   const domain = VENDOR_DOMAINS[account.vendor] || ''

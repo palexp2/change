@@ -25,6 +25,7 @@ const TABS = [
 ]
 
 import { ReceiptStatusBadge as StatusBadge } from '../components/Badge.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 const UPLOAD_MIMES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf']
 const UPLOAD_EXTS  = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'pdf']
@@ -78,7 +79,7 @@ function UploadZone({ onUpload, uploading, progress, compact }) {
       />
       {uploading ? (
         <div className="flex items-center justify-center gap-2 text-slate-600">
-          <RefreshCw size={16} className="text-brand-500 animate-spin" />
+          <ThinkingOrb size={16} />
           <span className="text-sm font-medium" data-testid="upload-progress">
             {progress?.total > 1
               ? `Téléversement ${Math.min(progress.done + 1, progress.total)} / ${progress.total}…`
@@ -195,7 +196,7 @@ function WebcamCaptureModal({ onClose, onCapture, uploading }) {
               <>
                 {starting && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 text-white">
-                    <RefreshCw size={28} className="animate-spin" />
+                    <ThinkingOrb size={28} ink />
                     <p className="text-xs">Démarrage de la caméra…</p>
                   </div>
                 )}
@@ -219,7 +220,7 @@ function WebcamCaptureModal({ onClose, onCapture, uploading }) {
                   <RefreshCw size={14} /> Reprendre
                 </button>
                 <button type="button" className="btn-primary inline-flex items-center gap-1" onClick={confirmUpload} disabled={uploading} data-testid="webcam-confirm">
-                  {uploading ? <><RefreshCw size={14} className="animate-spin" /> Téléversement…</> : <><CheckCircle size={14} /> Utiliser cette photo</>}
+                  {uploading ? <><ThinkingOrb size={14} ink /> Téléversement…</> : <><CheckCircle size={14} /> Utiliser cette photo</>}
                 </button>
               </>
             ) : (
@@ -310,6 +311,17 @@ export default function SaleReceipts() {
   const [webcamOpen, setWebcamOpen]   = useState(false)
   const [toDelete, setToDelete]       = useState(null)
   const displayedIdsRef               = useRef([])
+
+  // Consommer la demande d'ouverture pour que fermer/recharger la page ne
+  // redémarre pas la caméra. Les liens ordinaires vers les reçus restent libres.
+  useEffect(() => {
+    if (params.get('capture') !== 'camera') return
+    setWebcamOpen(true)
+    const next = new URLSearchParams(params)
+    next.delete('capture')
+    next.delete('onglet')
+    setParams(next, { replace: true })
+  }, [params, setParams])
 
   const load = useCallback(async () => {
     await loadProgressive(

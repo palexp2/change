@@ -13,7 +13,8 @@ import { defaultNavItems, applyNavOrder, navKey, findNavEntry } from '../lib/nav
 import { currentPageTitle } from '../lib/currentPageTitle.js'
 import { getSubsections, resolveSubsections } from '../lib/navSubsections.js'
 import { SETTINGS_ROUTE } from '../lib/settingsSections.js'
-import { NAV_TAB_CLAIMS } from '../lib/financeSections.js'
+import { NAV_TAB_CLAIMS, findFinanceHub } from '../lib/financeSections.js'
+import FinanceHubTabs from './FinanceHubTabs.jsx'
 import { api } from '../lib/api.js'
 import { prefetch } from '../lib/prefetch.js'
 import { connect as realtimeConnect, disconnect as realtimeDisconnect } from '../lib/realtime.js'
@@ -79,7 +80,8 @@ function useHoverPrefetch(to) {
 }
 
 // `compact` : dimensions des sous-items d'un groupe (vs ligne pleine hauteur).
-function NavItem({ to, href, external, icon: Icon, label, compact = false, badge, badgeTone, badgeTitle }) {
+// `flyout` : dimensions des lignes d'un panneau du rail (alignées sur NavRow 'flyout').
+function NavItem({ to, href, external, icon: Icon, label, compact = false, flyout = false, badge, badgeTone, badgeTitle }) {
   const hover = useHoverPrefetch(to)
   if (external) {
     return (
@@ -90,9 +92,9 @@ function NavItem({ to, href, external, icon: Icon, label, compact = false, badge
         data-testid="nav-external"
         className={`flex items-center text-sm font-medium transition-all
           text-slate-600 hover:text-slate-900 hover:bg-slate-100
-          ${compact ? 'gap-2.5 px-3 py-1.5 rounded-md' : 'gap-3 px-3 py-2 rounded-lg'}`}
+          ${flyout ? 'gap-2.5 px-3 py-2 mx-1 rounded-md' : compact ? 'gap-2.5 px-3 py-1.5 rounded-md' : 'gap-3 px-3 py-2 rounded-lg'}`}
       >
-        <Icon size={compact ? 14 : 16} className="flex-shrink-0" />
+        <Icon size={flyout ? 15 : compact ? 14 : 16} className="flex-shrink-0" />
         <span className="flex-1">{label}</span>
         <ExternalLink size={12} className="flex-shrink-0 text-slate-400" />
       </a>
@@ -405,8 +407,11 @@ function NavRow({ item, variant, subsections }) {
   const { chain, childRects } = useFlyoutChain(panelRef, open, () => setOpen(false))
   const [pos, seedPos] = useFlyoutPosition(rowRef, panelRef, open)
   // Une page peut fournir ses onglets effectifs (selon le compte, par exemple).
-  const visibleItems = subsections ?? items
-  const hasSubsections = subsections !== undefined ? subsections.length > 0 : !!getSubsections(item.to)
+  // Un regroupement de l'Espace finance montre ses pages (ses onglets) au survol.
+  const hubItems = useMemo(() => item.hubPages?.map(p => ({ to: p.to, label: p.label })), [item.hubPages])
+  const visibleItems = subsections ?? hubItems ?? items
+  const hasSubsections = subsections !== undefined ? subsections.length > 0
+    : hubItems ? hubItems.length > 1 : !!getSubsections(item.to)
   const inFlyout = variant === 'flyout'
   const inRail = variant === 'rail'
   // Réordonner le rail au glisser-déposer : pendant un glissement de section,
@@ -420,6 +425,18 @@ function NavRow({ item, variant, subsections }) {
   useExclusiveRailMenu(inRail && open, () => setOpen(false))
   useEffect(() => { setOpen(false) }, [location.pathname, location.search])
   useEffect(() => { if (rootDrag) setOpen(false) }, [rootDrag])
+
+  // Sous-menu dynamique (vues, comptes) : chargé dès l'affichage de la ligne,
+  // pour ne montrer le chevron que s'il y a vraiment quelque chose à ouvrir.
+  const isDynamic = subsections === undefined && !hubItems && ['views', 'accounts'].includes(getSubsections(item.to)?.kind)
+  const isAdmin = hasRole(user, 'admin')
+  useEffect(() => {
+    if (!isDynamic || inRail) return
+    let alive = true
+    resolveSubsections(item.to, { isAdmin }).then(list => { if (alive) setItems(list) })
+    return () => { alive = false }
+  }, [isDynamic, inRail, item.to, isAdmin])
+  const showChevron = hasSubsections && !inRail && (isDynamic ? items?.length > 0 : true)
 
   const pendingRef = useRef(false)
   function onEnter() {
@@ -446,7 +463,9 @@ function NavRow({ item, variant, subsections }) {
   }
 
   const cls = ({ isActive: routerActive }) => {
-    const isActive = tabAwareActive(item.to, location, routerActive)
+    const isActive = item.hubPages
+      ? findFinanceHub(location.pathname, location.search)?.hub.label === item.label
+      : tabAwareActive(item.to, location, routerActive)
     // `nav-active` porte la teinte de section héritée (`--nav-accent`, posée
     // par NavGroup ; vert de marque par défaut hors groupe).
     if (inRail) {
@@ -481,7 +500,7 @@ function NavRow({ item, variant, subsections }) {
         <item.icon size={inRail ? 18 : inFlyout ? 15 : 14} className="flex-shrink-0" />
         {!inRail && <span className="flex-1">{item.label}</span>}
         <NavBadge item={item} inRail={inRail} />
-        {hasSubsections && !inRail && <ChevronRight size={11} className="flex-shrink-0 opacity-50" />}
+        {showChevron && <ChevronRight size={11} className="flex-shrink-0 opacity-50" />}
       </NavLink>
 
       {open && (inRail || visibleItems?.length > 0) && (
@@ -537,7 +556,7 @@ function GroupNavLink({ item }) {
 // le groupe Comptabilité resterait replié et éteint pendant qu'on travaille
 // dans l'Espace finance.
 function navItemPaths(item) {
-  if (item.flyoutGroups) return [item.to, ...item.flyoutGroups.flatMap(g => g.items.map(s => s.to))]
+  if (item.flyoutGroups) return [item.to, ...item.flyoutGroups.flatMap(g => g.items.flatMap(s => (s.hubPages || [s]).map(p => p.to.split('?')[0])))]
   return [item.to]
 }
 
@@ -636,6 +655,17 @@ function NavFlyoutItem({ icon: Icon, label, groups, to }) {
       )}
     </>
   )
+}
+
+/**
+ * Variante « à plat » de NavFlyoutItem, pour un groupe `inlineFlyout` : ses
+ * pages s'affichent en simple liste directement dans le panneau parent, sans second
+ * panneau. La page de l'entrée (Espace finance) n'a pas de ligne : un clic
+ * sur la section elle-même y mène (cf. `inlineFlyoutHome`).
+ */
+function InlineFlyoutSections({ item, Row }) {
+  // Liste simple, comme les autres menus : pas de titres de familles.
+  return <>{item.flyoutGroups.flatMap(g => g.items).map(sub => <Row key={sub.to} item={sub} />)}</>
 }
 
 // ── Réordonnancement du menu ────────────────────────────────────────────────
@@ -776,8 +806,16 @@ function NavSortable({ container, itemKey, rail = false, children }) {
   )
 }
 
-function NavGroup({ group, icon: Icon, items, accent }) {
+// Section `inlineFlyout` : sa page d'accueil est celle de son entrée à
+// sections (Comptabilité → dashboard de l'Espace finance).
+function inlineFlyoutHome(items, inlineFlyout) {
+  return inlineFlyout ? items.find(i => i.flyoutGroups)?.to : null
+}
+
+function NavGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
   const location = useLocation()
+  const navigate = useNavigate()
+  const home = inlineFlyoutHome(items, inlineFlyout)
   const isActive = items.some(item => navItemMatches(location.pathname, item))
 
   const storageKey = `erp.navgroup.${group}`
@@ -839,7 +877,7 @@ function NavGroup({ group, icon: Icon, items, accent }) {
     <div style={accentVar} onMouseEnter={onHoverEnter} onMouseLeave={onHoverLeave}>
       <button
         type="button"
-        onClick={toggle}
+        onClick={() => { if (home) { navigate(home); if (!open) toggle() } else toggle() }}
         aria-expanded={open}
         className={`flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium w-full transition-all
           ${isActive ? 'nav-active' : 'text-slate-700 hover:text-slate-900 hover:bg-slate-100'}`}
@@ -863,8 +901,10 @@ function NavGroup({ group, icon: Icon, items, accent }) {
           className="mt-0.5 ml-4 pl-2 border-l space-y-0.5"
           style={{ borderColor: 'rgb(var(--nav-accent) / 0.3)' }}
         >
-          {items.map(item => (
-            <NavSortable key={item.to || item.href} container={`group:${group}`} itemKey={item.to || item.href}>
+          {items.map(item => (inlineFlyout && item.flyoutGroups
+            // Sections à plat : pas de poignée de glissement au milieu du bloc.
+            ? <InlineFlyoutSections key={item.to} item={item} Row={GroupNavLink} />
+            : <NavSortable key={item.to || item.href} container={`group:${group}`} itemKey={item.to || item.href}>
               {item.flyoutGroups
                 ? <NavFlyoutItem {...item} groups={item.flyoutGroups} />
                 : item.external
@@ -907,7 +947,9 @@ function RailExternalLink({ href, icon: Icon, label }) {
   )
 }
 
-function RailGroup({ group, icon: Icon, items, accent }) {
+function RailGroup({ group, icon: Icon, items, accent, inlineFlyout }) {
+  const navigate = useNavigate()
+  const home = inlineFlyoutHome(items, inlineFlyout)
   const [open, setOpen] = useState(false)
   const [pinned, setPinned] = useState(false)
   const triggerRef = useRef(null)
@@ -945,6 +987,7 @@ function RailGroup({ group, icon: Icon, items, accent }) {
         onMouseMove={() => { if (!open && !rootDrag) openMenu() }}
         onFocus={openMenu}
         onClick={() => {
+          if (home) { navigate(home); return }
           // Au doigt il n'y a pas de survol : le tap ouvre puis referme.
           if (open && pinned) { close(); return }
           if (!open) openMenu()
@@ -986,12 +1029,14 @@ function RailGroup({ group, icon: Icon, items, accent }) {
             {group}
           </p>
           <FlyoutChainContext.Provider value={chain}>
-            {items.map(item => (
-              <NavSortable key={item.to || item.href} container={`group:${group}`} itemKey={item.to || item.href}>
+            {items.map(item => (inlineFlyout && item.flyoutGroups
+              // Sections à plat : pas de poignée de glissement au milieu du bloc.
+              ? <InlineFlyoutSections key={item.to} item={item} Row={FlyoutNavLink} />
+              : <NavSortable key={item.to || item.href} container={`group:${group}`} itemKey={item.to || item.href}>
                 {item.flyoutGroups
                   ? <NavFlyoutItem {...item} groups={item.flyoutGroups} />
                   : item.external
-                    ? <NavItem {...item} compact />
+                    ? <NavItem {...item} flyout />
                     : <FlyoutNavLink item={item} />}
               </NavSortable>
             ))}
@@ -1392,7 +1437,7 @@ export function Layout({ children }) {
   // Rendu par appel direct (pas un composant JSX) : défini pendant le render,
   // il perdrait son état à chaque frappe s'il était monté comme composant.
   const sidebarBody = () => (
-    <div className="flex flex-col h-full bg-white w-72">
+    <div className="look-panel flex flex-col h-full bg-white w-72">
       {/* En-tête : logo */}
       <div className="flex items-center h-14 px-3 border-b border-slate-100 flex-shrink-0 gap-2">
         <NavLink to="/dashboard" className="flex items-center gap-2 min-w-0" title="Tableau de bord">
@@ -1445,7 +1490,7 @@ export function Layout({ children }) {
       className="flex flex-col items-center w-14 h-full py-2.5 gap-1"
     >
       <NavLink
-        to="/dashboard"
+        to="/dashboard/vue-globale"
         title="Tableau de bord"
         aria-label="Tableau de bord"
         className="flex items-center justify-center w-9 h-9 mb-0.5 flex-shrink-0"
@@ -1492,7 +1537,7 @@ export function Layout({ children }) {
       {/* Sidebar desktop — rail d'icônes permanent, menus au survol */}
       <div
         data-testid="app-sidebar"
-        className="hidden md:flex flex-shrink-0 bg-white border-r border-slate-200 w-14"
+        className="look-panel hidden md:flex flex-shrink-0 bg-white border-r border-slate-200 w-14"
       >
         {sidebarRail()}
       </div>
@@ -1526,6 +1571,7 @@ export function Layout({ children }) {
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto">
+          <FinanceHubTabs />
           {children}
         </main>
       </div>

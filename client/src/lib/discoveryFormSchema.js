@@ -1,4 +1,5 @@
 import { normalizeQuestionImage } from './discoveryQuestionImages.js'
+import { EN_TEXTS, translate, normalizeLang } from './discoveryFormI18n.js'
 // Schéma éditable du formulaire de découverte technique (System builder).
 //
 // Le formulaire public (pages/CustomerPostPayment.jsx) ne porte plus ses
@@ -41,10 +42,7 @@ export const DEFAULT_TEXTS = {
   'shipping.prompt_existing': "Confirmez l'adresse de livraison :",
 
   'network.title': 'Accès réseau',
-  'network.prompt': 'Aurez-vous accès à un câble Ethernet ou un Wi-Fi à moins de 250 pi de la serre, avec une ligne de vue directe ?',
-  'network.mobile_title': 'Contrôleur Internet mobile',
-  'network.mobile_needed_text': 'Votre connexion Ethernet ou Wi-Fi ne permet pas un branchement adéquat. Un contrôleur Internet mobile est à prévoir, sous réserve d’une couverture cellulaire suffisante.',
-  'network.mobile_text': "Le contrôleur internet mobile est inclus dans votre commande — vous n'avez besoin d'aucun Wi-Fi local. Assurez-vous que l'endroit où sera installé le contrôleur central a une bonne couverture cellulaire.",
+  'network.prompt': 'Aurez-vous une connexion Internet stable à moins de 250 pi de la serre, avec une ligne de vue directe ?',
   'network.wifi_prompt': 'Pour pré-programmer le contrôleur central, fournissez les infos Wi-Fi :',
   'network.wifi_ssid_label': 'Nom du Wi-Fi (SSID)',
   'network.wifi_password_label': 'Mot de passe',
@@ -58,10 +56,11 @@ export const DEFAULT_TEXTS = {
   'greenhouse.side_vent_height_label': 'Hauteur des côtés ouvrants (pi)',
   'greenhouse.side_pipe_type_label': 'Type de tuyau de côté',
   'greenhouse.guide_pipes_label': 'Avez-vous des tuyaux de 1 po à 1 ⁵⁄₁₆ po de diamètre qui peuvent servir de tuyaux guides ?',
-  'greenhouse.diameter_other_label': 'Diamètre externe exact',
+  'greenhouse.diameter_other_label': 'Diamètre externe',
 
   'louvers.title': 'Louvres',
   'roofs.present': 'Est-ce que cette serre a un toit ouvrant ?',
+  'roofs.present_count': 'Combien de toits ouvrants possède cette serre ?',
   'roofs.count': 'Nombre de toits ouvrants à automatiser',
   'roofs.voltage': 'Quelle est la tension du moteur du toit ouvrant ?',
   'roofs.inverter': 'Avez-vous déjà votre inverseur pour le toit ouvrant ?',
@@ -71,14 +70,22 @@ export const DEFAULT_TEXTS = {
   'roofs.model': 'Modèle de l’inverseur',
   'roofs.supply_possible': 'Orisha peut peut-être fournir l’inverseur pour ce moteur. La disponibilité et la compatibilité seront à confirmer avec notre équipe.',
   'roofs.supply_customer': 'Vous devez fournir l’inverseur pour ce moteur. Orisha peut seulement envisager de le fournir pour un moteur 24 V DC ou un moteur Ridder RW240, 240 V, 1 phase, 5 fils.',
+  'screens.present': 'Est-ce que cette serre a une toile thermique ?',
+  'screens.present_count': 'Combien de toiles thermiques possède cette serre ?',
+  'screens.count': 'Nombre de toiles thermiques à automatiser',
+  'screens.voltage': 'Quelle est la tension du moteur de la toile thermique ?',
+  'screens.inverter': 'Avez-vous déjà votre inverseur pour la toile thermique ?',
+  'screens.ridder': 'Est-ce un moteur Ridder RW240, 240 V, 1 phase, 5 fils ?',
+  'screens.inverter_model': 'Quelle est la marque et le modèle de votre inverseur ?',
+  'screens.brand': 'Marque de l’inverseur',
+  'screens.model': 'Modèle de l’inverseur',
+  'screens.supply_possible': 'Orisha peut peut-être fournir l’inverseur pour ce moteur. La disponibilité et la compatibilité seront à confirmer avec notre équipe.',
+  'screens.supply_customer': 'Vous devez fournir l’inverseur pour ce moteur. Orisha peut seulement envisager de le fournir pour un moteur 24 V DC ou un moteur Ridder RW240, 240 V, 1 phase, 5 fils.',
 
   'louvers.present': 'Combien de louvres à automatiser dans cette serre ?',
   'louvers.type': 'Comment cette louvre est-elle commandée ?',
   'louvers.fan': 'Un ventilateur est-il associé à cette louvre ?',
   'louvers.fan_unavailable': 'Orisha ne propose pas de contrôle séparé pour ce ventilateur. Configuration à vérifier.',
-  'humidity.title': 'Conservation de l’humidité',
-  'humidity.valve': 'Souhaitez-vous ajouter une valve pour la conservation de l’humidité ?',
-  'humidity.haf': 'Avez-vous des ventilateurs HAF à automatiser ?',
   'chief.furnaces_heading': 'Fournaises',
   'chief.has_furnaces_label': 'Cette serre a-t-elle des fournaises à automatiser ?',
   'chief.furnaces_count_label': 'Combien y a-t-il de fournaises à automatiser dans cette serre:',
@@ -99,6 +106,12 @@ export const DEFAULT_TEXTS = {
   'submit.incomplete': 'Complétez les champs obligatoires pour continuer',
   'submitted.title': 'Informations enregistrées',
   'submitted.text': 'Merci, nous avons bien reçu vos informations. Notre équipe va les utiliser pour préparer votre installation.',
+  'prepare.title': 'À préparer dès maintenant',
+  'prepare.panel': 'Installez un panneau de contreplaqué sur un mur intérieur de la serre pour y fixer les unités Orisha. Prévoyez au moins 4 pi².',
+  'prepare.outlet': 'Le système Orisha a besoin de 5 A : prévoyez une prise de courant dans la serre.',
+  'prepare.outlet_breaker': 'Le système Orisha a besoin de 5 A : prévoyez une prise de courant dans chaque serre et un disjoncteur double 15 A pour le toit ouvrant avec moteur Ridder RW240, 1 phase, 5 fils.',
+  'prepare.pipe': 'Procurez-vous un tuyau de 1 à 1¾ po de diamètre, avec son ancrage.',
+  'prepare.pipe_help': 'Il sert à fixer {capteurs}, au moins 2 pi au-dessus du point le plus haut de la serre.',
 }
 
 export const DEFAULT_CHOICES = {
@@ -109,8 +122,10 @@ export const DEFAULT_CHOICES = {
   ],
   'roofs.inverter_options': [
     { value: 'harnois_8ze141l', label: 'Harnois 8ZE141L' },
+    { value: 'harnois_8ze142l', label: 'Harnois 8ZE142L' },
     { value: 'vre_mc21', label: 'VRE MC21' },
-    { value: 'other', label: 'Autre (préciser marque et modèle)' },
+    { value: 'other', label: 'Autre' },
+    { value: 'unknown', label: 'Je ne sais pas' },
   ],
   // Une louvre se décrit par une seule question illustrée : les combinaisons
   // offertes (voltage + commande) sont montrées en images, le voltage ne se
@@ -118,7 +133,7 @@ export const DEFAULT_CHOICES = {
   'louvers.types': [
     { value: 'spring_110', label: 'Spring loaded 110 V' },
     { value: 'open_close_24', label: 'Piston ou moteur 24 V, signaux ouvrir/fermer' },
-    { value: 'other', label: 'Autre / Je ne sais pas' },
+    { value: 'other', label: 'Je ne sais pas' },
   ],
 
   'order_type.options': [
@@ -160,6 +175,7 @@ export const DEFAULT_CHOICES = {
   'greenhouse.guide_pipes_options': [
     { value: 'present', label: 'Oui' },
     { value: 'needed', label: 'Non' },
+    { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'chief.has_furnaces_options': [
     { value: 'yes', label: 'Oui, il y a des fournaises' },
@@ -170,7 +186,7 @@ export const DEFAULT_CHOICES = {
     { value: 'no', label: "Non, j'ai déjà mes valves" },
   ],
   // Le contact sec dit tout ce qu'il faut savoir de la fournaise. Marque et
-  // modèle ne se demandent qu'à qui ne le sait pas.
+  // modèle ne se demandent qu'à qui répond « Non » ou ne le sait pas.
   'furnace.dry_contact_options': [
     { value: 'yes', label: 'Oui' },
     { value: 'no', label: 'Non' },
@@ -188,6 +204,7 @@ export const DEFAULT_CHOICES = {
     { value: '75', label: '75 pi' },
     { value: '100', label: '100 pi' },
     { value: 'over_100', label: 'Plus de 100 pi' },
+    { value: 'unknown', label: 'Je ne sais pas' },
   ],
   'furnace.thermostat_options': [
     { value: 'yes', label: 'J’ai besoin d’un thermostat de secours' },
@@ -307,9 +324,6 @@ export const SCHEMA_GROUPS = [
       { id: 'network.title', kind: 'text', label: 'Titre' },
       { id: 'network.prompt', kind: 'text', label: 'Question' },
       { id: 'network.options', kind: 'choices', label: 'Choix', fixedValues: true },
-      { id: 'network.mobile_title', kind: 'text', label: 'Titre (contrôleur mobile inclus)' },
-      { id: 'network.mobile_text', kind: 'textarea', label: 'Texte (contrôleur mobile inclus)' },
-      { id: 'network.mobile_needed_text', kind: 'textarea', label: 'Texte (connexion locale inadéquate)' },
       { id: 'network.wifi', kind: 'group', label: 'Bloc identifiants Wi-Fi', hideable: true },
       { id: 'network.wifi_prompt', kind: 'text', label: 'Intro Wi-Fi' },
       { id: 'network.wifi_ssid_label', kind: 'text', label: 'Libellé SSID' },
@@ -339,26 +353,27 @@ export const SCHEMA_GROUPS = [
       { id: 'greenhouse.side_pipe_type_options', kind: 'choices', label: 'Choix type de tuyau', fixedValues: true, under: 'greenhouse.side_vents' },
       { id: 'greenhouse.guide_pipes_label', kind: 'text', label: 'Libellé tuyaux guides', under: 'greenhouse.side_vents' },
       { id: 'greenhouse.guide_pipes_options', kind: 'choices', label: 'Choix tuyaux guides', fixedValues: true, under: 'greenhouse.side_vents' },
-      { id: 'greenhouse.diameter_other_label', kind: 'text', label: 'Libellé diamètre externe exact', under: 'greenhouse.side_vents' },
+      { id: 'greenhouse.diameter_other_label', kind: 'text', label: 'Libellé diamètre externe', under: 'greenhouse.side_vents' },
     ],
   },
   {
     id: 'roofs', title: 'Toits ouvrants', short: 'Toits', section: null,
     items: [
-      ...['present', 'count', 'voltage', 'inverter', 'ridder', 'inverter_model', 'brand', 'model', 'supply_possible', 'supply_customer'].map(key => ({ id: `roofs.${key}`, kind: 'text', label: DEFAULT_TEXTS[`roofs.${key}`] })),
+      ...['present', 'count', 'inverter', 'voltage', 'ridder', 'inverter_model', 'brand', 'model', 'supply_possible', 'supply_customer'].map(key => ({ id: `roofs.${key}`, kind: 'text', label: DEFAULT_TEXTS[`roofs.${key}`] })),
       { id: 'roofs.voltage_options', kind: 'choices', label: 'Tensions', fixedValues: true },
       { id: 'roofs.inverter_options', kind: 'choices', label: 'Inverseurs', fixedValues: true },
     ],
+  },
+  // Toiles thermiques : mêmes questions, mêmes choix que les toits ouvrants.
+  {
+    id: 'screens', title: 'Toiles thermiques', short: 'Toiles', section: null,
+    items: ['present', 'count', 'inverter', 'voltage', 'ridder', 'inverter_model', 'brand', 'model', 'supply_possible', 'supply_customer'].map(key => ({ id: `screens.${key}`, kind: 'text', label: DEFAULT_TEXTS[`screens.${key}`] })),
   },
   {
     id: 'louvers', title: 'Louvres et ventilateurs', short: 'Louvres', section: null,
     // Les réponses (0, 1, 2 louvres ; combinaisons de commande) sont des images
     // dessinées par le code.
     items: ['title', 'present', 'type', 'fan', 'fan_unavailable'].map(key => ({ id: `louvers.${key}`, kind: key === 'fan_unavailable' ? 'textarea' : 'text', label: { title: 'Titre', present: 'Question louvres', type: 'Question type de louvre', fan: 'Ventilateur associé', fan_unavailable: 'Ventilateur non pris en charge' }[key] })),
-  },
-  {
-    id: 'humidity', title: 'Conservation de l’humidité', short: 'Humidité', section: null,
-    items: ['title', 'valve', 'haf'].map(key => ({ id: `humidity.${key}`, kind: 'text', label: { title: 'Titre', valve: 'Question valve', haf: 'Question HAF' }[key] })),
   },
   {
     id: 'chief', title: 'Serres Chef de culture', short: 'Chef de culture', section: 'greenhouse_chief',
@@ -395,6 +410,12 @@ export const SCHEMA_GROUPS = [
       { id: 'submit.incomplete', kind: 'text', label: 'Message « incomplet »' },
       { id: 'submitted.title', kind: 'text', label: 'Titre après envoi' },
       { id: 'submitted.text', kind: 'textarea', label: 'Texte après envoi' },
+      { id: 'prepare.title', kind: 'text', label: 'Titre « à préparer »' },
+      { id: 'prepare.panel', kind: 'textarea', label: 'Panneau de contreplaqué' },
+      { id: 'prepare.outlet', kind: 'textarea', label: 'Prise de courant' },
+      { id: 'prepare.outlet_breaker', kind: 'textarea', label: 'Prise + disjoncteur (toit 240 V)' },
+      { id: 'prepare.pipe', kind: 'textarea', label: 'Tuyau des capteurs extérieurs' },
+      { id: 'prepare.pipe_help', kind: 'textarea', label: 'Aide tuyau ({capteurs} = capteurs achetés)' },
     ],
   },
 ]
@@ -577,15 +598,27 @@ export function conditionIsNumeric(source) {
  * Fusionne un calque de surcharges avec les valeurs par défaut et renvoie
  * l'accesseur utilisé par le formulaire public.
  */
-export function buildForm(overrides) {
+// `lang` = 'en' : version anglaise. Les textes réécrits dans l'éditeur sont en
+// français, ils cèdent la place à la traduction des défauts ; les choix retirés
+// ou ajoutés et les questions ajoutées restent (ces dernières, telles qu'écrites).
+export function buildForm(overrides, lang = 'fr') {
   const o = overrides && typeof overrides === 'object' ? overrides : {}
-  const texts = { ...DEFAULT_TEXTS }
-  for (const [k, v] of Object.entries(o.texts || {})) {
+  const en = normalizeLang(lang) === 'en'
+  const texts = { ...DEFAULT_TEXTS, ...(en ? EN_TEXTS : {}) }
+  if (!en) for (const [k, v] of Object.entries(o.texts || {})) {
     if (k in DEFAULT_TEXTS && typeof v === 'string' && v.trim() !== '') texts[k] = v
   }
   const choices = {}
   for (const [k, def] of Object.entries(DEFAULT_CHOICES)) {
-    choices[k] = mergeChoiceList(k, def, o.choices?.[k])
+    const merged = mergeChoiceList(k, def, o.choices?.[k])
+    choices[k] = en
+      ? merged.map(c => {
+        const d = def.find(x => x.value === c.value)
+        const label = translate('en', d ? d.label : c.label)
+        const help = d?.help ?? c.help
+        return { ...c, label, ...(help ? { help: translate('en', help) } : {}) }
+      })
+      : merged
   }
   const hidden = {}
   for (const id of HIDEABLE_IDS) if (o.hidden?.[id]) hidden[id] = true
@@ -604,6 +637,8 @@ export function buildForm(overrides) {
     }))
 
   return {
+    lang: en ? 'en' : 'fr',
+    tr: (fr) => translate(en ? 'en' : 'fr', fr),
     t: (id) => texts[id] ?? '',
     image: (id) => normalizeQuestionImage(o.images?.[id]),
     opts: (id) => choices[id] || [],

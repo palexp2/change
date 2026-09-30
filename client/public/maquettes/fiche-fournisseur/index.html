@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fiche fournisseur dans Transactions</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Cinzel:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+:root {
+  --bg: #f2ecdf; --bg2: #ece6da; --surface: #f9f6ef; --surface2: #ebe4d6;
+  --border: #dcd3c1; --border2: #cdc5b7; --ink: #1d2a40; --ink2: #3d4757; --ink3: #626470; --ink5: #7b7572;
+  --gold: #75561d; --pnl: #1f2b40; --pnl-ink: #f1e8d4; --pnl-gold: #e2bf76;
+  --st-green: #dcebd3; --st-yellow: #f3e7b5; --st-blue: #dbe6f1; --st-gray: #e6e1d6; --st-red: #b3261e;
+  --dot-green: #4f8a3c; --dot-yellow: #c49a14; --dot-blue: #3f78b5; --dot-gray: #9a9384;
+  --neg: #8f2a23; --flag: #e2711d;
+}
+:root[data-mode="nuit"] {
+  --bg: #18222f; --bg2: #141c27; --surface: #1d293d; --surface2: #233148;
+  --border: #414f6a; --border2: #56637c; --ink: #e4e2dc; --ink2: #cfccc4; --ink3: #aaa79f; --ink5: #827f79;
+  --gold: #d8d2c2; --pnl: #141c29; --pnl-ink: #e4e2dc; --pnl-gold: #d8d2c2;
+  --st-green: #22321f; --st-yellow: #3a3218; --st-blue: #1d2b3c; --st-gray: #262a31; --st-red: #ff7a6e;
+  --dot-green: #7fbf68; --dot-yellow: #e0b93f; --dot-blue: #79a9e0; --dot-gray: #8d8a84;
+  --neg: #ff9d92; --flag: #f08a3c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg2); color: var(--ink); font: 13px/1.35 Inter, system-ui, sans-serif; padding: 20px 16px 40px; }
+button { font: inherit; color: inherit; background: none; border: 0; cursor: pointer; padding: 0; }
+
+.page-head { display: flex; align-items: center; gap: 18px; max-width: 1320px; margin: 0 auto 14px; flex-wrap: wrap; }
+.page-head h1 { font: 500 18px Cinzel, Georgia, serif; letter-spacing: .12em; color: var(--gold); margin: 0; }
+.opts { display: flex; gap: 6px; flex-wrap: wrap; }
+.opt { padding: 6px 12px; border: 1px solid var(--border2); border-radius: 999px; background: var(--surface); font-weight: 500; }
+.opt b { font-family: Cinzel, serif; color: var(--gold); margin-right: 6px; }
+.opt[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.opt[aria-pressed="true"] b { color: inherit; opacity: .7; }
+.mode { margin-left: auto; }
+.sub { max-width: 1320px; margin: 0 auto 12px; color: var(--ink3); }
+
+/* écran */
+.screen { max-width: 1320px; height: 760px; margin: 0 auto; display: flex; border: 1px solid var(--border2); border-radius: 12px; overflow: hidden; background: var(--bg); box-shadow: 0 18px 40px rgb(0 0 0 / .12); }
+.rail { width: 46px; flex: none; background: var(--pnl); display: flex; flex-direction: column; align-items: center; padding: 12px 0; gap: 16px; }
+.rail i { width: 18px; height: 18px; border: 1.5px solid color-mix(in srgb, var(--pnl-gold) 60%, transparent); border-radius: 5px; display: block; }
+.rail i.on { border-color: var(--pnl-gold); background: color-mix(in srgb, var(--pnl-gold) 18%, transparent); }
+.rail i.logo { border-radius: 50%; border-color: var(--pnl-gold); background: var(--pnl-gold); width: 14px; height: 14px; }
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.hub { display: flex; gap: 22px; padding: 0 20px; height: 42px; align-items: stretch; border-bottom: 1px solid var(--border); flex: none; }
+.hub a { display: flex; align-items: center; color: var(--ink3); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; }
+.hub a.on { color: var(--gold); border-bottom-color: var(--gold); }
+
+.body { flex: 1; min-height: 0; display: flex; }
+.work { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.bar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; flex: none; flex-wrap: wrap; }
+.search { width: 200px; height: 30px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); display: flex; align-items: center; padding: 0 10px; color: var(--ink5); gap: 6px; }
+.search::before { content: ''; width: 10px; height: 10px; border: 1.5px solid var(--ink5); border-radius: 50%; }
+.chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; border-radius: 999px; border: 1px solid transparent; color: var(--ink2); font-variant-numeric: tabular-nums; }
+.chip:hover { background: var(--surface2); }
+.chip[aria-pressed="true"] { background: var(--surface); border-color: var(--border2); color: var(--ink); font-weight: 600; }
+.chip .d { width: 9px; height: 9px; border-radius: 50%; }
+.chip .n { color: var(--ink5); font-weight: 500; }
+.chip.warn { color: var(--gold); }
+.spacer { flex: 1; }
+.meta { color: var(--ink5); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.meta b { color: var(--ink); font-weight: 600; }
+.meta .bad { color: var(--neg); font-weight: 600; }
+.icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); display: inline-grid; place-items: center; color: var(--ink2); position: relative; }
+.icon-btn:hover { border-color: var(--border2); }
+.menu { position: absolute; right: 0; top: 34px; z-index: 5; background: var(--surface); border: 1px solid var(--border2); border-radius: 10px; padding: 6px; min-width: 190px; box-shadow: 0 14px 30px rgb(0 0 0 / .18); display: none; text-align: left; }
+.menu.open { display: block; }
+.menu div { padding: 7px 10px; border-radius: 6px; color: var(--ink2); }
+.menu div:hover { background: var(--surface2); }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 0; }
+
+.title-acct { font: 600 17px Cinzel, Georgia, serif; letter-spacing: .06em; color: var(--gold); white-space: nowrap; }
+
+/* tableau */
+.grid { flex: 1; min-height: 0; overflow: auto; border-top: 1px solid var(--border); }
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+thead th { position: sticky; top: 0; z-index: 1; background: var(--bg); text-align: left; font: 500 10.5px Cinzel, Georgia, serif; letter-spacing: .14em; color: var(--ink5); padding: 9px 10px; border-bottom: 1px solid var(--border2); }
+th.num, td.num { text-align: right; }
+tbody tr { cursor: pointer; }
+tbody td { padding: 0 10px; height: 40px; border-bottom: 1px solid color-mix(in srgb, var(--border) 70%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+tr.st-rapproche td { background: var(--st-green); }
+tr.st-comptabilise td { background: var(--st-yellow); }
+tr.st-facture_recue td { background: var(--st-blue); }
+tr.st-ignore td { background: var(--st-gray); color: var(--ink5); }
+tr.st-a_traiter td { background: var(--surface); }
+tr.st-a_traiter td:first-child { box-shadow: inset 3px 0 0 var(--st-red); }
+tr.flag td:first-child { box-shadow: inset 3px 0 0 var(--flag); }
+tbody tr:hover td { filter: brightness(.97); }
+:root[data-mode="nuit"] tbody tr:hover td { filter: brightness(1.12); }
+td.date { color: var(--ink3); font-variant-numeric: tabular-nums; }
+td.lib .l1 { font-weight: 600; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+td.lib .l2 { font-size: 11.5px; color: var(--ink5); overflow: hidden; text-overflow: ellipsis; }
+td.lib .acct { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 4px; background: var(--surface2); color: var(--ink3); font-size: 11px; font-weight: 500; }
+td.num { font-variant-numeric: tabular-nums; font-weight: 600; }
+td.num.neg { color: var(--neg); }
+td.bal { color: var(--ink5); font-weight: 400; }
+.sug { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.sug span { overflow: hidden; text-overflow: ellipsis; color: var(--ink2); }
+.sug em { font-style: normal; font-weight: 600; color: var(--gold); }
+.sug button { width: 22px; height: 22px; border-radius: 6px; border: 1px solid var(--border2); background: var(--surface); flex: none; display: grid; place-items: center; font-size: 12px; }
+.sug button.ok { color: var(--dot-green); }
+.sug button.no { color: var(--st-red); }
+
+tr.exp td { background: var(--surface); height: auto; padding: 12px 16px 14px 46px; white-space: normal; cursor: default; box-shadow: inset 3px 0 0 var(--gold); }
+.expbox { display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap; }
+.seg { display: inline-flex; border: 1px solid var(--border2); border-radius: 8px; overflow: hidden; }
+.seg button { padding: 6px 12px; }
+.seg button.on { background: var(--ink); color: var(--bg); }
+.fld { display: flex; flex-direction: column; gap: 3px; }
+.fld label { font: 500 10px Cinzel, serif; letter-spacing: .14em; color: var(--ink5); }
+.fld div { height: 30px; min-width: 150px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg); padding: 0 10px; display: flex; align-items: center; }
+.primary { height: 30px; padding: 0 16px; border-radius: 8px; background: var(--ink); color: var(--bg); font-weight: 600; }
+
+/* T1 onglets en bas */
+.tabs-bottom { flex: none; display: flex; align-items: stretch; height: 40px; border-top: 1px solid var(--border2); background: var(--bg2); overflow-x: auto; padding-left: 10px; }
+.tabs-bottom button { padding: 0 14px; display: flex; align-items: center; gap: 7px; color: var(--ink3); white-space: nowrap; border-right: 1px solid var(--border); }
+.tabs-bottom button.on { background: var(--bg); color: var(--ink); font-weight: 600; box-shadow: inset 0 2px 0 var(--gold); }
+.tabs-bottom .sep { width: 10px; }
+.cnt { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--st-red); color: #fff; font-size: 10.5px; font-weight: 700; display: inline-grid; place-items: center; }
+:root[data-mode="nuit"] .cnt { color: #1a1010; }
+
+/* T2 rail de comptes */
+.acct-rail { width: 220px; flex: none; border-right: 1px solid var(--border); background: var(--bg2); overflow-y: auto; padding: 10px 8px; }
+.acct-rail h4 { margin: 12px 8px 4px; font: 500 10px Cinzel, serif; letter-spacing: .18em; color: var(--ink5); }
+.acct-rail button { width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; text-align: left; color: var(--ink2); }
+.acct-rail button:hover { background: var(--surface2); }
+.acct-rail button.on { background: var(--surface); color: var(--ink); font-weight: 600; box-shadow: inset 2px 0 0 var(--gold); }
+.acct-rail button .cur { font-size: 10.5px; color: var(--ink5); margin-left: auto; }
+.acct-rail button .cnt { margin-left: 4px; }
+.acct-rail .todo { font-weight: 600; color: var(--ink); }
+
+/* T3 cartes en haut */
+.cards { flex: none; display: flex; gap: 8px; padding: 12px 16px 2px; overflow-x: auto; }
+.card { flex: none; width: 150px; padding: 9px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); text-align: left; position: relative; }
+.card .nm { font-weight: 600; color: var(--ink2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .sb { font-size: 11.5px; color: var(--ink5); margin-top: 2px; }
+.card .cnt { position: absolute; top: 8px; right: 8px; }
+.card.on { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+.card.on .nm { color: var(--ink); }
+.card.todo { background: var(--ink); border-color: var(--ink); }
+.card.todo .nm, .card.todo .sb { color: var(--bg); }
+.card.todo.on { box-shadow: 0 0 0 2px var(--pnl-gold); }
+
+.empty { padding: 60px; text-align: center; color: var(--ink5); font: 500 13px Cinzel, serif; letter-spacing: .14em; }
+@media (max-width: 760px) { .acct-rail { width: 150px; } .search { width: 130px; } }
+</style>
+<style>
+/* fiche fournisseur */
+.vtrig { gap: 8px; cursor: help; }
+.vtrig:hover { border-color: var(--gold); }
+.fld .vtrig .vend-btn { margin-left: auto; }
+.vend-btn { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; padding: 0 6px; height: 17px; border-radius: 4px; border: 1px solid var(--border2); background: var(--surface); color: var(--ink5); font-size: 10px; font-weight: 600; letter-spacing: .08em; vertical-align: 1px; }
+.vend-btn:hover { color: var(--gold); border-color: var(--gold); }
+.vend-btn.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+
+.vcard { --pad: 14px; }
+.vcard h5 { margin: 0 0 8px; font: 600 13px Inter, sans-serif; color: var(--ink); display: flex; align-items: baseline; gap: 8px; }
+.vcard h5 small { font: 500 10px Cinzel, serif; letter-spacing: .14em; color: var(--ink5); }
+.vrow { display: flex; gap: 10px; padding: 5px 0; border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.vrow b { flex: none; width: 74px; font: 500 10px/1.6 Cinzel, serif; letter-spacing: .12em; color: var(--ink5); text-transform: uppercase; }
+.vrow span { color: var(--ink2); }
+.vrow span em { font-style: normal; font-weight: 600; color: var(--ink); }
+.vtags { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+.vtag { padding: 2px 8px; border-radius: 999px; background: var(--surface2); border: 1px solid var(--border); color: var(--ink2); font-weight: 600; font-size: 11.5px; }
+.vtag.acct { color: var(--gold); }
+.vdesc { color: var(--ink2); margin-bottom: 6px; }
+.vpart { color: var(--ink2); background: var(--surface2); border-radius: 8px; padding: 7px 9px; margin-bottom: 8px; }
+.vsrc { margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); display: flex; align-items: center; gap: 8px; color: var(--ink5); font-size: 11.5px; }
+.vsrc a { color: var(--gold); text-decoration: none; font-weight: 600; }
+.vnone { color: var(--ink5); padding: 6px 0; }
+
+/* F1 — dans la ligne dépliée */
+.expbox.with-v { align-items: stretch; }
+.vinline { flex: none; width: 320px; padding: 10px 14px; border: 1px solid var(--border2); border-radius: 10px; background: var(--bg2); }
+
+/* F2 — panneau à droite */
+.vpanel { width: 320px; flex: none; border-left: 1px solid var(--border2); background: var(--surface); padding: 14px 16px; overflow: auto; }
+.vpanel .close { float: right; color: var(--ink5); font-size: 15px; }
+
+/* F3 — bulle au survol */
+.vpop { position: absolute; z-index: 20; width: 330px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border2); border-radius: 12px; box-shadow: 0 18px 40px rgb(0 0 0 / .22); }
+
+/* F4 — colonne fournisseur */
+td.vcol .v1 { color: var(--ink2); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+td.vcol .v2 { font-size: 11.5px; color: var(--ink5); }
+td.vcol .v2 i { font-style: normal; color: var(--gold); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="page-head">
+  <h1>Fiche fournisseur</h1>
+  <div class="opts" id="opts"></div>
+  <button class="opt mode" id="mode">Nuit</button>
+</div>
+<div class="sub" id="sub"></div>
+<div class="screen">
+  <div class="rail"><i class="logo"></i><i></i><i></i><i></i><i class="on"></i><i></i><i></i></div>
+  <div class="main">
+    <nav class="hub"><a class="on">Transactions</a><a>Rapprochement</a><a>Propositions</a><a>Paiements émis</a><a>Règles</a><a>Extraction de données</a></nav>
+    <div class="body" id="body"></div>
+  </div>
+</div>
+<div id="pop"></div>
+
+<script>
+const OPTS = [
+  ['F3', 'Bulle au survol', 'Déplie une ligne, puis passe sur le nom du fournisseur.'],
+]
+const V = {
+  'Newark': { cur: 'CAD', pay: 'Mastercard BNC', cat: '14000 Pièces', desc: 'Distribution de composants électroniques (Premier Farnell).',
+    part: 'Facture sur le web, sous Newark. Taxes TPS et TVQ.',
+    qb: 'Newark', type: 'Dépense', exp: '14000 Pièces', tax: 'TPS/TVQ', terms: 'Sur réception', pnote: '', maj: '12 sept.' },
+  'Provo': { cur: 'CAD', pay: 'Mastercard BNC', cat: '14000 Pièces', desc: 'Câbles, fils et accessoires électroniques.',
+    part: 'Déposée sur Dext par PA — pas de site transactionnel pour récupérer la facture.',
+    qb: 'Provo', type: 'Facture fournisseur', exp: '14000 Pièces', tax: 'TPS/TVQ', terms: 'Net 30', pnote: 'Virement Interac', maj: '24 sept.' },
+  'ChatGPT (OpenAI)': { cur: 'USD', pay: 'Mastercard BNC', cat: '76000 Serv. web & Téléphonie', desc: 'Abonnement 21 USD, le 11 du mois.',
+    part: 'Facture sur le web. Inscrire en CAD. Hors-champ (Californie).',
+    qb: 'OpenAI', type: 'Dépense', exp: '76000 Serv. web & Téléphonie', tax: 'Hors-champ', terms: 'Sur réception', pnote: '', maj: '11 sept.' },
+  'Bell (Internet)': { cur: 'CAD', pay: 'Mastercard BNC', cat: '76000 Serv. web & Téléphonie', desc: 'Compte 543955959 — Fibe, ±109 $, période du 22 au 21.',
+    part: 'Facture disponible ±2 semaines après le paiement, datée du mois précédent.',
+    qb: 'Bell Canada', type: 'Dépense', exp: '76000 Serv. web & Téléphonie', tax: 'TPS/TVQ', terms: 'Préautorisé', pnote: '', maj: '22 sept.' },
+  'Digikey': { cur: 'CAD', pay: 'Mastercard BNC', cat: '14000 Pièces', desc: 'Composants électroniques.',
+    part: 'Facture : site Digikey → Factures de l\u2019entreprise. TPS seulement (Minnesota). Livraisons partielles à surveiller.',
+    qb: 'Digi-Key', type: 'Dépense', exp: '14000 Pièces', tax: 'TPS seulement', terms: 'Sur réception', pnote: '', maj: '17 sept.' },
+  'Amazon': { cur: 'CAD', pay: 'Mastercard BNC', cat: '14000 Pièces ou 67000 Fournitures', desc: 'Achats divers — parfois personnels.',
+    part: 'Taxes cas par cas. Notes de crédit de frais d\u2019importation difficiles à retracer.',
+    qb: '—', type: 'Dépense', exp: '67000 Fournitures', tax: 'À valider', terms: 'Sur réception', pnote: '', maj: '23 sept.' },
+  'Adobe': { cur: 'CAD', pay: 'Mastercard BNC', cat: '76000 Serv. web & Téléphonie', desc: 'Abonnement mensuel aux applications Adobe.',
+    part: 'Facture sur le web — compte à Luisa. TPS et TVQ.',
+    qb: 'Adobe', type: 'Dépense', exp: '76000 Serv. web & Téléphonie', tax: 'TPS/TVQ', terms: 'Préautorisé', pnote: '', maj: '15 sept.' },
+  'Novo Express': { cur: 'CAD', pay: 'BNC CAD', cat: '65000 Expédition, livraison et poste', desc: 'Frais d\u2019expédition des commandes.',
+    part: 'Bien répartir TPS, TVQ et TVH dans QuickBooks.',
+    qb: 'Novo Express', type: 'Facture fournisseur', exp: '65000 Expédition', tax: 'TPS/TVQ/TVH', terms: 'Net 14', pnote: 'Paiement BNC', maj: '25 sept.' },
+  'BDC': { cur: 'CAD', pay: 'BNC CAD', cat: '79200 Frais d\u2019intérêts', desc: 'Moratoire sur le paiement du capital de la dette.',
+    part: 'Le déboursé s\u2019inscrit dans les frais d\u2019intérêts.',
+    qb: 'BDC', type: 'Versement de dette', exp: '79200 Frais d\u2019intérêts', tax: 'Exonéré', terms: 'Préautorisé', pnote: 'Débit préautorisé', maj: '23 sept.' },
+  'BTTH Services multiples': { cur: 'CAD', pay: 'BNC CAD', cat: '67100 Entretien et réparation', desc: 'Entretien ménager — Boli Trakalo T. Herve.',
+    part: 'À payer sur réception, via « Paiement » à la BNC.',
+    qb: 'BTTH Services multiples', type: 'Facture fournisseur', exp: '67100 Entretien et réparation', tax: 'Exempté', terms: 'Sur réception', pnote: 'Paiement BNC', maj: '16 sept.' },
+  'The Letter EM': { cur: 'CAD', pay: 'BNC CAD', cat: '75900 Marketing', desc: 'Stratégie marketing.',
+    part: 'Facture à comptabiliser le 30 ou 31 du mois précédent.',
+    qb: 'The Letter EM', type: 'Facture fournisseur', exp: '75900 Marketing', tax: 'TPS/TVQ', terms: 'Net 30', pnote: 'Paiement BNC', maj: '16 sept.' },
+  'Stripe': { cur: 'CAD/USD', pay: 'BNC CAD', cat: '41000 Revenus de services', desc: 'Le dépôt brut mêle abonnements, frais Stripe et taxes.',
+    part: 'Reprendre la répartition du virement total, puis les taxes dans Factures.',
+    qb: 'Stripe', type: 'Dépôt', exp: '41000 Revenus de services', tax: 'TPS/TVQ', terms: '—', pnote: '', maj: '21 sept.' },
+  'Amazon Web Services': { cur: 'CAD', pay: 'Mastercard BNC', cat: '76000 Serv. web & Téléphonie', desc: 'Hébergement — Elastic Compute Cloud.',
+    part: 'Le Bill Summary n\u2019est pas la facture. Le débit diffère de la facture (conversion USD).',
+    qb: 'Amazon Web Services', type: 'Dépense', exp: '76000 Serv. web & Téléphonie', tax: 'TPS/TVQ', terms: 'Préautorisé', pnote: '', maj: '19 sept.' },
+  'Google': { cur: 'CAD', pay: 'Mastercard BNC', cat: '76000 Serv. web & Téléphonie', desc: 'Abonnement mensuel 162 $ (Workspace).',
+    part: 'Facture transmise à michel@orisha.io. Paiement préautorisé au début du mois suivant.',
+    qb: 'Google', type: 'Dépense', exp: '76000 Serv. web & Téléphonie', tax: 'Hors champ', terms: 'Préautorisé', pnote: '', maj: '16 sept.' },
+}
+const ACCTS = [
+  { n: 'BNC CAD', c: 'CAD', bal: '71 056,01 $' }, { n: 'BNC USD', c: 'USD' }, { n: 'MasterCard BNC', c: 'CAD' },
+  { n: 'VISA Desjardins USD', c: 'USD' }, { n: 'Venn USD', c: 'USD' }, { n: 'Venn CAD', c: 'CAD' },
+]
+const S = { r: 'rapproche', c: 'comptabilise', f: 'facture_recue', a: 'a_traiter', i: 'ignore' }
+// [date, libellé, description, montant, solde, statut, suggestion, drapeau, fournisseur]
+const ROWS = {
+  'MasterCard BNC': [
+    ['2026-09-25', 'PREMIER FARNELL', 'MISSISSAUGA ON', -1273.64, null, 'a', ['Dépense', 'Newark · Pièces'], 0, 'Newark'],
+    ['2026-09-24', 'PROVO LTD', 'WOODBRIDGE ON', -204.10, null, 'f', ['Facture reçue', 'Provo · 204,10 $'], 0, 'Provo'],
+    ['2026-09-24', 'OPENAI', 'SAN FRANCISCO CA', -30.37, null, 'a', ['Dépense', 'ChatGPT · Serv. web'], 0, 'ChatGPT (OpenAI)'],
+    ['2026-09-23', 'AMAZON.CA', 'TORONTO ON', -8.40, null, 'a', 0, 0, 'Amazon'],
+    ['2026-09-22', 'BELL CANADA (CR)', 'VERDUN QC', -103.42, null, 'a', ['Dépense', 'Bell · Serv. web'], 0, 'Bell (Internet)'],
+    ['2026-09-17', 'DIGIKEY', 'THIEF RIVER FALLS MN', -842.19, null, 'c', 0, 0, 'Digikey'],
+    ['2026-09-16', 'GOOGLE *SERVICES', 'HALIFAX NS', -162.00, null, 'r', 0, 0, 'Google'],
+    ['2026-09-15', 'ADOBE', 'OTTAWA ON', -32.18, null, 'r', 0, 0, 'Adobe'],
+  ],
+  'BNC CAD': [
+    ['2026-09-25', 'NOVO EXPRESS', 'PMTS ENTREPRISES', -106.72, 71056.01, 'a', ['Dépense', 'Novo Express · Expédition'], 0, 'Novo Express'],
+    ['2026-09-23', 'BDC', 'DPA ENTREPRISE', -8617.96, 71162.73, 'a', ['Versement', 'Prêt BDC · échéance 23 sept.'], 1, 'BDC'],
+    ['2026-09-21', 'STRIPE', 'COMPTE DIVERS', 2650.37, 79780.69, 'a', ['Dépôt', 'Stripe · virement total'], 0, 'Stripe'],
+    ['2026-09-16', 'BTTH SERVICES MULTIP', 'PMTS ENTREPRISES', -103.48, 77130.32, 'a', 0, 0, 'BTTH Services multiples'],
+    ['2026-09-16', 'THE LETTER EM', 'PMTS ENTREPRISES', -6898.50, 77233.80, 'c', 0, 0, 'The Letter EM'],
+    ['2026-09-15', 'DT NETHRIS PAIE', 'COMPTE DIVERS', -21480.33, 84132.30, 'r'],
+    ['2026-09-14', 'VILLE DE QUEBEC', 'COMPTE DIVERS', -412.60, 105612.63, 'r'],
+  ],
+  'Venn USD': [['2026-09-19', 'AWS', 'SEATTLE WA', -118.44, null, 'a', ['Dépense', 'AWS · Serv. web'], 0, 'Amazon Web Services']],
+}
+const st = { opt: 'F3', acct: 'MasterCard BNC', open: 'MasterCard BNC0', panel: 'Newark', kind: {} }
+const fmt = (v, c) => v == null ? '' : v.toLocaleString('fr-CA', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (c === 'USD' ? ' $ US' : ' $')
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const cur = (n) => (ACCTS.find(a => a.n === n) || {}).c
+
+function vcard(name) {
+  const v = V[name]
+  if (!v) return `<div class="vcard"><h5>${esc(name || 'Fournisseur')}</h5><div class="vnone">Pas encore de fiche.</div>
+    <div class="vsrc"><a href="#">Créer la fiche</a></div></div>`
+  const line = (k, t) => t ? `<div class="vrow"><b>${k}</b><span>${esc(t)}</span></div>` : ''
+  return `<div class="vcard">
+    <h5>${esc(name)}<small>FICHE FOURNISSEUR</small></h5>
+    <div class="vtags"><span class="vtag">${esc(v.cur)}</span><span class="vtag">${esc(v.pay)}</span><span class="vtag acct">${esc(v.cat)}</span></div>
+    <div class="vdesc">${esc(v.desc)}</div>
+    ${v.part ? `<div class="vpart">${esc(v.part)}</div>` : ''}
+    ${line('Dépense', v.exp)}
+    ${line('Taxes', v.tax)}
+    ${line('Type', v.type)}
+    ${line('Échéance', v.terms)}
+    ${line('Paiement', v.pnote)}
+    ${line('QuickBooks', v.qb)}
+    <div class="vsrc">Mise à jour ${esc(v.maj)} · <a href="#">ouvrir la fiche</a></div>
+  </div>`
+}
+
+function table() {
+  const rs = ROWS[st.acct] || []
+  const c = cur(st.acct)
+  const hasBal = rs.some(r => r[4] != null)
+  const f4 = st.opt === 'F4'
+  const head = `<tr><th style="width:92px">Date</th><th style="width:${f4 ? 24 : 30}%">Libellé</th>${f4 ? '<th style="width:26%">Fournisseur</th>' : '<th>Suggestion</th>'}<th class="num" style="width:120px">Montant</th>${hasBal ? '<th class="num" style="width:120px">Solde</th>' : ''}</tr>`
+  const cols = 4 + (hasBal ? 1 : 0)
+  const body = rs.map((r, i) => {
+    const [d, l, desc, amt, bal, s, sug, flag, vn] = r
+    const id = st.acct + i
+    const v = V[vn]
+    const btn = ''
+    const sg = sug ? `<span class="sug"><span><em>${sug[0]}</em> · ${esc(sug[1])}</span><button class="ok">✓</button><button class="no">✕</button></span>` : ''
+    const col3 = f4
+      ? `<td class="vcol">${vn ? `<div class="v1">${esc(vn)}</div><div class="v2">${esc(v.cur)} · ${esc(v.pay)} · <i>${esc(v.cat.split(' ')[0])}</i></div>` : ''}</td>`
+      : `<td>${sg}</td>`
+    const tr = `<tr class="st-${S[s]}${flag ? ' flag' : ''}" data-row="${id}">
+      <td class="date">${d.slice(5).replace('-', '·')}</td>
+      <td class="lib"><div class="l1">${esc(l)}${btn}</div>${desc ? `<div class="l2">${esc(desc)}</div>` : ''}</td>
+      ${col3}
+      <td class="num ${amt < 0 ? 'neg' : ''}">${fmt(amt, c)}</td>
+      ${hasBal ? `<td class="num bal">${fmt(bal, c)}</td>` : ''}</tr>`
+    if (st.open !== id) return tr
+    const k = st.kind[id] || (sug && ['Dépense', 'Virement'].includes(sug[0]) ? sug[0] : 'Dépense')
+    const exp = `<tr class="exp"><td colspan="${cols}"><div class="expbox">
+      <div style="flex:1;min-width:380px;display:flex;gap:14px;align-items:flex-end;flex-wrap:wrap">
+        <div class="seg">${['Dépense', 'Virement', 'Apparier'].map(x => `<button data-kind="${x}" data-id="${id}" class="${x === k ? 'on' : ''}">${x}</button>`).join('')}</div>
+        <div class="fld"><label>Fournisseur</label><div class="vtrig" ${vn ? `data-vend="${esc(vn)}"` : ''}>${esc(vn || 'Choisir…')}${vn ? '<span class="vend-btn">i</span>' : ''}</div></div>
+        <div class="fld"><label>Compte</label><div>${v ? esc(v.exp) : ''}</div></div>
+        <div class="fld"><label>Taxes</label><div>${v ? esc(v.tax) : '—'}</div></div>
+        <div class="fld" style="flex:1;min-width:160px"><label>Mémo</label><div>${esc(l.toLowerCase().replace(/\b\w/g, m => m.toUpperCase()))}</div></div>
+        <button class="primary">Comptabiliser</button>
+      </div>
+    </div></td></tr>`
+    return tr + exp
+  }).join('')
+  return `<div class="grid"><table><thead>${head}</thead><tbody>${body}</tbody></table></div>`
+}
+
+function bar() {
+  return `<div class="bar"><span class="title-acct">${esc(st.acct)}</span><div class="search">Rechercher</div><span class="spacer"></span>
+    <span class="meta">${(ACCTS.find(a => a.n === st.acct) || {}).bal || ''}</span>
+    <button class="icon-btn">↻</button><button class="icon-btn">⋯</button></div>`
+}
+
+function tabs() {
+  return `<div class="tabs-bottom">${ACCTS.map(a => `<button data-acct="${a.n}" class="${st.acct === a.n ? 'on' : ''}">${esc(a.n)}</button>`).join('')}</div>`
+}
+
+function render() {
+  document.getElementById('opts').innerHTML = OPTS.map(([k, t]) => `<button class="opt" data-opt="${k}" aria-pressed="${st.opt === k}"><b>${k}</b>${t}</button>`).join('')
+  document.getElementById('sub').textContent = OPTS.find(o => o[0] === st.opt)[2]
+  const panel = ''
+  document.getElementById('body').innerHTML = `<div class="work">${bar()}${table()}${tabs()}</div>${panel}`
+  document.getElementById('pop').innerHTML = ''
+}
+
+document.addEventListener('click', (e) => {
+  const t = e.target.closest('[data-opt],[data-acct],[data-kind],[data-row],.sug button')
+  if (!t) return
+  if (t.dataset.opt) { st.opt = t.dataset.opt }
+  else if (t.dataset.acct) { st.acct = t.dataset.acct; st.open = t.dataset.acct + '0' }
+  else if (t.dataset.kind) { st.kind[t.dataset.id] = t.dataset.kind }
+  else if (t.matches('.sug button')) { const tr = t.closest('tr'); tr.style.opacity = '.25'; return }
+  else if (t.dataset.row) { st.open = st.open === t.dataset.row ? null : t.dataset.row }
+  render()
+})
+document.addEventListener('mouseover', (e) => {
+  const t = e.target.closest('[data-vend]')
+  const pop = document.getElementById('pop')
+  if (!t) { if (!e.target.closest('.vpop')) pop.innerHTML = ''; return }
+  const r = t.getBoundingClientRect()
+  pop.innerHTML = `<div class="vpop" style="left:${Math.min(r.left, innerWidth - 350)}px;top:${r.top + scrollY - 8}px;transform:translateY(-100%)">${vcard(t.dataset.vend)}</div>`
+})
+document.getElementById('mode').addEventListener('click', (e) => {
+  const nuit = document.documentElement.dataset.mode === 'nuit'
+  document.documentElement.dataset.mode = nuit ? '' : 'nuit'
+  e.currentTarget.textContent = nuit ? 'Nuit' : 'Jour'
+})
+render()
+</script>
+</body>
+</html>

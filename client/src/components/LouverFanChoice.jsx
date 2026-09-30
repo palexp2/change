@@ -1,6 +1,8 @@
+import { useDiscoveryTr } from '../lib/discoveryLang.js'
 // Louvre seule ou reliée à son ventilateur, dans le style des choix voisins.
 export default function LouverFanChoice({ hasFan, checked, onChange, name }) {
-  const label = hasFan ? 'Avec ventilateur' : 'Sans ventilateur'
+  const tr = useDiscoveryTr()
+  const label = tr(hasFan ? 'Avec ventilateur' : 'Sans ventilateur')
   return (
     <label className={`relative block cursor-pointer rounded-lg border p-3 focus-within:ring-2 focus-within:ring-brand-500 focus-within:ring-offset-2 ${checked ? 'border-brand-500 bg-brand-50' : 'border-slate-200 hover:bg-slate-50'}`}>
       <input type="radio" name={name} value={String(hasFan)} className="sr-only" checked={checked} onChange={onChange} aria-label={label} />

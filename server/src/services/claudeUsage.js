@@ -18,9 +18,8 @@
 //     expirait à 08:38 UTC le matin et à 18:40 UTC l'après-midi du même jour.
 //   • kind 'weekly_all'    — total sur 7 jours, tous modèles confondus. Se
 //     réinitialise à date et heure fixes (ex. jeudi 01:59:59 UTC).
-//   • kind 'weekly_scoped' — plafond hebdomadaire propre à UN modèle (`scope.model`,
-//     ex. « Fable »). Troisième limite réelle : elle peut bloquer le modèle haut de
-//     gamme alors que les deux autres jauges paraissent au vert.
+//   • kind 'weekly_scoped' — plafond hebdomadaire propre à UN modèle (Fable).
+//     Ignoré : l'agent ne tourne plus sur Fable (2026-09-30).
 //
 //   • IL N'Y A AUCUNE LIMITE JOURNALIÈRE (24 h).
 //   • `severity` ('normal' | autre) est le niveau d'alerte donné par Anthropic
@@ -177,7 +176,6 @@ async function fetchSubscription() {
 
   const session = byKind('session')
   const weekly = byKind('weekly_all')
-  const scoped = byKind('weekly_scoped')
 
   const parsed = {
     session: {
@@ -190,16 +188,6 @@ async function fetchSubscription() {
       resetsAt: weekly?.resets_at || data.seven_day?.resets_at || null,
       severity: weekly?.severity || null,
     },
-    // Plafond hebdomadaire d'un modèle précis. Absent du forfait ? → null, et la page
-    // n'affiche simplement rien (plutôt qu'une jauge à zéro qui inquiéterait pour rien).
-    weekScoped: scoped ? {
-      utilizationPct: round(scoped.percent),
-      resetsAt: scoped.resets_at || null,
-      severity: scoped.severity || null,
-      // `display_name` est le libellé d'Anthropic (ex. « Fable ») : on le rend tel quel
-      // au lieu de deviner un nom de modèle.
-      label: scoped.scope?.model?.display_name || null,
-    } : null,
     // Crédits de dépassement : désactivés = atteindre un plafond ARRÊTE le travail
     // jusqu'à la réinitialisation (rien ne bascule en facturation à l'usage).
     extraUsageEnabled: !!data.extra_usage?.is_enabled,
@@ -263,9 +251,6 @@ async function compute() {
     account,
     session: sub?.session ?? emptyBucket(),
     week: sub?.week ?? emptyBucket(),
-    // Troisième limite : plafond hebdomadaire d'un modèle donné — seulement le % et la
-    // réinitialisation, qui suffisent à alerter.
-    weekScoped: sub?.weekScoped ?? null,
     // Faux = au plafond, tout attend la réinitialisation (aucun crédit de secours).
     extraUsageEnabled: sub?.extraUsageEnabled ?? false,
     subscriptionAvailable: sub != null,
@@ -349,10 +334,11 @@ export async function getClaudeUsage({ allowStale = true, keepWarm = false } = {
 
 // Dernière lecture connue, sans rien déclencher : la barre de gauche (tous les
 // utilisateurs, toutes les pages) ne doit jamais ajouter d'appel à Anthropic. Le cache
-// est déjà entretenu toutes les 5 min par l'ordonnanceur (syncScopedModelLimit).
+// est entretenu par les lectures du garde-fou de quota.
 export function peekClaudeUsage() { return _cache?.data || null }
 
 // Premier chargement : on remplit le cache sans attendre qu'une page le demande,
 // pour que la toute première consultation soit instantanée elle aussi. Décalé de
 // 5 s, le temps que le démarrage du serveur retombe.
-setTimeout(() => { refresh().catch(() => {}) }, 5000).unref?.()
+// Pas sur le relais de redémarrage : il ne vit que quelques secondes.
+if (process.env.ERP_ROLE !== 'standby') setTimeout(() => { refresh().catch(() => {}) }, 5000).unref?.()

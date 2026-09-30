@@ -8,7 +8,7 @@ import { checkForeignKeys } from '../utils/fkExists.js';
 import { applyCustomFieldDefaults } from './custom-fields.js';
 import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
 import { emitEntity } from '../services/realtimeEmitters.js';
-import { writeBackRecord } from '../services/airtableWriteback.js';
+import { writeBackRecord, createInAirtable } from '../services/airtableWriteback.js';
 import { readRelation } from '../services/customFieldsView.js';
 import {
   fetchProjectCommissions,
@@ -81,6 +81,37 @@ router.get('/commission-beneficiaries', async (req, res) => {
   }
 });
 
+// Colonnes physiques qu'une vue (pill) de la table projets filtre, trie,
+// groupe, colore ou affiche. Ajoutées au `lite` : sans elles, une vue filtrée
+// sur un champ absent du lite (ex. « Perdus » : cf_vendu = Non) restait vide
+// jusqu'à l'arrivée de la version complète (7 Mo).
+const LITE_BASE = new Set(['id', 'name', 'company_id', 'contact_id', 'type', 'status',
+  'probability', 'value_cad', 'monthly_cad', 'nb_greenhouses', 'close_date', 'creation',
+  'updated_at', 'vendeur_ref'])
+function liteViewColumns(pillId, relation) {
+  if (typeof pillId !== 'string' || !pillId) return []
+  const pill = db.prepare(
+    "SELECT filters, visible_columns, sort, group_by, color_rules FROM table_view_pills WHERE id = ? AND table_name = 'projects'"
+  ).get(pillId)
+  if (!pill) return []
+  const names = new Set()
+  const walk = v => {
+    if (Array.isArray(v)) v.forEach(walk)
+    else if (v && typeof v === 'object') {
+      if (typeof v.field === 'string') names.add(v.field)
+      Object.values(v).forEach(walk)
+    }
+  }
+  for (const k of ['filters', 'sort', 'color_rules']) { try { walk(JSON.parse(pill[k] || '[]')) } catch { /* JSON illisible */ } }
+  for (const k of ['visible_columns', 'group_by']) {
+    let v = pill[k]
+    try { v = JSON.parse(v) } catch { /* chaîne simple */ }
+    for (const c of [].concat(v || [])) if (typeof c === 'string') names.add(c)
+  }
+  const physical = new Set(db.prepare(`PRAGMA table_xinfo(${relation})`).all().map(c => c.name))
+  return [...names].filter(n => physical.has(n) && !LITE_BASE.has(n) && /^[A-Za-z_][A-Za-z0-9_]*$/.test(n))
+}
+
 // GET /api/projects
 // ?lite=1 → renvoie seulement les colonnes affichées par défaut dans la liste,
 // sans les sous-requêtes coûteuses (orders json_group_array, vendeur_label CASE,
@@ -118,11 +149,13 @@ router.get('/', (req, res) => {
     `SELECT COUNT(*) as c FROM ${readRelation('projects')} p LEFT JOIN companies c ON p.company_id = c.id ${where}`
   ).get(...params).c;
 
+  // ?view=<pill id> : le lite porte aussi les colonnes de cette vue.
+  const viewCols = lite ? liteViewColumns(req.query.view, readRelation('projects')) : []
   const liteSelect = `
     SELECT p.id, p.name, p.company_id, p.contact_id, p.type, p.status,
            p.probability, p.value_cad, p.monthly_cad, p.nb_greenhouses,
            p.close_date, p.creation, p.updated_at, p.vendeur_ref,
-           c.name as company_name
+           ${viewCols.map(c => `p."${c}", `).join('')}c.name as company_name
     FROM ${readRelation('projects')} p
     LEFT JOIN companies c ON p.company_id = c.id
     ${where}
@@ -170,6 +203,7 @@ router.get('/', (req, res) => {
 router.get('/:id', (req, res) => {
   const project = db.prepare(
     `SELECT p.*, c.name as company_name, ct.first_name || ' ' || ct.last_name as contact_name,
+            ct.language as contact_language, c.language as company_language, c.currency as company_currency,
             CASE
               WHEN p.vendeur_ref LIKE 'employee:%' THEN (
                 SELECT TRIM(COALESCE(e.first_name,'') || ' ' || COALESCE(e.last_name,''))
@@ -247,10 +281,23 @@ router.post('/:id/commissions', async (req, res) => {
 
 // POST /api/projects
 router.post('/', (req, res) => {
-  const { name, company_id, contact_id, type, status, close_date, notes } = req.body;
-  if (!name) return res.status(400).json({ error: 'Name is required' });
+  const { company_id, contact_id, status, close_date, notes } = req.body;
   const fkErr = checkForeignKeys({ company_id, contact_id });
   if (fkErr) return res.status(400).json({ error: fkErr.message });
+  // Type non fourni : déduit de l'entreprise — « Expansion » si elle a déjà un
+  // projet gagné, sinon « Nouveau client ».
+  const type = req.body.type || (company_id
+    ? (db.prepare(`SELECT 1 FROM projects WHERE company_id = ? AND status = 'Gagné' LIMIT 1`).get(company_id)
+      ? 'Expansion' : 'Nouveau client')
+    : null);
+  // Le formulaire ne demande plus de nom (les projets n'en ont pas) : la colonne
+  // étant NOT NULL, on en dérive un de l'entreprise et du type.
+  const companyName = company_id
+    ? db.prepare('SELECT name FROM companies WHERE id = ?').get(company_id)?.name
+    : null;
+  const name = String(req.body.name || '').trim()
+    || [companyName, type].filter(Boolean).join(' — ')
+    || 'Projet';
 
   // Valide les champs monétaires/numériques avant l'INSERT : un `"abc"` ou un
   // négatif doit produire un 400 explicite, pas un `0` silencieux qui corromprait
@@ -274,11 +321,12 @@ router.post('/', (req, res) => {
   // dans schema.js pour les anciennes lignes ayant `creation IS NULL`.
   const nowIso = new Date().toISOString();
   db.prepare(
-    `INSERT INTO projects (id, name, company_id, contact_id, type, status, probability, value_cad, monthly_cad, nb_greenhouses, close_date, notes, creation)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO projects (id, name, company_id, contact_id, type, status, probability, value_cad, monthly_cad, nb_greenhouses, close_date, notes, creation, vendeur_ref)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(id, name, company_id || null, contact_id || null,
     type || null, status || 'Ouvert', probability, value_cad, monthly_cad,
-    nb_greenhouses, close_date || null, notes || null, nowIso);
+    nb_greenhouses, close_date || null, notes || null, nowIso,
+    String(req.body.vendeur_ref || '').trim() || null);
 
   // Pré-remplit les champs custom ayant une valeur par défaut (single_select via
   // default_id, ou text/number/currency/url via default_value) — colonnes cf_*
@@ -290,6 +338,11 @@ router.post('/', (req, res) => {
   ).get(id);
   emitEntity('project', 'created', id, project, req.user?.id);
   res.status(201).json(project);
+  // Miroir Airtable, non bloquant : le projet existe dans Boréal même si
+  // Airtable est indisponible, et le prochain enregistrement de la fiche
+  // retentera la création (cf. PUT). createInAirtable ne lève jamais — chaque
+  // échec est tracé dans sync_log.
+  createInAirtable('projets', id);
 });
 
 // PUT /api/projects/:id — partial update
@@ -335,7 +388,11 @@ router.put('/:id', (req, res) => {
       .run(...values, req.params.id);
     // Write-back ERP → Airtable (fire-and-forget) : ne pousse que les colonnes
     // modifiées dont le sens n'est pas 'pull' — échecs tracés dans sync_log.
-    writeBackRecord('projets', req.params.id, Object.keys(req.body));
+    // Projet pas encore lié (créé pendant qu'Airtable était indisponible) :
+    // l'enregistrer le crée enfin.
+    const linked = db.prepare('SELECT airtable_id FROM projects WHERE id = ?').get(req.params.id)?.airtable_id;
+    if (linked) writeBackRecord('projets', req.params.id, Object.keys(req.body));
+    else createInAirtable('projets', req.params.id);
   }
 
   const updated = db.prepare(`SELECT p.*, c.name as company_name FROM ${readRelation('projects')} p LEFT JOIN companies c ON p.company_id = c.id WHERE p.id = ?`).get(req.params.id)

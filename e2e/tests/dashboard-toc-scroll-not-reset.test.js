@@ -34,7 +34,7 @@ describe('Dashboard — cliquer une section ne remet pas le scroll en haut', () 
 
   test('passer de « Coûts d\'expédition » à la section suivante garde le scroll', async () => {
     await page.goto(URL + '/dashboard/couts-expedition', { waitUntil: 'domcontentloaded' })
-    await page.waitForSelector('[data-testid="toc-link-section_geo_map"]', { timeout: 30000 })
+    await page.waitForSelector('[data-testid="toc-link-section_productivity"]', { timeout: 30000 })
     await page.waitForTimeout(3000)
 
     const start = await scrollTop()
@@ -47,7 +47,7 @@ describe('Dashboard — cliquer une section ne remet pas le scroll en haut', () 
       window.__mins = []
       window.__t = setInterval(() => window.__mins.push(m.scrollTop), 25)
     })
-    await page.click('[data-testid="toc-link-section_geo_map"]')
+    await page.click('[data-testid="toc-link-section_productivity"]')
     await page.waitForTimeout(2000)
     const samples = await page.evaluate(() => {
       clearInterval(window.__t)
@@ -61,7 +61,7 @@ describe('Dashboard — cliquer une section ne remet pas le scroll en haut', () 
       min >= start - 100,
       `le scroll n'est pas reparti d'en haut (min=${min}, départ=${start}, échantillons=${samples.length})`,
     )
-    assert.match(page.url(), /\/dashboard\/carte-clients$/)
+    assert.match(page.url(), /\/dashboard\/productivite$/)
   })
 
   test('changer réellement de page repart bien du haut', async () => {

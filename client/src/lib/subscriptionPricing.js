@@ -56,3 +56,16 @@ export function intervalLabel(sub) {
   if (type === 'week') return `${count} sem`
   return `${count} mois`
 }
+
+/**
+ * Totaux avant taxes d'un abonnement, depuis les détails Stripe
+ * (`/abonnements/:id/stripe-details`) : somme des items (unit_amount × qty,
+ * pré-taxe par construction) moins le rabais — montant fixe ou pourcentage.
+ */
+export function subscriptionTotals(details) {
+  const items = details?.items || []
+  const itemsSubtotal = items.reduce((s, it) => s + (it.total || 0), 0)
+  const d = details?.discount
+  const discountAmt = d?.amount_off ?? (d?.percent_off != null ? itemsSubtotal * d.percent_off / 100 : 0)
+  return { itemsSubtotal, discountAmt, subtotal: itemsSubtotal - discountAmt, currency: items[0]?.currency || '' }
+}

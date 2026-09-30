@@ -1,8 +1,8 @@
 import DiscoveryFormOptions, { CountStepper } from '../components/DiscoveryFormOptions.jsx'
-import DiscoveryExtrasTable, { additionalEquipment } from '../components/DiscoveryExtrasTable.jsx'
+import DiscoveryExtrasTable, { additionalEquipment, EXTRA_COLUMNS, FLAG_COLUMNS, MATERIAL_COLUMNS } from '../components/DiscoveryExtrasTable.jsx'
 import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, ExternalLink, Copy, Check, Pencil } from 'lucide-react'
+import { Plus, ExternalLink, Copy, Check, Pencil, ChevronDown, ChevronRight } from 'lucide-react'
 import { api } from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { ListPage } from '../components/ListPage.jsx'
@@ -14,6 +14,10 @@ import DiscoveryFormDetail from './DiscoveryFormDetail.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { DISCOVERY_LANGS } from '../lib/discoveryFormI18n.js'
+
+// Création : permissions et matériel à envoyer cochés dans une seule section.
+const PERMISSION_AND_MATERIAL_COLUMNS = [...EXTRA_COLUMNS, ...FLAG_COLUMNS, ...MATERIAL_COLUMNS]
 
 function CopyLinkButton({ url }) {
   const [copied, setCopied] = useState(false)
@@ -146,13 +150,14 @@ export default function DiscoveryForms() {
 function CreateForm({ companies, onSave, onClose }) {
   const { addToast } = useToast()
   const [companyId, setCompanyId] = useState('')
-  const [options, setOptions] = useState({ sensors: {} })
+  const [options, setOptions] = useState({ sensors: {}, lang: 'fr' })
   const [helperCount, setHelperCount] = useState(0)
   const [chiefCount, setChiefCount] = useState(0)
   // Quantités supplémentaires par serre, clé stable par type (c0, h0…) pour
   // survivre à un changement du nombre de serres de l'autre type.
   const [extras, setExtras] = useState({})
   const [saving, setSaving] = useState(false)
+  const [advanced, setAdvanced] = useState(false)
 
   const chiefs = Math.max(0, Number(chiefCount) || 0)
   const total = (Number(helperCount) || 0) + chiefs
@@ -161,7 +166,7 @@ function CreateForm({ companies, onSave, onClose }) {
   async function handleSubmit(e) {
     e.preventDefault()
     if (!companyId) { addToast({ message: 'Entreprise requise', type: 'error' }); return }
-    if (total <= 0) { addToast({ message: 'Au moins une serre (Helper ou Chef de culture) requise', type: 'error' }); return }
+    if (total <= 0) { addToast({ message: 'Au moins une serre (Assistant ou Chef de culture) requise', type: 'error' }); return }
     setSaving(true)
     try {
       const additional_equipment = additionalEquipment(extras, cards)
@@ -175,6 +180,18 @@ function CreateForm({ companies, onSave, onClose }) {
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
+      {/* Langue du formulaire que le client remplira. */}
+      <div role="radiogroup" aria-label="Langue du formulaire" className="flex justify-end">
+        <div className="inline-flex rounded-md border border-slate-200 p-0.5 text-xs">
+          {DISCOVERY_LANGS.map(l => (
+            <button key={l.value} type="button" role="radio" aria-checked={options.lang === l.value}
+              onClick={() => setOptions(o => ({ ...o, lang: l.value }))}
+              className={`px-2 py-0.5 rounded font-medium ${options.lang === l.value ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>
+              {l.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div>
         <label className="label">Entreprise *</label>
         <LinkedRecordField
@@ -192,12 +209,19 @@ function CreateForm({ companies, onSave, onClose }) {
           <CountStepper id="system-chief-count" label="Chef de culture" max={50} value={chiefCount} onChange={setChiefCount} />
         </div>
         <div>
-          <label htmlFor="system-helper-count" className="label">Nombre de Helper</label>
-          <CountStepper id="system-helper-count" label="Helper" max={50} value={helperCount} onChange={setHelperCount} />
+          <label htmlFor="system-helper-count" className="label">Nombre d'Assistant</label>
+          <CountStepper id="system-helper-count" label="Assistant" max={50} value={helperCount} onChange={setHelperCount} />
         </div>
       </div>
-      <DiscoveryExtrasTable cards={cards} values={extras} onChange={setExtras} disabled={saving} title="Permissions supplémentaires" stepper />
-      <DiscoveryFormOptions value={options} onChange={setOptions} disabled={saving} />
+      <div className="border-t border-slate-200 pt-4">
+        <button type="button" aria-expanded={advanced} onClick={() => setAdvanced(o => !o)} className="flex items-center gap-1 text-sm font-semibold text-slate-900">
+          {advanced ? <ChevronDown size={14} /> : <ChevronRight size={14} />}Extra
+        </button>
+        {advanced && <div className="mt-4 space-y-4">
+          <DiscoveryExtrasTable cards={cards} values={extras} onChange={setExtras} disabled={saving} title="Extra par serre" columns={PERMISSION_AND_MATERIAL_COLUMNS} helperLabel="Assistant" checkbox />
+          <DiscoveryFormOptions flat mobileQty title="Extra pour le site" value={options} onChange={setOptions} disabled={saving} />
+        </div>}
+      </div>
       <div className="flex justify-end gap-2 pt-2 border-t border-slate-200">
         <button type="button" onClick={onClose} className="btn-ghost">Annuler</button>
         <button type="submit" disabled={saving || !companyId || total <= 0} className="btn-primary">

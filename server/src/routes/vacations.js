@@ -19,12 +19,13 @@ export default crudRouter(RECORD_REGISTRY.vacations, {
       if (!row) return res.status(403).json({ error: 'Accès à vos vacances uniquement' })
       return res.json(row)
     })
-    // GET /api/vacations/balance?employee_id=X&year=YYYY
+    // GET /api/vacations/balance?employee_id=X[&since=YYYY-MM-DD] — banque de
+    // vacances en $. `since` (vide = aucune référence) remplace la date de
+    // référence enregistrée.
     router.get('/balance', (req, res) => {
-      const { employee_id } = req.query
+      const { employee_id, since } = req.query
       if (!employee_id) return res.status(400).json({ error: 'employee_id requis' })
-      const year = parseInt(req.query.year, 10) || new Date().getFullYear()
-      const bal = vacationBalance(employee_id, year)
+      const bal = vacationBalance(employee_id, since)
       if (!bal) return res.status(404).json({ error: 'Employé introuvable' })
       res.json(bal)
     })

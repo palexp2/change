@@ -516,7 +516,7 @@ export async function generateAppReview() {
   for (const samples of batches) {
     const { code, text } = await runToollessClaude({
       prompt: reviewPrompt(samples, known, criteria),
-      model: 'codex', effort: 'high', timeoutMs: 6 * 60_000,
+      model: 'opus', effort: 'high', timeoutMs: 6 * 60_000,
     })
     if (code !== 0) throw new Error('Analyse de l’app interrompue ou modèle indisponible')
     const found = parseSuggestionsJson(text).filter(it => validateReviewFinding(it, samples))

@@ -661,3 +661,75 @@ export function recurringCoverage(vendorMatch, dateIso, windowDays = COVERAGE_DA
   `).get(needle, dateIso, windowDays, dateIso, windowDays, dateIso)
   return bill ? { by: 'bill', ...bill } : null
 }
+
+// ── Recherche dans les paiements émis ────────────────────────────────────────
+//
+// « Je viens marquer une facture payée et elle a disparu » : une facture déjà
+// réglée ailleurs (dans QuickBooks) quitte la liste « à payer » sans rien
+// laisser dans le fil. La loupe cherche donc dans les DEUX : les paiements
+// émis ET les factures fournisseurs, quel que soit leur statut — sinon elle ne
+// retrouverait jamais celle qu'on cherche, qui est justement celle qui manque.
+export function searchPayments(q, { limit = 40 } = {}) {
+  const needle = String(q || '').trim()
+  if (needle.length < 2) return { payments: [], bills: [] }
+  const like = `%${needle.replace(/[%_]/g, m => `\\${m}`)}%`
+  const cap = Math.min(200, Math.max(1, Number(limit) || 40))
+  // Un montant tapé (« 120,92 ») cherche aussi le montant, à 1 ¢ près.
+  const num = Number(needle.replace(/\s/g, '').replace(',', '.').replace(/[^\d.]/g, ''))
+  const amt = Number.isFinite(num) && num > 0 ? r2(num) : -1
+
+  const payments = db.prepare(`${LIST_SELECT}
+      AND (p.label LIKE ? ESCAPE '\\' OR p.recipient LIKE ? ESCAPE '\\'
+           OR p.invoice_number LIKE ? ESCAPE '\\' OR p.reference LIKE ? ESCAPE '\\'
+           OR p.notes LIKE ? ESCAPE '\\' OR p.account LIKE ? ESCAPE '\\'
+           OR ABS(p.amount - ?) <= 0.01)
+      ORDER BY p.payment_date DESC, p.created_at DESC LIMIT ?
+  `).all(like, like, like, like, like, like, amt, cap).map(resolveInvoiceDate)
+
+  const bills = db.prepare(`
+    SELECT b.id, b.vendor, b.vendor_invoice_number, b.bill_number, b.due_date, b.date_achat,
+           b.total_cad, b.balance_due_cad, b.currency, b.status, b.quickbooks_id,
+           (SELECT id FROM treasury_payments WHERE achat_id = b.id AND deleted_at IS NULL LIMIT 1) AS payment_id
+    FROM achats_fournisseurs b
+    WHERE b.type = 'bill' AND b.deleted_at IS NULL
+      AND (b.vendor LIKE ? ESCAPE '\\' OR b.vendor_invoice_number LIKE ? ESCAPE '\\'
+           OR b.bill_number LIKE ? ESCAPE '\\' OR ABS(b.total_cad - ?) <= 0.01)
+    ORDER BY COALESCE(b.due_date, b.date_achat) DESC LIMIT ?
+  `).all(like, like, like, amt, cap)
+
+  return { payments, bills }
+}
+
+// ── Facture réglée directement dans QuickBooks ───────────────────────────────
+//
+// Marquer une facture payée DANS l'ERP crée le paiement émis (syncFromAchat).
+// Le même geste fait dans QuickBooks n'arrivait ici que comme un changement de
+// statut : la facture quittait la liste « à payer » et n'apparaissait nulle
+// part ailleurs — l'argent promis disparaissait de la projection alors qu'il
+// est encore au compte. On crée donc le même paiement « en vol », à la date de
+// l'écriture QuickBooks, en notant son id pour ne jamais la republier là-bas.
+export function syncFromQbPaidBill(achat, { paymentDate = null, qbBillPaymentId = null } = {}) {
+  if (!achat || achat.type !== 'bill' || achat.status !== 'Payée') return null
+  if (!(Number(achat.total_cad) > 0)) return null
+  const existing = db.prepare(
+    'SELECT id FROM treasury_payments WHERE achat_id = ? AND deleted_at IS NULL'
+  ).get(achat.id)
+  if (existing) return null
+  const created = createPayment({
+    payment_date: paymentDate || new Date().toISOString().slice(0, 10),
+    direction: 'out',
+    amount: achat.amount_paid_cad || achat.total_cad,
+    currency: achat.currency || 'CAD',
+    label: achat.vendor || 'Facture fournisseur',
+    achat_id: achat.id,
+    invoice_number: achat.vendor_invoice_number || achat.bill_number || null,
+    notes: 'Payée dans QuickBooks',
+    source: 'qb',
+  })
+  if (qbBillPaymentId) {
+    db.prepare(`UPDATE treasury_payments SET qb_billpayment_id = ?,
+                qb_billpayment_pushed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
+      .run(String(qbBillPaymentId), created.id)
+  }
+  return getPayment(created.id)
+}

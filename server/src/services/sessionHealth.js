@@ -163,7 +163,7 @@ export const SESSION_PROBES = {
 export const SESSION_HEALTH_AUTOMATION_ID = 'sys_connector_session_health'
 
 export const SESSION_HEALTH_DEFAULT_CONFIG = {
-  connectors: 'instagram',      // sessions à vérifier (virgules) — ajouter « manychat » le jour venu
+  connectors: 'instagram,manychat', // sessions à vérifier (virgules)
   // Destinataire de l'alerte : Antoine, en message privé (résolu par courriel
   // via le bot Slack). Aucun webhook à créer.
   slack_channel: 'antoine.lambert96@gmail.com',

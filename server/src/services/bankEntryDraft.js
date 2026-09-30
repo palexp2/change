@@ -17,7 +17,8 @@
  * Lecture seule : rien n'est écrit, rien n'est publié.
  */
 import db from '../db/database.js'
-import { findVendorProfile, profileDefaultsForCurrency } from './vendorProfiles.js'
+import { mainQbAccount } from '../utils/qbBankAccount.js'
+import { resolveProfileByName, profileDefaultsForCurrency } from './vendorProfiles.js'
 import { resolveVendorFromBankLabel } from './scrapers/vendorFromBankLabel.js'
 import { txnFacts } from './bankTxnFacts.js'
 import { ruleForTxn } from './bankRules/store.js'
@@ -30,10 +31,6 @@ export const NO_TAX = '__none__'
 
 const txnLabel = (t) => (t?.details || '').trim() || (t?.description || '').trim() || ''
 
-// Premier segment de `qb_account_id` : un compte ERP peut couvrir plusieurs
-// comptes QB (compte scindé côté QuickBooks), le premier est le principal.
-const mainQbAccount = (account) =>
-  account?.qb_account_id ? String(account.qb_account_id).split(',')[0].trim() : null
 
 // ── L'habitude : comment on a comptabilisé ce fournisseur jusqu'ici ─────────
 
@@ -231,9 +228,21 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
     if (past) { vendor = past; vendorSource = 'achat passé du même fournisseur' }
   }
 
-  const profile = vendor ? findVendorProfile(vendor) : null
+  // La fiche se cherche sur un nom APPROCHANT : le libellé de la banque et les achats
+  // passés portent rarement le nom canonique, et sans la fiche on perdait ses défauts
+  // (compte, taxe, type, échéance). Le nom retenu devient celui de la fiche — c'est lui
+  // que le champ « Fournisseur » doit afficher, sélectionné, pas la graphie du relevé.
+  const profile = vendor ? resolveProfileByName(vendor) : null
+  // La graphie d'origine reste utile : les achats passés sont classés sous elle,
+  // pas sous le nom de la fiche.
+  const rawVendor = vendor
+  if (profile && !rule?.vendor_name && !doc?.vendor && profile.name !== vendor) {
+    vendorSource = `${vendorSource} → fiche « ${profile.name} »`
+    vendor = profile.name
+  }
   const defaults = profileDefaultsForCurrency(profile, currency) || {}
-  const history = vendor ? vendorHistory(vendor) : null
+  const history = (vendor ? vendorHistory(vendor) : null)
+    || (rawVendor && rawVendor !== vendor ? vendorHistory(rawVendor) : null)
   const n = history?.count || 0
 
   const field = (value, source) => (value == null || value === '' || !source ? { value: null, source: null } : { value, source })
@@ -334,6 +343,10 @@ export function buildEntryDraft(txn, account, { rule = undefined } = {}) {
     hints,
     history,
     vendor_profile_id: profile?.id || null,
+    // La catégorie comptable écrite en toutes lettres sur la fiche (« 14000 Pièces ») :
+    // quand la fiche ne pointe pas encore de compte QuickBooks, le formulaire s'en sert
+    // pour choisir le compte qui porte ce numéro.
+    vendor_category: profile?.qb_category || null,
     rule: rule ? { id: rule.id, name: rule.name } : null,
     missing,
     ready: missing.length === 0,

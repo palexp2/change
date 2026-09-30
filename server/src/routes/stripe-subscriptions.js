@@ -15,7 +15,7 @@ import {
   setCurrentItemsSnapshot,
 } from '../services/subscriptionItemsSnapshot.js'
 import { isStripeConfigured, mapStatus } from '../services/stripe.js'
-import { emitEntity } from '../services/realtimeEmitters.js'
+import { emitSubscription } from '../services/realtimeEmitters.js'
 import { checkForeignKeys } from '../utils/fkExists.js'
 import { logSync } from '../services/syncLog.js'
 
@@ -127,7 +127,7 @@ router.post('/', async (req, res) => {
   const {
     company_id, items, interval = 'month', interval_count = 1,
     currency = 'CAD', collection_method = 'send_invoice',
-    days_until_due = 30, trial_days = 0,
+    days_until_due = 0, trial_days = 0,
     payment_method_id, shipping_province, shipping_country,
   } = req.body || {}
 
@@ -151,7 +151,7 @@ router.post('/', async (req, res) => {
   if (!COLLECTION_METHODS.includes(collection_method)) {
     return res.status(400).json({ error: 'collection_method invalide' })
   }
-  const dueDays = Math.floor(Number(days_until_due) || 30)
+  const dueDays = Math.floor(Number(days_until_due) || 0)
   if (collection_method === 'send_invoice' && (dueDays < 0 || dueDays > 365)) {
     return res.status(400).json({ error: 'days_until_due doit être entre 0 et 365' })
   }
@@ -312,12 +312,7 @@ function upsertLocalSubscription({ sub, companyId, customerId, userId }) {
   }
   if (status !== 'canceled') setCurrentItemsSnapshot(id, extractItemsFromStripeSub(sub))
 
-  const row = db.prepare(`
-    SELECT s.*, co.name as company_name
-    FROM subscriptions s LEFT JOIN companies co ON s.company_id = co.id
-    WHERE s.id = ?
-  `).get(id)
-  emitEntity('subscription', existing ? 'updated' : 'created', id, row, userId)
+  emitSubscription(existing ? 'updated' : 'created', id, userId)
   return id
 }
 

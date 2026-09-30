@@ -1,3 +1,4 @@
+import ThinkingOrb from './ThinkingOrb'
 // État d'erreur visible pour l'échec de chargement d'une fiche détail.
 // api.js throw sur échec réseau/serveur et n'a pas de handler global ; sans ce
 // composant, un load() qui catch laisse la fiche sur un spinner infini ou un
@@ -18,7 +19,7 @@ export function DetailLoadError({ message, onRetry, retrying = false }) {
           disabled={retrying}
           className="mt-3 inline-flex items-center gap-2 rounded-md border border-rose-300 bg-white px-3 py-1.5 font-medium text-rose-700 hover:bg-rose-100 disabled:opacity-60"
         >
-          {retrying && <span className="animate-spin rounded-full h-3.5 w-3.5 border-b-2 border-rose-500" />}
+          {retrying && <ThinkingOrb size={14} ink className="text-rose-500" />}
           Réessayer
         </button>
       </div>

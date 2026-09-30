@@ -5,6 +5,7 @@ import { useToast } from '../components/ui/ToastProvider.jsx'
 import { useConfirm } from '../components/ConfirmProvider.jsx'
 import { formatRelativeTime } from '../utils/formatters.js'
 import api from '../lib/api.js'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 const TABLE_ORDER = [
   'custom_fields',
@@ -138,7 +139,7 @@ export function CorbeilleContent() {
       )}
 
       {loading ? (
-        <div className="flex justify-center py-12"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" /></div>
+        <div className="flex justify-center py-12"><ThinkingOrb size={32} /></div>
       ) : totalItems === 0 ? (
         <div className="text-center py-16 text-slate-400">
           <Trash2 size={32} className="mx-auto mb-3 opacity-30" />

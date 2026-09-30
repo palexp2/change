@@ -12,8 +12,6 @@
 //     fixe de la journée, et l'heure de réinitialisation change donc d'un bloc à
 //     l'autre. C'est le plafond qui coupe le plus souvent.
 //   • Semaine — total sur 7 jours, tous modèles, réinitialisé à date et heure fixes.
-//   • Semaine d'un modèle — plafond hebdomadaire propre à un modèle (ex. « Fable ») :
-//     il peut être atteint alors que les deux autres jauges paraissent au vert.
 //   • Il n'existe AUCUNE limite de 24 h.
 //
 // Une seule source (`GET /api/agent/usage`), deux affichages voisins :
@@ -24,9 +22,10 @@
 //   • <ClaudeModelControl/> — le choix du modèle de l'agent, à côté du bandeau et
 //     non dedans : c'est une commande, sa place est avec Pause et Réglages.
 import { useState, useEffect, useRef, useSyncExternalStore } from 'react'
-import { Sparkles, Gauge, CalendarDays, Loader2, Cpu, AlertTriangle, Bot, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
+import { Sparkles, Gauge, CalendarDays, AlertTriangle, Bot, ChevronDown, Check, UserRound, PauseCircle } from 'lucide-react'
 import api from '../lib/api.js'
 import { useToast } from './ui/ToastProvider.jsx'
+import ThinkingOrb from './ThinkingOrb'
 
 // Fermeture d'un menu ouvert : clic dehors ou Échap. Partagé par les deux sélecteurs
 // du bandeau (modèle, seuil de pause).
@@ -96,16 +95,14 @@ export function formatResetFull(iso) {
 }
 
 // ─── Modèle de travail de l'agent ─────────────────────────────────────────────
-// L'agent travaille sur le modèle préféré (Fable par défaut) — CHANGEABLE ici même :
+// L'agent travaille sur le modèle préféré (Opus 5.5 par défaut) — CHANGEABLE ici même :
 // le nom est un bouton qui ouvre le choix des modèles, sauvegardé aussitôt
-// (agent-settings.json, clé preferredModel). Le plafond hebdomadaire du modèle
-// préféré peut être épuisé alors que les autres jauges sont au vert : dans ce cas
-// l'agent continue sur le repli et revient au préféré à la réinitialisation.
-const MODEL_LABELS = { fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku', codex: 'Codex' }
+// (agent-settings.json, clé preferredModel).
+const MODEL_LABELS = { opus: 'Opus 5.5', sonnet: 'Sonnet', haiku: 'Haiku', fable: 'Fable' }  // fable : historique seulement
 export function modelLabel(m) { return MODEL_LABELS[m] || m || '—' }
 
 /**
- * « Fable ▾ » — sur quoi l'agent tourne, cliquable pour changer de modèle.
+ * « Opus 5.5 ▾ » — sur quoi l'agent tourne, cliquable pour changer de modèle.
  * Contrôle autonome, posé À CÔTÉ du bandeau de quotas (pas dedans) : choisir le
  * modèle est une commande, pas une mesure — sa place est avec Pause et Réglages.
  */
@@ -126,18 +123,13 @@ export function ClaudeModelControl({ className = '' }) {
   }, [pending, serverPreferred])
 
   if (!state?.preferred) return null
-  const { active, preferredResetAt } = state
+  const { active } = state
   const preferred = pending || state.preferred
-  const models = Array.isArray(state.models) && state.models.length ? state.models : Object.keys(MODEL_LABELS)
-  // Un choix en attente masque l'état de repli du serveur (il porte sur l'ancien préféré).
-  const fallbackActive = !pending && state.fallbackActive
+  const models = Array.isArray(state.models) && state.models.length ? state.models : ['opus', 'sonnet', 'haiku']
   const shown = pending || active || state.preferred
-  const hint = (fallbackActive
-    ? `Plafond hebdomadaire ${modelLabel(state.preferred)} épuisé : l'agent travaille sur ${modelLabel(active)}. `
-      + `Retour à ${modelLabel(state.preferred)} ${formatResetIn(preferredResetAt) || 'à la réinitialisation'}.`
-    : active || pending
-      ? `L'agent travaille sur ${modelLabel(shown)}.`
-      : 'Tous les modèles sont au plafond : la file attend la réinitialisation.')
+  const hint = (active || pending
+    ? `L'agent travaille sur ${modelLabel(shown)}.`
+    : 'Modèle au plafond : la file attend la réinitialisation.')
     + ' Cliquer pour changer de modèle.'
 
   async function choose(m) {
@@ -158,17 +150,13 @@ export function ClaudeModelControl({ className = '' }) {
       <button
         type="button"
         onClick={() => setOpen(o => !o)}
-        className={`inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border shrink-0 ${
-          fallbackActive
-            ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
-            : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-        }`}
+        className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium rounded-lg border shrink-0 border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
         data-testid="usage-strip-model-name"
         title={hint}
       >
-        <Bot size={14} className={fallbackActive ? 'text-amber-500' : 'text-slate-400'} />
-        {modelLabel(shown)}{fallbackActive ? ' (repli)' : ''}
-        <ChevronDown size={12} className={`shrink-0 ${fallbackActive ? 'text-amber-500' : 'text-slate-400'}`} />
+        <Bot size={14} className="text-slate-400" />
+        {modelLabel(shown)}
+        <ChevronDown size={12} className="shrink-0 text-slate-400" />
       </button>
       {open && (
         <div
@@ -439,19 +427,12 @@ function useClaudeUsage() {
 function LimitAlerts({ usage }) {
   if (!usage) return null
   const stalled = usage.schedulerLimitResetAt
-  const model = usage.agentModel
-  // Repli en cours : le travail CONTINUE, sur l'autre modèle. C'est une information, pas
-  // une alerte rouge — d'où le ton ambre et un message qui ne parle pas de pause.
-  const fallback = !stalled && model?.fallbackActive ? model : null
-  const hot = [usage.session, usage.week, usage.weekScoped]
+  const hot = [usage.session, usage.week]
     .filter(b => b && b.severity && b.severity !== 'normal')
-  if (!stalled && !fallback && !hot.length) return null
-  const tone = stalled || hot.length
-    ? 'border-rose-200 bg-rose-50 text-rose-800'
-    : 'border-amber-200 bg-amber-50 text-amber-800'
+  if (!stalled && !hot.length) return null
   return (
     <div
-      className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs ${tone}`}
+      className="flex items-start gap-2 rounded-lg border px-3 py-2 text-xs border-rose-200 bg-rose-50 text-rose-800"
       data-testid="claude-usage-alert"
     >
       <AlertTriangle size={14} className="mt-0.5 shrink-0" />
@@ -462,16 +443,6 @@ function LimitAlerts({ usage }) {
             Reprise automatique vers {formatResetAt(stalled)} ({formatResetIn(stalled) || 'imminent'}) : rien à faire,
             aucun travail n'est perdu.
           </>
-        ) : fallback ? (
-          <span data-testid="claude-usage-fallback">
-            <span className="font-medium">
-              Plafond {modelLabel(fallback.preferred)} épuisé — l'agent continue sur {modelLabel(fallback.active)}.
-            </span>{' '}
-            La file avance normalement ; retour à {modelLabel(fallback.preferred)}{' '}
-            {fallback.preferredResetAt
-              ? `vers ${formatResetAt(fallback.preferredResetAt)} (${formatResetIn(fallback.preferredResetAt) || 'imminent'})`
-              : 'à la réinitialisation'}.
-          </span>
         ) : (
           <span className="font-medium">Marge Claude faible — un plafond est près d'être atteint.</span>
         )}
@@ -480,9 +451,8 @@ function LimitAlerts({ usage }) {
   )
 }
 
-// Une limite compactée : « Fenêtre 5 h ▓▓░ reste 58 % · réinit. dans 2 h 10 ».
-// On affiche ce qui RESTE (pas ce qui est consommé) : c'est la question qu'on se pose
-// en regardant la page — « est-ce qu'il me reste assez pour lancer ce chantier ? ».
+// Une limite compactée : « Fenêtre 5 h ▓▓░ utilisé 42 % · réinit. dans 2 h 10 ».
+// On affiche ce qui est CONSOMMÉ, comme la barre (demande de P.-A. Papillon).
 function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
   const b = bucket || {}
   const pct = Number.isFinite(b.utilizationPct) ? Math.max(0, Math.min(100, b.utilizationPct)) : null
@@ -499,7 +469,7 @@ function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
             <span className={`block h-full rounded-full ${tone.bar}`} style={{ width: `${pct}%` }} />
           </span>
           <span className={`font-semibold tabular-nums shrink-0 ${tone.text}`} data-testid={`${testid}-pct`}>
-            reste {100 - pct} %
+            utilisé {pct} %
           </span>
           {/* Relatif à l'écran (c'est ce qui se lit d'un coup d'œil), heure exacte en
               infobulle (c'est ce qui sert à planifier). */}
@@ -532,7 +502,6 @@ function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
 export function ClaudeUsageStrip({ className = 'mb-5' }) {
   const { usage, error } = useClaudeUsage()
 
-  const scoped = usage?.weekScoped
   const failure = usage?.subscriptionError || null
   // Une ligne, seulement quand il n'y a AUCUN chiffre à montrer. Un refus passager
   // pendant qu'une lecture récente est encore affichée ne mérite pas d'alerte : l'âge
@@ -552,7 +521,7 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
             <span className="font-semibold uppercase tracking-wider text-slate-500" title={ageHint}>Quotas Claude</span>
             {/* Roue seulement pendant une vraie attente : quand la ligne d'explication
                 est là, une roue tournerait dans le vide. */}
-            {!usage && !note && <Loader2 size={11} className="text-slate-300 animate-spin" />}
+            {!usage && !note && <ThinkingOrb size={11} ink className="text-slate-300" />}
           </div>
           <AccountTag account={usage?.account} />
           <StripLimit
@@ -563,12 +532,6 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
             icon={CalendarDays} label="Semaine" bucket={usage?.week} testid="usage-strip-week"
             hint="Total des 7 derniers jours, tous modèles confondus."
           />
-          {scoped && (
-            <StripLimit
-              icon={Cpu} label={`Semaine ${scoped.label || 'modèle'}`} bucket={scoped} testid="usage-strip-scoped"
-              hint={`Plafond hebdomadaire propre au modèle ${scoped.label || ''} : il peut être atteint alors que les autres jauges sont au vert.`}
-            />
-          )}
           {/* Seule commande admise dans le bandeau : elle porte sur les pourcentages
               affichés juste à côté (à partir de quelle marge on s'arrête). */}
           <QuotaFloorControl />
@@ -581,29 +544,9 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
         )}
       </div>
 
-      <CodexUsageStrip className="mt-2" />
-
       {/* Alerte sous le bandeau : n'apparaît que quand le travail est vraiment arrêté
           ou sur le point de l'être. Le reste du temps, rien — on ne crie pas pour rien. */}
       <div className="[&>*]:mt-2"><LimitAlerts usage={usage} /></div>
-    </div>
-  )
-}
-
-export function CodexUsageStrip({ className = '' }) {
-  const { usage, error } = useClaudeUsage()
-  const codex = usage?.codex
-  const windows = codex?.windows || []
-  const blocked = windows.some(w => w.utilizationPct >= 100)
-  return (
-    <div className={`rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2 text-xs ${className}`} data-testid="codex-usage-strip">
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
-        <span className="font-semibold uppercase tracking-wider text-slate-500">Quotas Codex</span>
-        {windows.map(bucket => <StripLimit key={bucket.key} icon={Gauge} label={bucket.label} bucket={bucket} testid={`codex-usage-${bucket.key}`} />)}
-        {blocked && <span className="text-amber-700 font-medium">Limite atteinte</span>}
-        {!codex && !error && <span className="text-slate-400">Chargement…</span>}
-        {(error || codex?.error) && <span className="text-amber-700" role="status">{codex?.error || 'Quotas Codex indisponibles.'}</span>}
-      </div>
     </div>
   )
 }

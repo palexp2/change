@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeftRight, FileText, ExternalLink, Download, RefreshCw, Hammer, AlertTriangle, CheckCircle2, ImagePlus, X, Trash2, SlidersHorizontal, ShoppingCart } from 'lucide-react'
+import { ArrowLeftRight, FileText, ExternalLink, RefreshCw, Hammer, AlertTriangle, CheckCircle2, Trash2, SlidersHorizontal, ShoppingCart } from 'lucide-react'
 import api from '../lib/api.js'
-import Spinner from '../components/Spinner.jsx'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { Section } from '../components/SectionNav.jsx'
@@ -14,6 +13,8 @@ import ProductPurchaseModal from './ProductPurchaseModal.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { DataTable } from '../components/DataTable.jsx'
 import TableThumb from '../components/TableThumb.jsx'
+import AttachmentPreview from '../components/AttachmentPreview.jsx'
+import ImageSlot from '../components/ImageSlot.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { TABLE_COLUMN_META, STOCK_MOVEMENT_TYPES, STOCK_MOVEMENT_TYPE_COLORS, stockMovementSignedQty } from '../lib/tableDefs.js'
 import ErrorBanner from '../components/ErrorBanner.jsx'
@@ -60,6 +61,7 @@ const PRODUCT_FIELDS = [
   { key: 'weight_lbs',         label: 'Poids (lbs)',        type: 'number', step: '0.01', defaultVisible: false },
   { key: 'notes',              label: 'Notes',              type: 'textarea', span2: true, defaultVisible: false },
   { key: 'is_sellable',        label: 'Vendable',           type: 'checkbox' },
+  { key: 'quote_farm_wide',    label: 'Soumission : pour toute la ferme', type: 'checkbox' },
   { key: 'active',             label: 'Produit actif',      type: 'checkbox' },
 ]
 // Colonnes rendues AILLEURS que dans la carte de champs (image de l'en-tête,
@@ -271,7 +273,7 @@ function StockAdjustForm({ product, onSaved, onClose }) {
     .map(c => ({ ...c, color: c.color || STOCK_MOVEMENT_TYPE_COLORS[c.value] || 'gray' }))
     .filter(c => c.value !== 'Ajustement (diminution)')
     .map(c => (c.value === 'Ajustement (augmentation)' ? { ...c, label: 'Ajustement' } : c))
-  const typeBadge = c => <Badge color={c.color}>{c.label}</Badge>
+  const typeBadge = c => <Badge color={c.color} className="single-select-label">{c.label}</Badge>
 
   async function handleSubmit(e) {
     e.preventDefault()
@@ -339,54 +341,6 @@ function stackedTableHeight(rows) {
 // (RecordPeekDrawer) d'une liste : pas de Layout, pas de bouton retour ni de
 // titre (le drawer fournit le sien). `onClose` ferme le drawer (utilisé quand
 // le produit est supprimé pendant que le drawer est ouvert).
-// Image de la fiche produit — et seul endroit d'où l'on peut en poser une.
-// Avant, `products.image_url` ne venait QUE de la pièce jointe « Image » de la
-// table Pièces d'Airtable : une pièce sans image là-bas (ou un produit créé
-// dans l'ERP) n'avait aucune vignette, partout où elle est affichée (articles
-// d'une commande, nomenclature, catalogue). Le carré pointillé est donc à la
-// fois le repère « pas d'image » et le bouton pour en ajouter une.
-function ProductImageSlot({ src, alt, size, onPick, onRemove, busy }) {
-  const inputRef = useRef(null)
-  const [broken, setBroken] = useState(null)
-  const usable = src && broken !== src
-  return (
-    <div className={`relative flex-shrink-0 group ${size}`} data-testid="product-image-slot">
-      <input
-        ref={inputRef} type="file" accept="image/*" className="hidden"
-        onChange={e => { const f = e.target.files?.[0]; e.target.value = ''; if (f) onPick(f) }}
-      />
-      <button
-        type="button"
-        onClick={() => inputRef.current?.click()}
-        disabled={busy}
-        title={usable ? 'Changer l’image' : 'Ajouter une image'}
-        aria-label={usable ? 'Changer l’image' : 'Ajouter une image'}
-        className={`w-full h-full rounded-lg overflow-hidden flex items-center justify-center ${usable
-          ? 'border border-slate-200 hover:border-brand-400'
-          : 'border border-dashed border-slate-300 text-slate-300 hover:border-brand-400 hover:text-brand-500'}`}
-      >
-        {busy
-          ? <Spinner size="sm" />
-          : usable
-            ? <img src={src} alt={alt} onError={() => setBroken(src)} className="w-full h-full object-cover" />
-            : <ImagePlus size={18} />}
-      </button>
-      {usable && !busy && (
-        <button
-          type="button"
-          onClick={onRemove}
-          title="Retirer l’image"
-          aria-label="Retirer l’image"
-          data-testid="product-image-remove"
-          className="absolute -top-1.5 -right-1.5 hidden group-hover:flex h-5 w-5 items-center justify-center rounded-full bg-white border border-slate-300 text-slate-500 hover:text-red-600 hover:border-red-300 shadow-sm"
-        >
-          <X size={11} />
-        </button>
-      )}
-    </div>
-  )
-}
-
 export default function ProductDetail({ recordId, onClose }) {
   const id = recordId
   // « Suppression permise » : case du mode de personnalisation de la fiche.
@@ -441,6 +395,7 @@ export default function ProductDetail({ recordId, onClose }) {
         monthly_price_cad: data.monthly_price_cad ?? 0,
         monthly_price_usd: data.monthly_price_usd ?? 0,
         is_sellable: data.is_sellable === 1,
+        quote_farm_wide: data.quote_farm_wide === 1,
         min_stock: data.min_stock ?? 0,
         order_qty: data.order_qty ?? 0,
         location: data.location || '',
@@ -544,6 +499,9 @@ export default function ProductDetail({ recordId, onClose }) {
   // la fiche — l'inventaire s'ajuste par « Ajuster l'inventaire ».
   const [adjust, setAdjust] = useState({ [ADJUST_REASON]: '' })
   const adjustTimers = useRef({})
+  // Liens PDF en cours de saisie (autosave par champ via saveAdjust).
+  const [docDraft, setDocDraft] = useState({})
+  useEffect(() => { setDocDraft({}) }, [id])
   useEffect(() => {
     if (!product) return
     setAdjust({ [ADJUST_REASON]: product[ADJUST_REASON] || '' })
@@ -674,7 +632,8 @@ export default function ProductDetail({ recordId, onClose }) {
     <DetailShell
       header={{
         leading: (
-          <ProductImageSlot
+          <ImageSlot
+            testId="product-image-slot"
             src={product?.image_url}
             alt={form.name_fr}
             size="w-14 h-14"
@@ -853,40 +812,64 @@ export default function ProductDetail({ recordId, onClose }) {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 {docFields.map(f => {
-                  const urls = (product[f.url] || '').split(',').map(s => s.trim()).filter(Boolean)
+                  const raw = docDraft[f.url] ?? product[f.url] ?? ''
+                  const urls = raw.split(',').map(s => s.trim()).filter(Boolean)
                   const locals = (product[f.local] || '').split(',').map(s => s.trim()).filter(Boolean)
                   return (
                     <Field key={f.url} label={f.label} span2>
-                      {urls.length === 0 ? (
-                        <div className={`${inp} bg-slate-50 text-slate-400 italic cursor-default`}>—</div>
-                      ) : (
-                        <div className="space-y-3">
-                          {urls.map((url, i) => {
+                      <div className="flex items-center gap-1.5">
+                        <input
+                          type="text"
+                          className={inp}
+                          value={raw}
+                          onChange={e => {
+                            const v = e.target.value
+                            setDocDraft(d => ({ ...d, [f.url]: v }))
+                            saveAdjust(f.url, v.trim(), 600)
+                          }}
+                        />
+                        {urls.length === 1 && (
+                          <a
+                            href={urls[0]}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100"
+                            title="Ouvrir"
+                          >
+                            <ExternalLink size={14} />
+                          </a>
+                        )}
+                      </div>
+                      {(urls.length > 0 || locals.length > 0) && (
+                        <div className="flex flex-wrap gap-3 mt-2">
+                          {Array.from({ length: Math.max(urls.length, locals.length) }, (_, i) => {
+                            const url = urls[i]
                             const localPath = locals[i] || null
                             const localFilename = localPath ? localPath.replace(/^products\/docs\//, '') : null
-                            const localUrl = localFilename ? `/erp/api/product-docs/${localFilename}` : null
+                            const localUrl = localFilename ? `/erp/api/product-docs/${encodeURIComponent(localFilename)}` : null
                             return (
-                              <div key={i} className="space-y-1.5">
-                                <a
-                                  href={url}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className={`${inp} inline-flex items-center gap-1.5 link-record truncate`}
-                                  title={url}
-                                >
-                                  <ExternalLink size={14} className="shrink-0" />
-                                  <span className="truncate">{urls.length > 1 ? `[${i + 1}] ` : ''}{url}</span>
-                                </a>
-                                {localUrl ? (
+                              <div key={localPath || i} className="flex flex-col items-start gap-1.5 min-w-0">
+                                {url && urls.length > 1 && (
                                   <a
-                                    href={localUrl}
+                                    href={url}
                                     target="_blank"
                                     rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1.5 text-xs text-emerald-700 hover:underline"
-                                    title="Copie locale sur le serveur"
+                                    className="inline-flex items-center gap-1 text-xs link-record truncate"
+                                    title={url}
                                   >
-                                    <Download size={12} /> Copie locale ({localFilename})
+                                    <ExternalLink size={12} className="shrink-0" /> [{i + 1}]
                                   </a>
+                                )}
+                                {localUrl ? (
+                                  <AttachmentPreview
+                                    url={localUrl}
+                                    fileName={localFilename}
+                                    title={`${f.label.replace('Lien PDF ', '')}${locals.length > 1 ? ` · ${i + 1}` : ''}`}
+                                    kind="pdf"
+                                    showFileName={false}
+                                    overModal
+                                    testId={`product-doc-${f.url}-${i}`}
+                                  />
                                 ) : (
                                   <div className="text-xs text-slate-400 italic">Aucune copie locale</div>
                                 )}

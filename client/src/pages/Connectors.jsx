@@ -21,6 +21,7 @@ import { TABLE_COLUMN_META } from '../lib/tableDefs.js'
 import { fmtDateTime } from '../lib/formatDate.js'
 import { HubSpotExportModal } from '../components/HubSpotExportModal.jsx'
 import Spinner from '../components/Spinner.jsx'
+import ThinkingOrb from '../components/ThinkingOrb'
 
 // Étiquette des champs d'identifiants : elle remplace les placeholders, qui
 // disparaissaient dès la première frappe et laissaient deviner quel champ est quoi.
@@ -2158,21 +2159,26 @@ function PlaidConfig({ onRefresh }) {
   )
 }
 
-// Depuis quand la banque n'a plus rien livré à Plaid. Muet quand tout va bien —
-// c'est le silence prolongé qui compte, pas l'horodatage du dernier succès.
+// La seule chose que cette connexion doit encore livrer : le SOLDE, dont vit la
+// projection de trésorerie (les transactions viennent du fichier TRX_Orisha).
+// Muet quand tout va bien.
 function PlaidBankHealth({ health, itemId }) {
   const it = health?.items?.find(i => i.item_id === itemId)
   if (!it) return null
   if (it.needs_reauth) {
     return <p className="text-xs text-red-600">⚠ Connexion à réautoriser — reconnecter cette institution</p>
   }
-  const last = it.last_successful_update
+  const reads = (health?.accounts || [])
+    .filter(a => a.item_id === itemId && a.balance_at)
+    .map(a => a.balance_at)
+    .sort()
+  const last = reads[reads.length - 1]
   if (!last) return null
   const hours = (Date.now() - new Date(last).getTime()) / 3600e3
-  if (hours < 36) return null
+  if (hours < 8) return null
   return (
-    <p className="text-xs text-amber-700" title="Plaid n'a pas réussi à obtenir de nouvelles données de la banque depuis ce moment">
-      La banque n'a rien livré depuis {formatRelativeTime(last)}
+    <p className="text-xs text-amber-700" title="Le solde n'a pas été relu depuis ce moment — la projection de trésorerie reste sur le dernier montant connu">
+      Solde non relu depuis {formatRelativeTime(last)}
     </p>
   )
 }
@@ -2656,7 +2662,7 @@ export function ConnectorsContent() {
 
         {loading ? (
           <div className="flex items-center justify-center h-32">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600" />
+            <ThinkingOrb size={32} />
           </div>
         ) : (
           <>

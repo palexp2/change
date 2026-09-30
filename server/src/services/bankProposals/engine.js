@@ -105,6 +105,13 @@ export async function runBankEngine({ accountId = null, dryRun = false, kinds = 
     }
   }
 
+  // Les sûres, sans QuickBooks, s'appliquent seules (annulables).
+  let auto = { accepted: 0 }
+  try {
+    const { autoAcceptSafe } = await import('./autoAccept.js')
+    auto = await autoAcceptSafe({ dryRun })
+  } catch (e) { errors.push(`auto: ${e.message}`) }
+
   const produced = Object.values(byKind).reduce((s, x) => s + x.produced, 0)
   const inserted = Object.values(byKind).reduce((s, x) => s + x.inserted, 0)
   return {
@@ -114,6 +121,7 @@ export async function runBankEngine({ accountId = null, dryRun = false, kinds = 
     inserted,
     open_after: db.prepare("SELECT COUNT(*) n FROM bank_proposals WHERE status='proposee'").get().n,
     by_kind: byKind,
+    auto_accepted: auto.accepted || 0,
     errors,
     summary: summarizeRun({ produced, inserted, byKind, dryRun }),
   }

@@ -944,6 +944,8 @@ export function initSchema() {
     // Type d'objet QB poussé : 'purchase' (Purchase, déjà payé) ou 'bill' (Bill, à payer).
     // NULL pour les anciens enregistrements pré-toggle = traités comme 'purchase'.
     'ALTER TABLE sale_receipts ADD COLUMN quickbooks_type TEXT',
+    // Achat fournisseur → document extrait qui l'a publié (même quickbooks_id).
+    'CREATE INDEX IF NOT EXISTS idx_sale_receipts_qbid ON sale_receipts(quickbooks_id) WHERE quickbooks_id IS NOT NULL',
     // Soft delete : on conserve la ligne (au moins le gmail_message_id) pour éviter
     // que syncInvoiceLabel ne réimporte le même email à chaque tour, mais le fichier
     // disque est purgé et la ligne disparaît du UI (filtre `deleted_at IS NULL`).
@@ -1063,12 +1065,19 @@ export function initSchema() {
     'ALTER TABLE products ADD COLUMN monthly_price_cad REAL DEFAULT 0',
     'ALTER TABLE products ADD COLUMN monthly_price_usd REAL DEFAULT 0',
     'ALTER TABLE products ADD COLUMN is_sellable INTEGER DEFAULT 0',
+    // Modale de soumission : produit du bloc « Pour toute la ferme » (pas par serre)
+    'ALTER TABLE products ADD COLUMN quote_farm_wide INTEGER DEFAULT 0',
     // soumissions — auto-numbering
     'ALTER TABLE soumissions ADD COLUMN quote_number INTEGER',
+    // soumissions — rabais nommés : JSON [{ name, pct, monthly, amount }]
+    'ALTER TABLE soumissions ADD COLUMN discounts TEXT',
     // document_items — discounts (kept for schema compat, unused)
     'ALTER TABLE orders ADD COLUMN date_commande TEXT',
     'ALTER TABLE document_items ADD COLUMN discount_pct REAL DEFAULT 0',
     'ALTER TABLE document_items ADD COLUMN discount_amount REAL DEFAULT 0',
+    // document_items — serre de la ligne + prix mensuel (modale de soumission par serre)
+    'ALTER TABLE document_items ADD COLUMN group_name TEXT',
+    'ALTER TABLE document_items ADD COLUMN unit_monthly_price REAL DEFAULT 0',
     // soumissions — currency and global discount
     "ALTER TABLE soumissions ADD COLUMN currency TEXT DEFAULT 'CAD'",
     'ALTER TABLE soumissions ADD COLUMN discount_pct REAL DEFAULT 0',
@@ -1444,8 +1453,21 @@ export function initSchema() {
     // Droit annuel de vacances payées (en jours ouvrables). Sert au calcul du
     // solde restant et à l'avertissement de dépassement sur la fiche employé.
     'ALTER TABLE employees ADD COLUMN vacation_days_per_year REAL DEFAULT 0',
-    // Clear stale field_map so the next sync re-derives the complete mapping
-    "UPDATE airtable_module_config SET field_map=NULL WHERE module='employees'",
+    // Pourcentage de vacances (4 = 4 %) : la banque de vacances croît de ce %
+    // du salaire brut de chaque paie (heures, fériés et paie de vacances
+    // comprises). Remplace le droit en jours (`vacation_days_per_year`).
+    'ALTER TABLE employees ADD COLUMN vacation_pct REAL',
+    // Point de référence de la banque de vacances : « au <date>, la banque
+    // valait <montant> $ ». Le % a changé dans le passé sans historique ; la
+    // banque part de ce montant et n'accumule que les paies postérieures.
+    'ALTER TABLE employees ADD COLUMN vacation_ref_date TEXT',
+    'ALTER TABLE employees ADD COLUMN vacation_ref_balance REAL',
+    // Taux de commission habituel du vendeur, en pourcents (2.5 = 2,5 %).
+    // Proposé d'office quand on ajoute une commission à un projet.
+    'ALTER TABLE employees ADD COLUMN commission_rate REAL',
+    // (Retiré : un « UPDATE … SET field_map=NULL WHERE module='employees' »
+    // tournait à CHAQUE démarrage et effaçait le mapping Airtable des employés —
+    // la page /champs/employees n'affichait plus aucun champ Airtable.)
     // Réparation : la suppression d'un champ issu d'Airtable ne coupait pas son
     // import (corrigé dans routes/custom-fields.js). Les colonnes concernées
     // restaient alimentées par la sync et réapparaissaient dans la page de
@@ -3202,6 +3224,22 @@ export function initSchema() {
     )
   }
 
+  // File de travaux (/travaux) : deux vues filtrées sur la colonne dérivée
+  // `section` (calculée côté client) — la file, puis les travaux complétés.
+  if (cntPill.get('travaux_prompts').c === 0) {
+    const sectionFilter = value => JSON.stringify({ conjunction: 'AND', rules: [{ field: 'section', op: 'is', value }] })
+    insPill.run(
+      newRecordId(), 'travaux_prompts', 'File', 'blue', sectionFilter('File'),
+      JSON.stringify(['etat', 'title', 'created_by_name', 'model', 'created_at', 'duree']),
+      JSON.stringify([{ field: 'ordre', dir: 'asc' }]), null, '[]', 0,
+    )
+    insPill.run(
+      newRecordId(), 'travaux_prompts', 'Travaux complétés', 'green', sectionFilter('Complété'),
+      JSON.stringify(['etat', 'title', 'created_by_name', 'completed_at', 'duree']),
+      JSON.stringify([{ field: 'completed_at', dir: 'desc' }]), null, '[]', 1,
+    )
+  }
+
   // Migration `mois_du_document` → champ formule custom_fields.
   // L'ancienne colonne physique sur `factures` était populée par certains
   // chemins (Airtable sync, refunds backfill) mais pas par le webhook Stripe
@@ -3342,6 +3380,8 @@ export function initSchema() {
   // resoumise ni produire une seconde commande.
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN generated_order_id TEXT REFERENCES orders(id)') } catch {}
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN verification_json TEXT') } catch {}
+  // Notes internes d'Orisha, sous « Documents techniques » de la fiche.
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN technical_notes TEXT') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_onboarding_qual_call ON customer_onboarding_responses(qualification_call_id)') } catch {}
   // Calque de surcharges du formulaire (titres, questions, choix, questions
   // personnalisées) édité depuis /discovery-form-editor. Singleton id='default'.
@@ -3414,6 +3454,8 @@ export function initSchema() {
   // câble coaxial, plus loin). `within_central_controller_range` reste le
   // booléen qui dit si un nouveau contrôleur central est à fournir.
   try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN central_controller_distance TEXT') } catch {}
+  // Soumission payée sur Stripe dont le System builder a été tiré.
+  try { db.exec('ALTER TABLE customer_onboarding_responses ADD COLUMN soumission_id TEXT') } catch {}
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS slow_page_loads (
@@ -3432,6 +3474,7 @@ export function initSchema() {
     'ALTER TABLE customer_onboarding_responses ADD COLUMN farm_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
     'ALTER TABLE customer_onboarding_responses ADD COLUMN shipping_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
     'ALTER TABLE orders ADD COLUMN farm_address_id TEXT REFERENCES adresses(id) ON DELETE SET NULL',
+    'ALTER TABLE customer_onboarding_responses ADD COLUMN project_id TEXT REFERENCES projects(id) ON DELETE SET NULL',
   ]) { try { db.exec(sql) } catch {} }
 
   // Les formulaires déjà soumis doivent aussi présenter leurs liens avant
@@ -3998,9 +4041,11 @@ export function initSchema() {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_account ON bank_transactions(account_id, txn_date)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_txn_status ON bank_transactions(status)`)
   // Pont QuickBooks : chaque compte bancaire ERP pointe vers son (ou ses,
-  // séparés par virgule — ex. BNC USD scindé en 10020+10021 côté QB) compte(s)
+  // séparés par virgule — ex. BNC USD scindé en 10021+10020 côté QB) compte(s)
   // QB, et chaque transaction bancaire peut mémoriser la transaction QB
   // correspondante trouvée via le rapport GeneralLedger (services/bankQbLink.js).
+  // Le PREMIER de la liste est celui où l'ERP ÉCRIT (mainQbAccount, utils/qbBankAccount.js) ;
+  // les suivants ne servent qu'à retrouver une écriture déjà passée.
   try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN qb_account_id TEXT`) } catch {}
   // Pont Plaid : account_id Plaid (immuable côté Plaid) une fois ce compte
   // mappé depuis /connecteurs, et l'item_id de connector_oauth correspondant
@@ -4105,6 +4150,12 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN interest_cad REAL`) } catch {}
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN review_flag INTEGER DEFAULT 0`) } catch {}
   try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN review_flag_at TEXT`) } catch {}
+  // Dernier état commun du X entre Boréal et le fichier ('X' ou '') : le côté
+  // qui s'en écarte a changé et gagne (même mécanique que comment_sheet_base).
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN review_sheet_base TEXT`) } catch {}
+  // Qui a posé le vert : NULL/manuel = un humain ; 'qb_rapproche' / 'ecart_zero' =
+  // le passage automatique ; 'annule' = un humain l'a retiré, l'automate n'y revient plus.
+  try { db.exec(`ALTER TABLE bank_transactions ADD COLUMN reconcile_method TEXT`) } catch {}
   // Signet de relecture : la ligne où Michel s'est arrêté, une par compte
   // (le ruban orange du classeur).
   try { db.exec(`ALTER TABLE bank_accounts ADD COLUMN bookmark_txn_id TEXT`) } catch {}
@@ -4117,7 +4168,7 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE bank_rules ADD COLUMN conditions TEXT`) } catch {}
   // Seed du mapping (idempotent, ne touche pas un mapping déjà posé à la main).
   for (const [name, qbId] of [
-    ['BNC CAD', '61'], ['BNC USD', '234,168'], ['BNC Épargne', '133'],
+    ['BNC CAD', '61'], ['BNC USD', '168,234'], ['BNC Épargne', '133'],
     ['MasterCard BNC', '66'], ['Desjardins CAD', '236'], ['Desjardins USD', '237'],
     ['Marge Desjardins', '238'], ['VISA Desjardins CAD', '242'], ['VISA Desjardins USD', '239'],
     ['Venn CAD', '254'], ['Venn USD', '256'],
@@ -4181,6 +4232,8 @@ export function initSchema() {
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN balance_method TEXT') } catch {}
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN balance_ok INTEGER') } catch {}
   try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN invertible INTEGER DEFAULT 0') } catch {}
+  // Relevé récupéré du Drive par le guetteur (services/bankStatementDriveWatch.js).
+  try { db.exec('ALTER TABLE bank_statement_uploads ADD COLUMN drive_file_id TEXT') } catch {}
   // Jetons de reconnaissance d'un compte sur un relevé (numéro masqué, intitulé
   // imprimé) : appris quand l'humain corrige le compte deviné.
   try { db.exec('ALTER TABLE bank_accounts ADD COLUMN statement_hints TEXT') } catch {}
@@ -4800,7 +4853,7 @@ export function initSchema() {
   // relue ne se perde jamais dans la liste. Une relance (follow_up / reprise) le remet à
   // NULL : la nouvelle réponse de l'agent redevient « à lire ».
   try { db.exec(`ALTER TABLE work_prompts ADD COLUMN seen_at TEXT`) } catch {}
-  // Modèle Claude choisi POUR CET ITEM (fable/opus/sonnet/haiku), au moment du dépôt
+  // Modèle Claude choisi POUR CET ITEM (opus/sonnet/haiku), au moment du dépôt
   // — c'est le sélecteur de la fenêtre « Modifier le système ». Il ne remplace que le
   // modèle du préréglage : l'effort reste celui du préréglage, et le repli quota
   // s'applique comme d'habitude. NULL = pas de choix, on suit le préréglage (donc le
@@ -5252,6 +5305,8 @@ export function initSchema() {
   // de conversation existe déjà dans l'inbox Instagram). Sert uniquement à
   // afficher POURQUOI dans l'UI — ne change pas la logique de dédup.
   try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN contacted_source TEXT`) } catch {}
+  // Dernier message de la personne déjà jugé « conversation conclue ? » : on ne le redemande pas.
+  try { db.exec(`ALTER TABLE instagram_prospects ADD COLUMN concluded_check_at TEXT`) } catch {}
 
   // Historique des DM Instagram (@orisha_auto), utilisé pour détecter qu'un
   // prospect a déjà un fil de conversation — donc qu'il ne faut pas le
@@ -5371,6 +5426,18 @@ export function initSchema() {
   `)
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scraper_accounts_vendor ON scraper_accounts(vendor) WHERE deleted_at IS NULL`) } catch {}
 
+  // Sessions reçues par le pont de session pour un service qui n'est PAS un
+  // collecteur de factures (QuickBooks : robot « Rapprocher »). Hors de
+  // scraper_accounts pour qu'aucune tournée de collecte ne le prenne pour un
+  // portail.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS bridge_sessions (
+      key TEXT PRIMARY KEY,
+      storage_state_enc TEXT,
+      storage_state_at TEXT
+    )
+  `)
+
   // Historique des tournées. `log` = trace lisible (une ligne par étape) pour
   // diagnostiquer un sélecteur cassé sans relancer à l'aveugle ; `artifacts` =
   // captures d'écran/HTML écrites sous uploads/scrapers/<run_id>/.
@@ -5419,6 +5486,24 @@ export function initSchema() {
   `)
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_scraper_docs_external ON scraper_documents(vendor, external_id)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_scraper_docs_receipt ON scraper_documents(sale_receipt_id) WHERE sale_receipt_id IS NOT NULL`) } catch {}
+
+  // Portails repérés par le module de navigateur : un site ouvert et connecté
+  // dans le navigateur de l'utilisateur. Seul le NOM DE DOMAINE remonte ici —
+  // jamais les témoins d'un site que l'ERP ne sait pas collecter. C'est la
+  // liste « voici ce que tu utilises, veux-tu qu'on aille y chercher les
+  // factures ? », l'inverse de la saisie d'un compte à la main.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS portal_sightings (
+      id TEXT PRIMARY KEY,
+      domain TEXT NOT NULL UNIQUE,
+      title TEXT,
+      vendor TEXT,
+      times INTEGER DEFAULT 1,
+      first_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      last_seen_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      dismissed_at TEXT
+    )
+  `)
 
 
   // Motifs propres au RELEVÉ BANCAIRE (« AMZN », « SQ *LE CAFE »…), volontairement
@@ -5472,6 +5557,24 @@ export function initSchema() {
       updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     )
   `)
+  // Factures que Charles réclame À LA MAIN (bouton « Facture manquante » sur
+  // une sélection de lignes du relevé). Rien n'y entre tout seul : la détection
+  // automatique reste la pastille « sans facture », qui vit dans invoice_needs.
+  // `in_send` = cette facture fait partie du prochain message Slack ; la
+  // décocher la sort de l'envoi SANS la sortir de la liste.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS missing_invoice_requests (
+      id TEXT PRIMARY KEY,
+      bank_txn_id TEXT NOT NULL REFERENCES bank_transactions(id),
+      in_send INTEGER NOT NULL DEFAULT 1,
+      last_sent_at TEXT,
+      created_by TEXT,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    )
+  `)
+  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_missing_invoice_requests_txn ON missing_invoice_requests(bank_txn_id)`) } catch {}
+
   // ── Propositions du rapprochement bancaire ────────────────────────────────
   //
   // « Elle prépare, vous confirmez » (décision de Charles, 2026-09-12). Les
@@ -5524,6 +5627,9 @@ export function initSchema() {
   // disparu). Compteur plutôt qu'une date : c'est le nombre de passages qui dit
   // quelque chose, pas le temps écoulé.
   try { db.exec(`ALTER TABLE bank_proposals ADD COLUMN runs_unseen INTEGER DEFAULT 0`) } catch {}
+  // Acceptée par l'app elle-même (natures sûres, sans QuickBooks) : c'est ce
+  // qui la marque « auto » et la rend annulable d'un clic.
+  try { db.exec(`ALTER TABLE bank_proposals ADD COLUMN auto_accepted INTEGER DEFAULT 0`) } catch {}
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_prop_fp ON bank_proposals(fingerprint)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_prop_open ON bank_proposals(status, kind, account_id)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_bank_prop_txn ON bank_proposals(bank_txn_id, status)`) } catch {}
@@ -5722,6 +5828,28 @@ export function initSchema() {
   // Cci d'un courriel sortant (champ Cci de la modale de composition)
   try { db.exec(`ALTER TABLE emails ADD COLUMN bcc TEXT`) } catch {}
 
+  // Coût des API d'IA (Paramètres → Coûts IA) : un appel = une ligne, jetons
+  // seulement. Le coût se calcule à la lecture avec ai_model_prices — changer un
+  // prix recalcule l'historique. Whisper se déduit de transcription_jobs.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ai_usage_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      feature TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_usage_events_at ON ai_usage_events(at);
+    CREATE TABLE IF NOT EXISTS ai_model_prices (
+      model TEXT PRIMARY KEY,
+      input_per_m REAL,
+      output_per_m REAL,
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+  `)
+
   console.log('Database schema initialized');
 }
 
@@ -5842,6 +5970,16 @@ db.exec(`
   )
 `)
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_greenhouse_leads_src ON greenhouse_leads(source, external_id)`) } catch {}
+
+// Compteurs séquentiels qui ne reculent jamais (un numéro supprimé n'est pas
+// réattribué). `quote` = numéro QTE-Z-n des soumissions créées dans l'ERP.
+db.exec(`CREATE TABLE IF NOT EXISTS sequences (name TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0)`)
+// Un doublon portait le titre « Copie de QTE-Z-n » : il reprend son propre numéro.
+try {
+  db.exec(`UPDATE soumissions SET title = 'QTE-Z-' || quote_number, generated_pdf_path = NULL
+           WHERE airtable_id IS NULL AND quote_number IS NOT NULL AND title LIKE 'Copie de %'`)
+} catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_soumissions_quote_number ON soumissions(quote_number) WHERE quote_number IS NOT NULL`) } catch {}
 
 export function seedPaymentCards() {
   const insert = db.prepare(`

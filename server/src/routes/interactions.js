@@ -222,6 +222,16 @@ router.patch('/:id/pin', requireAuth, (req, res) => {
   res.json(updated)
 })
 
+// POST /api/interactions/:id/restore — annuler une suppression
+router.post('/:id/restore', requireAuth, (req, res) => {
+  const row = db.prepare('SELECT id, deleted_at FROM interactions WHERE id=?').get(req.params.id)
+  if (!row) return res.status(404).json({ error: 'Not found' })
+  db.prepare('UPDATE interactions SET deleted_at = NULL WHERE id=?').run(req.params.id)
+  const restored = db.prepare(INTERACTION_LIST_SELECT).get(req.params.id)
+  emitEntity('interaction', 'created', req.params.id, restored, req.user?.id)
+  res.json(restored)
+})
+
 // DELETE /api/interactions/:id
 router.delete('/:id', requireAuth, (req, res) => {
   const row = db.prepare('SELECT * FROM interactions WHERE id=?').get(req.params.id)

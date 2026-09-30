@@ -150,26 +150,110 @@ export function isStoryOnly({ first_comment_text, incoming = [] }) {
  * qui, elle, part par l'API. Quelqu'un à qui on a déjà écrit de cette façon est
  * traité, point.
  */
-export function markAlreadyHandled() {
+export function markAlreadyHandled({ ids = null } = {}) {
+  // Deux cas : jamais traitée, ou revenue (elle a réécrit) puis à qui Philippe
+  // a répondu depuis Instagram — sa réponse, plus récente que son dernier mot,
+  // la range à nouveau.
   const rows = db.prepare(`
-    SELECT p.id, MAX(m.sent_at) AS last_out
+    SELECT p.id, p.contacted, p.contacted_at, MAX(m.sent_at) AS last_out, MAX(t.last_incoming_at) AS last_in
     FROM instagram_prospects p
     JOIN manychat_threads t ON t.prospect_id = p.id OR t.user_id = p.manychat_subscriber_id
     JOIN manychat_messages m ON m.user_id = t.user_id AND m.kind = 'msgout_echo_instagram'
-    WHERE p.deleted_at IS NULL AND p.contacted = 0
+    WHERE p.deleted_at IS NULL
+      ${ids?.length ? `AND p.id IN (${ids.map(() => '?').join(',')})` : ''}
     GROUP BY p.id
-  `).all()
+    HAVING p.contacted = 0
+        OR (last_out > COALESCE(p.contacted_at, '') AND last_out >= COALESCE(last_in, ''))
+  `).all(...(ids || []))
   const upd = db.prepare(`
     UPDATE instagram_prospects
     SET contacted = 1, contacted_at = ?, contacted_source = 'dm_human',
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-    WHERE id = ? AND contacted = 0
+    WHERE id = ?
   `)
   let n = 0
   db.transaction(() => {
     for (const r of rows) { n += upd.run(r.last_out || new Date().toISOString(), r.id).changes }
   })()
   return n
+}
+
+/**
+ * Une conversation qui se conclut (« Thank you, see you there 👍 ») n'attend
+ * plus rien : la personne a eu le dernier mot, mais il n'y a rien à lui
+ * répondre. On la range dans les traités ; elle revient si elle réécrit.
+ * Chaque dernier message n'est jugé qu'une fois.
+ */
+export async function markConcluded(model) {
+  const rows = db.prepare(`
+    SELECT p.id, p.ig_username, t.user_id, t.last_incoming_at
+    FROM instagram_prospects p
+    JOIN manychat_threads t ON t.prospect_id = p.id OR t.user_id = p.manychat_subscriber_id
+    WHERE p.deleted_at IS NULL AND t.last_direction = 'in' AND t.last_incoming_at IS NOT NULL
+      AND (p.contacted = 0 OR t.last_incoming_at > COALESCE(p.contacted_at, ''))
+      AND t.last_incoming_at > COALESCE(p.concluded_check_at, '')
+      AND EXISTS (SELECT 1 FROM manychat_messages m WHERE m.user_id = t.user_id AND m.direction = 'out')
+    GROUP BY p.id
+    LIMIT 200
+  `).all()
+  if (!rows.length) return 0
+  const recent = db.prepare(`
+    SELECT direction, text FROM manychat_messages WHERE user_id = ? AND COALESCE(text,'') <> ''
+    ORDER BY sent_at DESC LIMIT 6
+  `)
+  const checked = db.prepare('UPDATE instagram_prospects SET concluded_check_at = ? WHERE id = ?')
+  const close = db.prepare(`
+    UPDATE instagram_prospects SET contacted = 1, contacted_at = ?, contacted_source = 'conclu',
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+    WHERE id = ?
+  `)
+  let n = 0
+  for (let i = 0; i < rows.length; i += 15) {
+    const batch = rows.slice(i, i + 15)
+    const lines = batch.map((r, k) => {
+      const msgs = recent.all(String(r.user_id)).reverse()
+        .map(m => `${m.direction === 'out' ? 'Orisha' : 'Elle'}: ${String(m.text).replace(/\s+/g, ' ').slice(0, 200)}`)
+      return `#${k}\n${msgs.join('\n')}`
+    }).join('\n\n')
+    const results = await askJson(model,
+      "Pour chaque conversation Instagram, dis si elle est CLAIREMENT conclue : le dernier message de la " +
+      "personne ferme l'échange (remerciement, « à bientôt », « parfait », « see you there », émoji d'accord…) " +
+      "et n'attend aucune réponse. S'il reste une question, une demande ou un doute, ce n'est PAS conclu. " +
+      'Réponds en JSON strict : { "results": [ { "i": <numéro>, "conclu": true|false } ] }.',
+      lines)
+    const byIndex = new Map(results.map(r => [Number(r.i), r]))
+    db.transaction(() => {
+      batch.forEach((r, k) => {
+        const res = byIndex.get(k)
+        if (!res) return
+        checked.run(r.last_incoming_at, r.id)
+        // Traité juste APRÈS son dernier mot : sinon elle semblerait avoir réécrit.
+        if (res.conclu === true) { close.run(new Date(new Date(r.last_incoming_at).getTime() + 1000).toISOString(), r.id); n++ }
+      })
+    })()
+  }
+  return n
+}
+
+async function askJson(model, system, user) {
+  const apiKey = process.env.OPENAI_API_KEY
+  if (!apiKey) throw new Error('OPENAI_API_KEY non configuré')
+  const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model, response_format: { type: 'json_object' }, temperature: 0,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    }),
+  })
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}))
+    throw new Error(err.error?.message || `OpenAI HTTP ${resp.status}`)
+  }
+  const data = await resp.json()
+  let parsed = {}
+  try { parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}') } catch { parsed = {} }
+  return Array.isArray(parsed.results) ? parsed.results : []
 }
 
 // ── Classement ──────────────────────────────────────────────────────────────
@@ -325,6 +409,8 @@ export async function runSegmentation({ force = false, trigger = 'schedule', ids
     const cfg = getSegmentConfig()
     const threshold = Math.max(2, Number(cfg.bot_threshold) || 4)
     const handled = markAlreadyHandled()
+    let concluded = 0
+    try { concluded = await markConcluded(cfg.model) } catch { /* le tri continue sans */ }
 
     // D'abord lire quelques profils : une fiche lue se remet d'elle-même au tri.
     // Une session morte arrête la lecture, jamais le tri.
@@ -392,14 +478,14 @@ export async function runSegmentation({ force = false, trigger = 'schedule', ids
 
     const rewritten = await rewriteStaleDrafts(changed)
     const summary = `${classed} fiche(s) rangée(s) dont ${changed.length} changée(s) de pile, ` +
-      `${robots} robot(s) supprimé(s), ${handled} déjà traitée(s)` +
+      `${robots} robot(s) supprimé(s), ${handled} déjà traitée(s), ${concluded} conversation(s) conclue(s)` +
       (prof ? ` · ${prof.read || 0} profil(s) lu(s)` + (prof.stopped ? ` — lecture arrêtée : ${prof.stopped}` : '') : '') +
       (problems.length ? ` · ${problems.length} échec(s)` : '')
     logSystemRun(SEGMENT_AUTOMATION_ID, {
       status: problems.length && !classed ? 'error' : 'success',
       duration_ms: Date.now() - t0, triggerData: { trigger }, result: summary,
     })
-    return { ok: true, classed, changed, robots, handled, rewritten, profiles: prof, problems, summary }
+    return { ok: true, classed, changed, robots, handled, concluded, rewritten, profiles: prof, problems, summary }
   } catch (e) {
     logSystemRun(SEGMENT_AUTOMATION_ID, { status: 'error', duration_ms: Date.now() - t0, triggerData: { trigger }, error: e })
     return { error: e.message }

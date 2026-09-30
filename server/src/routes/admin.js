@@ -4,9 +4,11 @@ import { newRecordId } from '../utils/recordId.js';
 import bcrypt from 'bcrypt';
 import db from '../db/database.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { readFileSync, statSync, existsSync } from 'fs';
-import { execSync } from 'child_process';
+import { promises as fsp } from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import os from 'os';
+import { getDiskUsage } from '../services/diskUsage.js'
 import Stripe from 'stripe';
 import { postPaymentDeposit, stripeInvoiceNetHtCents } from '../services/quickbooks.js';
 import { qbGet } from '../connectors/quickbooks.js';
@@ -18,6 +20,7 @@ import { listTrash, purgeTrash, TRASH_TABLE_KEYS } from '../services/trash.js'
 import { regenerateView } from '../services/customFieldsView.js'
 import { PUSH_ONLY_CF_KINDS } from '../services/airtableWriteback.js'
 
+const execFileAsync = promisify(execFile);
 const router = Router();
 router.use(requireAdmin);
 
@@ -542,13 +545,8 @@ router.delete('/users/:id', (req, res) => {
 });
 
 // GET /api/admin/health
-router.get('/health', (req, res) => {
-  // ── Disque ────────────────────────────────────────────────────────────────
-  let disk = null
-  try {
-    const out = execSync("df -k / | tail -1").toString().trim().split(/\s+/)
-    disk = { total: parseInt(out[1]) * 1024, used: parseInt(out[2]) * 1024, available: parseInt(out[3]) * 1024 }
-  } catch {}
+router.get('/health', async (req, res) => {
+  const { disk, diskBreakdown, diskMeasurement } = await getDiskUsage()
 
   // ── RAM ───────────────────────────────────────────────────────────────────
   const totalMem = os.totalmem()
@@ -562,78 +560,58 @@ router.get('/health', (req, res) => {
   // ── Uptime ────────────────────────────────────────────────────────────────
   const uptime = os.uptime()
 
-  // ── PM2 processes ─────────────────────────────────────────────────────────
-  let processes = []
-  try {
-    const raw = execSync('pm2 jlist 2>/dev/null').toString()
-    const list = JSON.parse(raw)
-    processes = list.map(p => ({
-      name: p.name,
-      status: p.pm2_env.status,
-      uptime: p.pm2_env.pm_uptime,
-      restarts: p.pm2_env.restart_time,
-      memory: p.monit?.memory || 0,
-      cpu: p.monit?.cpu || 0,
-      pid: p.pid,
-    }))
-  } catch {}
+  const processes = await getPm2Processes()
+  const recentErrors = await readRecentErrors()
 
-  // ── SQLite DB size ────────────────────────────────────────────────────────
-  let dbSize = null
-  try {
-    const dbPath = process.env.DATABASE_PATH || './data/erp.db'
-    dbSize = statSync(dbPath).size
-  } catch {}
-
-  // ── Répartition espace disque ─────────────────────────────────────────────
-  function duBytes(p) {
-    try {
-      const out = execSync(`du -sb "${p}" 2>/dev/null`).toString().trim()
-      return parseInt(out.split('\t')[0]) || 0
-    } catch { return 0 }
-  }
-  const home = os.homedir()
-  const diskBreakdown = [
-    { label: 'Enregistrements d\'appels', bytes: duBytes(`${home}/erp/server/uploads/calls`) },
-    { label: 'Photos produits',           bytes: duBytes(`${home}/erp/server/uploads/products`) },
-    { label: 'Base de données',           bytes: duBytes(`${home}/erp/server/data`) },
-    { label: 'Dépendances Node',          bytes: duBytes(`${home}/erp/server/node_modules`) },
-    { label: 'Logs PM2',                  bytes: duBytes(`${home}/.pm2/logs`) },
-    { label: 'FTP uploads',               bytes: duBytes(`${home}/ftp-server/uploads`) },
-  ]
-  if (disk) {
-    const accounted = diskBreakdown.reduce((s, c) => s + c.bytes, 0)
-    diskBreakdown.push({ label: 'Autres / Système', bytes: Math.max(0, disk.used - accounted) })
-  }
-
-  // ── Whisper queue ─────────────────────────────────────────────────────────
-  const whisper = db.prepare(`
-    SELECT transcription_status, COUNT(*) as total FROM calls GROUP BY transcription_status
-  `).all().reduce((acc, r) => { acc[r.transcription_status] = r.total; return acc }, {})
-
-  // ── Dernières erreurs ERP ─────────────────────────────────────────────────
-  let recentErrors = []
-  try {
-    const logPath = process.env.PM2_ERROR_LOG || `${os.homedir()}/.pm2/logs/erp-server-error.log`
-    if (existsSync(logPath)) {
-      const lines = readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean)
-      recentErrors = lines.slice(-8).reverse()
-    }
-  } catch {}
-
-  // ── Chargements de page lents (>500ms) ────────────────────────────────────
-  let slowLoads = []
-  try {
-    slowLoads = db.prepare(`
-      SELECT id, created_at, user_id, user_name, url, load_ms
-      FROM slow_page_loads
-      ORDER BY created_at DESC
-      LIMIT 50
-    `).all()
-  } catch {}
-
-  res.json({ disk, ram, cpu, uptime, processes, dbSize, whisper, recentErrors, diskBreakdown, slowLoads })
+  res.json({ disk, ram, cpu, uptime, processes, recentErrors, diskBreakdown, diskMeasurement })
 })
+
+// `pm2 jlist` coûte ~250 ms : jamais attendu par la page. On sert la dernière
+// liste (actualisée en arrière-plan au-delà de 10 s) ; seul le tout premier
+// appel après un démarrage attend.
+let pm2Cache = null
+let pm2Pending = null
+function refreshPm2() {
+  if (pm2Pending) return pm2Pending
+  pm2Pending = execFileAsync('pm2', ['jlist'], { timeout: 10_000, maxBuffer: 8 * 1024 * 1024 })
+    .then(({ stdout }) => {
+      const list = JSON.parse(stdout).map(p => ({
+        name: p.name,
+        status: p.pm2_env.status,
+        uptime: p.pm2_env.pm_uptime,
+        restarts: p.pm2_env.restart_time,
+        memory: p.monit?.memory || 0,
+      }))
+      pm2Cache = { at: Date.now(), list }
+      return list
+    })
+    .catch(() => pm2Cache?.list || [])
+    .finally(() => { pm2Pending = null })
+  return pm2Pending
+}
+async function getPm2Processes() {
+  if (!pm2Cache) return refreshPm2()
+  if (Date.now() - pm2Cache.at > 10_000) refreshPm2()
+  return pm2Cache.list
+}
+
+// Seule la fin du journal d'erreurs est utile : lire le fichier entier (6 Mo+)
+// bloquait la boucle d'événements.
+async function readRecentErrors() {
+  const logPath = process.env.PM2_ERROR_LOG || `${os.homedir()}/.pm2/logs/erp-server-error.log`
+  let fh
+  try {
+    fh = await fsp.open(logPath, 'r')
+    const { size } = await fh.stat()
+    const length = Math.min(size, 64 * 1024)
+    const buf = Buffer.alloc(length)
+    await fh.read(buf, 0, length, size - length)
+    const lines = buf.toString('utf8').trim().split('\n').filter(Boolean)
+    if (length < size) lines.shift() // première ligne possiblement tronquée
+    return lines.slice(-8).reverse()
+  } catch { return [] }
+  finally { await fh?.close() }
+}
 
 
 

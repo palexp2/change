@@ -9,7 +9,7 @@ import {
   normalizeExtracted, checkBalance, buildBalanceCorrection,
   scoreAccount, detectAccount, isInvertible, applySignConvention,
   extractStatement, MIN_DETECT_CONFIDENCE, dateHintFromName, yearDriftAgainstHint,
-  parseStatementResponse,
+  parseStatementResponse, isolateAccountChain, accountMismatch, ACCOUNT_MISMATCH, accountHintText,
 } from './bankStatementImport.js'
 import { planImportFromCounts } from './bankTrxSheet.js'
 
@@ -414,4 +414,81 @@ test('le solde d’ouverture déduit déclenche une passe corrective tardive', a
   // Système + document + réponse précédente + correction chiffrée.
   assert.equal(seen.length, 4)
   assert.match(seen[3].content, /100\.70/)
+})
+
+// ── Relevés Desjardins : plusieurs comptes sur un folio ─────────────────────
+
+// Folio d'août 2026 : le compte à opérations (EOP) PUIS la marge (MC 2), que
+// le modèle avait recopiée à la suite — écart de −49 468,77.
+const EOP = [
+  { txn_date: '2026-08-03', amount: -531.23, balance: 274.07 },
+  { txn_date: '2026-08-11', amount: -25000, balance: -24725.93 },
+  { txn_date: '2026-08-11', amount: 25000, balance: 274.07 },
+  { txn_date: '2026-08-17', amount: -25000, balance: -24725.93 },
+  { txn_date: '2026-08-17', amount: 25000, balance: 274.07 },
+  { txn_date: '2026-08-31', amount: -42, balance: 232.07 },
+]
+const MC2 = [
+  { txn_date: '2026-08-03', amount: 531.23, balance: 98000 },
+  { txn_date: '2026-08-11', amount: -25000, balance: 123000 },
+  { txn_date: '2026-08-17', amount: -25000, balance: 148000 },
+]
+
+test('les lignes d’une autre section du folio sont écartées par la colonne Solde', () => {
+  assert.equal(checkBalance([...EOP, ...MC2], 805.3, 232.07).ok, false)
+  const out = isolateAccountChain([...EOP, ...MC2], 805.3, 232.07)
+  assert.equal(out.dropped, 3)
+  assert.deepEqual(out.rows, EOP)
+  assert.equal(checkBalance(out.rows, 805.3, 232.07).ok, true)
+  // Section étrangère AVANT le compte : même verdict.
+  assert.deepEqual(isolateAccountChain([...MC2, ...EOP], 805.3, 232.07).rows, EOP)
+})
+
+test('sans chaîne unique qui balance, on ne retire rien', () => {
+  // Déjà juste : rien à isoler.
+  assert.equal(isolateAccountChain(EOP, 805.3, 232.07), null)
+  // Une ligne sautée casse la chaîne : l'écart doit rester visible.
+  assert.equal(isolateAccountChain([EOP[0], ...EOP.slice(2)], 805.3, 232.07), null)
+  // Soldes absents : pas de preuve.
+  assert.equal(isolateAccountChain([...EOP, { ...MC2[0], balance: null }], 805.3, 232.07), null)
+  assert.equal(isolateAccountChain([...EOP, ...MC2], null, 232.07), null)
+})
+
+test('un relevé sans mouvement balance s’il ouvre et ferme au même solde', () => {
+  assert.equal(checkBalance([], 0, 0).ok, true)
+  assert.equal(checkBalance([], 0, 0, { kind: 'card' }).ok, true)
+  assert.equal(checkBalance([], 10, 0).ok, false)
+})
+
+test('un relevé qui contredit son compte n’est pas vérifié', () => {
+  const usd = { name: 'Desjardins USD', currency: 'USD', kind: 'bank' }
+  // Le dossier USD contenait le relevé d'un compte en CAD, à zéro.
+  assert.match(accountMismatch(usd, { currency: 'CAD', rowCount: 0, closing: 0 }), /en CAD/)
+  // Même devise, mais « aucun mouvement » alors que le compte est à 35,34 $.
+  const known = { txn_date: '2026-08-31', balance: 35.34 }
+  assert.ok(accountMismatch(usd, { currency: 'USD', rowCount: 0, closing: 0, knownBalance: known }).startsWith(ACCOUNT_MISMATCH))
+  assert.equal(accountMismatch(usd, { currency: 'USD', rowCount: 0, closing: 35.34, knownBalance: known }), null)
+  // Carte : la dette peut être signée des deux côtés.
+  const visa = { name: 'VISA Desjardins CAD', currency: 'CAD', kind: 'card' }
+  assert.equal(accountMismatch(visa, { currency: 'CAD', rowCount: 0, closing: 147, knownBalance: { txn_date: '2026-08-01', balance: -147 } }), null)
+  assert.equal(accountMismatch(visa, { currency: 'CAD', rowCount: 0, closing: 0, knownBalance: { txn_date: '2026-07-24', balance: 0 } }), null)
+  // Des lignes au relevé : l'arithmétique suffit, pas de comparaison au solde connu.
+  assert.equal(accountMismatch(usd, { currency: 'USD', rowCount: 3, closing: 0, knownBalance: known }), null)
+  assert.equal(accountMismatch(null, { currency: 'CAD' }), null)
+})
+
+test('le compte visé est dit au modèle, et une section étrangère ne relance pas la lecture', async () => {
+  let calls = 0
+  let seen = null
+  const read = {
+    institution: 'Desjardins', currency: 'CAD', kind: 'bank', opening_balance: 805.3, closing_balance: 232.07,
+    rows: [...EOP, ...MC2].map((r) => ({ txn_date: r.txn_date, description: 'x', debit: r.amount < 0 ? -r.amount : null, credit: r.amount > 0 ? r.amount : null, balance: r.balance })),
+  }
+  const fake = async (messages) => { calls++; seen = messages; return read }
+  const account = { name: 'Desjardins CAD', currency: 'CAD', kind: 'bank', statement_hints: null }
+  const out = await extractStatement([{ text: 'folio' }], { call: fake, accountHint: account })
+  assert.equal(calls, 1)
+  assert.equal(out.check.ok, true)
+  assert.ok(seen[1].content.some((c) => c.type === 'text' && c.text === accountHintText(account)))
+  assert.match(accountHintText(account), /« Desjardins CAD » \(compte bancaire, CAD\)/)
 })

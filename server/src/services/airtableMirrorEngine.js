@@ -40,7 +40,7 @@ import { periodStartFromFields } from './paiePeriod.js'
 import { getAccessToken } from '../connectors/airtable.js'
 import { syncDynamicFields, updateDynamicFields } from './airtableAutoSync.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
-import { consumeWritebackEcho, fieldMapDirection } from './airtableWriteback.js'
+import { consumeWritebackEcho, fieldMapDirection, importSkippedCoreKeys } from './airtableWriteback.js'
 import { emitMirrorWrite } from './realtimeEmitters.js'
 import { sameStored } from './airtableDiff.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
@@ -616,6 +616,14 @@ export const CORE_PLANS = {
       country:      ['country', 'text'],
       language:     ['language', 'text'],
       address_type: ['address_type', 'text'],
+    },
+    // Une adresse n'est liée à l'entreprise que par UN des trois liens
+    // Airtable, selon son type : livraison (mappé), ferme ou facturation.
+    derive: (fields, rec, fm, { values }) => {
+      if (values.company_id) return {}
+      const companyId = lookupCompany(fields, 'Entreprise (adresse de la ferme)')
+        ?? lookupCompany(fields, 'Entreprise (adresse de factuation)')
+      return companyId ? { company_id: companyId } : {}
     },
   },
   bom: {
@@ -1432,6 +1440,9 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
     ? fieldMapFromUi(erpTable, plan.uiFieldMapPlan)
     : parseFieldMap(cfg.fieldMapRaw)
   const planEntries = Object.entries(plan.fields || {})
+  // Clés en écriture SEULE (Boréal → Airtable), calculées une fois pour la
+  // passe : le sens d'un module à `uiFieldMapPlan` se lit sur la colonne.
+  const pushOnlyKeys = importSkippedCoreKeys(mirrorId, planEntries.map(([k]) => k))
   // Le gel de colonnes est réglé par l'utilisateur dans Connecteurs. Seule la
   // fonction historique des projets le consultait ; ici il vaut pour tous les
   // miroirs — c'est un réglage explicite, pas une préférence par module.
@@ -1470,7 +1481,7 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
         // ne consulte ce réglage que dans un module sur vingt ; ici il vaut
         // pour tous, ce qui est le seul comportement défendable — l'utilisateur
         // a dit « Airtable ne décide pas de cette colonne ».
-        if (fieldMapDirection(mirrorId, coreKey) === 'push') continue
+        if (pushOnlyKeys.has(coreKey)) continue
         const transform = TRANSFORMS[transformName]
         if (!transform) throw new Error(`Transformation « ${transformName} » inconnue (${mirrorId}.${coreKey})`)
         values[column] = transform(rec.fields, airtableField, rec)

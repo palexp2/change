@@ -83,7 +83,7 @@ function dateDiff(a, b, units) {
   return Math.trunc((a.getTime() - b.getTime()) / ms)
 }
 
-function datetimeFormat(d, fmt) {
+function datetimeFormat(d, fmt, { weekTokens = false } = {}) {
   // Sous-ensemble des tokens Moment/Airtable les plus courants. Toujours en UTC
   // (cohérent avec le stockage ISO-Z de l'app). Format par défaut : ISO.
   if (!fmt) return d.toISOString()
@@ -102,6 +102,13 @@ function datetimeFormat(d, fmt) {
     m: d.getUTCMinutes(),
     ss: pad(d.getUTCSeconds()),
     s: d.getUTCSeconds(),
+  }
+  if (weekTokens) {
+    // Même convention ISO que WEEKNUM ; YYYY reste l'année civile.
+    const week = isoWeek(d)
+    Object.assign(tokens, { w: week, ww: pad(week), W: week, WW: pad(week) })
+    return String(fmt).replace(/\[([^\]]*)\]|YYYY|MMMM|MMM|YY|MM|DD|HH|mm|ss|ww|WW|M|D|H|m|s|w|W/g,
+      (token, literal) => literal ?? String(tokens[token]))
   }
   // Remplace les tokens du plus long au plus court pour éviter les collisions.
   return String(fmt).replace(/YYYY|MMMM|MMM|YY|MM|DD|HH|mm|ss|M|D|H|m|s/g, (t) => String(tokens[t]))
@@ -265,7 +272,12 @@ function coerceReturn(v) {
 // au démarrage). Les exceptions d'une impl sont neutralisées en null pour ne
 // jamais casser la lecture d'une VUE entière à cause d'une cellule mal formée.
 export function registerFormulaFunctions(db) {
-  for (const f of F) {
+  // Variante interne activée par la compilation des formules de la table cible.
+  const weekFormat = { name: '_DATETIME_FORMAT_WEEKS', impl: (d, fmt) => {
+    const x = toDate(d)
+    return x ? datetimeFormat(x, fmt, { weekTokens: true }) : null
+  } }
+  for (const f of [...F, weekFormat]) {
     if (f.sqlite === false) continue
     const safe = (...args) => {
       try { return coerceReturn(f.impl(...args)) } catch { return null }

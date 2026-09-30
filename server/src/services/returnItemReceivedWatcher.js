@@ -36,7 +36,7 @@ const ORDER_ERROR = 'Erreur de commande'
 const COURTESY = "Retour d'équipement de courtoisie"
 
 function instructionsFor(reason, receivedBy) {
-  const who = receivedBy || ''
+  const who = String(receivedBy || '').trim().split(/\s+/)[0]
   if (reason === DEFERRED) {
     return `Bonjour ${who}, SVP place l'article dans l'étagère d'analyse. L'item sera analysé, réparé, nettoyé et renvoyé lors de la prochaine séance d'analyse.`
   }

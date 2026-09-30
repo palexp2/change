@@ -80,7 +80,7 @@ const {
   setFieldDirection, dynamicFieldDirection, fieldMapDirection, writebackModuleForTable,
   airtableFieldValue, WRITEBACK_MODULES, buildColumnMap, pushableLinkColumn, airtableLinkIds,
   pushOnlyColumns, isAirtableComputedKey, isDirectionConfigurable,
-  coreDirectionLockReason, resetComputedKeyCache,
+  coreDirectionLockReason, resetComputedKeyCache, importSkippedCoreKeys, isImportRequiredColumn,
   stockMovementSignedChange, stockMovementLabel,
 } = await import('./airtableWriteback.js')
 const { rememberAirtableFieldTypes } = await import('./airtableFieldTypes.js')
@@ -521,19 +521,56 @@ test('retours : un champ dynamique part en pull et accepte le bidirectionnel', (
   assert.equal(dynamicFieldDirection('retours', 'cf_statut'), 'pull')
 })
 
-test('retour_items : les clés scalaires du field_map cœur sont réglables, pas les liens', () => {
+test('retour_items : les clés scalaires du field_map cœur sont réglables, « Retour » reste importé', () => {
   assert.equal(fieldMapDirection('retour_items', 'action'), 'pull')
   assert.equal(isDirectionConfigurable('retour_items', 'action'), true)
   setFieldDirection('retour_items', 'action', 'both')
   assert.equal(fieldMapDirection('retour_items', 'action'), 'both')
   setFieldDirection('retour_items', 'action', 'pull')
 
-  // « Produit à envoyer » n'est plus de la partie : colonne droppée (046).
-  for (const link of ['return', 'serial', 'company', 'product_to_receive']) {
-    assert.throws(() => setFieldDirection('retour_items', link, 'both'), /ne supporte pas/, link)
-    assert.equal(fieldMapDirection('retour_items', link), 'pull', link)
-    assert.equal(coreDirectionLockReason('retour_items', link), 'core_skip', link)
-  }
+  // « Retour » est la garde d'insertion du miroir : jamais sauté à l'import.
+  assert.throws(() => setFieldDirection('retour_items', 'return', 'both'), /ne supporte pas/)
+  assert.equal(fieldMapDirection('retour_items', 'return'), 'pull')
+  assert.equal(coreDirectionLockReason('retour_items', 'return'), 'core_skip')
+  assert.equal(isImportRequiredColumn('retour_items', 'return_id'), true)
+  assert.equal(isImportRequiredColumn('retour_items', 'serial_id'), false)
+})
+
+// ── Champs lien : bidirectionnels dès que la table cible est miroitée ────────
+
+db.exec(`CREATE TABLE IF NOT EXISTS serial_numbers (id TEXT PRIMARY KEY, airtable_id TEXT)`)
+db.exec(`CREATE TABLE IF NOT EXISTS returns (id TEXT PRIMARY KEY, airtable_id TEXT)`)
+
+test('retour_items : un lien à table cible est poussable et traduit en record id', () => {
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_mappings (id, module, erp_table, airtable_field_name, column_name, options)
+              VALUES ('m-ri-serial', 'airtable', 'return_items', 'Numéro de série', 'serial_id', ?)`)
+    .run(JSON.stringify({ link_target_table: 'serial_numbers' }))
+  db.prepare(`INSERT OR REPLACE INTO serial_numbers (id, airtable_id) VALUES ('sn1', 'recSERIAL000000001')`).run()
+  assert.equal(pushableLinkColumn('retour_items', 'serial_id'), 'serial_numbers')
+  assert.deepEqual(airtableLinkIds('serial_numbers', 'sn1'), ['recSERIAL000000001'])
+
+  // Sens 'pull' par défaut : rien ne part.
+  assert.equal(buildColumnMap('retour_items', {}).serial_id, undefined)
+  setFieldDirection('retour_items', 'dyn:serial_id', 'both')
+  assert.equal(buildColumnMap('retour_items', {}).serial_id, 'Numéro de série')
+  setFieldDirection('retour_items', 'dyn:serial_id', 'pull')
+})
+
+test('lien vers une table sans airtable_id : jamais poussable', () => {
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_mappings (id, module, erp_table, airtable_field_name, column_name, options)
+              VALUES ('m-ri-ghost', 'airtable', 'return_items', 'Fantôme', 'ghost_id', ?)`)
+    .run(JSON.stringify({ link_target_table: 'table_inexistante' }))
+  assert.equal(pushableLinkColumn('retour_items', 'ghost_id'), null)
+})
+
+test('import : un lien du plan en « Boréal → Airtable » est sauté, « Retour » jamais', () => {
+  const keys = ['return', 'serial', 'action']
+  assert.deepEqual([...importSkippedCoreKeys('retour_items', keys)], [])
+  setFieldDirection('retour_items', 'dyn:serial_id', 'push')
+  setFieldDirection('retour_items', 'dyn:return_id', 'push')
+  assert.deepEqual([...importSkippedCoreKeys('retour_items', keys)], ['serial'])
+  setFieldDirection('retour_items', 'dyn:serial_id', 'pull')
+  setFieldDirection('retour_items', 'dyn:return_id', 'pull')
 })
 
 // ── Billet NÉ dans Boréal → jumeau Airtable ──────────────────────────────────
@@ -584,6 +621,15 @@ test('billets : case à cocher et multi-sélection converties avant l’envoi', 
   assert.deepEqual(airtableFieldValue(cfg, 'mots_cles', '["app","toit"]'), ['app', 'toit'])
   assert.deepEqual(airtableFieldValue(cfg, 'mots_cles', 'app, toit'), ['app', 'toit'])
   assert.equal(airtableFieldValue(cfg, 'mots_cles', null), null)
+})
+
+test('projets : probabilité poussée en fraction, client posé à la création', () => {
+  const cfg = WRITEBACK_MODULES.projets
+  // « Probabilité » est un pourcentage Airtable (0.5 = 50 %).
+  assert.equal(airtableFieldValue(cfg, 'probability', 50), 0.5)
+  assert.equal(airtableFieldValue(cfg, 'probability', 7), 0.07)
+  assert.equal(airtableFieldValue(cfg, 'probability', null), null)
+  assert.equal(cfg.createLinks.company_id.table, 'companies')
 })
 
 test('mouvements d’inventaire : variation signée et libellé Airtable', () => {

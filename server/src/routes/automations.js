@@ -148,7 +148,8 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // Le moteur des propositions : quelles natures produire, à quel seuil, et
   // combien de propositions ouvertes on tolère avant d'arrêter d'en produire.
   sys_bank_engine: {
-    actionKeys: new Set(['kinds_enabled', 'min_confidence_doc', 'tie_margin', 'max_open']),
+    actionKeys: new Set(['kinds_enabled', 'min_confidence_doc', 'tie_margin', 'max_open',
+      'auto_accept_kinds', 'auto_accept_min_confidence']),
     validateKey: () => null,
   },
   // Contrôles comptables : chaque contrôle s'allume ou s'éteint ('on'/'off'),
@@ -239,12 +240,12 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
     },
   },
-  // Alerte « banque muette » : seuil, anti-spam, destinataires, canal Slack.
+  // Alerte « solde figé » : seuil, anti-spam, destinataires, canal Slack.
   sys_plaid_silence_alert: {
-    actionKeys: new Set(['silence_hours', 'repeat_hours', 'notify_roles', 'slack_webhook_env']),
+    actionKeys: new Set(['stale_hours', 'repeat_hours', 'notify_roles', 'slack_webhook_env']),
     validateKey(key, v) {
       if (!v) return
-      if (key === 'silence_hours' || key === 'repeat_hours') {
+      if (key === 'stale_hours' || key === 'repeat_hours') {
         if (!/^\d{1,4}$/.test(v)) throw new Error(`${key} doit être un nombre d'heures`)
         return
       }
@@ -261,6 +262,8 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // sans elle l'interrupteur répondrait 400 « lecture seule ».
   sys_venn_sync: { actionKeys: new Set() },
   sys_bank_debit_link: { actionKeys: new Set() },
+  // Robot « Rapprocher » : rien à régler, mais l'interrupteur doit tenir.
+  sys_bank_qb_reconcile_robot: { actionKeys: new Set() },
   sys_receipt_bank_match: { actionKeys: new Set() },
   // Même cas : déclarées configurables sans spec, leur interrupteur répondait
   // 400 « lecture seule » — impossible de les mettre en pause depuis la page.
@@ -288,7 +291,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // QuickBooks posés SANS demander. Les autres deviennent des propositions à
   // confirmer ; vider la liste coupe tout appariement automatique.
   sys_bank_qb_verify: {
-    actionKeys: new Set(['window_days', 'grace_days', 'auto_apply_methods', 'deep_since']),
+    actionKeys: new Set(['window_days', 'grace_days', 'auto_apply_methods', 'deep_since', 'auto_reconcile']),
     validateKey(key, v) {
       if (key === 'window_days') {
         // Plancher dur : en deçà de 30 jours, l'orientation des signes ne peut
@@ -305,6 +308,12 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
       if (key === 'deep_since') {
         if (!/^\d{4}-\d{2}-\d{2}$/.test(v || '')) throw new Error('deep_since : une date AAAA-MM-JJ')
+        return
+      }
+      if (key === 'auto_reconcile') {
+        for (const m of String(v || '').split(',').map((x) => x.trim()).filter(Boolean)) {
+          if (!['qb_rapproche', 'ecart_zero'].includes(m)) throw new Error(`auto_reconcile : « ${m} » — valeurs possibles : qb_rapproche, ecart_zero`)
+        }
         return
       }
       if (key !== 'auto_apply_methods' || !v) return
@@ -518,6 +527,23 @@ const CONFIGURABLE_SYSTEM_SPECS = {
         throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
       }
       if (key === 'recipient' && v.length > 60) throw new Error('recipient trop long (max 60 caractères)')
+    },
+  },
+  // Demande de factures manquantes sur Slack (envoi manuel depuis le relevé).
+  sys_missing_invoice_request: {
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'intro', 'outro']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'slack_channel' && !/^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/.test(v)) {
+        throw new Error('slack_channel : « #canal », « @personne », un courriel ou un identifiant Slack')
+      }
+      if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
+        throw new Error('slack_webhook_url doit commencer par https://hooks.slack.com/')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+      if ((key === 'intro' || key === 'outro') && v.length > 300) throw new Error(`${key} trop long (max 300 caractères)`)
     },
   },
   // Alerte Slack du sondage de satisfaction. `slack_channel` est la voie

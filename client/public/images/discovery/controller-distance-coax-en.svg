@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 300" width="640" height="300" role="img" aria-labelledby="title description">
+  <title id="title">Distance au contrôleur central — 350 pi</title>
+  <desc id="description">Une antenne reliée au contrôleur existant par un câble coaxial permet de rejoindre la serre à 350 pi.</desc>
+  <defs>
+    <g id="seedling">
+      <path d="M0 0V-11" fill="none" stroke="#3fa85a" stroke-width="2.4" stroke-linecap="round"/>
+      <path d="M0 -11C-12 -20-12 -8-0.5 -8.5Z" fill="#4bb264"/>
+      <path d="M0 -11C12 -20 12 -8 0.5 -8.5Z" fill="#4bb264"/>
+    </g>
+  </defs>
+  <rect width="640" height="300" fill="#fff"/>
+  <text x="320" y="54" text-anchor="middle" font-family="system-ui, -apple-system, sans-serif" font-size="30" font-weight="600" fill="#475569">350 ft</text>
+  <g fill="none" stroke="#94a3b8" stroke-width="2" stroke-linecap="round">
+    <path d="M164 68h280M164 60v16M444 60v16"/>
+  </g>
+  <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M24 148 92 100 160 148"/>
+    <path d="M36 148h112v120H36z"/>
+    <path d="M58 268v-40a14 14 0 0 1 28 0v40"/>
+  </g>
+  <g>
+    <rect x="96" y="170" width="56" height="44" rx="9" fill="#fff" stroke="#94a3b8" stroke-width="2.4"/>
+    <circle cx="110" cy="184" r="4" fill="#22a34a"/>
+    <path d="M106 198h36M106 206h22" fill="none" stroke="#cbd5e1" stroke-width="3" stroke-linecap="round"/>
+  </g>
+  <!-- Câble coaxial entre le contrôleur existant et son antenne déportée. -->
+  <path d="M140 170v-16a10 10 0 0 1 10-10h72a10 10 0 0 0 10-10v-16" fill="none" stroke="#3fa85a" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+  <g fill="none" stroke="#94a3b8" stroke-width="3.2" stroke-linecap="round">
+    <path d="M232 122V86M218 104h28M223 92h18"/>
+  </g>
+  <g fill="none" stroke="#22a34a" stroke-width="3.2" stroke-linecap="round">
+    <path d="M250 92a20 20 0 0 1 0 26"/>
+    <path d="M262 80a38 38 0 0 1 0 50"/>
+  </g>
+  <g>
+    <rect x="438" y="224" width="160" height="40" fill="#d9eef1"/>
+    <g fill="none" stroke="#7ecdd0" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round">
+      <path d="M428 268v-72c0-30 46-40 90-40s90 10 90 40v72"/>
+      <path d="M428 216h180"/>
+    </g>
+    <use href="#seedling" x="464" y="260"/>
+    <use href="#seedling" x="504" y="260"/>
+    <use href="#seedling" x="544" y="260"/>
+    <use href="#seedling" x="582" y="260"/>
+  </g>
+  <rect x="0" y="268" width="640" height="7" rx="3.5" fill="#22a34a"/>
+</svg>

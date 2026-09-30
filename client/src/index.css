@@ -82,10 +82,15 @@
     background-color: rgb(var(--nav-accent));
     color: #fff;
   }
-  .dark .nav-active {
+  .dark .nav-active,
+  :root[data-look^="cream"] .look-panel .nav-active,
+  :root[data-look^="night"] .look-panel .nav-active,
+  :root[data-look="candle"] .look-panel .nav-active {
     background-color: rgb(var(--nav-accent) / 0.18);
     color: rgb(var(--nav-accent));
   }
+  /* Looks QNE clairs : texte posé sur l'accent. */
+  :root[data-look^="cream"] .nav-active { color: var(--c-on-accent); }
 }
 
 @layer base {
@@ -102,6 +107,51 @@
   }
   h1, h2, h3, h4, h5, h6 {
     letter-spacing: -0.02em;
+  }
+  /* Case à cocher : un peu plus grande que celle du navigateur (13 px), et
+     calée à gauche — en cellule de grille (champs d'une fiche en panneau
+     latéral) elle s'étirait sur la colonne et se dessinait au centre. Les
+     tailles posées en classe (h-3.5, sr-only…) l'emportent toujours.
+     Cochée : vert de la marque, crochet blanc, partout (dessin maison — avec
+     accent-color le navigateur choisissait seul un crochet noir). */
+  input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    justify-self: start;
+    flex-shrink: 0;
+    appearance: none;
+    -webkit-appearance: none;
+    border: 1px solid rgb(148 163 184);
+    border-radius: 0.25rem;
+    background-color: #fff;
+    background-position: center;
+    background-repeat: no-repeat;
+    background-size: 100% 100%;
+    cursor: pointer;
+    vertical-align: middle;
+  }
+  .dark input[type="checkbox"] {
+    border-color: rgb(100 116 139);
+    background-color: transparent;
+  }
+  input[type="checkbox"]:checked,
+  input[type="checkbox"]:indeterminate {
+    border-color: transparent;
+    background-color: rgb(var(--acc-brand));
+  }
+  input[type="checkbox"]:checked {
+    background-image: url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='white' xmlns='http://www.w3.org/2000/svg'%3e%3cpath d='M12.207 4.793a1 1 0 010 1.414l-5 5a1 1 0 01-1.414 0l-2-2a1 1 0 011.414-1.414L6.5 9.086l4.293-4.293a1 1 0 011.414 0z'/%3e%3c/svg%3e");
+  }
+  input[type="checkbox"]:indeterminate {
+    background-image: url("data:image/svg+xml,%3csvg viewBox='0 0 16 16' fill='none' xmlns='http://www.w3.org/2000/svg'%3e%3cpath stroke='white' stroke-linecap='round' stroke-width='2' d='M4 8h8'/%3e%3c/svg%3e");
+  }
+  input[type="checkbox"]:focus-visible {
+    outline: 2px solid rgb(var(--acc-brand) / 0.5);
+    outline-offset: 1px;
+  }
+  input[type="checkbox"]:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
   }
 
   /* Custom scrollbar — subtle, matches the ERP aesthetic */
@@ -157,36 +207,39 @@
      « comptabilisé »). Même vocabulaire que les règles de couleur de vue. */
   .row-flagged { box-shadow: inset 3px 0 0 0 rgb(var(--c-amber-500) / .85); }
 
-  /* DataTable `skin="ledger"` — le classeur papier (maquette C5 · Crayon,
-     choisie par Charles le 2026-09-22) : fond crème, grille fine, écriture
-     à l'ancienne, chiffres de machine à écrire. « À traiter » reste papier nu :
-     le rouge est réservé au rond de relecture de Michel. */
+  /* DataTable `skin="ledger"` — le relevé bancaire (/rapprochement). Refait
+     le 2026-09-27 (maquette T1) : il suit le look choisi (fond, encre, filets,
+     accent) au lieu du papier crème fixe ; les couleurs de statut restent
+     celles du fichier (vert, jaune, bleu ; « À traiter » = surface nue), les
+     marques de Michel restent au crayon rouge. */
   .dt-skin-ledger {
-    --lg-paper: #f6f1e4; --lg-head: #ece4d1; --lg-rule: #d9cfb9; --lg-ink: #2b2a26; --lg-muted: #8a8270;
-    --lg-green: #d3e5c8; --lg-yellow: #f1e3a8; --lg-blue: #d6e2ef; --lg-gray: #e2ded5;
+    --lg-rule: rgb(var(--c-slate-200) / .8);
     --lg-pen: #b3261e; --lg-ribbon: #e2711d;
-    background: var(--lg-paper); color: var(--lg-ink);
-    font-family: 'Newsreader', Georgia, serif; border-color: var(--lg-rule);
+    background: rgb(var(--c-white)); color: rgb(var(--c-slate-800));
   }
-  .dark .dt-skin-ledger {
-    --lg-paper: #1d1b17; --lg-head: #26231d; --lg-rule: #3a352b; --lg-ink: #ece4d1; --lg-muted: #a39a86;
-    --lg-green: #243322; --lg-yellow: #3a3218; --lg-blue: #1f2a36; --lg-gray: #2b2924;
-    --lg-pen: #ff7a6e; --lg-ribbon: #f08a3c;
+  .dark .dt-skin-ledger { --lg-pen: #ff7a6e; --lg-ribbon: #f08a3c; }
+  .dt-skin-ledger .tabular-nums { font-variant-numeric: tabular-nums; }
+  .dt-skin-ledger [data-row-id] { border-bottom-color: var(--lg-rule); }
+  .dt-skin-ledger .group\/header { background: rgb(var(--c-slate-50)); border-bottom: 1px solid rgb(var(--c-slate-300)); }
+  .dt-skin-ledger [data-testid^="col-header-"] {
+    color: rgb(var(--c-slate-400)); font-family: 'Cinzel', Georgia, serif; font-weight: 500;
+    font-size: 11px; letter-spacing: .14em;
   }
-  .dt-skin-ledger .text-sm { font-size: 15px; }
-  .dt-skin-ledger .tabular-nums { font-family: 'Courier Prime', ui-monospace, monospace; font-size: 14px; }
-  .dt-skin-ledger [data-row-id] { border-bottom-color: var(--lg-rule); color: var(--lg-ink); }
-  .dt-skin-ledger [data-row-id] > div { border-right: 1px solid var(--lg-rule); }
-  .dt-skin-ledger .group\/header { background: var(--lg-head); border-bottom: 2px solid var(--lg-ink); }
-  .dt-skin-ledger [data-testid^="col-header-"] { color: var(--lg-muted); text-transform: uppercase; letter-spacing: .07em; font-size: 11.5px; border-right: 1px solid var(--lg-rule); }
+  .dt-skin-ledger .lg-lbl { font-weight: 600; }
+  .dt-skin-ledger .lg-sub { color: rgb(var(--c-slate-400)); font-size: 12px; }
+  /* Teintes de statut mêlées à la surface du look : lisibles de jour comme
+     de nuit, sans crier. */
   .dt-skin-ledger .row-st-a_traiter,
   .dt-skin-ledger .row-st-a_traiter.row-st-a_traiter:hover { background-color: transparent; }
-  .dt-skin-ledger .row-st-rapproche, .dt-skin-ledger .row-st-rapproche.row-st-rapproche:hover { background-color: var(--lg-green); }
-  .dt-skin-ledger .row-st-comptabilise, .dt-skin-ledger .row-st-comptabilise.row-st-comptabilise:hover { background-color: var(--lg-yellow); }
-  .dt-skin-ledger .row-st-facture_recue, .dt-skin-ledger .row-st-facture_recue.row-st-facture_recue:hover { background-color: var(--lg-blue); }
-  .dt-skin-ledger .row-st-ignore, .dt-skin-ledger .row-st-ignore.row-st-ignore:hover { background-color: var(--lg-gray); color: var(--lg-muted); }
+  .dt-skin-ledger .row-st-rapproche, .dt-skin-ledger .row-st-rapproche.row-st-rapproche:hover { background-color: color-mix(in srgb, rgb(var(--c-green-500)) 15%, rgb(var(--c-white))); }
+  .dt-skin-ledger .row-st-comptabilise, .dt-skin-ledger .row-st-comptabilise.row-st-comptabilise:hover { background-color: color-mix(in srgb, rgb(var(--c-yellow-400)) 30%, rgb(var(--c-white))); }
+  .dt-skin-ledger .row-st-facture_recue, .dt-skin-ledger .row-st-facture_recue.row-st-facture_recue:hover { background-color: color-mix(in srgb, rgb(var(--c-sky-500)) 15%, rgb(var(--c-white))); }
+  .dt-skin-ledger .row-st-ignore, .dt-skin-ledger .row-st-ignore.row-st-ignore:hover { background-color: color-mix(in srgb, rgb(var(--c-slate-400)) 18%, rgb(var(--c-white))); color: rgb(var(--c-slate-400)); }
+  .dark .dt-skin-ledger .row-st-rapproche, .dark .dt-skin-ledger .row-st-rapproche.row-st-rapproche:hover { background-color: color-mix(in srgb, rgb(var(--c-green-500)) 12%, rgb(var(--c-white))); }
+  .dark .dt-skin-ledger .row-st-comptabilise, .dark .dt-skin-ledger .row-st-comptabilise.row-st-comptabilise:hover { background-color: color-mix(in srgb, rgb(var(--c-yellow-500)) 16%, rgb(var(--c-white))); }
+  .dark .dt-skin-ledger .row-st-facture_recue, .dark .dt-skin-ledger .row-st-facture_recue.row-st-facture_recue:hover { background-color: color-mix(in srgb, rgb(var(--c-sky-500)) 14%, rgb(var(--c-white))); }
   .dt-skin-ledger [data-row-id]:hover { filter: brightness(.97); }
-  .dt-skin-ledger .lg-title { font-family: 'Newsreader', Georgia, serif; color: var(--lg-ink); }
+  .dark .dt-skin-ledger [data-row-id]:hover { filter: brightness(1.12); }
   /* Rond rouge au crayon autour de la date : « à réviser ». */
   .dt-skin-ledger .lg-pen {
     display: inline-block; padding: 1px 7px; border: 2px solid var(--lg-pen); border-radius: 50%;
@@ -201,17 +254,18 @@
   .dt-skin-ledger .lg-mark-pen { width: 15px; height: 15px; border: 2px solid var(--lg-pen); border-radius: 50%; }
   .dt-skin-ledger .lg-mark-pen[aria-pressed="true"] { background: var(--lg-pen); }
   .dt-skin-ledger .lg-mark-ribbon { width: 14px; height: 22px; background: var(--lg-ribbon); clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 74%, 0 100%); }
-  .dt-skin-ledger .lg-tabs { height: 40px; background: var(--lg-head); border-top: 2px solid var(--lg-ink); padding-left: 48px; font-size: 14px; }
-  .dt-skin-ledger .lg-tab { color: var(--lg-muted); }
-  .dt-skin-ledger .lg-tab:hover { color: var(--lg-ink); }
-  .dt-skin-ledger .lg-tab-on { background: var(--lg-paper); color: var(--lg-ink); font-style: italic; font-weight: 600; border-left: 1px solid var(--lg-rule); border-right: 1px solid var(--lg-rule); margin-top: -2px; }
+  /* Onglets de comptes, en bas : le seul endroit où le compte est nommé. */
+  .dt-skin-ledger .lg-tabs { height: 40px; background: rgb(var(--c-slate-50)); border: 1px solid rgb(var(--c-slate-200)); border-top: 0; border-radius: 0 0 10px 10px; padding-left: 8px; font-size: 13px; }
+  .dt-skin-ledger .lg-tab { color: rgb(var(--c-slate-500)); border-right: 1px solid rgb(var(--c-slate-200)); }
+  .dt-skin-ledger .lg-tab:hover { color: rgb(var(--c-slate-800)); }
+  .dt-skin-ledger .lg-tab-on { background: rgb(var(--c-white)); color: rgb(var(--c-slate-800)); font-weight: 600; box-shadow: inset 0 2px 0 rgb(var(--c-brand-500)); }
   .dt-skin-ledger .lg-count {
-    display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 3px;
-    border: 2px solid var(--lg-pen); border-radius: 50%; color: var(--lg-pen); font-size: 11px; font-weight: 700; font-style: normal;
-    font-family: 'Courier Prime', ui-monospace, monospace;
+    display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px;
+    border-radius: 999px; background: var(--lg-pen); color: #fff; font-size: 10.5px; font-weight: 700;
   }
-  /* Légende : pastille « À traiter » = papier nu, bordée. */
-  .dt-skin-ledger [data-testid="reconcile-legend-a_traiter"] .row-st-a_traiter { background: var(--lg-paper); border-color: var(--lg-rule); }
+  .dark .dt-skin-ledger .lg-count { color: #1a1010; }
+  /* Légende : pastille « À traiter » = surface nue, bordée. */
+  .dt-skin-ledger [data-testid="reconcile-legend-a_traiter"] .row-st-a_traiter { background: rgb(var(--c-white)); border-color: rgb(var(--c-slate-300)); }
 }
 
 @layer components {
@@ -342,6 +396,29 @@
    lien et par la gouttière d'ouverture de la ligne. */
 .dt-inert-links a {
   pointer-events: none;
+}
+/* Choix uniques : tronquer la valeur elle-même, y compris les pastilles
+   (l'ellipse du conteneur ne tronque pas le texte d'un enfant inline-flex). */
+select:not([multiple]):not([size]),
+select:not([multiple])[size="1"] {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dt-truncate-single-select {
+  min-width: 0;
+}
+.dt-truncate-single-select > span,
+.single-select-label {
+  display: inline-block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 /* Pastille « champ mis à jour ailleurs » (components/FieldPulse.jsx).
    Apparait, se tient, s'efface — durée alignée sur PULSE_MS dans
@@ -544,3 +621,66 @@
 .discovery-form-large .text-sm { font-size: 1rem; line-height: 1.5rem; }
 .discovery-form-large .text-base { font-size: 1.125rem; line-height: 1.75rem; }
 .discovery-form-large input, .discovery-form-large select, .discovery-form-large textarea { font-size: 1rem; }
+
+/* Thinking Orbs — indicateur « occupé » (components/ThinkingOrb.jsx). */
+.torb { display: inline-flex; flex: none; vertical-align: middle; line-height: 0; }
+.torb canvas { display: block; }
+
+
+/* ── Looks « salle de lecture » : barre latérale ──────────────────────
+   Actif quand <html> porte `.qne` (un look QNE est choisi). La barre prend
+   déjà les couleurs du panneau via `.look-panel` ; ici : trame de toile,
+   icônes or atténué au repos, or plein au survol et sur la page en cours
+   (avec un filet doré dessous), menus au survol lisibles (titre en Cinzel,
+   pages en lettres normales avec leur icône). Les looks Boréal ne changent pas. */
+:root.qne [data-testid="app-sidebar"] {
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 2px),
+    repeating-linear-gradient(90deg, rgba(0,0,0,.022) 0 1px, transparent 1px 2px);
+  border-right-color: transparent;
+}
+:root.qne [data-testid="sidebar-rail"] { gap: 6px; }
+:root.qne [data-testid="sidebar-rail"] > a:first-child { position: relative; margin-bottom: 8px; }
+:root.qne [data-testid="sidebar-rail"] > a:first-child::after {
+  content: ''; position: absolute; left: 50%; bottom: -5px; width: 18px; height: 1px; transform: translateX(-50%);
+  background: rgb(var(--acc-brand) / .55);
+}
+:root.qne [data-testid="sidebar-rail"] > nav :is(a, button) svg,
+:root.qne [data-testid="sidebar-rail"] > :is(a, button):not(:first-child) svg {
+  color: rgb(var(--acc-brand) / .6) !important; transition: color .12s cubic-bezier(.22,.61,.36,1);
+}
+:root.qne [data-testid="sidebar-rail"] :is(a, button):hover svg,
+:root.qne [data-testid="sidebar-rail"] .nav-active svg,
+:root.qne [data-testid="sidebar-rail"] [aria-expanded="true"] svg { color: rgb(var(--acc-brand)) !important; }
+:root.qne [data-testid="sidebar-rail"] .nav-active { position: relative; background-color: rgb(var(--acc-brand) / .1); color: rgb(var(--acc-brand)); }
+:root.qne [data-testid="sidebar-rail"] > nav .nav-active::after {
+  content: ''; position: absolute; left: 50%; bottom: 4px; width: 14px; height: 1px; transform: translateX(-50%);
+  background: rgb(var(--acc-brand));
+}
+/* menus au survol (style M1) */
+:root.qne .look-panel [data-nav-flyout] {
+  padding: 12px 8px 8px; border-radius: 14px; min-width: 15rem;
+  border-color: rgb(var(--acc-brand) / .2);
+  box-shadow: 0 22px 48px rgb(0 0 0 / .45);
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,.018) 0 1px, transparent 1px 2px),
+    repeating-linear-gradient(90deg, rgba(0,0,0,.022) 0 1px, transparent 1px 2px);
+}
+:root.qne .look-panel [data-nav-flyout] > p:first-child {
+  padding: 0 10px 8px; font-family: 'Cinzel', Georgia, serif; font-size: 10.5px; font-weight: 500;
+  letter-spacing: .24em; text-transform: uppercase; color: rgb(var(--acc-brand)) !important;
+}
+:root.qne .look-panel [data-nav-flyout] a {
+  min-height: 34px; margin-inline: 0; padding-inline: 10px; border-radius: 9px;
+  font-size: 14.5px; font-weight: 400; color: rgb(var(--c-slate-800));
+}
+:root.qne .look-panel [data-nav-flyout] a svg { color: rgb(var(--acc-brand) / .7); }
+:root.qne .look-panel [data-nav-flyout] a:hover { background-color: rgb(var(--acc-brand) / .11); color: rgb(var(--acc-brand)); }
+:root.qne .look-panel [data-nav-flyout] a:hover svg { color: rgb(var(--acc-brand)); }
+:root.qne .look-panel [data-nav-flyout] a.nav-active {
+  position: relative; background-color: transparent; color: rgb(var(--acc-brand)); font-weight: 500;
+}
+:root.qne .look-panel [data-nav-flyout] a.nav-active svg { color: rgb(var(--acc-brand)); }
+:root.qne .look-panel [data-nav-flyout] a.nav-active::before {
+  content: ''; position: absolute; left: 0; top: 9px; bottom: 9px; width: 2px; border-radius: 2px; background: rgb(var(--acc-brand));
+}

@@ -41,7 +41,8 @@ const REC_ID = /^rec[A-Za-z0-9]{14}$/
 // cellule elle-même — le panneau n'est alors QUE la liste recherchable, comme
 // dans Airtable (cf. components/LinkChipsCell.jsx).
 export default function LinkCellEditor({ col, value, onCommit, onCancel, showCurrent = true }) {
-  const multi = !!col.linkMulti
+  // `linkSingle` : colonne tableau (linkMulti) limitée à un lien — choisir remplace.
+  const multi = !!col.linkMulti && !col.linkSingle
   const pageOptions = Array.isArray(col.linkOptions) ? col.linkOptions : null
 
   const initial = useMemo(() => parseLinkedKeys(value), [value])
@@ -127,8 +128,8 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel, showCur
   }, [col.linkIdentity, initial])
 
   const serialize = useCallback((keys) => (
-    multi ? JSON.stringify(keys) : (keys[0] ?? null)
-  ), [multi])
+    col.linkMulti ? JSON.stringify(keys) : (keys[0] ?? null)
+  ), [col.linkMulti])
 
   function associate(rec) {
     const key = keyFor(rec)
@@ -148,9 +149,28 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel, showCur
 
   function dissociate(key) {
     const next = sel.filter(k => k !== key)
-    if (multi) setSel(next)
+    if (multi) { setSel(next); inputRef.current?.focus() }
     else onCommit(serialize(next))
   }
+
+  // Fermeture : même règle au blur et au clic hors du panneau. Le blur seul ne
+  // suffit pas — après un « × » (le bouton focalisé disparaît) ou sans champ de
+  // recherche, le focus n'est plus dans le panneau et un clic ailleurs ne le
+  // refermait jamais.
+  const closedRef = useRef(false)
+  const closeRef = useRef(null)
+  closeRef.current = () => {
+    if (closedRef.current) return
+    closedRef.current = true
+    if (multi && showCurrent) onCommit(serialize(sel)); else onCancel()
+  }
+  useEffect(() => {
+    const onDown = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) closeRef.current()
+    }
+    document.addEventListener('mousedown', onDown, true)
+    return () => document.removeEventListener('mousedown', onDown, true)
+  }, [])
 
   const candidates = results.filter(r => !sel.includes(keyFor(r)))
 
@@ -177,9 +197,7 @@ export default function LinkCellEditor({ col, value, onCommit, onCancel, showCur
         // Multi : le panneau se referme sur ce qui a été composé (associations et
         // dissociations comprises). Mono : choisir COMMIT déjà, un abandon ne
         // doit rien écrire.
-        if (!e.currentTarget.contains(e.relatedTarget)) {
-          if (multi && showCurrent) onCommit(serialize(sel)); else onCancel()
-        }
+        if (!e.currentTarget.contains(e.relatedTarget)) closeRef.current()
       }}
       style={pos ? { position: 'fixed', top: pos.top, left: pos.left, width: pos.width, maxHeight: pos.maxHeight } : { visibility: 'hidden' }}
       className="z-50 overflow-y-auto rounded-lg border border-brand-500 bg-white shadow-lg py-1"

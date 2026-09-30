@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { ExternalLink } from 'lucide-react'
 import AttachmentPreview from './AttachmentPreview.jsx'
 import api from '../lib/api.js'
@@ -8,8 +8,14 @@ import LinkedRecordField from './LinkedRecordField.jsx'
 import { SubscriptionHistory } from './SubscriptionHistory.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
-import { intervalAmount, intervalLabel } from '../lib/subscriptionPricing.js'
+import { intervalAmount, intervalLabel, subscriptionTotals } from '../lib/subscriptionPricing.js'
 import { fmtCad } from '../utils/formatters.js'
+import { Badge, SUBSCRIPTION_STATUS, STRIPE_INVOICE_STATUS } from './Badge.jsx'
+
+function StatusBadge({ map, status, size }) {
+  const s = map[status]
+  return <Badge color={s?.color} size={size}>{s?.label || status}</Badge>
+}
 
 // Import différé : FactureDetail importe ce module (side-peek abonnement d'une
 // facture). Un import statique créerait un cycle à l'évaluation ; `lazy` casse
@@ -34,13 +40,22 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
     setFacturePeek(null)
   }, [abonnement])
 
+  // Seule la dernière requête a le droit d'écrire : une réponse tardive d'un
+  // abonnement quitté (ou d'un rechargement dépassé) est ignorée.
+  const detailsReq = useRef(0)
+  function loadDetails(id, { initial = false } = {}) {
+    const gen = ++detailsReq.current
+    const isCurrent = () => gen === detailsReq.current
+    if (initial) { setDetails(null); setLoading(true) }
+    return api.abonnements.stripeDetails(id)
+      .then(d => { if (isCurrent()) setDetails(d) })
+      .catch(() => {})
+      .finally(() => { if (isCurrent()) setLoading(false) })
+  }
+
   useEffect(() => {
     if (!abonnement) return
-    setLoading(true)
-    api.abonnements.stripeDetails(abonnement.id)
-      .then(setDetails)
-      .catch(() => setDetails(null))
-      .finally(() => setLoading(false))
+    loadDetails(abonnement.id, { initial: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [abonnement?.id])
 
@@ -48,14 +63,14 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
     api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
   }, [])
 
-  // Realtime: refresh history on subscription_event:* broadcasts. Hook must
-  // run on every render — kept above the early return below. The handler
-  // closes over `abonnement` via stable id; `details` is read fresh inside
-  // refreshDetails through its own setter call below.
+  // Temps réel (hook avant le return anticipé) : `subscription:updated` porte la
+  // ligne à jour (édition d'un collègue, webhook Stripe, sync) → en-tête ;
+  // `subscription_event:*` → historique et produits Stripe.
   useRealtimeChannel(abonnement?.id ? `subscription:${abonnement.id}` : null, (msg) => {
-    if (!abonnement?.id) return
-    if (msg.type?.startsWith('subscription_event:')) {
-      api.abonnements.stripeDetails(abonnement.id).then(setDetails).catch(() => {})
+    if (msg.type === 'subscription:updated') {
+      setLocalAbo(prev => ({ ...(prev?.id === abonnement.id ? prev : abonnement), ...msg.payload }))
+    } else if (msg.type?.startsWith('subscription_event:')) {
+      loadDetails(abonnement.id)
     }
   })
 
@@ -79,24 +94,10 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
     }
   }
 
-  async function refreshDetails() {
-    const fresh = await api.abonnements.stripeDetails(aboState.id).catch(() => null)
-    if (fresh) setDetails(fresh)
-  }
-
-  // Montant avant taxes au cycle de facturation, calculé depuis les items
-  // Stripe (unit_amount × qty est par construction pré-taxe) moins les rabais.
-  // Fallback sur intervalAmount pendant le chargement de `details`.
-  const preTaxCycleAmount = (() => {
-    if (!details?.items?.length) return null
-    const itemsSubtotal = details.items.reduce((s, it) => s + (it.total || 0), 0)
-    const d = details.discount
-    const discountAmt = d
-      ? (d.amount_off != null ? d.amount_off : (d.percent_off != null ? itemsSubtotal * d.percent_off / 100 : 0))
-      : 0
-    return itemsSubtotal - discountAmt
-  })()
-  const displayedAmount = preTaxCycleAmount != null ? preTaxCycleAmount : intervalAmount(abonnement)
+  // Montant avant taxes au cycle : en-tête, ligne « Rabais » et pied du tableau
+  // lisent les mêmes totaux. Fallback sur intervalAmount pendant le chargement.
+  const totals = details?.items?.length ? subscriptionTotals(details) : null
+  const displayedAmount = totals ? totals.subtotal : intervalAmount(aboState)
 
   const body = (
       <div className="space-y-5">
@@ -114,27 +115,25 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
             />
           </div>
           <div className="flex items-center gap-3">
-            <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-medium ${abonnement.status === 'active' ? 'bg-green-100 text-green-700' : abonnement.status === 'canceled' ? 'bg-red-100 text-red-700' : abonnement.status === 'past_due' ? 'bg-amber-100 text-amber-700' : 'bg-blue-100 text-blue-700'}`}>
-              {abonnement.status === 'active' ? 'Actif' : abonnement.status === 'canceled' ? 'Annulé' : abonnement.status === 'past_due' ? 'En retard' : abonnement.status === 'trialing' ? 'Essai' : abonnement.status}
-            </span>
-            <span className="text-lg font-bold text-slate-800" data-testid="abo-modal-cycle-amount" title="Avant taxes">{fmtCad(displayedAmount)}<span className="text-xs font-normal text-slate-400">/{intervalLabel(abonnement)}</span><span className="text-[10px] font-normal text-slate-400 ml-1">av. tx</span></span>
+            <StatusBadge map={SUBSCRIPTION_STATUS} status={aboState.status} />
+            <span className="text-lg font-bold text-slate-800" data-testid="abo-modal-cycle-amount" title="Avant taxes">{fmtCad(displayedAmount)}<span className="text-xs font-normal text-slate-400">/{intervalLabel(aboState)}</span><span className="text-[10px] font-normal text-slate-400 ml-1">av. tx</span></span>
           </div>
         </div>
 
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-          <div><div className="text-xs text-slate-400 mb-0.5">Début</div><div className="text-slate-700">{fmtDate(abonnement.start_date)}</div></div>
-          <div><div className="text-xs text-slate-400 mb-0.5">Fin</div><div className="text-slate-700">{fmtDate(abonnement.end_date || abonnement.cancel_date)}</div></div>
-          <div><div className="text-xs text-slate-400 mb-0.5">Client Stripe</div><div className="text-slate-700 font-mono text-xs">{abonnement.customer_email || '—'}</div></div>
+          <div><div className="text-xs text-slate-400 mb-0.5">Début</div><div className="text-slate-700">{fmtDate(aboState.start_date)}</div></div>
+          <div><div className="text-xs text-slate-400 mb-0.5">Fin</div><div className="text-slate-700">{fmtDate(aboState.end_date || aboState.cancel_date)}</div></div>
+          <div><div className="text-xs text-slate-400 mb-0.5">Client Stripe</div><div className="text-slate-700 font-mono text-xs">{aboState.customer_email || '—'}</div></div>
           <div>
             <div className="text-xs text-slate-400 mb-0.5">Stripe</div>
-            {abonnement.stripe_url
-              ? <a href={abonnement.stripe_url} target="_blank" rel="noopener noreferrer" className="link-record text-xs inline-flex items-center gap-1"><ExternalLink size={11} /> Voir</a>
+            {aboState.stripe_url
+              ? <a href={aboState.stripe_url} target="_blank" rel="noopener noreferrer" className="link-record text-xs inline-flex items-center gap-1"><ExternalLink size={11} /> Voir</a>
               : <span className="text-slate-400">—</span>}
           </div>
         </div>
 
         {loading ? (
-          <div className="flex justify-center py-10"><div className="animate-spin rounded-full h-6 w-6 border-b-2 border-brand-600" /></div>
+          <Spinner center />
         ) : !details ? (
           <p className="text-center py-8 text-slate-400 text-sm">Impossible de charger les détails Stripe</p>
         ) : (
@@ -164,42 +163,23 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
                         <td className="px-4 py-2.5 text-right font-medium text-slate-800">{item.total != null ? `${item.total.toFixed(2)} ${item.currency}` : '—'}</td>
                       </tr>
                     ))}
-                    {details.discount && (() => {
-                      const itemsSubtotal = details.items.reduce((s, it) => s + (it.total || 0), 0)
-                      const currency = details.items[0]?.currency || ''
-                      const d = details.discount
-                      const amt = d.amount_off != null
-                        ? d.amount_off
-                        : (d.percent_off != null ? itemsSubtotal * d.percent_off / 100 : 0)
-                      if (!amt) return null
-                      const label = d.percent_off != null
-                        ? `${d.name} (${d.percent_off}%)`
-                        : d.name
-                      return (
-                        <tr className="border-b border-slate-100 last:border-0">
-                          <td className="px-4 py-2.5 text-slate-600" colSpan={3}>Rabais : {label}</td>
-                          <td className="px-4 py-2.5 text-right font-medium text-slate-600">−{amt.toFixed(2)} {currency}</td>
-                        </tr>
-                      )
-                    })()}
+                    {totals?.discountAmt > 0 && (
+                      <tr className="border-b border-slate-100 last:border-0">
+                        <td className="px-4 py-2.5 text-slate-600" colSpan={3}>
+                          Rabais : {details.discount.name}{details.discount.percent_off != null && ` (${details.discount.percent_off}%)`}
+                        </td>
+                        <td className="px-4 py-2.5 text-right font-medium text-slate-600">−{totals.discountAmt.toFixed(2)} {totals.currency}</td>
+                      </tr>
+                    )}
                   </tbody>
-                  {details.items.length > 0 && (() => {
-                    const itemsSubtotal = details.items.reduce((s, it) => s + (it.total || 0), 0)
-                    const currency = details.items[0]?.currency || ''
-                    const d = details.discount
-                    const discountAmt = d
-                      ? (d.amount_off != null ? d.amount_off : (d.percent_off != null ? itemsSubtotal * d.percent_off / 100 : 0))
-                      : 0
-                    const subtotal = itemsSubtotal - discountAmt
-                    return (
-                      <tfoot>
-                        <tr className="bg-slate-50 border-t border-slate-200">
-                          <td className="px-4 py-2 text-xs font-semibold text-slate-500" colSpan={3}>Total avant taxes</td>
-                          <td className="px-4 py-2 text-right font-semibold text-slate-800">{subtotal.toFixed(2)} {currency}</td>
-                        </tr>
-                      </tfoot>
-                    )
-                  })()}
+                  {totals && (
+                    <tfoot>
+                      <tr className="bg-slate-50 border-t border-slate-200">
+                        <td className="px-4 py-2 text-xs font-semibold text-slate-500" colSpan={3}>Total avant taxes</td>
+                        <td className="px-4 py-2 text-right font-semibold text-slate-800">{totals.subtotal.toFixed(2)} {totals.currency}</td>
+                      </tr>
+                    </tfoot>
+                  )}
                 </table>
               </div>
             </div>
@@ -207,7 +187,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
             <SubscriptionHistory
               subscriptionId={aboState.id}
               history={details.history}
-              onChanged={refreshDetails}
+              onChanged={() => loadDetails(aboState.id)}
             />
 
             {details.invoices.length > 0 && (
@@ -225,9 +205,7 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
                         <div className="flex items-center gap-3">
                           <span className={`text-xs font-mono ${inv.facture_id ? 'link-record' : 'text-slate-700'}`}>{inv.number || '—'}</span>
                           <span className="text-xs text-slate-400">{fmtDate(inv.date)}</span>
-                          <span className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-medium ${inv.status === 'paid' ? 'bg-green-100 text-green-700' : inv.status === 'open' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>
-                            {inv.status === 'paid' ? 'Payée' : inv.status === 'open' ? 'Ouverte' : inv.status === 'draft' ? 'Brouillon' : inv.status}
-                          </span>
+                          <StatusBadge map={STRIPE_INVOICE_STATUS} status={inv.status} size="xs" />
                         </div>
                         <div className="flex items-center gap-3">
                           <span className="font-medium text-slate-700 text-sm">{inv.amount.toFixed(2)} {inv.currency}</span>
@@ -279,8 +257,8 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
     <RecordPeekDrawer
       open
       onClose={onClose}
-      title={abonnement.product_name || "Détails de l'abonnement"}
-      subtitle={aboState.company_name || abonnement.customer_email || undefined}
+      title={aboState.product_name || "Détails de l'abonnement"}
+      subtitle={aboState.company_name || aboState.customer_email || undefined}
       width={640}
       peekKey="abonnements"
     >

@@ -5,6 +5,7 @@ import { emitCompany } from './realtimeEmitters.js'
 import { getStripeKey } from './stripe.js'
 import { APP_URL } from '../config/appUrl.js'
 import { escapeHtml, escapeAttr } from '../utils/sanitizeHtml.js'
+import { currencyCustomerFor, saveCurrencyCustomer } from './stripeCustomerCompany.js'
 
 export function getStripeClient() {
   const sk = getStripeKey()
@@ -14,12 +15,23 @@ export function getStripeClient() {
 
 // Returns the existing stripe_customer_id for the company, or creates one
 // in Stripe (with name + email + erp_company_id metadata) and stores it.
-export async function ensureStripeCustomer(stripe, companyId) {
+export async function ensureStripeCustomer(stripe, companyId, { currency, forceAlt = false } = {}) {
   const co = db.prepare(
     'SELECT id, name, email, stripe_customer_id FROM companies WHERE id=?'
   ).get(companyId)
   if (!co) throw new Error('Entreprise introuvable')
-  if (co.stripe_customer_id) return co.stripe_customer_id
+  if (co.stripe_customer_id && !currency) return co.stripe_customer_id
+
+  if (co.stripe_customer_id && currency) {
+    // Client déjà lié à une autre devise (Stripe refuse de les combiner) :
+    // on passe au client de cette devise.
+    if (!forceAlt) {
+      const main = await stripe.customers.retrieve(co.stripe_customer_id).catch(() => null)
+      if (!main || main.deleted || !main.currency || main.currency === currency) return co.stripe_customer_id
+    }
+    const alt = currencyCustomerFor(companyId, currency)
+    if (alt) return alt
+  }
 
   // Try the primary contact's email if the company itself has none
   let email = co.email
@@ -35,6 +47,10 @@ export async function ensureStripeCustomer(stripe, companyId) {
     email: email || undefined,
     metadata: { erp_company_id: co.id },
   })
+  if (co.stripe_customer_id) {
+    saveCurrencyCustomer(companyId, currency, created.id)
+    return created.id
+  }
   db.prepare('UPDATE companies SET stripe_customer_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\') WHERE id=?')
     .run(created.id, companyId)
   emitCompany('updated', companyId, null)
@@ -125,6 +141,31 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
     tax_regime: pending.tax_regime,
   })
 
+  // Rabais : coupon Stripe à montant fixe (le calcul de l'ERP fait foi, même
+  // pour un %), créé une fois par facture et par montant. Taxes après rabais.
+  // Checkout n'accepte qu'un coupon : plusieurs rabais sont regroupés.
+  const { pendingInvoiceTotals, discountLabel } = await import('./invoiceDiscount.js')
+  const { discounts: discLines, discount_amount } = pendingInvoiceTotals(pending)
+  const offCents = Math.round(discount_amount * 100)
+  let discounts
+  if (offCents > 0) {
+    const key = `pending_invoice_coupon_${pending.id}_${offCents}`
+    let couponId = db.prepare("SELECT value FROM connector_config WHERE connector='stripe' AND key=?").get(key)?.value
+    if (!couponId) {
+      const coupon = await stripe.coupons.create({
+        amount_off: offCents, currency: 'cad', duration: 'once',
+        name: discLines.filter(d => d.amount > 0).map(discountLabel).join(' + ').slice(0, 40),
+        metadata: { erp_pending_invoice_id: pending.id },
+      })
+      couponId = coupon.id
+      db.prepare(`
+        INSERT INTO connector_config (connector, key, value) VALUES ('stripe', ?, ?)
+        ON CONFLICT(connector, key) DO UPDATE SET value=excluded.value
+      `).run(key, couponId)
+    }
+    discounts = [{ coupon: couponId }]
+  }
+
   const successUrl = successUrlOverride || `${baseAppUrl}/erp/customer/post-payment?session_id={CHECKOUT_SESSION_ID}`
   const cancelUrl = cancelUrlOverride || `${baseAppUrl}/erp/pay/${pending.id}?cancelled=1`
 
@@ -136,6 +177,7 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
     mode: 'payment',
     customer: customerId,
     line_items,
+    ...(discounts ? { discounts } : {}),
     success_url: successUrl,
     cancel_url: cancelUrl,
     expires_at: expiresAt,
@@ -151,7 +193,7 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
           ...(pending.tax_regime ? { erp_tax_regime: pending.tax_regime } : {}),
           ...(pending.tax_exempt_reason ? { erp_tax_exempt_reason: String(pending.tax_exempt_reason).slice(0, 500) } : {}),
         },
-        ...(pending.due_days ? { custom_fields: [{ name: 'Échéance', value: `${pending.due_days} jours` }] } : {}),
+        ...(pending.due_days != null ? { custom_fields: [{ name: 'Échéance', value: Number(pending.due_days) > 0 ? `${pending.due_days} jours` : 'Sur réception' }] } : {}),
       },
     },
     metadata: {

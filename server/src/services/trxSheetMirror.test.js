@@ -4,7 +4,7 @@
 // lit tous les jours.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { rowForTab, planTab, placeMissing, growthDescending, readsBack, monthFirstOf, blankRowFill, rowHeightFill, resolveComment, dataRowHeight, paintRuns, cellsToWrite, reviewCells, dataWidth, balanceCells, detectTabDirection, rowsForBalancePass, STATUS_FILL, dateShape, formatDateLike } from './trxSheetMirror.js'
+import { rowForTab, planTab, placeMissing, growthDescending, readsBack, monthFirstOf, blankRowFill, rowHeightFill, resolveComment, dataRowHeight, paintRuns, cellsToWrite, resolveReview, dataWidth, balanceCells, detectTabDirection, rowsForBalancePass, STATUS_FILL, dateShape, formatDateLike } from './trxSheetMirror.js'
 
 // Onglet BNC : Date | Description | Référence | Autres détails | … | Débit | Crédit | Solde
 const BNC = { date: 0, description: 1, reference: 2, details: 3, debit: 5, credit: 6, balance: 7 }
@@ -373,36 +373,34 @@ test('l’inverse n’arrive jamais : « Autorisée » ne redevient pas « En at
 })
 
 // ── La colonne « X » : la relecture de Michel ───────────────────────────────
-// Le classeur porte déjà cette colonne ; Boréal n'y pose et n'y retire qu'un X
-// isolé, et ne touche jamais à ce que quelqu'un y a écrit.
+// La marque se pose des deux côtés ; le côté qui s'écarte du dernier état commun
+// gagne, et Boréal ne retire jamais un X qu'il n'a pas vu retiré ailleurs.
 const BNC_X = { ...BNC, review: 9 }
 
-test('une ligne marquée reçoit son X dans la colonne du fichier', () => {
-  const paired = [{ rowIndex: 7, txn: { review_flag: 1 }, current: { review: '' } }]
-  assert.deepEqual(reviewCells(paired, BNC_X, 'BNC CAD'), [
-    { range: 'BNC CAD!J8', values: [['X']] },
-  ])
+test('X : une marque posée dans Boréal part au fichier', () => {
+  assert.deepEqual(resolveReview(1, '', ''), { value: 'X', toFile: true })
 })
 
-test('un X déjà présent n’est pas réécrit', () => {
-  const paired = [{ rowIndex: 7, txn: { review_flag: 1 }, current: { review: 'X' } }]
-  assert.deepEqual(reviewCells(paired, BNC_X, 'BNC CAD'), [])
+test('X : un X ajouté à la main dans le fichier entre dans Boréal, jamais effacé', () => {
+  assert.deepEqual(resolveReview(0, 'X', ''), { value: 'X', toErp: true })
+  assert.deepEqual(resolveReview(0, 'x', null), { value: 'X', toErp: true })
 })
 
-test('la marque retirée efface le X', () => {
-  const paired = [{ rowIndex: 7, txn: { review_flag: 0 }, current: { review: 'X' } }]
-  assert.deepEqual(reviewCells(paired, BNC_X, 'BNC CAD'), [
-    { range: 'BNC CAD!J8', values: [['']] },
-  ])
+test('X : retirée dans Boréal, la marque s’efface du fichier', () => {
+  assert.deepEqual(resolveReview(0, 'X', 'X'), { value: '', toFile: true })
 })
 
-test('une note écrite à la main dans la colonne n’est jamais effacée', () => {
-  const paired = [{ rowIndex: 7, txn: { review_flag: 0 }, current: { review: 'AL' } }]
-  assert.deepEqual(reviewCells(paired, BNC_X, 'BNC CAD'), [])
+test('X : effacé dans le fichier, la marque tombe dans Boréal', () => {
+  assert.deepEqual(resolveReview(1, '', 'X'), { value: '', toErp: true })
 })
 
-test('sans colonne X dans l’onglet, on n’écrit rien', () => {
-  assert.deepEqual(reviewCells([{ rowIndex: 7, txn: { review_flag: 1 } }], BNC, 'BNC CAD'), [])
+test('X : sans état commun connu, le X l’emporte des deux côtés', () => {
+  assert.deepEqual(resolveReview(1, '', null), { value: 'X', toFile: true })
+})
+
+test('X : une note écrite à la main dans la colonne n’est jamais touchée', () => {
+  assert.deepEqual(resolveReview(0, 'AL', 'X'), { skip: true })
+  assert.deepEqual(resolveReview(1, 'AL', null), { skip: true })
 })
 
 test('la colonne X ne compte pas dans la largeur des données', () => {

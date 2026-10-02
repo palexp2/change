@@ -14,6 +14,7 @@ import { ConfirmProvider } from './components/ConfirmProvider.jsx'
 import { UndoSendProvider } from './components/UndoSendProvider.jsx'
 import { TravauxQuickProvider } from './components/TravauxQuickPanel.jsx'
 import ServerOfflineOverlay from './components/ServerOfflineOverlay.jsx'
+import DatePickerHost from './components/DatePickerHost.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
 import RecordRoutePanel from './components/RecordRoutePanel.jsx'
 import { FeedbackFab } from './components/FeedbackFab.jsx'
@@ -71,6 +72,7 @@ import SaleReceipts from './pages/SaleReceipts.jsx'
 import JournalEntries from './pages/JournalEntries.jsx'
 import StockMovements from './pages/StockMovements.jsx'
 import Fournitures from './pages/Fournitures.jsx'
+import MarketingForms from './pages/MarketingForms.jsx'
 import RapprochementBancaire from './pages/RapprochementBancaire.jsx'
 import ReglesBancaires from './pages/ReglesBancaires.jsx'
 import QbReconcile from './pages/QbReconcile.jsx'
@@ -295,6 +297,7 @@ function AppRoutes() {
       <Route path="/journal-entries" element={<ProtectedRoute><JournalEntries /></ProtectedRoute>} />
       <Route path="/stock-movement" element={<ProtectedRoute><StockMovements /></ProtectedRoute>} />
       <Route path="/fournitures" element={<ProtectedRoute><Fournitures /></ProtectedRoute>} />
+      <Route path="/formulaires" element={<ProtectedRoute><MarketingForms /></ProtectedRoute>} />
       <Route path="/achats-fournitures" element={<Navigate to="/fournitures" replace />} />
       <Route path="/rapprochement" element={<ProtectedRoute><RapprochementBancaire /></ProtectedRoute>} />
       <Route path="/regles-bancaires" element={<ProtectedRoute><ReglesBancaires /></ProtectedRoute>} />
@@ -354,6 +357,7 @@ export default function App() {
                   <AppRoutes />
                 </TravauxQuickProvider>
                 <ServerOfflineOverlay />
+                <DatePickerHost />
               </UndoSendProvider>
             </ConfirmProvider>
           </ToastProvider>

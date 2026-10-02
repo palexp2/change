@@ -59,7 +59,7 @@ export default function Tickets() {
           data={tickets}
           loading={loading}
           peek={{
-            title: () => 'Billet',
+            title: row => row.cf_billet || 'Billet',
             to: row => `/tickets/${row.id}`,
             width: 720,
             render: (row, { close }) => <TicketDetail recordId={row.id} embedded onClose={close} />,

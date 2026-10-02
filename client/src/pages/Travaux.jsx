@@ -26,7 +26,7 @@ import {
   Play, Pause, Trash2, ChevronUp, ChevronsUp, Plus, Sparkles, Check, X, ListOrdered, Link2, CheckCircle2, AlertTriangle, RefreshCw, ChevronDown, Send,
   Hourglass, GripVertical, Plug, CircleStop, PauseCircle, PlayCircle,
   Lightbulb, MessageSquare, ChevronLeft, ChevronRight, CalendarDays, Paperclip,
-  Settings2, Square, Wand2, Star, FileText, RotateCw, Power, Settings, Cpu,
+  Settings2, Square, Wand2, Star, FileText, RotateCw, Power, Settings, Cpu, Github, Bot, Clock, Pencil, CloudUpload,
 } from 'lucide-react'
 import api from '../lib/api.js'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
@@ -40,7 +40,7 @@ import { ClaudeUsageStrip, modelLabel } from '../components/ClaudeUsage.jsx'
 import { PageLink, requestPage } from '../components/PageLink.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import Spinner from '../components/Spinner.jsx'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 // Briques partagées avec le panneau rapide (accessible depuis toute l'app) :
 // lecture temps réel de la file, pastille d'état, choix d'une question, réponse.
 // Une seule implémentation, deux points d'entrée — voir lib/travauxQueue.jsx.
@@ -2568,6 +2568,48 @@ function QueuePauseControl({ toast }) {
 }
 
 /** Taille de Boréal en lignes de code, à droite du titre. Silencieux en cas d'échec. */
+/**
+ * Sauvegarde du code sur GitHub : lien vers le dépôt, bouton « sauvegarder »
+ * (snapshot + push de main) et date du dernier push. Pastille ambre = des
+ * changements ne sont pas encore sur GitHub.
+ */
+function GithubBackup({ toast }) {
+  const [state, setState] = useState(null)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let alive = true
+    api.travaux.githubState().then(s => { if (alive) setState(s) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  const push = async () => {
+    setBusy(true)
+    try {
+      setState(await api.travaux.githubPush())
+      toast.success('Code sauvegardé sur GitHub')
+    } catch (e) { toast.error(e.message) }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="inline-flex items-center gap-2 text-slate-500">
+      <a href="https://github.com/palexp2/change" target="_blank" rel="noopener noreferrer"
+        title="GitHub" aria-label="GitHub" className="hover:text-slate-800">
+        <Github size={18} />
+      </a>
+      <button type="button" onClick={push} disabled={busy || state?.pushing}
+        className="relative hover:text-slate-800 disabled:opacity-50" data-testid="travaux-github-push"
+        title="Sauvegarder le code sur GitHub" aria-label="Sauvegarder le code sur GitHub">
+        {busy ? <Spinner size="sm" /> : <CloudUpload size={18} />}
+        {state?.pending && !busy && <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-amber-500" />}
+      </button>
+      {state?.last_push_at && (
+        <span className="text-xs tabular-nums" title="Dernier push" data-testid="travaux-github-last-push">
+          {fmtDateTime(state.last_push_at)}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function CodeLinesCounter() {
   const [stats, setStats] = useState(null)
   useEffect(() => {
@@ -2988,6 +3030,192 @@ function AgentSettingsControl({ toast }) {
   )
 }
 
+// ─── Onglet 5 : agents autonomes ──────────────────────────────────────────────
+//
+// Un agent = un nom, une mission en clair et des heures de réveil (Montréal).
+// À chaque réveil, le serveur dépose un passage dans la file (automation
+// sys_autonomous_agents) : l'historique se lit dans la file, comme le reste.
+
+const HOURS = Array.from({ length: 24 }, (_, h) => h)
+
+function HoursPicker({ value, onChange }) {
+  const [open, setOpen] = useState(false)
+  const box = useRef(null)
+  useEffect(() => {
+    if (!open) return
+    const onDown = e => { if (box.current && !box.current.contains(e.target)) setOpen(false) }
+    const onKey = e => { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
+  }, [open])
+  const toggle = h => onChange(value.includes(h) ? value.filter(x => x !== h) : [...value, h].sort((a, b) => a - b))
+  return (
+    <div className="relative shrink-0" ref={box}>
+      <button
+        type="button"
+        data-testid="agent-hours"
+        title="Heures de réveil"
+        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border ${value.length ? 'border-slate-200 text-slate-600' : 'border-amber-300 text-amber-700'} hover:bg-slate-50`}
+        onClick={() => setOpen(o => !o)}
+      >
+        <Clock size={12} /> {value.length ? value.map(h => `${h} h`).join(' · ') : '—'}
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-1 w-64 rounded-xl border border-slate-200 bg-white shadow-lg p-2 grid grid-cols-6 gap-1">
+          {HOURS.map(h => (
+            <button
+              key={h}
+              type="button"
+              data-testid={`agent-hour-${h}`}
+              className={`py-1 text-xs rounded-md tabular-nums ${value.includes(h) ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}
+              onClick={() => toggle(h)}
+            >
+              {h}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AgentCard({ a, autoFocus, onPatch, onDelete, onRun }) {
+  const { draft, edit, flush } = useRecordDraft(
+    { name: a.name || '', instructions: a.instructions || '' },
+    patch => onPatch(a.id, patch),
+    600,
+    sameTrimmed,
+  )
+  const nameRef = useRef(null)
+  const last = a.last_prompt_status ? { status: a.last_prompt_status } : null
+  return (
+    <div data-agent-id={a.id} className={`rounded-xl border border-slate-200 bg-white p-3 ${a.enabled ? '' : 'opacity-60'}`}>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          data-testid="agent-enabled"
+          aria-pressed={a.enabled}
+          title={a.enabled ? 'Actif' : 'En veille'}
+          className={`p-1 rounded-md ${a.enabled ? 'text-emerald-600' : 'text-slate-400'} hover:bg-slate-100`}
+          onClick={() => onPatch(a.id, { enabled: !a.enabled })}
+        >
+          <Power size={15} />
+        </button>
+        <label className="group flex-1 min-w-0 flex items-center gap-1.5 rounded-md border border-transparent px-1.5 py-0.5 hover:border-slate-200 focus-within:border-brand-300 focus-within:bg-white cursor-text" title="Renommer">
+          <input
+            ref={nameRef}
+            className="flex-1 min-w-0 bg-transparent text-sm font-semibold text-slate-800 focus:outline-none"
+            data-testid="agent-name"
+            aria-label="Nom de l'agent"
+            autoFocus={autoFocus}
+            onFocus={autoFocus ? e => e.target.select() : undefined}
+            value={draft.name}
+            onChange={e => edit('name', e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') nameRef.current?.blur() }}
+            onBlur={flush}
+          />
+          <Pencil size={12} className="shrink-0 text-slate-300 group-hover:text-slate-500 group-focus-within:hidden" />
+        </label>
+        <HoursPicker value={a.run_hours || []} onChange={hours => onPatch(a.id, { run_hours: hours })} />
+        <button
+          type="button"
+          data-testid="agent-run"
+          title="Lancer maintenant"
+          disabled={!a.instructions}
+          className="p-1 rounded-md text-slate-400 hover:text-brand-700 hover:bg-slate-100 disabled:opacity-40"
+          onClick={() => onRun(a.id)}
+        >
+          <Play size={15} />
+        </button>
+        <button
+          type="button"
+          data-testid="agent-delete"
+          title="Supprimer"
+          className="p-1 rounded-md text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+          onClick={() => onDelete(a)}
+        >
+          <Trash2 size={15} />
+        </button>
+      </div>
+      <div className="mt-2 rounded-lg border border-slate-100 bg-slate-50/60 px-2.5 py-1.5">
+        <AutoGrowNote
+          className="text-sm text-slate-700 min-h-[2.5rem]"
+          data-testid="agent-instructions"
+          aria-label="Mission"
+          value={draft.instructions}
+          onChange={e => edit('instructions', e.target.value)}
+          onBlur={flush}
+        />
+      </div>
+      {a.last_run_at && (
+        <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-400" data-testid="agent-last-run">
+          {shortDate(a.last_run_at)}
+          {last && <StatusPill p={last} />}
+          <span>· {a.run_count}</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AgentsTab({ toast }) {
+  const [agents, setAgents] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [fresh, setFresh] = useState(null)
+
+  const load = useCallback(async () => {
+    try { setAgents((await api.travaux.listAgents()).agents) }
+    catch (e) { toast.error(e.message) }
+    finally { setLoading(false) }
+  }, [toast])
+  useEffect(() => { load() }, [load])
+  useEffect(() => {
+    const onEvt = () => load()
+    window.addEventListener('travaux:agents:updated', onEvt)
+    return () => window.removeEventListener('travaux:agents:updated', onEvt)
+  }, [load])
+
+  const add = async () => {
+    try {
+      const a = await api.travaux.createAgent({ name: 'Nouvel agent' })
+      setFresh(a.id)
+      setAgents(prev => [...prev, a])
+    } catch (e) { toast.error(e.message) }
+  }
+  const patch = async (id, p) => {
+    try {
+      const row = await api.travaux.updateAgent(id, p)
+      setAgents(prev => prev.map(x => x.id === id ? row : x))
+      return row
+    } catch (e) { toast.error(e.message); load() }
+  }
+  const remove = async (a) => {
+    if (!window.confirm(`Supprimer « ${a.name || 'cet agent'} » ?`)) return
+    setAgents(prev => prev.filter(x => x.id !== a.id))
+    try { await api.travaux.deleteAgent(a.id) } catch (e) { toast.error(e.message); load() }
+  }
+  const run = async (id) => {
+    try {
+      const out = await api.travaux.runAgent(id)
+      if (out?.agent) setAgents(prev => prev.map(x => x.id === id ? out.agent : x))
+      toast.success('Ajouté à la file')
+    } catch (e) { toast.error(e.message) }
+  }
+
+  if (loading) return <Spinner size="xs" />
+  return (
+    <div className="max-w-3xl space-y-3" data-testid="agents-tab">
+      {agents.map(a => (
+        <AgentCard key={a.id} a={a} autoFocus={a.id === fresh} onPatch={patch} onDelete={remove} onRun={run} />
+      ))}
+      <button className={btnCls} data-testid="agent-new" onClick={add}>
+        <Plus size={14} /> Agent
+      </button>
+    </div>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 const TABS = [
@@ -2995,6 +3223,7 @@ const TABS = [
   { key: 'suggestions', label: 'Suggestions de Claude', icon: Sparkles },
   { key: 'idees', label: 'De côté & idées', icon: Lightbulb },
   { key: 'recurrents', label: 'Travaux récurrents', icon: RefreshCw },
+  { key: 'agents', label: 'Agents autonomes', icon: Bot },
 ]
 // L'onglet des idées héberge aussi les items mis de côté : « ?onglet=de-cote » y
 // mène. Les liens existants (?onglet=idees) restent valides — une clé d'URL déjà
@@ -3031,6 +3260,7 @@ export default function Travaux({ space = 'finance' }) {
           <div className="inline-flex items-center gap-5">
             <CpuUsage />
             <CodeLinesCounter />
+            <GithubBackup toast={toast} />
           </div>
         </div>
 
@@ -3066,6 +3296,7 @@ export default function Travaux({ space = 'finance' }) {
         {tab === 'suggestions' && <SuggestionsTab toast={toast} space={space} />}
         {tab === 'idees' && <IdeasTab toast={toast} space={space} />}
         {tab === 'recurrents' && <RecurringTab toast={toast} />}
+        {tab === 'agents' && <AgentsTab toast={toast} />}
       </div>
     </Layout>
   )

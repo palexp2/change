@@ -9,14 +9,14 @@ import { ensureSoumissionSystemBuilder, AUTOMATION_ID as SOUMISSION_BUILDER_ID }
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { recordEvent, classifyChange } from '../services/subscriptionEvents.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
-import { linkFactureToProject } from '../services/stripeProjectLink.js'
+import { autoLinkStripeFacture } from '../services/stripeProjectLink.js'
 import {
   extractItemsFromStripeSub,
   getCurrentItemsSnapshot,
   setCurrentItemsSnapshot,
 } from '../services/subscriptionItemsSnapshot.js'
 import { computeMonthlyNet } from '../services/subscriptionMonthly.js'
-import { recomputeFactureBalance } from '../services/factureBalance.js'
+import { recomputeFactureBalance, openFactureStatus } from '../services/factureBalance.js'
 import { emitFacture, emitFacturePaymentsChanged, emitSubscription } from '../services/realtimeEmitters.js'
 import { resolveStripeInvoiceFields, applyStripeCustomFieldColumns } from '../services/stripeFactureFieldMap.js'
 import { resolveStripeSubscriptionFields } from '../services/stripeSubscriptionFieldMap.js'
@@ -194,8 +194,9 @@ async function handleSubscriptionWebhook(event) {
   }
 }
 
-function mapStripeInvoiceStatus(s) {
-  const m = { paid: 'Payé', open: 'À payer', void: 'Void', uncollectible: 'Uncollectible', draft: 'Draft' }
+function mapStripeInvoiceStatus(s, dueDate) {
+  if (s === 'open') return openFactureStatus(dueDate)
+  const m = { paid: 'Payé', void: 'Void', uncollectible: 'Uncollectible', draft: 'Draft' }
   return m[s] || s
 }
 
@@ -214,7 +215,7 @@ async function upsertFactureFromStripeInvoice(invoice) {
   const currency = (invoice.currency || 'cad').toUpperCase()
   const invoiceDate = resolved.document_date
   const dueDate = resolved.due_date
-  const status = mapStripeInvoiceStatus(invoice.status)
+  const status = mapStripeInvoiceStatus(invoice.status, dueDate)
 
   // Encaissement : on capture date / charge / payment_intent / montant du Stripe
   // invoice si celui-ci est marqué payé. Si le statut bascule autre que 'paid'
@@ -305,8 +306,8 @@ async function upsertFactureFromStripeInvoice(invoice) {
 
   // Champs personnalisés mappés via la modale « Mapping Stripe »
   applyStripeCustomFieldColumns(factureId, invoice)
-  // Payée depuis le PDF d'une soumission → projet de la soumission.
-  linkFactureToProject(factureId, invoice)
+  // Entreprise et projet : soumission payée, abonnement, courriel, nom…
+  const linked = autoLinkStripeFacture(factureId, invoice)
 
   if (!pdfAlreadyDownloaded && invoice.invoice_pdf) {
     const pdfT0 = Date.now()
@@ -335,7 +336,7 @@ async function upsertFactureFromStripeInvoice(invoice) {
   // l'origine est un webhook, pas un utilisateur connecté.
   emitFacture(action, factureId, null)
 
-  return { id: factureId, action, kind }
+  return { id: factureId, action, kind, linked }
 }
 
 // (Plus de fonction recordStripeInvoicePayment ici : avec le pattern simple, le
@@ -767,6 +768,9 @@ async function handleWebhook(req, res) {
     ]
     if (factureInfo) {
       resultLines.push(`Facture ${factureInfo.action} : ${factureInfo.id}`, `${appUrl}/erp/factures/${factureInfo.id}`)
+      const { company, project } = factureInfo.linked || {}
+      if (company) resultLines.push(`Entreprise rattachée (${company.how}) : ${company.id}`)
+      if (project) resultLines.push(`Projet rattaché (${project.how}) : ${project.id}`)
     }
     logSystemRun('sys_stripe_invoice_paid', {
       status: 'success',

@@ -48,10 +48,6 @@ export function closedYearsFiltered(findings, config = auditConfig()) {
   })
 }
 
-export function checkById(id) {
-  return CHECKS.find((c) => c.id === id) || null
-}
-
 export function auditConfig() {
   const row = db.prepare('SELECT action_config FROM automations WHERE id=?').get(AUDIT_AUTOMATION_ID)
   try { return JSON.parse(row?.action_config || '{}') } catch { return {} }

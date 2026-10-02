@@ -226,8 +226,6 @@ export async function undoProposal(id, userId) {
   return getProposal(id)
 }
 
-export const UNDOABLE_KINDS = Object.keys(UNDOERS)
-
 function accountOf(txnId) {
   return db.prepare('SELECT account_id FROM bank_transactions WHERE id=?').get(txnId)?.account_id
 }

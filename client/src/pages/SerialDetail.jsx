@@ -1,7 +1,6 @@
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import { History } from 'lucide-react'
 import api from '../lib/api.js'
-import { Badge } from '../components/Badge.jsx'
 import { CentralControllerPermissions } from '../components/CentralControllerPermissions.jsx'
 import { fmtDate } from '../lib/formatDate.js'
 import { fmtCad } from '../utils/formatters.js'
@@ -11,6 +10,9 @@ import { useAutosave } from '../lib/useAutosave.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
+import SearchableSelect from '../components/SearchableSelect.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { parseSelectChoices, colorForChoice, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 
 // Colonnes rendues AILLEURS que dans la carte — le n° de série est le titre du
 // panneau, le produit son sous-titre — ou seulement quand elles sont remplies
@@ -40,11 +42,24 @@ export default function SerialDetail({ recordId: id }) {
     if (msg.type === 'serial_number:updated') setSerial(s => (s ? { ...s, ...msg.payload } : s))
   })
 
-  // Le produit se lie et se délie depuis la fiche (autosave) : c'est la seule
-  // colonne que la route PATCH des numéros de série accepte.
+  // Le produit et le statut se modifient depuis la fiche (autosave) : ce sont
+  // les seules colonnes que la route PATCH des numéros de série accepte.
   const { save, savingKeys } = useAutosave(serial, p => api.serials.update(id, p), {
     onSaved: (updated) => setSerial(s => ({ ...s, ...updated })),
   })
+
+  // Choix du statut : ceux du champ « Statut » (/champs/serial_numbers), pour
+  // qu'un choix ajouté là-bas apparaisse ici sans retouche.
+  const { fields: cf } = useCustomFields('serial_numbers')
+  const statusChoices = useMemo(() => parseSelectChoices(cf.find(f => f.column_name === 'status')), [cf])
+  const statusOptions = useMemo(() => {
+    const opts = statusChoices.map(c => ({ value: c.label ?? c.id, label: c.label ?? c.id }))
+    // Valeur hors liste (ancien choix Airtable) : gardée sélectionnable.
+    if (serial?.status && !opts.some(o => o.value === serial.status)) opts.push({ value: serial.status, label: serial.status })
+    return opts
+  }, [statusChoices, serial?.status])
+  // Mêmes pastilles colorées que la colonne « Statut » du tableau.
+  const statusPill = o => <ChoiceBadge color={colorForChoice(statusChoices, o.label)} className="single-select-label">{o.label}</ChoiceBadge>
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: serial, notFound: 'Numéro de série introuvable.' })
   if (pending) return pending
@@ -52,7 +67,7 @@ export default function SerialDetail({ recordId: id }) {
   return (
       <DetailShell
         header={{
-          badge: serial.status && <Badge color="blue">{serial.status}</Badge>,
+          badge: serial.status && statusPill({ label: serial.status }),
           meta: (
             <>
               <LinkedRecordField
@@ -78,6 +93,7 @@ export default function SerialDetail({ recordId: id }) {
           taken={TAKEN_ELSEWHERE}
           className="card p-5"
           testId="serial-fields"
+          selectPills
         >
           <DetailField id="company_name" label="Entreprise">
             <Val>
@@ -93,7 +109,19 @@ export default function SerialDetail({ recordId: id }) {
                 : null}
             </Val>
           </DetailField>
-          <DetailField id="status" label="Statut"><Val>{serial.status}</Val></DetailField>
+          <DetailField id="status" label="Statut" saving={!!savingKeys.status}>
+            <SearchableSelect
+              value={serial.status || ''}
+              options={statusOptions}
+              emptyOption="—"
+              onChange={v => save('status', v)}
+              className="input text-sm w-full"
+              size="sm"
+              disabled={!!savingKeys.status}
+              renderValue={statusPill}
+              renderOption={statusPill}
+            />
+          </DetailField>
           <DetailField id="address" label="Adresse"><Val>{serial.address}</Val></DetailField>
           <DetailField id="manufacture_value" label="Valeur fabrication"><Val>{fmtCad(serial.manufacture_value)}</Val></DetailField>
           <DetailField id="manufacture_date" label="Date fabrication"><Val>{fmtDate(serial.manufacture_date)}</Val></DetailField>
@@ -127,9 +155,9 @@ export default function SerialDetail({ recordId: id }) {
                   <div className="absolute -left-1.5 w-3 h-3 bg-brand-500 rounded-full mt-1.5 border-2 border-white" />
                   <div className="text-xs text-slate-400">{fmtDate(h.changed_at || h.created_at)}</div>
                   <div className="text-sm text-slate-900 mt-0.5">
-                    {h.previous_status ? <Badge color="slate">{h.previous_status}</Badge> : <span className="text-slate-400">—</span>}
+                    {h.previous_status ? statusPill({ label: h.previous_status }) : <span className="text-slate-400">—</span>}
                     <span className="mx-2 text-slate-400">→</span>
-                    {h.new_status ? <Badge color="blue">{h.new_status}</Badge> : <span className="text-slate-400">—</span>}
+                    {h.new_status ? statusPill({ label: h.new_status }) : <span className="text-slate-400">—</span>}
                   </div>
                 </li>
               ))}

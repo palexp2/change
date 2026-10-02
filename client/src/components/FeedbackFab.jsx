@@ -91,6 +91,32 @@ export function FeedbackFab({ contextRecord = '' }) {
     onCancel: () => { setPicking(false); if (fromFormRef.current) setOpen(true) },
   })
 
+  // Les modales, menus et panneaux déjà ouverts restent ouverts : la demande
+  // vise souvent un élément DANS l'un d'eux, qu'il faut pouvoir cibler. Leurs
+  // détections « clic à l'extérieur » écoutent mousedown/pointerdown sur
+  // document : on arrête ces événements dès window (capture) quand ils viennent
+  // du FAB, du bandeau de ciblage ou de cette fenêtre — le click, lui, passe
+  // (les onClick React restent intacts). Échap ne ferme que cette fenêtre, et
+  // Tab n'est plus rattrapé par le piège à focus d'une modale de dessous.
+  useEffect(() => {
+    const inFab = t => t instanceof Element && (
+      t.closest('[data-feedback-picker]') ||
+      (open && textareaRef.current?.closest('[role="dialog"]')?.contains(t)))
+    function onDown(e) { if (inFab(e.target)) e.stopPropagation() }
+    function onKey(e) {
+      if (!open) return
+      if (e.key === 'Escape') { e.stopPropagation(); close() }
+      else if (e.key === 'Tab' && inFab(e.target)) e.stopPropagation()
+    }
+    const downs = ['mousedown', 'pointerdown', 'touchstart']
+    downs.forEach(t => window.addEventListener(t, onDown, true))
+    window.addEventListener('keydown', onKey, true)
+    return () => {
+      downs.forEach(t => window.removeEventListener(t, onDown, true))
+      window.removeEventListener('keydown', onKey, true)
+    }
+  })
+
   // Touche « M » : ouvre la fenêtre. Mêmes garde-fous que les raccourcis de
   // navigation (Layout) : pas pendant une saisie, un scan ou avec modificateur.
   // Décidé après la distribution de l'événement : si un autre écouteur l'a déjà
@@ -331,6 +357,11 @@ export function FeedbackFab({ contextRecord = '' }) {
             autoFocus
             spellCheck
             lang="fr"
+            // Grammarly coupé ici seulement (demande de P.-A. Papillon) :
+            // il reste actif partout ailleurs dans l'app.
+            data-gramm="false"
+            data-gramm_editor="false"
+            data-enable-grammarly="false"
             className="input w-full resize-y"
           />
           {autocorrect.corrected && (

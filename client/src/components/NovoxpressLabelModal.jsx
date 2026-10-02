@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { fmtMoney } from '../utils/formatters.js'
-import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope, Truck } from 'lucide-react'
+import { ChevronRight, CheckCircle, Download, AlertTriangle, RefreshCw, Stethoscope } from 'lucide-react'
 import api from '../lib/api.js'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
-import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails } from './novoxpressShared.jsx'
+import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, UpsRateComparison } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import ThinkingOrb from './ThinkingOrb'
 
@@ -33,9 +33,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
   // Comparaison avec les tarifs UPS directs (hors Novoxpress). Lecture seule :
   // l'achat d'étiquette sortante passe toujours par Novoxpress ; UPS sert ici
   // à savoir si le tarif Novoxpress est concurrentiel.
-  const [ups, setUps] = useState(null) // { rates, customs, environment }
-  const [upsLoading, setUpsLoading] = useState(false)
-  const [upsError, setUpsError] = useState('')
 
   // Le transporteur imprime « NA » à la place du nom quand aucune personne n'est
   // rattachée à l'adresse : on bloque l'achat plutôt que de sortir une étiquette
@@ -102,8 +99,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
     setError('')
     setErrorDetails(null)
     setDiagnostic(null)
-    setUps(null)
-    setUpsError('')
     setLoading(true)
     setStep('rates')
     const sentPayload = {
@@ -202,73 +197,6 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
     } finally {
       setRetrying(false)
     }
-  }
-
-  async function handleCompareUps() {
-    setUpsLoading(true); setUpsError(''); setUps(null)
-    try {
-      const res = await api.ups.shipmentRates(envoi.id, { packages: buildPackages() })
-      setUps(res)
-    } catch (e) {
-      // Message brut de l'API UPS — jamais un échec silencieux.
-      setUpsError(e.message)
-    } finally {
-      setUpsLoading(false)
-    }
-  }
-
-  // Rendue par appel de fonction (pas <UpsComparison />) pour ne pas recréer un
-  // type de composant à chaque rendu du modal.
-  function renderUpsComparison() {
-    return (
-      <div className="border-t border-slate-100 pt-3 space-y-2" data-testid="ups-rate-comparison">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5"><Truck size={14} className="text-amber-700" /> Tarifs UPS (direct)</p>
-          <button onClick={handleCompareUps} disabled={upsLoading} className="btn-secondary btn-sm text-xs" data-testid="ups-compare-rates">
-            {upsLoading ? 'Interrogation…' : ups ? 'Rafraîchir' : 'Comparer avec UPS'}
-          </button>
-        </div>
-        {upsError && (
-          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 whitespace-pre-wrap break-words" data-testid="ups-rate-error">{upsError}</p>
-        )}
-        {ups?.rates?.length > 0 && (
-          <>
-            {ups.environment !== 'production' && (
-              <p className="text-[11px] text-amber-700">Environnement CIE (test) — tarifs indicatifs.</p>
-            )}
-            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {ups.rates.map(r => (
-                <div key={r.service_id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 text-sm">
-                  <div>
-                    <p className="font-medium text-slate-800">{r.service_name}</p>
-                    <p className="text-xs text-slate-400">
-                      UPS{r.negotiated ? ' · tarif négocié' : ''}{r.total_transit_day ? ` · ${r.total_transit_day} jour(s)` : ''}
-                    </p>
-                  </div>
-                  <span className="font-semibold text-slate-700 whitespace-nowrap">{fmtPrice(r)}</span>
-                </div>
-              ))}
-            </div>
-            <p className="text-[11px] text-slate-400">
-              Comparaison seulement — l'achat d'étiquette sortante passe par Novoxpress.
-            </p>
-          </>
-        )}
-        {ups?.customs?.length > 0 && (
-          <details className="text-xs text-slate-500">
-            <summary className="cursor-pointer select-none">Déclaration douanière (envoi hors Canada)</summary>
-            <ul className="mt-1 space-y-0.5">
-              {ups.customs.map((c, i) => (
-                <li key={i}>{c.qty} × {c.description} — {Number(c.unit_value).toFixed(2)} $ · origine {c.origin_country} · SH {c.hs_code}</li>
-              ))}
-            </ul>
-          </details>
-        )}
-        {ups && !ups.rates?.length && !upsError && (
-          <p className="text-xs text-slate-400">UPS n'a retourné aucun tarif pour cet envoi.</p>
-        )}
-      </div>
-    )
   }
 
   // ── Step: package ──
@@ -425,7 +353,7 @@ export default function NovoxpressLabelModal({ envoi, orderItemsTotalWeight, ind
               </button>
             ))}
           </div>
-          {renderUpsComparison()}
+          <UpsRateComparison outbound fetchRates={() => api.ups.shipmentRates(envoi.id, { packages: buildPackages() })} />
           <button onClick={() => setStep('package')} className="btn-secondary text-sm">← Retour</button>
         </>
       )}

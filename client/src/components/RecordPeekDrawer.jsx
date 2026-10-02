@@ -5,10 +5,12 @@ import { X, SlidersHorizontal, ChevronUp, ChevronDown } from 'lucide-react'
 import api from '../lib/api.js'
 import { hasOpenModal } from './Modal.jsx'
 import { OVERLAY_BASE, registerOverlay } from '../lib/overlayLayers.js'
-import { PeekFieldEditProvider } from '../lib/detailFieldLayout.jsx'
+import { PeekFieldEditProvider, useDetailHeaderConfig } from '../lib/detailFieldLayout.jsx'
+import PeekHeaderEditor, { headerFieldText } from './PeekHeaderEditor.jsx'
 import { PeekFooterProvider } from './PeekFooter.jsx'
 import { PEEK_ROUTES, matchPeekRoute } from '../lib/recordPeekRoutes.jsx'
 import Spinner from './Spinner.jsx'
+import RecordRevisionHistory, { revisionTarget } from './RecordRevisionHistory.jsx'
 
 // Drawer latéral (side-peek à la Airtable) : ouvre l'aperçu/édition d'un
 // enregistrement par-dessus la liste, sans quitter le contexte de la table.
@@ -62,7 +64,9 @@ import Spinner from './Spinner.jsx'
 //
 // Mode édition des champs : si la fiche embarquée rend une carte
 // <DetailFieldGrid>, l'en-tête affiche un bouton « Personnaliser les champs »
-// qui bascule la carte en mode édition (réordonner / retirer / ajouter).
+// qui bascule la carte en mode édition (réordonner / retirer / ajouter). Le
+// même mode règle le bandeau : titre et sous-titre pris parmi les champs de la
+// carte (qui publie champs + record via `publishHeader`), réglage partagé.
 
 const MIN_WIDTH = 360
 // Durée de l'animation de fermeture, alignée sur `.animate-slide-out-right`
@@ -205,10 +209,24 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
     setEditableFields(n => n + 1)
     return () => setEditableFields(n => n - 1)
   }, [])
+  // Source du bandeau : la PREMIÈRE carte de champs qui se publie (une fiche
+  // peut en contenir d'autres, plus bas, qui ne décident pas du titre).
+  const [headerSrc, setHeaderSrc] = useState(null) // { token, entityType, fields, record }
+  const publishHeader = useCallback((token, src) => {
+    setHeaderSrc(cur => {
+      if (src) return !cur || cur.token === token ? { token, ...src } : cur
+      return cur?.token === token ? null : cur
+    })
+  }, [])
   const fieldEditCtx = useMemo(
-    () => ({ editing: editingFields, setEditing: setEditingFields, register: registerFieldGrid }),
-    [editingFields, registerFieldGrid],
+    () => ({ editing: editingFields, setEditing: setEditingFields, register: registerFieldGrid, publishHeader }),
+    [editingFields, registerFieldGrid, publishHeader],
   )
+  const { header, setHeader } = useDetailHeaderConfig(headerSrc?.entityType || null)
+  const shownTitle = (header?.title && headerSrc && headerFieldText(headerSrc.record, header.title, headerSrc.fields)) || title
+  const shownSubtitle = header?.subtitle && headerSrc
+    ? header.subtitle.map(k => headerFieldText(headerSrc.record, k, headerSrc.fields)).filter(Boolean).join(' · ')
+    : subtitle
   // Une nouvelle ouverture repart en lecture, jamais en mode édition.
   useEffect(() => { if (!open) setEditingFields(false) }, [open])
 
@@ -427,6 +445,8 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
     document.addEventListener('touchend', onUp)
   }, [persistWidth, minWidth])
 
+  const revTarget = useMemo(() => revisionTarget(to), [to])
+
   if (!open) return null
 
   return createPortal(
@@ -468,8 +488,11 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
         <div className="flex items-center gap-1.5 px-6 py-4 border-b border-slate-200 bg-white flex-shrink-0">
           <div className="flex-1 min-w-0">
             {/* Titre à la Airtable : gros et gras, c'est le nom de l'enregistrement. */}
-            <div className="text-xl font-bold text-slate-900 truncate leading-tight" data-testid="record-peek-title">{title}</div>
-            {subtitle && <div className="text-xs text-slate-400 truncate">{subtitle}</div>}
+            <div className="text-xl font-bold text-slate-900 truncate leading-tight" data-testid="record-peek-title">{shownTitle}</div>
+            {shownSubtitle && <div className="text-xs text-slate-400 truncate" data-testid="record-peek-subtitle">{shownSubtitle}</div>}
+            {editingFields && editableFields > 0 && headerSrc && (
+              <PeekHeaderEditor fields={headerSrc.fields} header={header} onChange={setHeader} />
+            )}
           </div>
           {editableFields > 0 && (
             <button
@@ -536,6 +559,8 @@ export default function RecordPeekDrawer({ open, onClose, title, subtitle, to, s
         {/* Bande d'action de la fiche (<PeekFooter>) : hors du corps scrollable,
             donc toujours visible en bas du panneau. Vide, elle ne prend rien. */}
         <div ref={setFooterEl} className="flex-shrink-0 empty:hidden" data-testid="record-peek-footer" />
+        {/* Historique des révisions : barre au bas du panneau, se déplie vers le haut. */}
+        {revTarget && <RecordRevisionHistory table={revTarget.table} id={revTarget.id} />}
       </div>
       {/* Panneaux ouverts depuis celui-ci. Rendus hors du corps : leurs propres
           liens sont interceptés par LEUR panneau, pas par celui-ci (les events

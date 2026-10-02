@@ -33,19 +33,6 @@ export function parseNonNegativeInt(value) {
   return n !== null && n >= 0 ? n : null
 }
 
-// Nombre fini >= 0, décimales autorisées (coûts, prix). Refuse NaN, Infinity,
-// négatifs, '', "abc".
-export function parseNonNegativeNumber(value) {
-  let n
-  if (typeof value === 'number') n = value
-  else if (typeof value === 'string') {
-    const t = value.trim()
-    if (t === '') return null
-    n = Number(t)
-  } else return null
-  return Number.isFinite(n) && n >= 0 ? n : null
-}
-
 // Nombre fini quelconque (positif, négatif ou zéro), décimales autorisées.
 // Refuse NaN, Infinity, '', null, undefined, "abc". Sert de base aux validations
 // bornées (probabilité 0-100, montants >= 0, etc.).

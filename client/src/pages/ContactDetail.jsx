@@ -1,8 +1,9 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
-import { Plus, Save, Star, X, CheckSquare, Trash2 } from 'lucide-react'
+import { Plus, Save, Star, X, CheckSquare, Trash2, Mail } from 'lucide-react'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import EmailAttachments from '../components/EmailAttachments.jsx'
 import LogInteractionModal from '../components/LogInteractionModal.jsx'
+import CrmEmailComposer from '../components/CrmEmailComposer.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import { CrmDetailLayout, CrmCard, CrmRow, CrmAdd, CrmCenterTabs, scrollCrmToTop } from '../components/CrmDetailLayout.jsx'
 import api from '../lib/api.js'
@@ -432,6 +433,7 @@ export default function ContactDetail({ recordId, onClose }) {
   const [taskForm, setTaskForm] = useState({ title: '', status: 'À faire', priority: 'Normal', due_date: '', assigned_to: '', notes: '' })
   const [savingTask, setSavingTask] = useState(false)
   const [showLogModal, setShowLogModal] = useState(false)
+  const [showEmail, setShowEmail] = useState(false)
   // Colonne du centre : le fil des événements, ou le tableau des tâches ouvert
   // depuis la carte de droite.
   const [centerView, setCenterView] = useState('fil')
@@ -643,9 +645,14 @@ export default function ContactDetail({ recordId, onClose }) {
                   onSelect={setCenterView}
                 />
                 {centerView === 'fil' && (
-                  <button onClick={() => setShowLogModal(true)} className="btn-secondary btn-sm" data-testid="log-interaction">
-                    <Plus size={14} /> Consigner
-                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <button onClick={() => setShowEmail(true)} className="btn-secondary btn-sm" title="Courriel" aria-label="Courriel" data-testid="compose-email">
+                      <Mail size={14} />
+                    </button>
+                    <button onClick={() => setShowLogModal(true)} className="btn-secondary btn-sm" data-testid="log-interaction">
+                      <Plus size={14} /> Consigner
+                    </button>
+                  </div>
                 )}
               </div>
               {centerView === 'tâches' ? (
@@ -729,6 +736,15 @@ export default function ContactDetail({ recordId, onClose }) {
           onSaved={reloadInteractions}
         />
       )}
+
+      <CrmEmailComposer
+        isOpen={showEmail}
+        onClose={() => setShowEmail(false)}
+        contacts={[contact]}
+        contactId={id}
+        companyId={(contact.companies || []).find(c => c.is_primary)?.company_id || (contact.companies || [])[0]?.company_id}
+        onSent={reloadInteractions}
+      />
 
       {showTaskModal && (
         <TaskModalContent

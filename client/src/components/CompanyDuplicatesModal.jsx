@@ -6,6 +6,7 @@ import { Modal } from './Modal.jsx'
 import { Badge, phaseBadgeColor } from './Badge.jsx'
 import Spinner from './Spinner.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
+import { SearchableSelect } from './SearchableSelect.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 
 // Outil « Doublons » de la liste des entreprises : groupes suspects (nom
@@ -25,7 +26,7 @@ function Counts({ counts }) {
   )
 }
 
-function Group({ group, onDone }) {
+function Group({ group, onDone, manual = false }) {
   const [keep, setKeep] = useState(group.members[0].id)
   const [preview, setPreview] = useState(null)
   const [pick, setPick] = useState({})
@@ -48,7 +49,7 @@ function Group({ group, onDone }) {
     try {
       await api.companies.merge({ keep_id: keep, drop_ids: drops, pick })
       addToast({ type: 'success', message: 'Fusionné', duration: 2500 })
-      onDone(group.key)
+      onDone(group.key, keep)
     } catch (e) { setError(e.message); setBusy(false) }
   }
 
@@ -60,9 +61,9 @@ function Group({ group, onDone }) {
 
   return (
     <div className="card p-3" data-testid="company-dup-group">
-      <div className="flex items-center gap-1 mb-2">
+      {group.reasons.length > 0 && <div className="flex items-center gap-1 mb-2">
         {group.reasons.map(r => <Badge key={r} color="gray">{REASON[r] || r}</Badge>)}
-      </div>
+      </div>}
       <div className="space-y-1">
         {group.members.map(m => (
           <label key={m.id} className="flex items-center gap-2 text-sm cursor-pointer">
@@ -110,9 +111,11 @@ function Group({ group, onDone }) {
           </>
         ) : (
           <>
-            <button className="btn-ghost btn-sm" disabled={busy} onClick={dismiss}>
-              <X size={14} /> Pas un doublon
-            </button>
+            {!manual && (
+              <button className="btn-ghost btn-sm" disabled={busy} onClick={dismiss}>
+                <X size={14} /> Pas un doublon
+              </button>
+            )}
             <button className="btn-primary btn-sm" disabled={busy} onClick={openPreview} data-testid="company-dup-merge">
               <Merge size={14} /> Fusionner
             </button>
@@ -149,6 +152,48 @@ export function CompanyDuplicatesModal({ isOpen, onClose, onMerged }) {
           {groups.map(g => <Group key={g.key} group={g} onDone={done} />)}
         </div>
       )}
+    </Modal>
+  )
+}
+
+// Fusion lancée depuis la fiche entreprise : on choisit l'autre fiche, puis même
+// écran que l'outil « Doublons ». onMerged(id de la fiche gardée).
+export function CompanyMergeModal({ isOpen, onClose, company, onMerged }) {
+  const [companies, setCompanies] = useState([])
+  const [otherId, setOtherId] = useState(null)
+
+  useEffect(() => {
+    if (!isOpen) return
+    setOtherId(null)
+    api.companies.lookup().then(setCompanies).catch(() => setCompanies([]))
+  }, [isOpen])
+
+  const options = companies.filter(c => c.id !== company?.id)
+  const other = options.find(c => c.id === otherId)
+  const group = company && other && {
+    key: `${company.id}:${other.id}`,
+    reasons: [],
+    members: [
+      { id: company.id, name: company.name, lifecycle_phase: company.lifecycle_phase, city: company.city, province: company.province, counts: {} },
+      { id: other.id, name: other.name, counts: {} },
+    ],
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} size="lg" title="Fusionner">
+      <div className="space-y-3">
+        <SearchableSelect
+          value={otherId}
+          options={options}
+          onChange={setOtherId}
+          getOptionValue={c => c.id}
+          getOptionLabel={c => c.name || '—'}
+          className="input-field text-sm w-full"
+          size="sm"
+          testId="company-merge-target"
+        />
+        {group && <Group key={group.key} group={group} manual onDone={(_, keep) => onMerged?.(keep)} />}
+      </div>
     </Modal>
   )
 }

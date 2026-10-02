@@ -16,8 +16,3 @@ export function mainQbAccount(account) {
   return String(raw).split(',')[0].trim() || null
 }
 
-export function allQbAccounts(account) {
-  const raw = typeof account === 'string' ? account : account?.qb_account_id
-  if (!raw) return []
-  return String(raw).split(',').map((s) => s.trim()).filter(Boolean)
-}

@@ -197,7 +197,7 @@ const RULES = [
   { fr: 'Capteur de climat extérieur', en: 'Outdoor Climate Sensor',
     keys: ['outdoor climate sensor', 'capteur de la climat extérieur', 'capteur de climat extérieur',
       'option capteur de climat avancé', 'outside temperature and humidity probe'] },
-  { fr: 'Capteur de sol', en: 'Soil sensor', keys: ['capteur de sol', 'soil temp probe'] },
+  { fr: 'Capteur de température du sol', en: 'Soil Temperature Sensor', keys: ['capteur de sol', 'soil temp probe'] },
   { fr: 'Capteur bulbe sec / bulbe humide', en: 'Dry bulb / wet bulb sensor',
     keys: ['capteur bulbe sec bulbe humide', 'wet/ dry bulb', 'mèche capteur bulbe sec/humide'] },
 

@@ -84,11 +84,6 @@ export function listRequests() {
   }))
 }
 
-/** Les ids des transactions déjà dans la liste — le relevé les marque. */
-export function requestedTxnIds() {
-  return db.prepare('SELECT bank_txn_id FROM missing_invoice_requests').all().map((r) => r.bank_txn_id)
-}
-
 export function addRequests(txnIds = [], user = null) {
   const ins = db.prepare(`
     INSERT INTO missing_invoice_requests (id, bank_txn_id, in_send, created_by, updated_at)

@@ -18,6 +18,7 @@
 
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
+import { localDay } from '../utils/datetime.js'
 import { sendSlack } from './slack.js'
 import { logSystemRun, isSystemAutomationActive } from './systemAutomations.js'
 import { createChangeLogWatcher } from './changeLogWatcher.js'
@@ -48,12 +49,13 @@ function createReplacementOrder(item) {
 
   const tx = db.transaction(() => {
     db.prepare(`
-      INSERT INTO orders (id, order_number, company_id, status, notes, documents)
-      VALUES (?, ?, ?, 'Commande vide', ?, ?)
+      INSERT INTO orders (id, order_number, company_id, status, notes, documents, date_commande)
+      VALUES (?, ?, ?, 'Commande vide', ?, ?, ?)
     `).run(
       orderId, orderNumber, companyId,
       `Remplacement automatique — retour ${item.return_id}`,
-      item.return_shipping_label || null
+      item.return_shipping_label || null,
+      localDay()
     )
     // Plus de produit sur la ligne : `return_items.product_send_id`
     // (« Produit à envoyer ») a été droppée à la demande (migration 046). La

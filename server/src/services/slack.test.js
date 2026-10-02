@@ -65,3 +65,10 @@ test('une erreur Slack remonte plutôt que de partir au mauvais endroit', async 
     await assert.rejects(() => sendSlack({ channel: 'C0000001', text: 'x' }), /channel_not_found/)
   } finally { restore(); delete process.env.SLACK_BOT_TOKEN }
 })
+
+test('webhookBotChannel : un webhook connu est relayé par le bot, un inconnu non', async () => {
+  const { webhookBotChannel } = await import('./slack.js')
+  assert.equal(webhookBotChannel('https://hooks.slack.com/services/TUCQ905A6/B0BRYH9BGKS/secret'), 'C0BC7KSM1D5')
+  assert.equal(webhookBotChannel('https://hooks.slack.com/services/TUCQ905A6/B0NOPE/secret'), null)
+  assert.equal(webhookBotChannel(null), null)
+})

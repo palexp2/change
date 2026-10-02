@@ -30,7 +30,7 @@
 
 import db from '../db/database.js'
 import { newRecordId } from '../utils/recordId.js'
-import { invalidateColumnsCache } from '../db/changeLog.js'
+import { invalidateColumnsCache, syncRollupTriggers } from '../db/changeLog.js'
 import { FORMULA_FUNCTIONS } from './formulaEngine.js'
 import { erpTableForAirtableTableId } from './airtableTableMap.js'
 
@@ -1315,6 +1315,7 @@ export function regenerateView(erpTable) {
       db.exec(`CREATE VIEW ${viewName} AS SELECT * FROM ${erpTable}`)
     })
     tx()
+    syncRollupTriggers(erpTable, [])
     // Le snapshot client lit la VUE (voir db/changeLog.js) : ses colonnes
     // viennent de changer, le cache de colonnes est périmé.
     invalidateColumnsCache()
@@ -1440,6 +1441,8 @@ export function regenerateView(erpTable) {
     for (const [id, msg] of errorsById) updErr.run(msg, id)
   })
   tx()
+  // Rollup : une ligne enfant modifiée doit renvoyer ce parent au navigateur.
+  syncRollupTriggers(erpTable, virtualCols.filter(cf => cf.kind === 'rollup' && !errorsById.get(cf.id)))
   invalidateColumnsCache()
   const errors = [...errorsById].filter(([, m]) => m).map(([id, message]) => ({ id, message }))
   return { view: viewName, columns: virtualCols.length, sql, errors }

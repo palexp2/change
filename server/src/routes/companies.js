@@ -11,6 +11,8 @@ import { readRelation } from '../services/customFieldsView.js'
 import { RETURN_COMPANY_SQL } from '../services/returnCompany.js'
 import { parsePage } from '../utils/pagination.js'
 import { buildPartialUpdate } from '../utils/partialUpdate.js';
+import { writeBackRecord } from '../services/airtableWriteback.js';
+import { getWritableCustomColumns, refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -195,13 +197,24 @@ router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT id FROM companies WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Company not found' });
 
+  // Champs personnalisés : seuls ceux que l'ERP a le droit d'écrire (règle
+  // unique de customFieldWritability). Un champ Airtable en import seul est
+  // refusé en 400 plutôt qu'écrit puis écrasé au sync suivant.
+  if (refusedAirtablePullKeys('companies', req.body).length > 0) {
+    return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR });
+  }
+  const customCols = getWritableCustomColumns('companies').map(c => c.column_name);
   const { setClause, values } = buildPartialUpdate(req.body, {
-    allowed: ['name','lifecycle_phase','email','address','city','province','country','notes','currency','language','is_vendeur_orisha'],
+    allowed: ['name','lifecycle_phase','email','address','city','province','country','notes','currency','language','is_vendeur_orisha', ...customCols],
     coerce: { is_vendeur_orisha: v => (v === true || v === 1 || v === '1' ? 1 : 0) },
   });
   if (setClause) {
     db.prepare(`UPDATE companies SET ${setClause}, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(...values, req.params.id);
     emitCompany('updated', req.params.id, req.user?.id);
+    // Write-back Boréal → Airtable (fire-and-forget) : ne part que ce qui est
+    // réglé en « Bidirectionnel » ou « Boréal → Airtable » dans /champs/companies.
+    // Échecs tracés dans sync_log.
+    writeBackRecord('companies', req.params.id, Object.keys(req.body));
   }
 
   res.json(db.prepare('SELECT * FROM companies WHERE id = ?').get(req.params.id));

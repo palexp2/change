@@ -14,7 +14,7 @@ import { fmtDate } from '../lib/formatDate.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import {
   OPS_AREAS, OPS_SEVERITIES, OPS_STATUSES,
-  OPS_SEVERITY_COLORS, OPS_STATUS_COLORS,
+  OPS_SEVERITY_COLORS, OPS_STATUS_COLORS, occurredWithCreationTime,
 } from '../lib/opsIssues.js'
 import OpsIssueDetail from './OpsIssueDetail.jsx'
 
@@ -41,6 +41,7 @@ const COLUMNS = TABLE_COLUMN_META.ops_issues.map(meta => ({
   editable: EDITABLE_FIELDS.has(meta.field),
   // Format « + heure » choisi : une date sans heure s'affiche à 00:00.
   dateOnlyAsMidnight: meta.type === 'date',
+  ...(meta.id === 'occurred_at' && { dateDisplayValue: occurredWithCreationTime }),
 }))
 
 const today = () => new Date().toISOString().slice(0, 10)

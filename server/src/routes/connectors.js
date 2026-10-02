@@ -47,6 +47,7 @@ import { hardcodedErpColumns } from '../services/airtableAutoSync.js'
 import { directSourceFor } from '../services/airtableDirectSources.js'
 import { syncStripeSubscriptions, isStripeConfigured } from '../services/stripe.js'
 import { isHubSpotConfigured } from '../connectors/hubspot.js'
+import { importHubSpotHistory, getHistoryStatus as hsHistoryStatus, HISTORY_SYNC_KEY, HISTORY_TYPES } from '../services/hubspotHistoryImport.js'
 import { pullDelta as hsPullDelta, getOwnerMappingStatus as hsOwnerStatus, setUserOwnerOverride as hsSetOwnerOverride} from '../services/hubspotSync.js'
 import { isNovoxpressConfigured } from '../services/novoxpress.js'
 import { processWebhookPing, registerWebhookForBaseTraced } from '../services/airtableWebhooks.js'
@@ -2975,6 +2976,19 @@ router.delete('/hubspot', requireAdmin, (req, res) => {
 router.post('/sync/hubspot', requireAuth, async (req, res) => {
   const full = !!req.body?.full
   trackedWithLog('hubspot_tasks', () => hsPullDelta({ full }), 'manual')
+  res.json({ ok: true })
+})
+
+// GET/POST /api/connectors/hubspot/history — import de l'historique HubSpot
+// (notes, réunions…) dans le fil d'interactions. Rejouable, reprend au curseur.
+router.get('/hubspot/history', requireAuth, (req, res) => {
+  res.json({ types: hsHistoryStatus() })
+})
+router.post('/hubspot/history', requireAdmin, (req, res) => {
+  const types = (req.body?.types || HISTORY_TYPES).filter(t => HISTORY_TYPES.includes(t))
+  const run = () => importHubSpotHistory({ types, restart: !!req.body?.restart })
+  tracked(HISTORY_SYNC_KEY, run).then(r => logSync(HISTORY_SYNC_KEY, 'manual', { status: 'success', result: r }))
+    .catch(e => { logSync(HISTORY_SYNC_KEY, 'manual', { status: 'error', error: e.message }); console.error('HubSpot history:', e.message) })
   res.json({ ok: true })
 })
 

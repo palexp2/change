@@ -15,7 +15,11 @@ const POLL_MS = 60_000
 const STORE_KEY = 'ai-usage-last'
 const KNOWN = [{ key: 'claude', name: 'Claude' }]
 
-const readStore = () => { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {} } catch { return {} } }
+// Rail : sigle du titulaire du compte plutôt que « CL » pour chaque licence Claude.
+const OWNER_TAGS = { guillaume: 'GL', charles: 'CJ' }
+const railTag = (a) => OWNER_TAGS[(a.owner || '').toLowerCase()] || a.name.slice(0, 2)
+
+const readStore =() => { try { return JSON.parse(localStorage.getItem(STORE_KEY)) || {} } catch { return {} } }
 
 // Comptes frais + dernières valeurs connues pour ceux qui manquent (`stale`).
 // `fresh` null = premier rendu : la dernière lecture s'affiche normalement.
@@ -150,7 +154,7 @@ export function AiUsageRail({ wide = false, to, runningBadge = false }) {
             <span className={wide
               ? 'text-[12px] font-medium text-slate-600 min-w-14 whitespace-nowrap'
               : 'flex items-baseline gap-1 text-[9px] font-semibold uppercase tracking-wide text-slate-400'}>
-              {wide ? a.name : a.name.slice(0, 2)}
+              {wide ? a.name : railTag(a)}
               {/* Rail : ce qui est CONSOMMÉ, toujours visible (même lecture que le détail). */}
               {!wide && worst(a) && (
                 <span data-testid={`ai-usage-${a.key}-used`} className={`text-[10px] normal-case tracking-normal tabular-nums ${usageTone(worst(a).pct, worst(a).severity).text}`}>

@@ -530,11 +530,6 @@ export async function syncMirrorRegistry({ token, includeUndecidedTables = true 
 
 // ── Lecture ─────────────────────────────────────────────────────────────────
 
-export function registryIsEmpty() {
-  if (!tableExists('airtable_mirrors')) return true
-  return db.prepare('SELECT COUNT(*) AS n FROM airtable_mirrors').get().n === 0
-}
-
 /**
  * Miroirs à synchroniser/auditer, dans l'ordre de leurs dépendances.
  * `depends_on` remplace la constante MODULE_SYNC_PRIORITY : l'ordre se déduit

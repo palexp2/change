@@ -24,8 +24,3 @@ export function setFrozen(erpTable, column, frozen, userId = null) {
   }
 }
 
-// Given a list of (column, value) pairs, return the subset where column isn't frozen.
-export function filterFrozen(erpTable, pairs) {
-  const frozen = getFrozenColumns(erpTable)
-  return pairs.filter(([col]) => !frozen.has(col))
-}

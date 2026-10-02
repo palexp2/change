@@ -10,10 +10,6 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 // les consommateurs retombent sur la connexion par défaut.
 export const requestContext = new AsyncLocalStorage()
 
-export function runWithUser(user, fn) {
-  return requestContext.run({ user }, fn)
-}
-
 export function getCurrentUser() {
   return requestContext.getStore()?.user || null
 }

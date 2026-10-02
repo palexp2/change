@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { receptionInstruction, receptionShelf, matchReturnItem } from './returnReception.js'
 
-test('les phrases sont celles d\'Airtable, au caractère près', () => {
+test('phrases affichées au réceptionniste', () => {
   assert.equal(
     receptionInstruction('Retour de garantie avec échange immédiat', 'Martin'),
     "Bonjour Martin, SVP place l'article dans l'étagère d'analyse."
@@ -19,19 +19,22 @@ test('les phrases sont celles d\'Airtable, au caractère près', () => {
   )
   assert.equal(
     receptionInstruction('Erreur de commande', 'Alicia'),
-    "Bonjour Alicia, SVP place l'article dans l'étagère de reconditionnement."
+    "Bonjour Alicia, SVP place l'article dans l'étagère d'analyse."
   )
 })
 
-test('raison inconnue ou vide : reçu, mais aucune étagère inventée', () => {
-  assert.equal(receptionShelf(''), null)
-  assert.equal(receptionShelf('Réparation - DEPRECATED'), null)
-  assert.equal(receptionInstruction('', 'Martin'), 'Bonjour Martin, article reçu. Étagère à déterminer.')
+test('raison vide ou inconnue : étagère d\'analyse', () => {
+  assert.equal(receptionShelf(''), 'analyse')
+  assert.equal(receptionShelf('Réparation - DEPRECATED'), 'analyse')
+  assert.equal(receptionInstruction('', 'Martin'), "Bonjour Martin, SVP place l'article dans l'étagère d'analyse.")
 })
 
-test('étagère par raison', () => {
+test('étagère par raison : seule la fin d\'abonnement va au reconditionnement', () => {
+  assert.equal(receptionShelf("Fin d'abonnement"), 'reconditionnement')
   assert.equal(receptionShelf('Retour de garantie avec échange immédiat'), 'analyse')
-  assert.equal(receptionShelf("Le client à changé d'idée"), 'reconditionnement')
+  assert.equal(receptionShelf("Le client à changé d'idée"), 'analyse')
+  assert.equal(receptionShelf('Erreur de commande'), 'analyse')
+  assert.equal(receptionShelf("Retour d'équipement de courtoisie"), 'analyse')
 })
 
 test('le scan trouve la série avant le SKU, insensible à la casse', () => {

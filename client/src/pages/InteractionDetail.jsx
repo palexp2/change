@@ -3,6 +3,7 @@ import { Phone, Mail, MessageSquare, Users, FileText, Trash2 } from 'lucide-reac
 import api from '../lib/api.js'
 import EmailBodyFrame from '../components/EmailBodyFrame.jsx'
 import EmailAttachments from '../components/EmailAttachments.jsx'
+import EmailTrackingBlock from '../components/EmailTrackingBlock.jsx'
 import { looksLikeHtml } from '../lib/emailDoc.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
 import { Badge, INTERACTION_TYPE_LABELS as TYPE_LABELS } from '../components/Badge.jsx'
@@ -31,9 +32,11 @@ const DIRECTION_COLORS = { in: 'green', out: 'blue' }
 export function InteractionTypePill({ type }) {
   const Icon = INTERACTION_TYPE_ICONS[type] || FileText
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium ${INTERACTION_TYPE_COLORS[type] || 'bg-slate-100 text-slate-600'}`}>
-      <Icon size={12} />
-      {TYPE_LABELS[type] || type}
+    // `!inline-flex` : en tableau, `.dt-truncate-single-select > span` passe la
+    // pastille en inline-block et l'icône (svg block) renvoie le texte à la ligne.
+    <span className={`!inline-flex max-w-full items-center gap-1.5 px-2 py-0.5 rounded-md text-xs font-medium ${INTERACTION_TYPE_COLORS[type] || 'bg-slate-100 text-slate-600'}`}>
+      <Icon size={12} className="shrink-0" />
+      <span className="truncate">{TYPE_LABELS[type] || type}</span>
     </span>
   )
 }
@@ -269,12 +272,17 @@ export default function InteractionDetail({ recordId: id, onClose }) {
         {item.type === 'email' && (
           <EmailAttachments interactionId={id} embedded hideWhenEmpty />
         )}
+        {item.type === 'email' && item.direction === 'out' && <EmailTrackingBlock interactionId={id} />}
 
-        {/* Réunion / note */}
-        {(item.type === 'meeting' || item.type === 'note') && item.meeting_notes && (
+        {/* Réunion / note — et notes d'un appel saisi à la main ou importé */}
+        {item.meeting_notes && (
           <Block label="Notes">
             <div className={boxClass}>{item.meeting_notes}</div>
           </Block>
+        )}
+        {/* Pièces jointes importées de HubSpot */}
+        {item.type !== 'email' && item.hubspot_id && (
+          <EmailAttachments interactionId={id} embedded hideWhenEmpty />
         )}
       </div>
     </DetailShell>

@@ -5,7 +5,8 @@ import { emitCompany } from './realtimeEmitters.js'
 import { getStripeKey } from './stripe.js'
 import { APP_URL } from '../config/appUrl.js'
 import { escapeHtml, escapeAttr } from '../utils/sanitizeHtml.js'
-import { currencyCustomerFor, saveCurrencyCustomer } from './stripeCustomerCompany.js'
+import { stripeCustomerFields } from './stripeCustomerCompany.js'
+import { trackEmailHtml } from './emailTracking.js'
 
 export function getStripeClient() {
   const sk = getStripeKey()
@@ -15,23 +16,12 @@ export function getStripeClient() {
 
 // Returns the existing stripe_customer_id for the company, or creates one
 // in Stripe (with name + email + erp_company_id metadata) and stores it.
-export async function ensureStripeCustomer(stripe, companyId, { currency, forceAlt = false } = {}) {
+export async function ensureStripeCustomer(stripe, companyId) {
   const co = db.prepare(
     'SELECT id, name, email, stripe_customer_id FROM companies WHERE id=?'
   ).get(companyId)
   if (!co) throw new Error('Entreprise introuvable')
-  if (co.stripe_customer_id && !currency) return co.stripe_customer_id
-
-  if (co.stripe_customer_id && currency) {
-    // Client déjà lié à une autre devise (Stripe refuse de les combiner) :
-    // on passe au client de cette devise.
-    if (!forceAlt) {
-      const main = await stripe.customers.retrieve(co.stripe_customer_id).catch(() => null)
-      if (!main || main.deleted || !main.currency || main.currency === currency) return co.stripe_customer_id
-    }
-    const alt = currencyCustomerFor(companyId, currency)
-    if (alt) return alt
-  }
+  if (co.stripe_customer_id) return co.stripe_customer_id
 
   // Try the primary contact's email if the company itself has none
   let email = co.email
@@ -43,18 +33,26 @@ export async function ensureStripeCustomer(stripe, companyId, { currency, forceA
   }
 
   const created = await stripe.customers.create({
-    name: co.name,
+    ...stripeCustomerFields(co),
     email: email || undefined,
     metadata: { erp_company_id: co.id },
   })
-  if (co.stripe_customer_id) {
-    saveCurrencyCustomer(companyId, currency, created.id)
-    return created.id
-  }
   db.prepare('UPDATE companies SET stripe_customer_id=?, updated_at=strftime(\'%Y-%m-%dT%H:%M:%fZ\', \'now\') WHERE id=?')
     .run(created.id, companyId)
   emitCompany('updated', companyId, null)
   return created.id
+}
+
+// Avant l'envoi d'une soumission ou d'une facture : le client Stripe existe,
+// avec les adresses de facturation et de livraison de la fiche entreprise.
+export async function syncStripeCustomer(stripe, companyId) {
+  const had = db.prepare('SELECT stripe_customer_id FROM companies WHERE id=?').get(companyId)?.stripe_customer_id
+  const id = await ensureStripeCustomer(stripe, companyId)
+  if (had) {
+    const co = db.prepare('SELECT id, name FROM companies WHERE id=?').get(companyId)
+    await stripe.customers.update(id, stripeCustomerFields(co))
+  }
+  return id
 }
 
 // Get/create a Stripe tax_rate matching {name, percentage, jurisdiction}.
@@ -166,7 +164,9 @@ export async function createOrRefreshCheckoutSession({ stripe, pending, baseAppU
     discounts = [{ coupon: couponId }]
   }
 
-  const successUrl = successUrlOverride || `${baseAppUrl}/erp/customer/post-payment?session_id={CHECKOUT_SESSION_ID}`
+  // Facture simple : page de remerciement. Le System builder après paiement est
+  // réservé aux liens des soumissions (voir soumissionCheckout.js).
+  const successUrl = successUrlOverride || `${baseAppUrl}/erp/pay/${encodeURIComponent(pending.id)}/merci`
   const cancelUrl = cancelUrlOverride || `${baseAppUrl}/erp/pay/${pending.id}?cancelled=1`
 
   // Stripe max expires_at is 24h for hosted Checkout Sessions. Beyond that the
@@ -260,7 +260,7 @@ export function buildInvoiceEmailHtml({
   return `<!DOCTYPE html>
 <html><body style="font-family:Arial,sans-serif;color:#1f2937;line-height:1.5;">
 ${intro}
-<p><a href="${escapeAttr(hostedUrl)}" style="display:inline-block;background:#4f46e5;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px;font-weight:600;">Voir et payer la facture</a></p>
+<p><a href="${escapeAttr(hostedUrl)}" style="display:inline-block;background:#21B14B;color:#fff;padding:10px 16px;text-decoration:none;border-radius:6px;font-weight:600;">Voir et payer la facture</a></p>
 ${pdfUrl ? `<p><a href="${escapeAttr(pdfUrl)}">Télécharger le PDF</a></p>` : ''}
 <p>Merci pour votre confiance,<br/>${escapeHtml(fromName || 'Orisha')}</p>
 ${trackingPixelUrl ? `<img src="${escapeAttr(trackingPixelUrl)}" width="1" height="1" alt="" style="display:block;width:1px;height:1px;border:0;" />` : ''}
@@ -332,7 +332,7 @@ export async function finalizeAndSendInvoice({ stripe, stripeInvoiceId, companyI
     fromName: userRow?.name || 'Orisha',
   })
 
-  const sent = await sendEmail(recipientEmail, subject, html, { userId })
+  const sent = await sendEmail(recipientEmail, subject, trackEmailHtml(html, emailRowId), { userId })
 
   // Log interaction + email row
   db.prepare(`INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)

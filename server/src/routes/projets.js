@@ -234,7 +234,7 @@ router.get('/adresses', (req, res) => {
     LEFT JOIN companies co ON a.company_id = co.id
     LEFT JOIN contacts ct ON a.contact_id = ct.id
     ${where}
-    ORDER BY a.address_type ASC, a.created_at DESC
+    ORDER BY a.address_type ASC, (a.address_rank = 'Principale') DESC, a.created_at DESC
     LIMIT ? OFFSET ?
   `).all(...params, limitVal, offset)
 
@@ -253,14 +253,33 @@ router.get('/adresses/:id', (req, res) => {
 })
 
 // Colonnes qu'un client peut écrire sur une adresse.
-const ADRESSE_COLUMNS = ['line1', 'city', 'province', 'postal_code', 'country', 'address_type', 'contact_id', 'language']
+const ADRESSE_COLUMNS = ['line1', 'city', 'province', 'postal_code', 'country', 'address_type', 'address_rank', 'contact_id', 'language']
+
+// Une seule adresse principale par entreprise et par type : celle qui le
+// devient fait passer les autres du même type en secondaire.
+function demoteOtherPrincipals(adr, actorUserId) {
+  if (!adr?.company_id || !adr.address_type || adr.address_rank !== 'Principale') return
+  const others = db.prepare(`SELECT id FROM adresses WHERE company_id = ? AND address_type = ?
+    AND address_rank = 'Principale' AND id != ?`).all(adr.company_id, adr.address_type, adr.id)
+  for (const { id } of others) {
+    db.prepare(`UPDATE adresses SET address_rank = 'Secondaire', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(id)
+    emitEntity('adresse', 'updated', id, db.prepare('SELECT * FROM adresses WHERE id = ?').get(id), actorUserId)
+  }
+}
 
 router.post('/adresses', (req, res) => {
   const { line1, city, province, postal_code, country, address_type, company_id, contact_id, language } = req.body
+  // Sans rang fourni : la première adresse d'un type est la principale.
+  let address_rank = req.body.address_rank || null
+  if (!address_rank && company_id && address_type) {
+    const exists = db.prepare('SELECT 1 FROM adresses WHERE company_id = ? AND address_type = ? LIMIT 1').get(company_id, address_type)
+    address_rank = exists ? 'Secondaire' : 'Principale'
+  }
   const id = newRecordId()
-  db.prepare(`INSERT INTO adresses (id, line1, city, province, postal_code, country, address_type, company_id, contact_id, language)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`)
-    .run(id, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, company_id||null, contact_id||null, language||null)
+  db.prepare(`INSERT INTO adresses (id, line1, city, province, postal_code, country, address_type, address_rank, company_id, contact_id, language)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(id, line1||null, city||null, province||null, postal_code||null, country||null, address_type||null, address_rank, company_id||null, contact_id||null, language||null)
+  demoteOtherPrincipals(db.prepare('SELECT * FROM adresses WHERE id = ?').get(id), req.user?.id)
   checkAddress(id, { actorUserId: req.user?.id })
   const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(id)
   emitEntity('adresse', 'created', id, adr, req.user?.id)
@@ -279,6 +298,7 @@ router.put('/adresses/:id', (req, res) => {
   checkAddress(req.params.id, { actorUserId: req.user?.id })
   const adr = db.prepare('SELECT * FROM adresses WHERE id = ?').get(req.params.id)
   if (!adr) return res.status(404).json({ error: 'Not found' })
+  if ('address_rank' in req.body || 'address_type' in req.body) demoteOtherPrincipals(adr, req.user?.id)
   emitEntity('adresse', 'updated', req.params.id, adr, req.user?.id)
   res.json(adr)
 })
@@ -1025,7 +1045,7 @@ router.post('/factures/:id/void', async (req, res) => {
   if (!String(f.invoice_id || '').startsWith('in_')) {
     return res.status(400).json({ error: "Seule une facture Stripe peut être annulée d'ici" })
   }
-  if (f.status !== 'À payer' && f.status !== 'Uncollectible') {
+  if (!['À payer', 'En retard', 'Uncollectible'].includes(f.status)) {
     return res.status(400).json({ error: `Facture « ${f.status || '—'} » : rien à annuler` })
   }
   if (!key) return res.status(503).json({ error: 'Stripe non configuré' })

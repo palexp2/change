@@ -2,12 +2,12 @@ import { useMemo } from 'react'
 import { Field } from './Field.jsx'
 import { SearchableSelect } from './SearchableSelect.jsx'
 import { MultiSelectField } from './MultiSelectField.jsx'
-import { InlineText, InlineTextarea, InlineUrl, InlineNumber, InlineDate, InlineCheckbox } from './InlineFields.jsx'
+import { InlineText, InlineTextarea, InlineUrl, InlineNumber, InlineDuration, InlineDate, InlineCheckbox } from './InlineFields.jsx'
 import { AttachmentField } from './AttachmentField.jsx'
 import { RatingInput } from './RatingStars.jsx'
 import { useFieldGate } from '../lib/fieldGate.js'
 import { useExtraCustomFields } from '../lib/useDetailFields.jsx'
-import { parseSelectChoices, colorForChoice, ChoiceBadge, isAirtableLinkField, LinkedRecordsValue, dateFormatOf } from '../lib/customFieldDisplay.jsx'
+import { parseSelectChoices, colorForChoice, ChoiceBadge, isAirtableLinkField, LinkedRecordsValue, dateFormatOf, durationFormatOf } from '../lib/customFieldDisplay.jsx'
 import { dateFormatHasTime } from '../lib/formatDate.js'
 
 // Les champs personnalisés d'une table, rendus comme des blocs de champ
@@ -57,7 +57,7 @@ export function isLinkCustomField(f) {
 }
 
 // Éditeur inline correspondant au type du champ. `null` → pas d'éditeur pour ce
-// type (image, durée…) : la fiche retombe sur l'affichage.
+// type (image…) : la fiche retombe sur l'affichage.
 //
 // `recordId` n'est utile qu'au champ Attachement, dont les fichiers sont
 // rattachés à l'enregistrement côté serveur.
@@ -68,13 +68,14 @@ export function isLinkCustomField(f) {
 //
 // `linkFilter` : pour un champ LIEN, restriction supplémentaire des candidats
 // proposés, décidée par la fiche (cf. LinkedRecordsValue → `extraFilter`).
-export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false, linkFilter = null }) {
+// `widePicker` : pour un champ LIEN, liste déroulante large aux libellés entiers.
+export function CustomFieldEditor({ field, value, saving, onSave, recordId, selectPills = false, linkFilter = null, widePicker = false, compactNumber = false }) {
   const commit = v => onSave?.(field.key, v)
   // Champ lien : la valeur est un (ou des) identifiant(s) de fiche — pastille
   // cliquable + picker recherchable de la table cible, le même dans toutes les
   // fiches. Traité avant le switch : son type STOCKÉ est 'text'.
   if (isLinkCustomField(field)) {
-    return <LinkedRecordsValue field={field.field} value={value} detail onChange={commit} saving={saving} extraFilter={linkFilter} />
+    return <LinkedRecordsValue field={field.field} value={value} detail onChange={commit} saving={saving} extraFilter={linkFilter} widePicker={widePicker} />
   }
   switch (field.type) {
     // Attachement : s'écrit tout seul par sa route de dépôt (les octets partent
@@ -98,12 +99,14 @@ export function CustomFieldEditor({ field, value, saving, onSave, recordId, sele
       return <InlineUrl value={value} saving={saving} onSave={commit} testId={`cf-input-${field.key}`} />
     case 'number':
     case 'currency':
-      return <InlineNumber value={value} saving={saving} onSave={commit} className="input text-sm w-full" testId={`cf-input-${field.key}`} />
+      return <InlineNumber value={value} saving={saving} onSave={commit} compact={compactNumber} className="input text-sm w-full" testId={`cf-input-${field.key}`} />
     // Pourcentage : la colonne porte le nombre de pourcents — on saisit 45, le
     // « % » est là pour le dire (la barre de progression, elle, est un rendu de
     // lecture : cf. PercentValue).
     case 'percent':
       return <InlineNumber value={value} saving={saving} onSave={commit} suffix="%" className="input text-sm w-full" testId={`cf-input-${field.key}`} />
+    case 'duration':
+      return <InlineDuration value={value} saving={saving} onSave={commit} format={durationFormatOf(field.field)} testId={`cf-input-${field.key}`} />
     case 'date':
       return <InlineDate value={value} saving={saving} onSave={commit} withTime={dateFormatHasTime(dateFormatOf(field.field))} testId={`cf-input-${field.key}`} />
     case 'checkbox':

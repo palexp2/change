@@ -449,7 +449,8 @@ export function parseLinkedKeys(value, { splitCommas = true } = {}) {
 // qu'une fiche pose quand la restriction dépend de l'enregistrement affiché et
 // non du champ : l'adresse de livraison d'une commande ne se choisit que parmi
 // les adresses de SON entreprise.
-export function LinkedRecordsValue({ field, value, byLabel = false, detail = false, onChange = null, saving = false, navigable = true, extraFilter = null }) {
+// `widePicker` : liste déroulante large, libellés entiers (cf. LinkedRecordField).
+export function LinkedRecordsValue({ field, value, byLabel = false, detail = false, onChange = null, saving = false, navigable = true, extraFilter = null, widePicker = false }) {
   const keys = useMemo(() => parseLinkedKeys(value, { splitCommas: !byLabel }), [value, byLabel])
   const target = field?.record_link_target || null
   const resolved = useRecordLinks(keys, target, byLabel)
@@ -490,6 +491,7 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
             searchFilter={filter}
             identity={identity}
             saving={saving}
+            widePicker={widePicker}
             onChange={v => commit(v
               ? keys.map((k, j) => (j === i ? String(v) : k))
               : keys.filter((_, j) => j !== i))}
@@ -502,6 +504,7 @@ export function LinkedRecordsValue({ field, value, byLabel = false, detail = fal
             searchFilter={filter}
             identity={identity}
             saving={saving}
+            widePicker={widePicker}
             onChange={v => v && commit([...keys, String(v)])}
           />
         )}
@@ -1008,6 +1011,8 @@ const VIEW_KEY_TO_FIELD_KEY = {
   // Achats d'une fiche pièce : ce sont des `purchases`, avec des colonnes
   // réduites. Leurs CHAMPS sont ceux de la table mère (/champs/purchases).
   product_purchases:   'purchases',
+  // « Utilisé dans » d'une fiche pièce : lignes de BOM où elle est composant.
+  product_used_in:     'bom_items',
   // Historique d'achats d'une fiche fourniture (/champs/achats_fournitures).
   fourniture_achats:   'achats_fournitures',
 }

@@ -34,9 +34,29 @@ export function resolveSlackTarget({ url = null, envName = null, fallbackEnv = D
   return { url: null, env: null, fallback: false, missing: envName || fallbackEnv }
 }
 
+// Une seule app Slack (celle du bot token) : les webhooks entrants de l'ancienne
+// app « ERP Orisha » (A0BMC755SRL) sont relayés par chat.postMessage vers le
+// canal où chacun postait. Clé = segment `B…` de l'URL (pas secret ; le secret
+// est le dernier segment). Un webhook inconnu part encore en direct.
+const WEBHOOK_BOT_CHANNELS = {
+  B0BRYH9BGKS: 'C0BC7KSM1D5', // SLACK_WEBHOOK_TREASURY  → #comptabilité
+  B0BQY08JXSP: 'U06ECMYHNR2', // SLACK_WEBHOOK_PERSO     → DM Antoine Lambert
+  B0BR0E7KVGD: 'UUCQBRLF4',   // SLACK_WEBHOOK_GUILLAUME → DM Guillaume Lambert
+  B0BR27UPWJ2: 'U0633QP1KUG', // SLACK_WEBHOOK_MARKETING → DM Émilie Carignan
+  B0BRV8AB6CT: 'U03GS6BQD5G', // URL collée (prospects Instagram) → DM Philippe
+  B0C5JGYTP44: 'C08B0PC5F1Q', // URL collée (factures manquantes) → #informations-importantes
+}
+
+export function webhookBotChannel(url) {
+  const m = String(url || '').match(/hooks\.slack\.com\/services\/T[A-Z0-9]+\/(B[A-Z0-9]+)\//)
+  return m ? WEBHOOK_BOT_CHANNELS[m[1]] || null : null
+}
+
 /** POST { text } sur une URL de webhook entrant Slack. Throw si non-2xx. */
 export async function postSlack(url, text) {
   if (!url) throw new Error('URL de webhook Slack manquante')
+  const botChannel = slackBotToken() ? webhookBotChannel(url) : null
+  if (botChannel) { await postSlackChat(botChannel, text); return }
   const resp = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

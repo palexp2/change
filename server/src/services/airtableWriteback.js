@@ -3,7 +3,7 @@ import { getAccessToken, airtablePatch, airtablePost } from '../connectors/airta
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 import { logSync } from './syncLog.js'
 import {
-  ENVOIS_FIELD_MAP_PLAN, ORDERS_FIELD_MAP_PLAN, PAIES_FIELD_MAP_PLAN, PIECES_FIELD_MAP_PLAN,
+  COMPANIES_FIELD_MAP_PLAN, ENVOIS_FIELD_MAP_PLAN, ORDERS_FIELD_MAP_PLAN, PAIES_FIELD_MAP_PLAN, PIECES_FIELD_MAP_PLAN,
   PROJETS_FIELD_MAP_PLAN, RETOUR_ITEMS_FIELD_MAP_PLAN, SERIALS_FIELD_MAP_PLAN,
   fieldMapFromUi,
 } from './airtableUiFieldMap.js'
@@ -316,6 +316,10 @@ export const WRITEBACK_MODULES = {
       address: row => airtableLinkIds('adresses', row.address_id),
     },
     configSource: { table: 'airtable_orders_config', baseCol: 'base_id', tableIdCol: 'orders_table_id', fieldMapCol: 'field_map_orders' },
+    // Le numéro de Boréal fait foi : il est écrit dans « # de commande » à la
+    // création (jamais ensuite — `neverPush`).
+    createFields: (row, fieldMap) => (fieldMap.order_number && row.order_number
+      ? { [fieldMap.order_number]: `CMD-${row.order_number}` } : {}),
   },
   // Retours (RMA) et leurs articles. Deux tables nées dans Airtable, où une
   // partie du traitement se fait encore : sans write-back, toute saisie faite
@@ -422,6 +426,22 @@ export const WRITEBACK_MODULES = {
     skipKeys: new Set(),
     keyToColumn: {},
     defaultDirection: 'pull',
+  },
+  // Entreprises (CRM). Plus de field_map cœur (cf. retireCompaniesCoreFieldMap) :
+  // tout se règle dans /champs/companies, donc tous les scalaires passent par le
+  // chemin dynamique de buildColumnMap (`dyn:<colonne>`). `defaultDirection:
+  // 'pull'` : déclarer le module rend le sens CHOISISSABLE, il ne pousse rien
+  // tant que personne n'a passé un champ en « Bidirectionnel ».
+  //
+  // Mises à jour seulement : une entreprise née dans Boréal n'est pas créée
+  // dans Airtable — « Entreprise », le champ-titre, y est une formule, donc
+  // impossible à remplir depuis ici (la fiche y naîtrait sans nom).
+  companies: {
+    erpTable: 'companies',
+    uiFieldMapPlan: COMPANIES_FIELD_MAP_PLAN,
+    skipKeys: new Set(),
+    defaultDirection: 'pull',
+    configSource: { table: 'airtable_sync_config', baseCol: 'base_id', tableIdCol: 'companies_table_id', fieldMapCol: 'field_map_companies' },
   },
   // Mouvements d'inventaire. Field_map cœur à 6 clés (cf. CORE_PLANS du moteur),
   // dont 2 visent des champs calculés d'Airtable (« Created », « Valeur du
@@ -1191,6 +1211,7 @@ export async function createInAirtable(module, recordId, { initialFields = {}, r
 
     // Valeurs initiales explicites d'un formulaire de création (validées par
     // l'appelant serveur). Aucun effet sur les sens de sync des mises à jour.
+    if (cfg.createFields) Object.assign(fields, cfg.createFields(row, fieldMap))
     Object.assign(fields, initialFields)
 
     // Ne jamais créer une ligne détachée de sa commande ou de son produit.

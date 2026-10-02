@@ -981,10 +981,23 @@ const RESULT_TYPE_ERROR = "result_type doit être 'text', 'number', 'currency', 
 // distingue que par son rendu.
 // Options posées à la création d'un champ calculé : seul le format « Devise »
 // en porte (son symbole).
+// Réglages d'affichage d'un champ calculé, selon son format — comme l'onglet
+// « Formatting » d'Airtable : symbole (devise), barre ou % (pourcentage),
+// format de date.
 function resultTypeOptions(rt, body) {
-  if (rt !== 'currency') return {}
-  try { return { options: normalizeCurrencyOptions(body?.options).json } }
-  catch (e) { throw fieldError(400, e.message) }
+  try {
+    if (rt === 'currency') return { options: normalizeCurrencyOptions(body?.options).json }
+    if (rt === 'percent') return { options: normalizePercentOptions(body?.options).json }
+    if (rt === 'date') return { options: normalizeDateOptions(body?.options).json }
+  } catch (e) { throw fieldError(400, e.message) }
+  return {}
+}
+
+// Décimales d'un champ calculé numérique (nombre, devise, pourcentage) ;
+// undefined = pas de réglage (défaut d'affichage).
+function resultDecimals(rt, raw) {
+  const d = parseInt(raw)
+  return DECIMAL_TYPES.has(rt) && Number.isInteger(d) && d >= 0 && d <= 5 ? d : undefined
 }
 
 function typeForResultType(rt) {
@@ -1068,7 +1081,10 @@ const FIELD_KINDS = {
       validateFormulaReferences(expr, erpTable)
       return {
         type: typeForResultType(resultType),
-        columns: { formula_expr: expr, result_type: resultType, ...resultTypeOptions(resultType, body) },
+        columns: {
+          formula_expr: expr, result_type: resultType,
+          decimals: resultDecimals(resultType, body?.decimals), ...resultTypeOptions(resultType, body),
+        },
       }
     },
   },
@@ -1090,7 +1106,13 @@ const FIELD_KINDS = {
       // Le format n'est pas demandé : un lookup recopie une valeur, donc il
       // s'affiche comme le champ récupéré (`result_type` du corps est ignoré).
       const resultType = inferLookupResultType(lookup.lookup_target_table, lookup.lookup_target_column)
-      return { type: typeForResultType(resultType), columns: { ...lookup, result_type: resultType } }
+      return {
+        type: typeForResultType(resultType),
+        columns: {
+          ...lookup, result_type: resultType,
+          decimals: resultDecimals(resultType, body?.decimals), ...resultTypeOptions(resultType, body),
+        },
+      }
     },
   },
 
@@ -1107,11 +1129,12 @@ const FIELD_KINDS = {
       // Les agrégats sont numériques par défaut.
       const resultType = requireResultType(body?.result_type, { fallback: 'number' })
       validateRollup(rollup, erpTable)
-      const d = parseInt(body?.decimals)
-      const decimals = resultType === 'number' && Number.isInteger(d) && d >= 0 && d <= 5 ? d : undefined
       return {
         type: typeForResultType(resultType),
-        columns: { ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType, decimals, ...resultTypeOptions(resultType, body) },
+        columns: {
+          ...rollup, rollup_agg: String(rollup.rollup_agg).toUpperCase(), result_type: resultType,
+          decimals: resultDecimals(resultType, body?.decimals), ...resultTypeOptions(resultType, body),
+        },
       }
     },
   },
@@ -1719,7 +1742,7 @@ router.put('/:id', (req, res) => {
     // Prend en compte un changement de type dans la même requête (ex: number → currency).
     // Champ calculé : c'est son format (result_type) qui compte — un rollup
     // passé de « liste » à « Nombre » garde type='text' en base.
-    const effectiveType = ['formula', 'rollup'].includes(existing.kind)
+    const effectiveType = ['formula', 'rollup', 'lookup'].includes(existing.kind)
       ? (('result_type' in (req.body || {})) ? req.body.result_type : existing.result_type)
       : (('type' in (req.body || {})) ? req.body.type : existing.type)
     if (!DECIMAL_TYPES.has(effectiveType)) return res.status(400).json({ error: 'Décimales applicable seulement aux champs nombre, devise ou pourcentage' })

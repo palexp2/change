@@ -2,6 +2,7 @@ import { Router } from 'express'
 import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { parsePage } from '../utils/pagination.js'
+import { readRelation } from '../services/customFieldsView.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -23,7 +24,7 @@ router.get('/', (req, res) => {
            p.sku      AS product_sku,
            p.name_fr  AS product_name,
            u.name     AS user_name
-    FROM stock_movements sm
+    FROM ${readRelation('stock_movements')} sm
     LEFT JOIN products p ON sm.product_id = p.id
     LEFT JOIN users    u ON sm.user_id = u.id
     ${where}

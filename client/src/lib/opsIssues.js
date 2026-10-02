@@ -22,3 +22,13 @@ export const OPS_STATUS_OPTIONS = asOptions(OPS_STATUSES)
 export const OPS_SEVERITY_COLORS = { Mineur: 'slate', Moyen: 'yellow', Bloquant: 'red' }
 
 export const OPS_STATUS_COLORS = { Ouvert: 'red', 'En cours': 'yellow', 'Résolu': 'green' }
+
+const localDay = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+// « Date » sans heure, le jour même de la saisie : on montre l'heure de création.
+export function occurredWithCreationTime(row) {
+  const v = row.occurred_at
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v) || !row.created_at) return v
+  const created = new Date(row.created_at)
+  return !isNaN(created) && localDay(created) === v ? row.created_at : v
+}

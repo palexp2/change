@@ -124,6 +124,13 @@ export const MANUAL_RUNNERS = {
     return runAddressConfirmSweep({ dryRun: !!dryRun })
   },
 
+  // Fermeture des projets ouverts depuis trop longtemps : dry-run = la liste,
+  // run-now = la fermeture (même si l'automation est en pause).
+  sys_project_auto_close: async ({ dryRun }) => {
+    const { runProjectAutoClose } = await import('./projectAutoClose.js')
+    return runProjectAutoClose({ dryRun: !!dryRun, trigger: 'manuel' })
+  },
+
   // Corbeille : dry-run = ce qui partirait, sans rien détruire ; run-now =
   // suppression définitive immédiate (même si l'automation est en pause).
   // `log: false` — la route run-now journalise déjà l'exécution.
@@ -296,6 +303,11 @@ export const MANUAL_RUNNERS = {
   // Suggestions de travaux : dry-run = le contexte qui serait soumis au modèle
   // (sans appel) ; run-now = passage complet, les nouvelles suggestions
   // apparaissent dans /travaux.
+  // Agents autonomes : dry-run = agents qui se réveilleraient maintenant.
+  sys_autonomous_agents: async ({ dryRun }) => {
+    const { tickAutonomousAgents } = await import('./autonomousAgents.js')
+    return tickAutonomousAgents({ dryRun })
+  },
   sys_work_suggestions: async ({ dryRun }) => {
     const { buildContextDigest, buildIntegrationDigest, runSuggestionEngines } = await import('./workSuggestions.js')
     if (dryRun) {
@@ -420,7 +432,7 @@ export const SYSTEM_AUTOMATIONS = [
     id: 'sys_stripe_invoice_paid',
     name: 'Stripe invoice.paid → Facture',
     description:
-      "À la réception d'un webhook Stripe invoice.paid, la table factures est mise à jour (status='Payé', total, company résolue par email/nom) et le PDF Stripe est téléchargé. " +
+      "À la réception d'un webhook Stripe invoice.paid, la table factures est mise à jour (status='Payé', total), rattachée à son entreprise (client Stripe, abonnement, courriel du contact, nom) et à son projet (soumission payée, autres factures de l'abonnement, seul projet de l'entreprise) quand le lien est vide et le candidat unique, et le PDF Stripe est téléchargé. " +
       "Idempotent : un second événement pour la même invoice met à jour la ligne existante (matching par invoice_id).",
     trigger_config: {
       kind: 'webhook',
@@ -1313,6 +1325,24 @@ export const SYSTEM_AUTOMATIONS = [
     default_active: 1,
   },
   {
+    id: 'sys_autonomous_agents',
+    name: 'Travaux : réveil des agents autonomes',
+    description:
+      "Toutes les 10 minutes, chaque agent de l'onglet « Agents » de la page Travaux dont une heure de réveil vient de passer dépose un passage dans la file de travaux, avec sa mission en clair. " +
+      "La file l'exécute comme n'importe quel item (pause, quota et postes respectés) ; l'historique des passages se lit dans la file. " +
+      "Seul le dernier créneau échu compte, et seulement dans les 3 heures : un serveur arrêté ne relance pas de passages en rafale. " +
+      "Un passage encore en file ou en attente de réponse bloque le suivant du même agent. " +
+      "Désactiver cette automation endort tous les agents ; chaque agent a aussi son propre interrupteur.",
+    trigger_config: {
+      kind: 'schedule',
+      source: 'cron */10 * * * * (index.js) → services/autonomousAgents.js',
+      summary: 'Toutes les 10 minutes, selon les heures de chaque agent (Montréal)',
+    },
+    action_config: {},
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_month_end_provisions',
     name: 'Écritures de fin de mois : préparation des provisions',
     description:
@@ -1868,6 +1898,26 @@ export const SYSTEM_AUTOMATIONS = [
     configurable: true,
   },
   {
+    id: 'sys_fifo_cost',
+    name: 'Coût unitaire FIFO des pièces',
+    description:
+      "Tient le « Coût unitaire (FIFO) » des pièces achetées (remplace l'automatisation Airtable). Chaque achat reçu est un lot " +
+      "(quantité × prix unitaire : override payé, sinon facturé) ; le stock restant est fait des lots les plus récents, jusqu'à " +
+      "couvrir la quantité en inventaire ; le coût est la moyenne pondérée de ces lots. Stock nul : prix du dernier lot. " +
+      "Les pièces fabriquées (coût du BOM) et les logiciels sont exclus. " +
+      "Recalcul à chaque écriture d'un achat ou d'une pièce (change_log), et passe complète toutes les heures qui relit d'abord " +
+      "le prix de tous les achats dans Airtable. Un coût changé est écrit dans la pièce puis poussé vers Airtable. " +
+      "Alertes par pièce : lot reçu sans prix (exclu de la moyenne), prix d'un lot très éloigné des autres achats (> 2,5× ou " +
+      "< 0,4× la médiane — levée quand le prix est marqué vérifié sur la fiche pièce, tant qu'il ne change pas), stock sans aucun achat avec prix. Un stock supérieur aux achats reçus vient de l'inventaire de " +
+      "départ : le surplus est valorisé au coût de départ saisi sur la fiche pièce, sinon au prix du plus ancien achat.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(purchases, products) → fifoCostWatcher (poll 10s) + passe complète horaire',
+      summary: "Réception ou modification d'un achat, changement de stock d'une pièce, et toutes les heures",
+    },
+    default_active: 1,
+  },
+  {
     id: 'sys_return_item_created',
     name: 'Création d\'un item de retour (import Airtable #2)',
     description:
@@ -1896,6 +1946,58 @@ export const SYSTEM_AUTOMATIONS = [
     },
   },
   {
+    id: 'sys_facture_paid_slack',
+    name: 'Facture payée : demande de lien au projet sur Slack',
+    description:
+      "Quand une facture passe à « Payé » — quelle qu'en soit l'origine : Stripe, paiement saisi dans l'ERP, sync QuickBooks ou Airtable — envoie un message Slack (canal #paiements par défaut) qui demande de lier la facture au projet, avec le lien vers la fiche de la facture. " +
+      "Les factures d'ABONNEMENT sont ignorées, SAUF le premier paiement de l'abonnement (aucune autre facture payée, de montant non nul, plus ancienne sur le même abonnement). " +
+      "Une facture d'abonnement dont l'abonnement n'est pas encore synchronisé attend : elle sera tranchée à sa prochaine mise à jour. " +
+      "Une facture à 0 $ n'envoie rien (skip_zero_amount=0 pour l'inclure). " +
+      "Chaque facture n'est tranchée qu'une fois (envoyée, ignorée ou en erreur) ; les factures déjà payées à la mise en service n'envoient jamais rien. " +
+      "Le texte est modifiable dans « message » : {lien} = lien vers la facture, {numero} = numéro de la facture. " +
+      "Désactivée : aucune alerte, et les factures payées pendant la pause ne sont pas rattrapées.",
+    trigger_config: {
+      kind: 'db_change',
+      source: 'change_log(factures) → facturePaidSlackWatcher (poll 5s)',
+      summary: 'Facture passée à « Payé », hors abonnement (sauf 1er paiement)',
+    },
+    action_config: {
+      slack_channel: '#paiements',
+      slack_webhook_url: '',
+      slack_webhook_env: '',
+      paid_statuses: 'Payé, Payée',
+      skip_zero_amount: '1',
+      message:
+        'Une facture a été payée.\n' +
+        'SVP liez la facture au projet : {lien}\n' +
+        'Et suivez la procédure inscrite sur la fiche de la facture.\n' +
+        "S'il s'agit d'un rachat d'équipement en abonnement, n'oubliez pas d'annuler / modifier l'abonnement et de changer l'état des numéros de série concernés.",
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_project_auto_close',
+    name: 'Projets : fermeture automatique après 30 jours',
+    description:
+      "Chaque matin (6 h 15 à Montréal), ferme les projets encore ouverts (champ « Vendu » vide) dont la date de création remonte à « days » jours ou plus. " +
+      "Fermer = Vendu « Non », Raison du refus « reason » (« Fermeture automatique » par défaut), Fermeture = la date du jour si elle était vide. Le changement est aussi poussé dans Airtable. " +
+      "Un projet déjà marqué Vendu (Oui ou Non) n'est jamais touché. Un jour manqué est rattrapé au passage suivant. " +
+      "Le journal ne reçoit que les passages qui ont fermé quelque chose. « Simuler » liste les projets qui seraient fermés ; « Exécuter » les ferme tout de suite.",
+    trigger_config: {
+      kind: 'schedule',
+      source: "cron '15 10 * * *' UTC (index.js) → services/projectAutoClose.js",
+      cron: '15 10 * * * UTC (6 h 15 à Montréal en été)',
+      summary: 'Tous les matins',
+    },
+    action_config: {
+      days: '30',
+      reason: 'Fermeture automatique',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
     id: 'sys_trash_auto_cleanup',
     name: 'Corbeille : suppression définitive après 30 jours',
     description:
@@ -1920,6 +2022,40 @@ export const SYSTEM_AUTOMATIONS = [
     },
     action_config: {
       retention_days: '30',
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_soumission_link_click',
+    name: 'Clic sur « S’abonner » / « Acheter » d’une soumission → fil d’activité',
+    description:
+      "Chaque ouverture d'un bouton « S'abonner » ou « Acheter » du PDF d'une soumission ajoute une note entrante " +
+      "« Lien … ouvert » au fil d'activité du contact et de l'entreprise de la soumission. " +
+      "Les clics faits depuis l'ERP lui-même (aperçu) et les robots de messagerie ne sont pas comptés.",
+    trigger_config: {
+      kind: 'app_event',
+      source: 'GET /erp/pay/soumission/:id/:kind → services/soumissionLinkClick.js',
+      summary: "Déclenché quand le client ouvre un bouton de paiement d'une soumission",
+    },
+    configurable: true,
+    default_active: 1,
+  },
+  {
+    id: 'sys_soumission_late_click_task',
+    name: 'Clic tardif sur une soumission → tâche de relance',
+    description:
+      "Si le client ouvre « S'abonner » ou « Acheter » plus de delay_hours heures après le dernier envoi de la soumission, " +
+      "une tâche « Relancer … » (priorité haute, échéance le jour même) est créée pour l'utilisateur assignee_email, " +
+      "liée à l'entreprise et au contact. Une seule tâche ouverte à la fois par soumission.",
+    trigger_config: {
+      kind: 'app_event',
+      source: 'GET /erp/pay/soumission/:id/:kind → services/soumissionLinkClick.js',
+      summary: "Déclenché au clic sur un bouton de paiement, si l'envoi date de plus de delay_hours heures",
+    },
+    action_config: {
+      assignee_email: 'philippe@orisha.io',
+      delay_hours: '24',
     },
     configurable: true,
     default_active: 1,

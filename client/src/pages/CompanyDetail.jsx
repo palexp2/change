@@ -1,9 +1,10 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { Link } from 'react-router-dom'
-import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList, LifeBuoy } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { Link, useNavigate } from 'react-router-dom'
+import { Edit2, Plus, Save, X, Trash2, ExternalLink, FileText, ChevronDown, Package, FolderKanban, CheckSquare, Truck, RefreshCw, ShoppingCart, Undo2, Users, Phone, ClipboardList, LifeBuoy, Mail, Merge } from 'lucide-react'
 import EmptyState from '../components/EmptyState.jsx'
 import InteractionTimeline from '../components/InteractionTimeline.jsx'
 import LogInteractionModal from '../components/LogInteractionModal.jsx'
+import CrmEmailComposer from '../components/CrmEmailComposer.jsx'
 import { CreateInvoiceModal } from '../components/CreateInvoiceModal.jsx'
 import { CreateSubscriptionModal } from '../components/CreateSubscriptionModal.jsx'
 import api from '../lib/api.js'
@@ -38,11 +39,16 @@ import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { fmtDate } from '../lib/formatDate.js'
+import { stripeFactureUrl } from '../lib/stripeLinks.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import { DuplicateWarning } from '../components/DuplicateWarning.jsx'
 import { AddressCheckBadge, AddressCheckIssues, AddressConfirmBadge, AddressRecheckButton, parseCheckIssues } from '../components/AddressCheckIssues.jsx'
 import { AdresseModalContent } from '../components/AdresseModal.jsx'
+import { CreateRetourModal } from '../components/CreateRetourModal.jsx'
+import { CompanyMergeModal } from '../components/CompanyDuplicatesModal.jsx'
+import { useCustomFields } from '../lib/useCustomFields.js'
+import { parseSelectChoices, colorForChoice, ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 
 const PHASES = ['Contact', 'Qualified', 'Problem aware', 'Solution aware', 'Lead', 'Quote Sent', 'Customer', 'Not a Client Anymore']
 
@@ -154,7 +160,7 @@ function InlineField({ field, value, saving, onSave }) {
 // « Langue » retirée de la fiche le 2026-09-09 (fiche entreprise seulement) :
 // la colonne reste en base et sur les contacts.
 const COMPANY_FIELDS = [
-  { key: 'lifecycle_phase', label: 'Phase',     type: 'select', options: PHASES, span2: true },
+  { key: 'lifecycle_phase', label: 'Phase du cycle de vie', type: 'select', options: PHASES, span2: true },
   { key: 'currency',        label: 'Devise',    type: 'select', options: ['CAD','USD','EUR'] },
   { key: 'is_vendeur_orisha', label: 'Vendeur Orisha', type: 'boolean', span2: true },
   { key: 'notes',           label: 'Notes',     type: 'textarea', span2: true, defaultVisible: false },
@@ -594,6 +600,13 @@ function stackedTableHeight(rows) {
 // s'atteint par « Tout voir », qui ouvre le tableau complet au centre.
 const RAIL_ROWS = 5
 
+// Reflet local de la règle serveur : une seule adresse principale par type.
+function demoteSiblings(list, adr) {
+  if (adr?.address_rank !== 'Principale') return list
+  return list.map(a => (a.id !== adr.id && a.address_type === adr.address_type && a.address_rank === 'Principale')
+    ? { ...a, address_rank: 'Secondaire' } : a)
+}
+
 const ABO_STATUS = { active: 'Actif', canceled: 'Annulé', past_due: 'En retard', trialing: 'Essai' }
 
 // Titre du panneau d'un achat fournisseur (carte de droite et tableau central).
@@ -609,11 +622,18 @@ export default function CompanyDetail({ recordId, onClose }) {
   const id = recordId
   const confirm = useConfirm()
   const { addToast } = useToast()
+  // Couleurs du champ « Statut » des numéros de série (mêmes que leur fiche).
+  const { fields: serialFields } = useCustomFields('serial_numbers')
+  const serialStatusChoices = useMemo(() => parseSelectChoices(serialFields.find(f => f.column_name === 'status')), [serialFields])
   // Bulk « Retourner tous les numéros de série » (import automatisation Airtable #3)
   const [bulkReturnSerialIds, setBulkReturnSerialIds] = useState(null)
   const [bulkReturnReason, setBulkReturnReason] = useState('')
   const [bulkReturnSubmitting, setBulkReturnSubmitting] = useState(false)
+  const [showCreateRetour, setShowCreateRetour] = useState(false)
+  const [showMerge, setShowMerge] = useState(false)
+  const navigate = useNavigate()
   const [fieldSaving, setFieldSaving] = useState(null)
+  const customSavingKeys = useMemo(() => (fieldSaving ? { [fieldSaving]: true } : {}), [fieldSaving])
   const { status: saveState, save } = useSaveStatus()
   const [showContactModal, setShowContactModal] = useState(false)
   const [contactForm, setContactForm] = useState({ first_name: '', last_name: '', email: '', phone: '', mobile: '', language: '' })
@@ -653,7 +673,7 @@ export default function CompanyDetail({ recordId, onClose }) {
   const [adresses, setAdresses] = useState([])
   const [showAdresseModal, setShowAdresseModal] = useState(false)
   const [editingAdresse, setEditingAdresse] = useState(null)
-  const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' })
+  const [adresseForm, setAdresseForm] = useState({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', address_rank: '', contact_id: '' })
   const [onboardingResponses, setOnboardingResponses] = useState([])
   const [qualificationCalls, setQualificationCalls] = useState([])
   const [systemBuilders, setSystemBuilders] = useState([])
@@ -661,9 +681,13 @@ export default function CompanyDetail({ recordId, onClose }) {
   // groupe de records liés ouvert depuis la colonne de droite.
   const [centerView, setCenterView] = useState('fil')
   const [showLogModal, setShowLogModal] = useState(false)
+  const [showEmail, setShowEmail] = useState(false)
   const { record: company, setRecord: setCompany, loading, loadError, reload: load } =
     useDetailRecord(() => api.companies.get(id), [id])
 
+  // Fenêtre de fusion ouverte : la suppression qui arrive est la nôtre.
+  const mergingRef = useRef(false)
+  useEffect(() => { mergingRef.current = false }, [id])
   useRealtimeChannel(id ? `company:${id}` : null, (msg) => {
     if (msg.type === 'company:updated') {
       // La table `companies` garde une colonne legacy `contacts` (TEXT JSON Airtable
@@ -672,7 +696,7 @@ export default function CompanyDetail({ recordId, onClose }) {
       const { contacts: _legacyContacts, ...rest } = msg.payload || {}
       setCompany(c => c ? { ...c, ...rest } : c)
     } else if (msg.type === 'company:deleted') {
-      onClose?.()
+      if (!mergingRef.current) onClose?.()
     } else if (msg.type === 'company:contacts_changed') {
       // Re-fetch la fiche pour rafraîchir le sous-tableau `contacts`
       // (link/délink/rename d'un contact lié, depuis un autre onglet/user).
@@ -780,6 +804,16 @@ export default function CompanyDetail({ recordId, onClose }) {
       document_date: row => <span className="text-slate-500">{fmtDate(row.document_date)}</span>,
       amount_before_tax_cad: row => <span className="font-medium text-slate-700">{fmtMoney(row.amount_before_tax_cad, row.currency)}</span>,
       currency: row => <span className="font-mono text-xs text-slate-600">{(row.currency || 'CAD').toUpperCase()}</span>,
+      stripe: row => {
+        const url = stripeFactureUrl(row)
+        if (!url) return <span className="text-slate-400">—</span>
+        return (
+          <a href={url} target="_blank" rel="noopener noreferrer" onClick={e => e.stopPropagation()}
+            className="inline-flex items-center gap-1 link-record" title="Ouvrir dans Stripe">
+            <ExternalLink size={12} /> Stripe
+          </a>
+        )
+      },
     }
     return TABLE_COLUMN_META.company_factures.map(m => ({ ...m, render: RENDERS[m.id] }))
   }, [])
@@ -1246,7 +1280,7 @@ export default function CompanyDetail({ recordId, onClose }) {
             render: (row, { close }) => <RetourDetail recordId={row.id} embedded onClose={close} />,
           }}
           height={stackedTableHeight(retours.length)}
-          emptyState={{ icon: Undo2, title: 'Aucun retour', description: "Aucune demande de retour (RMA) n'a été enregistrée pour cette entreprise." }}
+          emptyState={{ icon: Undo2, title: 'Aucun retour', cta: { label: 'Créer un retour', icon: Plus, onClick: () => setShowCreateRetour(true) } }}
         />
       ),
     },
@@ -1282,6 +1316,7 @@ export default function CompanyDetail({ recordId, onClose }) {
         to: `/serials/${r.id}`,
         primary: r.serial || `#${r.id}`,
         secondary: r.product_name || r.sku || null,
+        meta: r.status ? <ChoiceBadge color={colorForChoice(serialStatusChoices, r.status)}>{r.status}</ChoiceBadge> : null,
       }),
       table: () => (
         <DataTable
@@ -1401,17 +1436,28 @@ export default function CompanyDetail({ recordId, onClose }) {
           )}
           {company?.stripe_customer_id && (
             <a
-              href={`https://customer.orisha.io/create-customer-portal-session?customerId=${encodeURIComponent(company.stripe_customer_id)}`}
+              href={`https://dashboard.stripe.com/customers/${encodeURIComponent(company.stripe_customer_id)}`}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 link-record"
             >
-              <ExternalLink size={12} /> Portail Stripe
+              <ExternalLink size={12} /> Stripe
             </a>
           )}
           </>
         ),
         actions: (
+        <>
+        <button
+          onClick={() => setShowCreateRetour(true)}
+          className="btn-secondary"
+          data-testid="company-new-retour"
+        >
+          <Undo2 size={14} /> Retour
+        </button>
+        <button onClick={() => { mergingRef.current = true; setShowMerge(true) }} className="btn-secondary" title="Fusionner" data-testid="company-merge">
+          <Merge size={14} />
+        </button>
         <div className="relative">
           <button
             onClick={() => setInvoiceMenuOpen(o => !o)}
@@ -1437,10 +1483,23 @@ export default function CompanyDetail({ recordId, onClose }) {
             </>
           )}
         </div>
+        </>
         ),
       }}
       beforeNav={(
         <>
+      <CompanyMergeModal
+        isOpen={showMerge}
+        company={company}
+        onClose={() => { mergingRef.current = false; setShowMerge(false) }}
+        onMerged={keepId => {
+          setShowMerge(false)
+          invalidate(`/companies/${keepId}`)
+          if (keepId === id) { mergingRef.current = false; load() }
+          else navigate(`/companies/${keepId}`, { replace: true })
+        }}
+      />
+
       <CreateInvoiceModal
         companyId={id}
         initialMode={invoiceModalMode}
@@ -1494,7 +1553,8 @@ export default function CompanyDetail({ recordId, onClose }) {
                 et ceux qu'on ajoute se règlent dans la fiche elle-même (bouton
                 « Personnaliser les champs » au survol de la carte). Le nom de
                 l'entreprise reste hors carte — il est déjà le titre. */}
-            <DetailFieldGrid entityType="companies" record={company} className="card p-4" onDeleted={onClose}>
+            <DetailFieldGrid entityType="companies" record={company} className="card p-4" onDeleted={onClose}
+              onSaveCustom={saveField} savingKeys={customSavingKeys}>
               {COMPANY_FIELDS.filter(f => f.key !== 'name').map(field => (
                 <DetailField
                   key={field.key}
@@ -1529,7 +1589,7 @@ export default function CompanyDetail({ recordId, onClose }) {
               testId="crm-card-adresses"
               action={<CrmAdd
                 label="Ajouter une adresse"
-                onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '' }); setShowAdresseModal(true) }}
+                onClick={() => { setEditingAdresse(null); setAdresseForm({ line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', address_rank: '', contact_id: '' }); setShowAdresseModal(true) }}
               />}
             >
               {adresses.length === 0 ? (
@@ -1541,6 +1601,9 @@ export default function CompanyDetail({ recordId, onClose }) {
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="text-[11px] font-medium px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">{a.address_type || '—'}</span>
+                          {a.address_rank && (
+                            <span className={`text-[11px] font-medium px-1.5 py-0.5 rounded-full ${a.address_rank === 'Principale' ? 'bg-brand-50 text-brand-700' : 'bg-slate-50 text-slate-500'}`} data-testid={`adresse-rank-${a.id}`}>{a.address_rank}</span>
+                          )}
                           {/* Verdict du vérificateur d'adresses (services/addressCheck.js). */}
                           <AddressCheckBadge status={a.check_status} />
                           {/* Confirmation auprès de l'API (livraison / ferme). */}
@@ -1563,7 +1626,7 @@ export default function CompanyDetail({ recordId, onClose }) {
                         )}
                       </div>
                       <div className="flex gap-0.5 shrink-0 opacity-0 group-hover:opacity-100 transition">
-                        <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1" title="Modifier"><Edit2 size={13} /></button>
+                        <button onClick={() => { setEditingAdresse(a); setAdresseForm({ line1: a.line1||'', city: a.city||'', province: a.province||'', postal_code: a.postal_code||'', country: a.country||'Canada', address_type: a.address_type||'Ferme', address_rank: a.address_rank||'', contact_id: a.contact_id||'' }); setShowAdresseModal(true) }} className="text-slate-400 hover:text-brand-600 p-1" title="Modifier"><Edit2 size={13} /></button>
                         <button onClick={async () => { if (!(await confirm('Supprimer cette adresse ?'))) return; await api.adresses.delete(a.id); setAdresses(prev => prev.filter(x => x.id !== a.id)) }} className="text-slate-400 hover:text-red-500 p-1" title="Supprimer"><Trash2 size={13} /></button>
                       </div>
                     </div>
@@ -1580,9 +1643,14 @@ export default function CompanyDetail({ recordId, onClose }) {
             <div className="flex items-center justify-between gap-2">
               <CrmCenterTabs tabs={centerTabs} active={centerView} onSelect={setCenterView} />
               {centerView === 'fil' && (
-                <button onClick={() => setShowLogModal(true)} className="btn-secondary btn-sm" data-testid="log-interaction">
-                  <Plus size={14} /> Consigner
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button onClick={() => setShowEmail(true)} className="btn-secondary btn-sm" title="Courriel" aria-label="Courriel" data-testid="compose-email">
+                    <Mail size={14} />
+                  </button>
+                  <button onClick={() => setShowLogModal(true)} className="btn-secondary btn-sm" data-testid="log-interaction">
+                    <Plus size={14} /> Consigner
+                  </button>
+                </div>
               )}
             </div>
             {openRelated ? openRelated.table()
@@ -1640,6 +1708,7 @@ export default function CompanyDetail({ recordId, onClose }) {
         abonnement={selectedAbonnement}
         onClose={() => setSelectedAbonnement(null)}
         onChange={reloadAbonnements}
+        stripeButton
       />
 
       {/* Une ligne d'achat fournisseur de la carte de droite ouvre la même
@@ -1673,6 +1742,15 @@ export default function CompanyDetail({ recordId, onClose }) {
         />
       )}
 
+      <CrmEmailComposer
+        isOpen={showEmail}
+        onClose={() => setShowEmail(false)}
+        contacts={company.contacts || []}
+        companyId={id}
+        recipientSelect
+        onSent={reloadInteractions}
+      />
+
       {/* Task Modal */}
       {showTaskModal && (
         <CompanyTaskModal
@@ -1700,8 +1778,8 @@ export default function CompanyDetail({ recordId, onClose }) {
           editingAdresse={editingAdresse}
           adresseForm={adresseForm}
           setAdresseForm={setAdresseForm}
-          onSaved={updated => setAdresses(prev => prev.map(a => a.id === updated.id ? updated : a))}
-          onCreated={created => setAdresses(prev => [...prev, created])}
+          onSaved={updated => setAdresses(prev => demoteSiblings(prev.map(a => a.id === updated.id ? updated : a), updated))}
+          onCreated={created => setAdresses(prev => demoteSiblings([...prev, created], created))}
           onClose={() => setShowAdresseModal(false)}
         />
       </Modal>
@@ -1815,6 +1893,19 @@ export default function CompanyDetail({ recordId, onClose }) {
           </div>
         </form>
       </Modal>
+
+      <CreateRetourModal
+        isOpen={showCreateRetour}
+        onClose={() => setShowCreateRetour(false)}
+        companyId={id}
+        tickets={tickets}
+        adresses={adresses}
+        orders={company.orders || []}
+        onCreated={() => {
+          api.returns.listByCompany(id).then(r => setRetours(r.data || [])).catch(() => {})
+          api.companies.get(id).then(setCompany).catch(() => {})
+        }}
+      />
 
       <Modal isOpen={!!bulkReturnSerialIds} onClose={() => setBulkReturnSerialIds(null)} title="Retourner tous les numéros de série" size="sm">
         <div className="space-y-4">

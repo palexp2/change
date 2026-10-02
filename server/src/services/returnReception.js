@@ -1,19 +1,16 @@
 /**
  * Réception d'un article de retour — les règles viennent d'Airtable.
  *
- * Dans Airtable, chaque article reçu porte une phrase « Instructions pour le
- * réceptionniste » qui dit dans quelle étagère poser l'article. Relevé le
- * 2026-09-15 sur les 452 articles qui en portent une : la RAISON DU RETOUR la
- * détermine à 100 %, sans une seule exception.
+ * La RAISON DU RETOUR dit dans quelle étagère poser l'article. Règle de
+ * Martin Audesse (2026-10-01) : « Fin d'abonnement = reconditionnement. Tous
+ * les autres dans l'étagère d'analyse » — raison vide ou inconnue comprise.
  *
- *   Retour de garantie avec échange immédiat → étagère d'analyse
- *   Retour de garantie avec échange différé  → étagère d'analyse + séance
- *   Fin d'abonnement / Le client à changé d'idée → reconditionnement + PA avisé
- *   Erreur de commande / Retour d'équipement de courtoisie → reconditionnement
+ *   Fin d'abonnement → reconditionnement + PA avisé
+ *   Retour de garantie avec échange différé → analyse + séance
+ *   Le client à changé d'idée → analyse + PA avisé
+ *   tout le reste → analyse
  *
- * Les phrases sont recopiées au caractère près : c'est ce que l'équipe lit
- * depuis 2023. Une raison inconnue (ou vide) ne se devine pas — l'article est
- * reçu quand même, mais sans étagère.
+ * Les phrases sont celles qu'Airtable affichait depuis 2023.
  */
 
 const ANALYSE = "SVP place l'article dans l'étagère d'analyse."
@@ -22,19 +19,17 @@ const SEANCE = "L'item sera analysé, réparé, nettoyé et renvoyé lors de la 
 const PA_AVISE = 'PA a été avisé de la réception de cet item.'
 
 const INSTRUCTIONS_PAR_RAISON = {
-  'Retour de garantie avec échange immédiat': [ANALYSE],
-  'Retour de garantie avec échange différé': [ANALYSE, SEANCE],
   "Fin d'abonnement": [RECONDITIONNEMENT, PA_AVISE],
-  "Le client à changé d'idée": [RECONDITIONNEMENT, PA_AVISE],
-  'Erreur de commande': [RECONDITIONNEMENT],
-  "Retour d'équipement de courtoisie": [RECONDITIONNEMENT],
+  'Retour de garantie avec échange différé': [ANALYSE, SEANCE],
+  "Le client à changé d'idée": [ANALYSE, PA_AVISE],
 }
 
-/** Étagère visée : 'analyse' | 'reconditionnement' | null (raison inconnue). */
+const instructionParts = (returnReason) =>
+  INSTRUCTIONS_PAR_RAISON[String(returnReason || '').trim()] || [ANALYSE]
+
+/** Étagère visée : 'analyse' | 'reconditionnement'. */
 export function receptionShelf(returnReason) {
-  const parts = INSTRUCTIONS_PAR_RAISON[String(returnReason || '').trim()]
-  if (!parts) return null
-  return parts[0] === ANALYSE ? 'analyse' : 'reconditionnement'
+  return instructionParts(returnReason)[0] === RECONDITIONNEMENT ? 'reconditionnement' : 'analyse'
 }
 
 /** La phrase affichée au réceptionniste après un scan. */
@@ -42,9 +37,7 @@ export function receptionInstruction(returnReason, person) {
   // Un utilisateur Boréal arrive en nom complet : on salue par le prénom.
   const who = String(person || '').trim().split(/\s+/)[0]
   const salut = who ? `Bonjour ${who}, ` : ''
-  const parts = INSTRUCTIONS_PAR_RAISON[String(returnReason || '').trim()]
-  if (!parts) return `${salut}article reçu. Étagère à déterminer.`
-  return salut + parts.join(' ')
+  return salut + instructionParts(returnReason).join(' ')
 }
 
 /**

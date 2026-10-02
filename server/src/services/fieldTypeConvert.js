@@ -169,7 +169,22 @@ function choiceIndex(options) {
   return idx.size ? idx : null
 }
 
-function textToValue(text, type, options, { choices } = {}) {
+// Un champ adopté d'une DURÉE Airtable mais typé texte côté Boréal garde ce
+// qu'Airtable envoie : des secondes nues (« 1500 » = 25 min). Le relire comme
+// une saisie (entier nu = minutes) multiplierait tout par 60.
+const BARE_NUMBER = /^\d+(?:\.\d+)?$/
+function mirrorsAirtableDuration(field) {
+  if (field?.source !== 'airtable' || !field.airtable_mapping_id) return false
+  try {
+    const row = db.prepare(`
+      SELECT t.field_type FROM airtable_field_mappings m
+      JOIN airtable_field_types t ON t.field_id = m.airtable_field_id
+      WHERE m.id = ? LIMIT 1`).get(field.airtable_mapping_id)
+    return row?.field_type === 'duration'
+  } catch { return false }
+}
+
+function textToValue(text, type, options, { choices, bareSeconds } = {}) {
   switch (type) {
     case 'text':
     case 'long_text':
@@ -183,6 +198,7 @@ function textToValue(text, type, options, { choices } = {}) {
       return n === null ? { ok: false } : { ok: true, value: n }
     }
     case 'duration': {
+      if (bareSeconds && BARE_NUMBER.test(text.trim())) return { ok: true, value: Number(text.trim()) }
       const s = parseDurationToSeconds(text)
       return s === null ? { ok: false } : { ok: true, value: s }
     }
@@ -307,13 +323,14 @@ export function planTypeConversion(field, toType, toOptions) {
     }
   }
 
+  const bareSeconds = toType === 'duration' && fromType !== 'duration' && mirrorsAirtableDuration(field)
   const failCounts = new Map()
   const convByText = new Map()
   for (const r of rows) {
     const text = textOf(r.v)
     if (text == null) { plan.clears.push(r.id); continue }
     if (!convByText.has(text)) {
-      convByText.set(text, UNFABRICABLE.has(toType) ? { ok: false } : textToValue(text, toType, toOptions, { choices }))
+      convByText.set(text, UNFABRICABLE.has(toType) ? { ok: false } : textToValue(text, toType, toOptions, { choices, bareSeconds }))
     }
     const res = convByText.get(text)
     if (res.ok) {

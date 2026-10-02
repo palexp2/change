@@ -1,4 +1,6 @@
 import { spawn } from 'child_process'
+import { chooseRunAccount } from './claudeUsage.js'
+import { getAccount, markAccountLimited, hasAvailableAccount } from './claudeAccounts.js'
 import { newRecordId } from '../utils/recordId.js'
 import { readFileSync, writeFileSync, appendFileSync, renameSync, existsSync, unlinkSync, readdirSync, statSync } from 'fs'
 import { resolve, dirname } from 'path'
@@ -311,6 +313,13 @@ function promptTemplate(key) {
 // les accolades simples du schéma JSON de sortie sont préservées telles quelles.
 function renderTemplate(tpl, vars) {
   return String(tpl).replace(/\{\{(\w+)\}\}/g, (m, k) => (k in vars ? String(vars[k] ?? '') : m))
+}
+
+// Compte Claude d'un spawn : celui qui a le plus de marge (voir claudeAccounts.js).
+// Le principal n'ajoute rien à l'environnement ; un compte supplémentaire pose
+// CLAUDE_CONFIG_DIR vers son dossier.
+function runAccountEnv(accountId = null) {
+  return getAccount(accountId || chooseRunAccount().id).env
 }
 
 // ERP_AGENT_RUN=1 est posé sur CHAQUE spawn de claude ci-dessous (voir les quatre
@@ -673,7 +682,7 @@ export function generateInstantProposal(itemId) {
   const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
   const spec = toollessSpec({ model, effort })
   const proc = spawn(spec.bin, spec.args,
-    { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+    { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1', ...runAccountEnv() }, stdio: 'pipe' })
 
   proc.stdin.write(prompt)
   proc.stdin.end()
@@ -709,7 +718,7 @@ export function runToollessClaude({ prompt, model: wanted = 'sonnet', effort = '
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
     const spec = toollessSpec({ model, effort })
     const proc = spawn(spec.bin, spec.args,
-      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1', ...runAccountEnv() }, stdio: 'pipe' })
 
     proc.stdin.write(prompt)
     proc.stdin.end()
@@ -795,7 +804,7 @@ function runUserSummary(taskId) {
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
     const spec = toollessSpec({ model: 'haiku', effort: 'low' })
     const proc = spawn(spec.bin, spec.args,
-      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1', ...runAccountEnv() }, stdio: 'pipe' })
 
     proc.stdin.write(prompt)
     proc.stdin.end()
@@ -1046,15 +1055,26 @@ function rearmLimitTimer() {
 async function handleLimitHit(taskId, limit, sessionId) {
   const task = readTasks().find(t => t.id === taskId) || {}
   const ranModel = task.run_model || task.model || preferredAgentModel()
-  const scope = await fetchLimitScope()
-  noteLimit(scope === 'account' ? CLAUDE_MODELS : [ranModel], limit)
+  const ranAccount = task.run_account || null
+  const scope = await fetchLimitScope(ranAccount)
+  // Plafond de COMPTE avec un autre compte encore disponible : seul ce compte est mis
+  // de côté jusqu'à sa réinitialisation, la tâche repart aussitôt sur l'autre.
+  let switched = false
+  if (scope === 'account' && ranAccount) {
+    markAccountLimited(ranAccount, limit.resetAt)
+    switched = hasAvailableAccount({ exceptId: ranAccount })
+    if (switched) console.warn(`🤖 Agent: compte Claude « ${ranAccount} » à sec jusqu'à ${limit.label} — bascule sur l'autre compte`)
+  }
+  if (!switched) noteLimit(scope === 'account' ? CLAUDE_MODELS : [ranModel], limit)
 
   const isQueue = task.kind === 'queue'
   const deferred = updateTask(taskId, {
     // Item de file : c'est la file qui le relancera (nouvelle tâche) → celle-ci sort
     // du jeu. Suggestion/backlog : le runner la reprendra lui-même.
     status: isQueue ? 'cancelled' : 'approved',
-    agent_result: `(limite Claude atteinte — reprise automatique à ${limit.label})`,
+    agent_result: switched
+      ? '(limite Claude atteinte sur ce compte — reprise sur l\'autre compte)'
+      : `(limite Claude atteinte — reprise automatique à ${limit.label})`,
     user_summary: null,
     run_model: null,
     session_id: sessionId || null,
@@ -1064,7 +1084,11 @@ async function handleLimitHit(taskId, limit, sessionId) {
     broadcastTask(deferred)
     setImmediate(() => {
       import('./promptQueue.js')
-        .then(m => m.onAgentTaskDeferred(deferred, limit))
+        .then(m => {
+          m.onAgentTaskDeferred(deferred, limit)
+          // Autre compte disponible : on n'attend pas la réinitialisation.
+          if (switched) { m.advanceQueue(); kick() }
+        })
         .catch(e => console.error('🤖 File de travaux: report impossible —', e.message))
     })
   }
@@ -1152,7 +1176,7 @@ function spawnClaude({ prompt, allowedTools, streamTaskId = null, timeoutMs }) {
     const { CLAUDECODE: _c, CLAUDE_CODE_ENTRYPOINT: _e, ...cleanEnv } = process.env
     const spec = streamSpec({ allowedTools })
     const proc = spawn(spec.bin, spec.args,
-      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1' }, stdio: 'pipe' })
+      { cwd: CWD, env: { ...cleanEnv, HOME: '/home/ec2-user', ERP_AGENT_RUN: '1', ...runAccountEnv() }, stdio: 'pipe' })
 
     _currentProc = proc
 
@@ -1445,7 +1469,7 @@ function killExecutionTree(taskId, lane, pid) {
 
 function runDetachedExecution(taskId, prompt, {
   model = null, effort = null, tools = EXEC_TOOLS, resumeSessionId = null, lane = 'exec',
-  execLane = 0,
+  execLane = 0, accountId = null,
 } = {}) {
   const LOG = EXEC_LOG(taskId)
   const CODE = EXEC_CODE(taskId)
@@ -1485,11 +1509,13 @@ function runDetachedExecution(taskId, prompt, {
   // XDG_RUNTIME_DIR / DBUS_SESSION_BUS_ADDRESS explicites : systemd-run --user en a
   // besoin pour joindre le user manager, et un `pm2 resurrect` au boot peut démarrer
   // erp-server sans ces variables.
+  const accountEnv = runAccountEnv(accountId)
   const execEnv = {
     ...cleanEnv,
     HOME: '/home/ec2-user',
     ERP_AGENT_RUN: '1',
     ERP_AGENT_TASK_ID: taskId,
+    ...accountEnv,
     XDG_RUNTIME_DIR: cleanEnv.XDG_RUNTIME_DIR || '/run/user/1000',
     DBUS_SESSION_BUS_ADDRESS: cleanEnv.DBUS_SESSION_BUS_ADDRESS || 'unix:path=/run/user/1000/bus',
   }
@@ -1507,6 +1533,7 @@ function runDetachedExecution(taskId, prompt, {
     '--setenv=HOME=/home/ec2-user',
     '--setenv=ERP_AGENT_RUN=1',
     `--setenv=ERP_AGENT_TASK_ID=${taskId}`,
+    ...Object.entries(accountEnv).map(([k, v]) => `--setenv=${k}=${v}`),
     `--property=MemoryMax=${EXEC_MEMORY_MAX}`,
     `--property=MemoryHigh=${EXEC_MEMORY_HIGH}`,
     `--property=MemorySwapMax=${EXEC_SWAP_MAX}`,
@@ -1564,6 +1591,9 @@ function executeTask(next, { lane = 'exec', execLane = null } = {}) {
   // sur une vieille tâche passe au préféré) — c'est lui qu'on attribue si l'exécution
   // se heurte à un plafond.
   const runModel = normalizeModel(next.model || preferredAgentModel())
+  // `run_account` : le compte Claude qui porte l'exécution (le plus de marge au départ).
+  // C'est lui qu'on marque à sec si l'exécution se heurte au plafond.
+  const runAccount = chooseRunAccount().id
 
   // started_at : horodate le passage en in_progress pour alimenter le compteur de
   // temps écoulé côté UI (timer live pendant l'exécution, durée totale une fois terminée).
@@ -1571,6 +1601,7 @@ function executeTask(next, { lane = 'exec', execLane = null } = {}) {
   // la bonne file) après un redémarrage du serveur.
   const task = updateTask(next.id, {
     status: 'in_progress', started_at: new Date().toISOString(), run_model: runModel,
+    run_account: runAccount,
     ...(lane === 'question' ? null : { exec_lane: myLane }),
   })
   broadcastTask(task)
@@ -1629,7 +1660,7 @@ function executeTask(next, { lane = 'exec', execLane = null } = {}) {
     tools: isQuestion ? READONLY_TOOLS : EXEC_TOOLS,
     // Ancienne session Codex : illisible par Claude, on repart du brief.
     resumeSessionId: next.model === 'codex' ? null : next.resume_session_id || null,
-    lane, execLane: myLane,
+    lane, execLane: myLane, accountId: runAccount,
   })
 }
 

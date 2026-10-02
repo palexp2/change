@@ -173,7 +173,7 @@ export function getCustomFieldSpecs() {
 
 // Champs non configurables, affichés à titre informatif dans la modale.
 export const STRIPE_FACTURE_FIXED = [
-  { label: 'Statut', source: "status — traduit (paid → Payé, open → À payer, void → Void…)" },
+  { label: 'Statut', source: "status — traduit (paid → Payé, open → À payer ou En retard selon l'échéance, void → Void…)" },
   { label: 'Devise', source: 'currency — code ISO en majuscules' },
   { label: 'Entreprise', source: 'customer — lookup companies.stripe_customer_id' },
   { label: 'Abonnement / type', source: 'parent.subscription_details.subscription — lookup subscriptions.stripe_id ; kind = subscription/order' },

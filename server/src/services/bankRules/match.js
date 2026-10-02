@@ -149,13 +149,3 @@ export function matchBankRule(txn, rules) {
   return best
 }
 
-// Ce que la règle pose, en français, pour l'aperçu « cette règle remplirait… ».
-export function ruleSetsLabels(rule) {
-  const out = []
-  if (rule?.vendor_name) out.push(`fournisseur ${rule.vendor_name}`)
-  if (rule?.expense_account_id) out.push('compte de dépense')
-  if (rule?.tax_code_id) out.push('code de taxe')
-  if (rule?.memo) out.push('mémo')
-  if (rule?.qb_type) out.push(rule.qb_type === 'bill' ? 'facture fournisseur' : 'dépense')
-  return out
-}

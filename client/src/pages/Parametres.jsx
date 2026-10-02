@@ -10,6 +10,7 @@ import { defaultNavItems, applyNavOrder } from '../lib/navItems.js'
 import { SETTINGS_ROUTE, settingsSectionsFor } from '../lib/settingsSections.js'
 import QuickBooksAccountCard from '../components/QuickBooksAccountCard.jsx'
 import GmailAccountCard from '../components/GmailAccountCard.jsx'
+import EmailSignatureEditor from '../components/EmailSignatureEditor.jsx'
 import { Badge } from '../components/Badge.jsx'
 import { AddressCheckBadge, AddressCheckIssues } from '../components/AddressCheckIssues.jsx'
 import EmptyState from '../components/EmptyState.jsx'
@@ -331,8 +332,9 @@ function GmailSection() {
         Connectez la boîte Gmail de votre adresse ERP : vos échanges apparaissent alors
         dans le fil des contacts et des projets, et vos envois partent de votre adresse.
       </p>
-      <div className="max-w-xl">
+      <div className="max-w-xl space-y-5">
         <GmailAccountCard />
+        <EmailSignatureEditor />
       </div>
     </div>
   )

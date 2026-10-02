@@ -4,6 +4,7 @@ import { getStripeClient, createOrRefreshCheckoutSession } from '../services/str
 import { APP_URL } from '../config/appUrl.js'
 import { createSoumissionCheckout, SOUMISSION_PAY_KINDS } from '../services/soumissionCheckout.js'
 import { ensureSoumissionSystemBuilder } from '../services/soumissionSystemBuilder.js'
+import { recordSoumissionLinkClick } from '../services/soumissionLinkClick.js'
 
 const router = Router()
 
@@ -34,6 +35,7 @@ const SOUMISSION_ERRORS = {
   expired: [410, 'Soumission expirée', 'Cette soumission a expiré. Écrivez-nous pour la renouveler.'],
   empty: [400, 'Rien à payer', 'Cette option ne comporte aucun montant.'],
   mixed_discounts: [400, 'Paiement à confirmer', 'Les rabais de cette soumission doivent être appliqués par notre équipe. Écrivez-nous.'],
+  currency_mismatch: [400, 'Paiement à confirmer', 'La devise de cette soumission doit être confirmée par notre équipe. Écrivez-nous.'],
   no_tax_place: [400, 'Adresse manquante', 'Nous devons confirmer votre adresse avant le paiement. Écrivez-nous.'],
 }
 // Session payée (ou sans montant dû : rabais de 100 %), et bien celle de cette soumission.
@@ -77,6 +79,8 @@ router.get('/soumission/:id/:kind', async (req, res) => {
     return res.type('html').send(html)
   }
   if (!SOUMISSION_PAY_KINDS.includes(kind)) return res.status(404).type('html').send(htmlPage('Lien introuvable', '<h1 class="error">Lien introuvable</h1>').html)
+  // Compté avant la session Stripe : un clic qui échoue (soumission expirée…) reste un signal.
+  recordSoumissionLinkClick(req, id, kind)
   try {
     const { url } = await createSoumissionCheckout({ stripe: getStripeClient(), soumissionId: id, kind })
     return res.redirect(303, url)
@@ -88,6 +92,13 @@ router.get('/soumission/:id/:kind', async (req, res) => {
       `<h1 class="error">${title}</h1><p>${text}</p><a class="btn" href="mailto:info@orisha.io">info@orisha.io</a>`, status)
     return res.status(status).type('html').send(html)
   }
+})
+
+// GET /pay/:pendingId/merci — retour de Stripe après le paiement d'une facture.
+router.get('/:pendingId/merci', (req, res) => {
+  const { html } = htmlPage('Merci',
+    `<h1>Merci !</h1><p>Votre paiement a bien été reçu.</p><p class="muted">Thank you! Your payment has been received.</p>`)
+  return res.type('html').send(html)
 })
 
 // GET /pay/:pendingId — public permanent payment link.

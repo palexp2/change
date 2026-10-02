@@ -357,3 +357,23 @@ export function emitMirrorWrite(erpTable, outcome, id, changed = null, source = 
     ts: Date.now(),
   })
 }
+
+/**
+ * Le miroir vient de SUPPRIMER une ligne (record détruit dans Airtable).
+ * `row` est la ligne lue AVANT la suppression : une ligne de commande n'est
+ * diffusée que sur le canal de sa commande, qu'on ne peut plus relire après.
+ */
+export function emitMirrorDelete(erpTable, row, source = 'airtable') {
+  if (!erpTable || !row?.id) return
+  if (erpTable === 'orders') return emitOrder('deleted', row.id, null, { source })
+  if (erpTable === 'companies') return emitCompany('deleted', row.id, null, { source })
+  if (erpTable === 'order_items') {
+    if (row.order_id) emitOrderItem('deleted', row.order_id, { id: row.id }, null, { source })
+    return
+  }
+  const entity = ENTITY_BY_TABLE[erpTable]
+  if (!entity) return
+  emit([`${entity}:list`, `${entity}:${row.id}`], {
+    type: `${entity}:deleted`, payload: { id: row.id }, actorUserId: null, source, ts: Date.now(),
+  })
+}

@@ -57,6 +57,12 @@ export const CACHED_TABLES = [
   { name: 'interactions',             idColumn: 'id', exclude: [], client: false },
   { name: 'stripe_invoice_items',     idColumn: 'id', exclude: [] },
   { name: 'users',                    idColumn: 'id', exclude: ['password_hash'] },
+  // Journalisées pour l'historique des fiches (services/recordRevisions.js)
+  // seulement : aucune page ne les lit dans le cache.
+  { name: 'soumissions',              idColumn: 'id', exclude: [], client: false },
+  { name: 'fournitures',              idColumn: 'id', exclude: [], client: false },
+  { name: 'marketing_forms',          idColumn: 'id', exclude: [], client: false },
+  { name: 'ops_issues',               idColumn: 'id', exclude: [], client: false },
 ]
 
 function tableExists(name) {
@@ -137,6 +143,7 @@ export function purgeChangeLog() {
       DELETE FROM change_log
       WHERE changed_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)
     `).run(`-${CHANGE_LOG_RETENTION_HOURS} hours`)
+    purgeRollupLog()
     if (r.changes > 0) {
       console.log(`[change_log] purged ${r.changes} entries older than ${CHANGE_LOG_RETENTION_HOURS}h`)
     }
@@ -184,6 +191,14 @@ export function droppedFieldColumns(tableName, idColumn = 'id') {
       `SELECT column_name FROM purged_fields WHERE erp_table = ?`
     ).all(tableName)) add(r.column_name)
   } catch { /* migration 011 pas encore passée */ }
+  // Colonne réattribuée à un champ VIVANT (ex. orders.items_count, purgé puis
+  // recréé en rollup « Items ») : la pierre tombale de l'ancien champ ne doit
+  // pas retirer le nouveau du snapshot — la vue « À envoyer » le lit.
+  try {
+    for (const r of db.prepare(
+      `SELECT column_name FROM custom_fields WHERE erp_table = ? AND deleted_at IS NULL`
+    ).all(tableName)) out.delete(r.column_name)
+  } catch { /* table absente (install neuve) */ }
   return out
 }
 
@@ -269,4 +284,87 @@ export function getCachedTableSpec(tableName) {
 export function getAllCachedTableSpecs() {
   if (!columnsCache) buildColumnsCache()
   return columnsCache
+}
+
+// ─── Rollups : renvoyer le parent quand une ligne enfant change ──────────────
+//
+// Un rollup (« Items » d'une commande = somme des quantités de ses lignes) est
+// calculé par la vue du PARENT, mais c'est l'ENFANT qui bouge : le parent n'est
+// pas journalisé, le delta ne le renvoie pas et le cache du navigateur garde
+// l'ancienne valeur jusqu'au prochain bootstrap complet.
+//
+// Les triggers `chr_*` posés sur la table enfant inscrivent le parent dans
+// `change_log_rollup`, que SEUL le delta lit. Pas dans change_log : les watchers
+// qui le taillent (règles de champ, Slack facture payée, constatation des
+// revenus…) prendraient chaque ligne enfant modifiée pour une écriture sur le
+// parent.
+const ROLLUP_TRIGGER_PREFIX = 'chr_'
+const SAFE_SQL_IDENT = /^[a-z_][a-z0-9_]*$/i
+
+function ensureRollupLogTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS change_log_rollup (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_name TEXT NOT NULL,
+      record_id TEXT NOT NULL,
+      changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_change_log_rollup_changed_at ON change_log_rollup(changed_at);
+  `)
+}
+
+// (Re)pose les triggers des rollups d'un parent. Appelé à chaque régénération
+// de sa vue (services/customFieldsView.js) : créer, repointer ou supprimer un
+// rollup remet les triggers d'aplomb. `rollups` = custom_fields kind 'rollup'.
+export function syncRollupTriggers(parentTable, rollups) {
+  if (!SAFE_SQL_IDENT.test(parentTable)) return
+  ensureRollupLogTable()
+  const prefix = `${ROLLUP_TRIGGER_PREFIX}${parentTable}__`
+  const existing = db.prepare(
+    `SELECT name FROM sqlite_master WHERE type='trigger' AND substr(name, 1, ?) = ?`
+  ).all(prefix.length, prefix).map(r => r.name)
+  // Seul le cache du navigateur en profite : parent hors cache = rien à poser.
+  const cached = CACHED_TABLES.some(t => t.name === parentTable && t.client !== false)
+  const pairs = new Map() // `${child}__${fk}` → { child, fk }
+  if (cached) {
+    for (const r of rollups) {
+      const child = r.rollup_target_table, fk = r.rollup_target_fk
+      if (!SAFE_SQL_IDENT.test(child || '') || !SAFE_SQL_IDENT.test(fk || '')) continue
+      if (!tableExists(child)) continue
+      pairs.set(`${child}__${fk}`, { child, fk })
+    }
+  }
+  const tx = db.transaction(() => {
+    for (const name of existing) db.exec(`DROP TRIGGER IF EXISTS "${name}"`)
+    const ins = (ref) => `INSERT INTO change_log_rollup (table_name, record_id)
+        SELECT '${parentTable}', ${ref} WHERE ${ref} IS NOT NULL;`
+    for (const [key, { child, fk }] of pairs) {
+      const base = `${prefix}${key}`
+      db.exec(`CREATE TRIGGER "${base}_ins" AFTER INSERT ON ${child} BEGIN ${ins(`NEW.${fk}`)} END;`)
+      // Ligne déplacée d'un parent à l'autre : les deux changent.
+      db.exec(`CREATE TRIGGER "${base}_upd" AFTER UPDATE ON ${child} BEGIN
+        ${ins(`NEW.${fk}`)}
+        INSERT INTO change_log_rollup (table_name, record_id)
+          SELECT '${parentTable}', OLD.${fk} WHERE OLD.${fk} IS NOT NULL AND OLD.${fk} IS NOT NEW.${fk};
+      END;`)
+      db.exec(`CREATE TRIGGER "${base}_del" AFTER DELETE ON ${child} BEGIN ${ins(`OLD.${fk}`)} END;`)
+    }
+  })
+  tx()
+}
+
+/** Parents à renvoyer depuis `since` : [{ table_name, record_id }]. */
+export function rollupParentsChangedSince(since) {
+  try {
+    return db.prepare(
+      `SELECT DISTINCT table_name, record_id FROM change_log_rollup WHERE changed_at > ?`
+    ).all(since)
+  } catch { return [] } // table pas encore créée
+}
+
+export function purgeRollupLog() {
+  try {
+    db.prepare(`DELETE FROM change_log_rollup WHERE changed_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?)`)
+      .run(`-${CHANGE_LOG_RETENTION_HOURS} hours`)
+  } catch { /* table pas encore créée */ }
 }

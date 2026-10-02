@@ -19,8 +19,11 @@ import { startFieldRuleWatcher } from './services/fieldRuleWatcher.js'
 import { startRevenueRecognitionWatcher } from './services/revenueRecognitionWatcher.js'
 import { startReturnItemCreatedWatcher } from './services/returnItemCreatedWatcher.js'
 import { startShippedCostWatcher } from './services/shippedCostWatcher.js'
+import { startFifoCostWatcher } from './services/fifoCostWatcher.js'
 import { startReturnItemReceivedWatcher } from './services/returnItemReceivedWatcher.js'
+import { startFacturePaidSlackWatcher } from './services/facturePaidSlackWatcher.js'
 import { startAddressCheckWatcher } from './services/addressCheck.js'
+import { startRecordRevisions } from './services/recordRevisions.js'
 import { syncAllPrepaidAccountsFromQB } from './services/prepaid.js'
 import bootstrapRouter from './routes/bootstrap.js'
 import { seedSystemAutomations, logSystemRun, touchSystemRun, isSystemAutomationActive } from './services/systemAutomations.js'
@@ -45,6 +48,7 @@ import interactionsRouter from './routes/interactions.js'
 import callsRouter, { rematchCalls } from './routes/calls.js'
 import connectorsRouter from './routes/connectors.js'
 import hubspotRouter from './routes/hubspot.js'
+import marketingFormsRouter from './routes/marketing-forms.js'
 import purchasesRouter from './routes/purchases.js'
 import serialsRouter from './routes/serials.js'
 import viewsRouter from './routes/views.js'
@@ -150,6 +154,8 @@ import { logSync, purgeSyncLogs } from './services/syncLog.js'
 import { pullDelta as hsPullDelta, retryFailedPushes as hsRetryFailedPushes } from './services/hubspotSync.js'
 import { drainRachatRetryQueue } from './services/subscriptionEvents.js'
 import { isHubSpotConfigured } from './connectors/hubspot.js'
+import { syncHubSpotForms, syncScriptedForms } from './services/hubspotForms.js'
+import { importHubSpotHistory, pendingHistoryTypes as hsPendingHistoryTypes, HISTORY_SYNC_KEY as HS_HISTORY_SYNC_KEY } from './services/hubspotHistoryImport.js'
 import db from './db/database.js'
 import { installAiFetchMeter } from './services/aiCostMeter.js'
 
@@ -449,6 +455,7 @@ app.use('/api/interactions', interactionsRouter)
 app.use('/api/calls', callsRouter)
 app.use('/api/connectors', connectorsRouter)
 app.use('/api/hubspot', hubspotRouter)
+app.use('/api/marketing-forms', marketingFormsRouter)
 app.use('/api/purchases', purchasesRouter)
 app.use('/api/serials', serialsRouter)
 app.use('/api/views', viewsRouter)
@@ -637,6 +644,18 @@ const server = app.listen(PORT, () => {
   // change_log(order_items). Un envoi se crée dans Boréal comme dans Airtable :
   // le seul point commun est l'écriture sur la ligne (cf. shippedCostWatcher).
   startShippedCostWatcher()
+
+  // Coût unitaire FIFO des pièces — tail change_log(purchases, products) +
+  // passe complète horaire (prix d'achat relus dans Airtable).
+  startFifoCostWatcher()
+
+  // « Une facture a été payée » sur Slack — tail change_log(factures), toutes
+  // origines confondues (Stripe, paiement saisi, sync QB/Airtable).
+  startFacturePaidSlackWatcher()
+
+  // Historique des révisions des fiches — tail change_log, diff champ par champ
+  // contre le dernier instantané (services/recordRevisions.js).
+  startRecordRevisions().catch(e => console.error('[revisions] démarrage', e.message))
 
   // Gmail sync — toutes les 3 minutes
   function scheduleGmailSync() {
@@ -892,6 +911,42 @@ const server = app.listen(PORT, () => {
   setTimeout(scheduleHubSpotPushRetry, 75_000)
   setInterval(scheduleHubSpotPushRetry, 2 * 60 * 1000)
 
+  // Formulaires HubSpot + leurs soumissions (Marketing → Formulaires) — toutes les heures.
+  function scheduleHubSpotFormsSync() {
+    if (!isHubSpotConfigured()) return
+    const t0 = Date.now()
+    tracked('hubspot_forms', () => syncHubSpotForms()).then((out) => {
+      logSync('hubspot_forms', 'scheduled', {
+        status: out.errors.length ? 'error' : 'success',
+        modified: out.newSubmissions,
+        error: out.errors.join(' · ') || null,
+        durationMs: Date.now() - t0,
+      })
+    }).catch(e => {
+      logSync('hubspot_forms', 'scheduled', { status: 'error', error: e.message, durationMs: Date.now() - t0 })
+      console.error('HubSpot forms sync error:', e.message)
+    })
+  }
+  // Import de l'historique HubSpot interrompu par un redémarrage → reprise au curseur.
+  setTimeout(() => {
+    const types = isHubSpotConfigured() ? hsPendingHistoryTypes() : []
+    if (!types.length) return
+    tracked(HS_HISTORY_SYNC_KEY, () => importHubSpotHistory({ types }))
+      .then(r => logSync(HS_HISTORY_SYNC_KEY, 'scheduled', { status: 'success', result: r }))
+      .catch(e => { logSync(HS_HISTORY_SYNC_KEY, 'scheduled', { status: 'error', error: e.message }); console.error('HubSpot history:', e.message) })
+  }, 90_000)
+  setTimeout(scheduleHubSpotFormsSync, 3 * 60_000)
+  setInterval(scheduleHubSpotFormsSync, 60 * 60 * 1000)
+  // Formulaires dont le script à la soumission est actif — toutes les 2 min.
+  let scriptedFormsBusy = false
+  setInterval(() => {
+    if (scriptedFormsBusy || !isHubSpotConfigured()) return
+    scriptedFormsBusy = true
+    tracked('hubspot_forms_scripted', () => syncScriptedForms())
+      .catch(e => console.error('HubSpot scripted forms sync error:', e.message))
+      .finally(() => { scriptedFormsBusy = false })
+  }, 2 * 60 * 1000)
+
   // Reprise des détections de rachat (post-churn) échouées — toutes les 5 min.
   // detectRachatForChurn() tourne en fire-and-forget à l'ingestion du webhook
   // Stripe ; un échec y était avalé, laissant un client réabonné marqué churné
@@ -1011,11 +1066,8 @@ const server = app.listen(PORT, () => {
         const { slack_webhook_env } = getStripePayoutPushConfig()
         const url = process.env[slack_webhook_env]
         if (url) {
-          await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: `❌ *Payouts Stripe → QuickBooks* — le passage automatique a échoué : ${e.message}\n→ Journal : page Automations de l'ERP.` }),
-          })
+          const { postSlack } = await import('./services/slack.js')
+          await postSlack(url, `❌ *Payouts Stripe → QuickBooks* — le passage automatique a échoué : ${e.message}\n→ Journal : page Automations de l'ERP.`)
         }
       } catch (slackErr) {
         console.error('Stripe payout push Slack alert error:', slackErr.message)
@@ -1134,6 +1186,15 @@ const server = app.listen(PORT, () => {
   }
   setTimeout(runQbVerify, 240_000)
   setInterval(runQbVerify, 60 * 60 * 1000)
+
+  // Factures « À payer » dont l'échéance est passée → « En retard ».
+  const runOverdueFactures = () => {
+    import('./services/factureBalance.js')
+      .then(({ refreshOverdueFactures }) => refreshOverdueFactures())
+      .catch(e => console.error('factures en retard:', e.message))
+  }
+  setTimeout(runOverdueFactures, 30_000)
+  cron.schedule('5 0 * * *', runOverdueFactures)
 
   cron.schedule('0 6 * * *', () => {
     import('./services/bankQbVerify.js')
@@ -1397,6 +1458,31 @@ const server = app.listen(PORT, () => {
     import('./services/workSuggestions.js')
       .then(({ runSuggestionEngines }) => runSuggestionEngines())
       .catch(e => console.error('work suggestions cron:', e.message))
+  })
+
+  // Agents autonomes (/travaux, onglet « Agents ») : toutes les 10 minutes, les
+  // agents dont l'heure de réveil est passée déposent leur passage dans la file.
+  // Gardé par l'automation système sys_autonomous_agents.
+  cron.schedule('*/10 * * * *', () => {
+    if (!isSystemAutomationActive('sys_autonomous_agents')) return
+    const t0 = Date.now()
+    import('./services/autonomousAgents.js')
+      .then(({ tickAutonomousAgents }) => {
+        const result = tickAutonomousAgents()
+        if (result.lances.length) logSystemRun('sys_autonomous_agents', { status: 'success', result, duration_ms: Date.now() - t0 })
+      })
+      .catch(e => {
+        console.error('autonomous agents cron:', e.message)
+        logSystemRun('sys_autonomous_agents', { status: 'error', error: e.message, duration_ms: Date.now() - t0 })
+      })
+  })
+
+  // Projets ouverts depuis 30 jours (réglable) : fermés avec la raison
+  // « Fermeture automatique ». 10h15 UTC = 6h15 à Montréal.
+  cron.schedule('15 10 * * *', () => {
+    import('./services/projectAutoClose.js')
+      .then(({ scheduledProjectAutoClose }) => scheduledProjectAutoClose())
+      .catch(e => console.error('project auto-close cron:', e.message))
   })
 
   // Corbeille : suppression définitive de ce qui y traîne depuis plus de

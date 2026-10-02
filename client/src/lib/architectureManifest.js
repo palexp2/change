@@ -2,13 +2,13 @@
 // Source : client/scripts/gen-architecture.mjs (lancé en `prebuild`).
 // Régénérer : cd client && node scripts/gen-architecture.mjs
 export const architectureManifest = {
-  "generatedAt": "2026-09-30T19:48:23.437Z",
+  "generatedAt": "2026-10-02T13:05:32.786Z",
   "stats": {
-    "routes": 96,
-    "pages": 82,
-    "groups": 6,
-    "api": 114,
-    "tables": 177,
+    "routes": 97,
+    "pages": 83,
+    "groups": 7,
+    "api": 115,
+    "tables": 191,
     "connectors": 11
   },
   "groups": [
@@ -94,6 +94,19 @@ export const architectureManifest = {
           "adminOnly": false,
           "hrOnly": false,
           "api": "/api/instagram"
+        }
+      ]
+    },
+    {
+      "group": "Marketing",
+      "items": [
+        {
+          "to": "/formulaires",
+          "label": "Formulaires",
+          "component": "MarketingForms",
+          "adminOnly": false,
+          "hrOnly": false,
+          "api": null
         }
       ]
     },
@@ -765,6 +778,7 @@ export const architectureManifest = {
     "/api/lt-debts",
     "/api/mapaq",
     "/api/marketing-budget",
+    "/api/marketing-forms",
     "/api/month-end",
     "/api/notifications",
     "/api/novoxpress",
@@ -854,6 +868,7 @@ export const architectureManifest = {
     "automation_send_log",
     "automation_versions",
     "automations",
+    "autonomous_agents",
     "bank_accounts",
     "bank_import_batches",
     "bank_proposals",
@@ -893,6 +908,7 @@ export const architectureManifest = {
     "drive_inventory_tabs",
     "drive_sync_state",
     "email_attachments",
+    "email_opens",
     "email_relance_overrides",
     "emails",
     "employees",
@@ -907,6 +923,7 @@ export const architectureManifest = {
     "instagram_dm_threads",
     "instagram_prospect_events",
     "instagram_prospects",
+    "interaction_files",
     "interactions",
     "invoice_needs",
     "journal_entry_defaults",
@@ -915,6 +932,9 @@ export const architectureManifest = {
     "marketing_budget_lines",
     "marketing_expense_rules",
     "marketing_expenses",
+    "marketing_form_script_runs",
+    "marketing_form_submissions",
+    "marketing_forms",
     "meetings",
     "missing_invoice_requests",
     "month_end_provision_months",
@@ -935,10 +955,14 @@ export const architectureManifest = {
     "prepaid_amortizations",
     "prepaid_expenses",
     "prepaid_ledger_entries",
+    "product_fifo",
+    "product_opening_costs",
     "products",
     "projects",
     "public_files",
     "purchase_order_numbers",
+    "purchase_price_approvals",
+    "purchase_prices",
     "purchases",
     "qb_attachments",
     "qb_journal_sequences",
@@ -946,6 +970,9 @@ export const architectureManifest = {
     "rachat_detect_failures",
     "rd_month_hours",
     "record_comments",
+    "record_revision_state",
+    "record_revisions",
+    "record_snapshots",
     "recurring_outflows",
     "recurring_task_completions",
     "recurring_tasks",
@@ -963,6 +990,7 @@ export const architectureManifest = {
     "serial_state_changes",
     "shipments",
     "slow_page_loads",
+    "soumission_sends",
     "soumissions",
     "stock_movements",
     "stripe_balance_transactions",

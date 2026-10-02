@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { fmtDate } from '../lib/formatDate.js'
-import { ChevronRight, CheckCircle, Download, RefreshCw, Stethoscope, Mail, FileText, Sparkles, Truck } from 'lucide-react'
+import { ChevronRight, CheckCircle, Download, RefreshCw, Stethoscope, Mail, FileText, Sparkles } from 'lucide-react'
 import api from '../lib/api.js'
 import EmailComposerModal from './EmailComposerModal.jsx'
 import NovoxpressDiagnosticPanel from './NovoxpressDiagnosticPanel.jsx'
-import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, addressOptionLabel } from './novoxpressShared.jsx'
+import { BOX_PRESETS, fmtPrice, getRateName, getRateCarrier, getRateDelivery, DebugDetails, addressOptionLabel, UpsRateComparison } from './novoxpressShared.jsx'
 import ErrorBanner from './ErrorBanner.jsx'
 import Spinner from './Spinner.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
@@ -53,9 +53,6 @@ export default function RetourActionsSection({ retour, onDone }) {
   // Comparaison avec les tarifs UPS directs (hors Novoxpress), même principe que
   // la modale d'étiquette des envois : lecture seule, l'achat passe par
   // Novoxpress. Le trajet tarifé est celui du retour (client → atelier).
-  const [ups, setUps] = useState(null)
-  const [upsLoading, setUpsLoading] = useState(false)
-  const [upsError, setUpsError] = useState('')
 
   // /api/retours/memos/:filename est derrière requireAuth (contrairement aux
   // étiquettes, servies en statique sans auth) — un lien <a> classique n'envoie
@@ -113,7 +110,6 @@ export default function RetourActionsSection({ retour, onDone }) {
     if (!isEnvelope && (!totalWeight || parseFloat(totalWeight) <= 0)) { setError('Entrez un poids total valide'); return }
     if (preset === 'custom' && (!custom.length || !custom.width || !custom.depth)) { setError('Entrez toutes les dimensions de la boîte'); return }
     setError(''); setErrorDetails(null); setDiagnostic(null); setLoading(true); setStep('rates')
-    setUps(null); setUpsError('')
     const sentPayload = { address_id: addressId, packaging_type: packagingType(), packages: buildPackages(), declared_value: '1' }
     try {
       const res = await api.retours.getRates(retour.id, sentPayload)
@@ -128,72 +124,6 @@ export default function RetourActionsSection({ retour, onDone }) {
     } finally {
       setLoading(false)
     }
-  }
-
-  async function handleCompareUps() {
-    setUpsLoading(true); setUpsError(''); setUps(null)
-    try {
-      setUps(await api.ups.returnRates(retour.id, { address_id: addressId, packages: buildPackages() }))
-    } catch (e) {
-      // Message brut de l'API UPS — jamais un échec silencieux.
-      setUpsError(e.message)
-    } finally {
-      setUpsLoading(false)
-    }
-  }
-
-  // Rendue par appel de fonction (pas <UpsComparison />) pour ne pas recréer un
-  // type de composant à chaque rendu.
-  function renderUpsComparison() {
-    return (
-      <div className="border-t border-slate-100 pt-3 space-y-2" data-testid="ups-rate-comparison">
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5"><Truck size={14} className="text-amber-700" /> Tarifs UPS (direct)</p>
-          <button onClick={handleCompareUps} disabled={upsLoading} className="btn-secondary btn-sm text-xs" data-testid="ups-compare-rates">
-            {upsLoading ? 'Interrogation…' : ups ? 'Rafraîchir' : 'Comparer avec UPS'}
-          </button>
-        </div>
-        {upsError && (
-          <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 whitespace-pre-wrap break-words" data-testid="ups-rate-error">{upsError}</p>
-        )}
-        {ups?.rates?.length > 0 && (
-          <>
-            {ups.environment !== 'production' && (
-              <p className="text-[11px] text-amber-700">Environnement CIE (test) — tarifs indicatifs.</p>
-            )}
-            <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-              {ups.rates.map(r => (
-                <div key={r.service_id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 text-sm">
-                  <div>
-                    <p className="font-medium text-slate-800">{r.service_name}</p>
-                    <p className="text-xs text-slate-400">
-                      UPS{r.negotiated ? ' · tarif négocié' : ''}{r.total_transit_day ? ` · ${r.total_transit_day} jour(s)` : ''}
-                    </p>
-                  </div>
-                  <span className="font-semibold text-slate-700 whitespace-nowrap">{fmtPrice(r)}</span>
-                </div>
-              ))}
-            </div>
-            <p className="text-[11px] text-slate-400">
-              Comparaison seulement — l'étiquette de retour s'achète via Novoxpress.
-            </p>
-          </>
-        )}
-        {ups?.customs?.length > 0 && (
-          <details className="text-xs text-slate-500">
-            <summary className="cursor-pointer select-none">Déclaration douanière (retour hors Canada)</summary>
-            <ul className="mt-1 space-y-0.5">
-              {ups.customs.map((c, i) => (
-                <li key={i}>{c.qty} × {c.description} — {Number(c.unit_value).toFixed(2)} $ · origine {c.origin_country} · SH {c.hs_code}</li>
-              ))}
-            </ul>
-          </details>
-        )}
-        {ups && !ups.rates?.length && !upsError && (
-          <p className="text-xs text-slate-400">UPS n'a retourné aucun tarif pour ce retour.</p>
-        )}
-      </div>
-    )
   }
 
   async function handleDiagnose(op) {
@@ -383,7 +313,7 @@ export default function RetourActionsSection({ retour, onDone }) {
                     </button>
                   ))}
                 </div>
-                {renderUpsComparison()}
+                <UpsRateComparison fetchRates={() => api.ups.returnRates(retour.id, { address_id: addressId, packages: buildPackages() })} />
                 <button onClick={() => setStep('package')} className="btn-secondary text-sm">← Retour</button>
               </>
             )}

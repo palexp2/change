@@ -688,8 +688,8 @@ export function retireContactsCoreFieldMap() {
 // `module` = 'airtable_companies' : c'est sous cette clé que vivent DÉJÀ les
 // mappings dynamiques des entreprises (dynamicFieldsKey du miroir).
 //
-// Aucune colonne à pousser : les entreprises n'ont pas de write-back (absentes
-// de WRITEBACK_MODULES) — le sync entrant est la seule écriture Airtable.
+// Aucune colonne à pousser : le write-back des entreprises (WRITEBACK_MODULES)
+// part en 'pull' par défaut, le sens se choisit dans /champs/companies.
 // Aucun champ lien non plus : le cœur des entreprises n'importe aucune FK.
 //
 // En pratique les deux colonnes ont déjà leur ligne de mapping (jumelle semée

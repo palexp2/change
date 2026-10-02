@@ -17,13 +17,17 @@ const firstName = (s) => (s || '').split(/[\s@]/)[0] || null
 
 export function summarizeAiUsage({ claude }, now = Date.now()) {
   const accounts = []
-  if (claude?.subscriptionAvailable) {
+  // Plusieurs licences Claude : une ligne par compte (`claude.accounts`), le premier
+  // garde la clé historique « claude ».
+  const list = claude?.accounts?.length ? claude.accounts : (claude ? [claude] : [])
+  list.forEach((c, i) => {
+    if (!c?.subscriptionAvailable) return
     const windows = [
-      ['session', 'Fenêtre 5 h', claude.session],
-      ['week', 'Semaine', claude.week],
+      ['session', 'Fenêtre 5 h', c.session],
+      ['week', 'Semaine', c.week],
     ].filter(([, , b]) => live(b?.utilizationPct, b?.resetsAt, now))
       .map(([key, label, b]) => win(key, label, b))
-    if (windows.length) accounts.push({ key: 'claude', name: 'Claude', owner: firstName(claude.account?.name || claude.account?.email), windows })
-  }
+    if (windows.length) accounts.push({ key: i ? `claude-${c.id}` : 'claude', name: 'Claude', owner: firstName(c.account?.name || c.account?.email), windows })
+  })
   return { accounts }
 }

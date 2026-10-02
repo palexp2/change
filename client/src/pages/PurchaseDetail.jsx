@@ -45,6 +45,10 @@ function EditableText({ value, saving, onCommit, type = 'text' }) {
 // posé d'office dans la carte.
 const SHOWN_SYNCED = ['fournisseur']
 const RECEIVED_KEY = 'cf_date_de_reception_complete'
+// Champs d'inventaire (réception, rangement) regroupés sous leur propre titre.
+const GROUPS = [{ id: 'inventaire', label: 'Inventaire', keys: [RECEIVED_KEY, 'emplacement'] }]
+// Quantité commandée : « 6 », pas « 6.0 » (décimales seulement si utiles).
+const COMPACT_NUMBERS = ['quantite_commande']
 
 // `onClose` ferme le panneau après suppression du record.
 export default function PurchaseDetail({ recordId: id, onClose }) {
@@ -119,7 +123,7 @@ export default function PurchaseDetail({ recordId: id, onClose }) {
               Référence PO, quantité commandée, coût unitaire, total, dates et
               notes : colonnes droppées sur demande (migration 035), « Qté
               reçue » à son tour (036). */}
-          <DetailFieldGrid entityType="purchases" record={purchase} onSaveCustom={saveField} savingKeys={fieldSaving} shownSynced={SHOWN_SYNCED} className="" testId="purchase-fields">
+          <DetailFieldGrid entityType="purchases" record={purchase} onSaveCustom={saveField} savingKeys={fieldSaving} shownSynced={SHOWN_SYNCED} groups={GROUPS} compactNumbers={COMPACT_NUMBERS} className="" testId="purchase-fields">
             {/* Réception complète : seulement une fois la facture liée. */}
             <DetailField id={RECEIVED_KEY} label="Date de réception complète" saving={fieldSaving[RECEIVED_KEY]}>
               {invoiceLinked
@@ -137,10 +141,10 @@ export default function PurchaseDetail({ recordId: id, onClose }) {
           <div className="grid grid-cols-2 gap-4 text-sm" data-testid="purchase-expense-lines">
             <div>
               <div className="text-xs text-slate-400 mb-1">Factures</div>
-              <ExpenseLineLinks info={expense} />
+              <ExpenseLineLinks info={expense} peek />
             </div>
             <div>
-              <div className="text-xs text-slate-400 mb-1">Prix payé</div>
+              <div className="text-xs text-slate-400 mb-1">Prix unitaire payé</div>
               <span className="tabular-nums">{fmtUnitPrice(expense?.unit_price_paid_cad, paidDecimals)}</span>
             </div>
           </div>

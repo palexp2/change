@@ -57,9 +57,13 @@ export const TABLE_LABELS = {
   fourniture_achats: 'Achats (fourniture)',
   product_movements: "Mouvements de stock (produit)",
   product_purchases: 'Achats (pièce)',
+  product_used_in: 'Utilisé dans (pièce)',
   sync_log: 'Journal de synchronisation',
   journal_entries: 'Écritures de journal',
   stripe_payouts: 'Versements Stripe',
+  marketing_forms: 'Formulaires',
+  marketing_form_submissions: 'Soumissions (formulaire)',
+  marketing_form_script_runs: 'Déclenchements (formulaire)',
   stripe_invoice_items: 'Items vendus',
   automations:    'Automations',
   soumissions:    'Soumissions',
@@ -455,15 +459,21 @@ export const TABLE_COLUMN_META = {
   // 2026-09-06, on ne les ressuscite pas ici. Le reste du catalogue purchases
   // reste PROPOSÉ dans le sélecteur de champs (tableau encastré).
   product_purchases: [
-    // « Achat » (code LIA) est déclaré pour le jour où le champ « ID » de
-    // /champs/purchases sortira de la corbeille : le portier des champs le
-    // retire des colonnes tant qu'il y est (cf. mergedColumns, DataTable.jsx).
-    // En attendant, le code de l'achat s'affiche dans l'en-tête du panneau.
-    { id: 'at_id',                        label: 'Achat',       field: 'at_id' },
+    // « Achat » (code LIA) : le champ « ID » de /champs/purchases est purgé,
+    // mais ce tableau le garde (keepDeleted, cf. mergedColumns, DataTable.jsx).
+    { id: 'at_id',                        label: 'Achat',       field: 'at_id', keepDeleted: true },
     { id: 'date_de_commande',             label: 'Commandé',    field: 'date_de_commande', type: 'date' },
     { id: 'quantite_commande',            label: 'Qté',         field: 'quantite_commande', type: 'number' },
-    { id: 'supplier',                     label: 'Fournisseur', field: 'supplier_company_name' },
+    // Calculé par GET /products/:id/purchases (override payé, sinon facturé).
+    { id: 'prix_unitaire',                label: 'Prix unitaire', field: 'prix_unitaire', type: 'number' },
+    // Calculé par GET /products/:id/purchases : quantité de l'achat encore en
+    // stock selon le FIFO (vide = lot épuisé).
+    { id: 'fifo_qty',                     label: 'En stock',    field: 'fifo_qty', type: 'number' },
+    { id: 'supplier',                    label: 'Fournisseur', field: 'supplier_company_name' },
     { id: 'cf_date_de_reception_complete', label: 'Reçu',       field: 'cf_date_de_reception_complete', type: 'date' },
+    // Champ « Créé par » de /champs/purchases (auteur de la création dans
+    // l'ERP ; vide pour les achats créés dans Airtable).
+    { id: 'cf_cree_par',                  label: 'Créé par',    field: 'cf_cree_par' },
   ],
 
   // Numéros de série : plus AUCUN champ codé en dur. Les 7 colonnes ci-dessous
@@ -627,6 +637,15 @@ export const TABLE_COLUMN_META = {
     { id: 'ref_des',         label: 'Ref. des.',     field: 'ref_des' },
     { id: 'product_name',    label: 'Produit parent', field: 'product_name', mappingColumn: 'product_id', linkTarget: 'products', defaultVisible: false  },
     { id: 'product_sku',     label: 'SKU parent',     field: 'product_sku',  defaultVisible: false },
+  ],
+  // Fiche pièce, section « Utilisé dans » : les lignes de BOM où la pièce est
+  // composant, vues côté produit parent.
+  product_used_in: [
+    { id: 'product_image', label: 'Image',      field: 'product_image_url', sortable: false, filterable: false, groupable: false },
+    { id: 'product_name',  label: 'Produit',    field: 'product_name', mappingColumn: 'product_id', linkTarget: 'products' },
+    { id: 'product_sku',   label: 'SKU',        field: 'product_sku' },
+    { id: 'qty_required',  label: 'Qté requise', field: 'qty_required', type: 'number' },
+    { id: 'ref_des',       label: 'Ref. des.',  field: 'ref_des' },
   ],
 
   // Employés : les 28 champs de la table sont des CHAMPS PERSONNALISÉS
@@ -1055,6 +1074,7 @@ export const TABLE_COLUMN_META = {
     { id: 'document_date',         label: 'Date',        field: 'document_date', type: 'date' },
     { id: 'amount_before_tax_cad', label: 'Total HT',    field: 'amount_before_tax_cad', type: 'number' },
     { id: 'currency',              label: 'Devise',      field: 'currency', type: 'single_select', options: ['CAD', 'USD', 'EUR'] },
+    { id: 'stripe',                label: 'Stripe',      field: 'invoice_id', sortable: false, filterable: false, groupable: false },
   ],
 
   company_abonnements: [
@@ -1133,6 +1153,34 @@ export const TABLE_COLUMN_META = {
     { id: 'period_end',               label: 'Période fin',     field: 'period_end', type: 'date', defaultVisible: false },
     { id: 'proration',                label: 'Prorata',         field: 'proration', type: 'boolean', defaultVisible: false },
     { id: 'created_at',               label: 'Créé le',         field: 'created_at', type: 'date', defaultVisible: false },
+  ],
+
+  marketing_forms: [
+    { id: 'name',               label: 'Nom',                 field: 'name', width: 380 },
+    { id: 'language',           label: 'Langue',              field: 'language', type: 'single_select', options: ['fr', 'en'] },
+    { id: 'field_count',        label: 'Champs',              field: 'field_count', type: 'number' },
+    { id: 'submission_count',   label: 'Soumissions',         field: 'submission_count', type: 'number' },
+    { id: 'last_submission_at', label: 'Dernière soumission', field: 'last_submission_at', type: 'date' },
+    { id: 'hs_updated_at',      label: 'Modifié',             field: 'hs_updated_at', type: 'date', defaultVisible: false },
+    { id: 'hs_created_at',      label: 'Créé',                field: 'hs_created_at', type: 'date', defaultVisible: false },
+  ],
+
+  marketing_form_submissions: [
+    { id: 'submitted_at', label: 'Date',       field: 'submitted_at', type: 'date' },
+    { id: 'name',         label: 'Nom',        field: 'last_name', width: 180 },
+    { id: 'email',        label: 'Courriel',   field: 'email', width: 260 },
+    { id: 'company',      label: 'Entreprise', field: 'company', width: 180 },
+    { id: 'page_url',     label: 'Page',       field: 'page_url', defaultVisible: false },
+  ],
+
+  marketing_form_script_runs: [
+    { id: 'ran_at',      label: 'Date',     field: 'ran_at', type: 'date' },
+    { id: 'email',       label: 'Courriel', field: 'email', width: 260 },
+    { id: 'status_code', label: 'Code',     field: 'status_code', type: 'number', width: 90 },
+    { id: 'error',       label: 'Erreur',   field: 'error', width: 280 },
+    { id: 'output',      label: 'Journal',  field: 'output', width: 320, defaultVisible: false },
+    { id: 'duration_ms', label: 'Durée',    field: 'duration_ms', type: 'number', defaultVisible: false },
+    { id: 'retry',       label: '',         field: 'id', width: 50, sortable: false },
   ],
 
   stripe_payouts: [

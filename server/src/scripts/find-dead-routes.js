@@ -63,6 +63,8 @@ const EXTERNAL_ROUTES = new Set([
   'POST /api/admin/stripe-backfill/process',
   // Pixel de tracking dans les emails (variante de /api/track/email)
   'GET /api/email-tracking/:emailId.gif',
+  // Lien suivi d'un courriel (compte le clic puis redirige)
+  'GET /api/track/click/:linkId',
   // Page de paiement client (lien permanent partagé hors-app)
   'GET /erp/pay/:pendingId',
   // Pending invoice consulté côté FactureDetail via api.factures.get

@@ -24,7 +24,7 @@
 // Une ligne verte introuvable ici est une VRAIE anomalie ; une ligne rouge
 // introuvable est simplement du travail à faire.
 import db from '../db/database.js'
-import { qbGet, qbEntityUrl } from '../connectors/quickbooks.js'
+import { qbGet } from '../connectors/quickbooks.js'
 import { TXN_TYPE_ENTITY } from './bankQbLink.js'
 import { shiftDate, daysBetween } from '../utils/datetime.js'
 import { round2 } from '../utils/money.js'
@@ -70,7 +70,6 @@ export const QB_RATE_ENTITY = {
 const FX_MIN = 1.15
 const FX_MAX = 1.65
 const CONVERSION_RE = /conversion|exchange|change de devise|currency|fx/i
-
 
 // ── Concordance de libellé ───────────────────────────────────────────────────
 //
@@ -489,11 +488,6 @@ export async function verifyConversions(matches, txnById, fetchTransfer = defaul
     } catch { /* QB indisponible : la conversion reste non vérifiée */ }
   }
   return matches
-}
-
-export function matchUrl(match) {
-  const e = match?.entries?.[0]
-  return e?.entity && e?.qbId ? qbEntityUrl(e.entity, e.qbId) : null
 }
 
 // Persiste le lien trouvé sur la transaction (mode `apply` de la sync).

@@ -66,7 +66,7 @@ const SNAPSHOT_REVIEWED = {
   // `documents`, `signature`, `types` retirés de cette liste le 2026-09-03 : les
   // colonnes elles-mêmes sont détruites (drop-orders-airtable-only-cols.js),
   // il n'y a plus de cas à examiner.
-  // items_count est recalculé depuis order_items dans Orders et PrioriteAssemblage.
+  // items_count : rollup lu dans Orders et PrioriteAssemblage (frais via change_log_rollup).
   orders: ['address_id', 'assigned_name', 'items_count'],
   projects: ['annule', 'autonumber', 'orders', 'soumission', 'version'],
   shipments: ['commande', 'company_name', 'order_number', 'shipping_id_novoxpress', 'status'],

@@ -1,9 +1,1118 @@
 {
   "_comment": "Journal des nouveautés affiché dans l'app (/changelog). Fichier versionné. OBLIGATOIRE : toute modification de client/src/** ou server/src/** doit être accompagnée d'une nouvelle entrée en TÊTE du tableau `entries` — deploy.sh refuse de livrer sinon (garde : server/src/services/changelogGuard.js, échappatoire ./deploy.sh --skip-changelog). Format d'une entrée — date: 'YYYY-MM-DD' (date métier, sans heure), title: titre court, category: étiquette de domaine (ex. Comptabilité, Envois, Ventes…), changes: liste de { type, text }. type ∈ 'new' (nouveauté), 'improved' (amélioration), 'fixed' (correction). Les entrées sont triées par date décroissante à l'affichage, pas besoin de les ranger ici.",
   "entries": [
-    { "date": "2026-09-30", "at": "2026-09-30T19:48:22+00:00", "title": "Portail Stripe depuis la fiche entreprise",
-      "category": "Ventes", "requester": "Charles",
-      "changes": [ { "type": "new", "text": "La fiche d'une entreprise cliente Stripe offre un lien « Portail Stripe » qui ouvre son portail de facturation." } ] },
+    {"date": "2026-10-02", "at": "2026-10-02T13:02:08+00:00", "title": "Modifier un champ : saisie à la Airtable", "category": "Système", "changes": [
+      {"type": "improved", "text": "Choix d'une Sélection : Entrée crée le choix suivant, « Ajouter un choix » place le curseur dedans, et coller une liste crée un choix par ligne."},
+      {"type": "fixed", "text": "Entrée dans un choix ne crée plus le champ avant la fin de la saisie ; sur un champ existant, Entrée enregistre le réglage en cours (décimales, valeur par défaut…), plus seulement le nom."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T02:15:39+00:00", "title": "Achat : la facture s'ouvre en panneau", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "Fiche d'un achat (depuis un produit) : cliquer sur le numéro de facture ouvre la facture dans un panneau latéral, sans quitter la page pour celle des fournisseurs."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T02:12:16+00:00", "title": "Fiche produit : renommer un champ sur place", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "new", "text": "Fiche produit, mode personnalisation des champs : un clic sur le nom d'un champ (ex. « Prix CAD ») permet de le renommer directement."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:56:02+00:00", "title": "Fiche pièce : ID des achats", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "Fiche pièce, section Achats : la colonne « Achat » (code LIA) est de nouveau proposée dans « Champs » et s'affiche dans le tableau."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:53:58+00:00", "title": "Fiche pièce : « Utilisé dans »", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "new", "text": "Fiche pièce : nouvelle section « Utilisé dans » listant les produits dont le BOM contient la pièce (quantité requise, ref. des.). Elle n'apparaît que si la pièce est utilisée quelque part."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:53:31+00:00", "title": "Coût FIFO : coût de l'inventaire de départ", "category": "Inventaire", "changes": [
+      {"type": "new", "text": "Fiche pièce, Achats : champ « Départ » pour saisir le coût unitaire du stock qui ne vient d'aucun achat (inventaire de départ). L'alerte « stock sans achat » disparaît et le coût FIFO en tient compte."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:47:44+00:00", "title": "Fiche produit : pas de BOM pour une pièce achetée", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "Quand l'approvisionnement est « Acheté », la section BOM n'apparaît plus sur la fiche produit."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:46:01+00:00", "title": "Fiche produit : section Ajustement retirée", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "La section « Ajustement d'inventaire » disparaît de la fiche produit ; le stock reste visible dans Informations et s'ajuste par « Ajuster l'inventaire »."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:45:08+00:00", "title": "Fiche pièce : montants formatés", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "fixed", "text": "Coût unitaire, prix… suivent maintenant le format réglé sur le champ (devise, 2 décimales) ; un clic redonne le nombre à modifier."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:43:54+00:00", "title": "Coût FIFO : achat gratuit", "category": "Inventaire", "changes": [
+      {"type": "new", "text": "Fiche pièce, Achats : un clic sur l'icône orange d'un achat sans prix le marque gratuit (0 $) quand le fournisseur ne facture pas ; l'alerte disparaît et l'achat compte à 0 $ dans le coût."}
+    ]},
+    { "date": "2026-10-02", "at": "2026-10-02T01:36:17+00:00", "title": "Fiche produit : réorganisation épurée",
+      "category": "Interface", "requester": "Pierre-Alexandre Papillon",
+      "changes": [ { "type": "improved", "text": "En mode édition de la fiche Produit, les flèches et poignées à gauche des champs disparaissent : on glisse un champ par son libellé." } ] },
+    { "date": "2026-10-02", "at": "2026-10-02T01:35:39+00:00", "title": "Bandeau de fiche réglable",
+      "category": "Interface", "requester": "Pierre-Alexandre Papillon",
+      "changes": [ { "type": "new", "text": "En mode personnalisation d'une fiche, le titre et le sous-titre du bandeau du haut se choisissent parmi les champs de la fiche (bouton ↺ pour revenir au bandeau d'origine). Réglage commun à tous." } ] },
+    {"date": "2026-10-02", "at": "2026-10-02T01:30:23+00:00", "title": "Achats : champ « Créé par »", "category": "Logistique", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "new", "text": "Les achats ont un champ « Créé par » (la personne qui a ajouté l'achat dans l'ERP), visible dans la liste des achats, leur fiche et le tableau « Achats » d'une fiche pièce ; il reste vide pour les achats créés dans Airtable."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:27:57+00:00", "title": "Historique d'une fiche : dates en AAAA-MM-JJ", "category": "Général", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "L'historique au bas d'une fiche affiche la date et l'heure de chaque changement (« 2026-10-02 14:05 ») au lieu de « il y a 47 minutes », qui reste au survol ; les valeurs de date modifiées s'y lisent aussi en AAAA-MM-JJ."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:26:52+00:00", "title": "Achats : quantité commandée sans décimale", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "La fiche d'un achat affiche la quantité commandée « 6 » au lieu de « 6.0 » ; les décimales restent quand elles comptent (ex. 2.5)."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:21:54+00:00", "title": "Coût FIFO : prix des factures saisies dans Boréal", "category": "Inventaire", "changes": [
+      {"type": "fixed", "text": "Un achat sans prix dans Airtable prend celui de la facture fournisseur liée dans Boréal, convertie en CAD (ex. Tuyau guide 7 pi : 33,70 $). Il n'est plus en alerte « sans prix »."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:18:50+00:00", "title": "Groupes de champs sur la fiche produit", "category": "Produits", "requester": "Pierre-Alexandre Papillon", "changes": [{"type": "new", "text": "Fiche produit, mode « Personnaliser les champs » : bouton « Groupe » pour créer un groupe nommé ; les champs placés sous son titre s'affichent dans une sous-section."}]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:17:40+00:00", "title": "Fiche pièce : tableaux en entier ou limités", "category": "Inventaire", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "new", "text": "En mode édition de la fiche pièce, un bouton à côté de Mouvements, Achats et BOM affiche le tableau en entier ou le limite en hauteur. Le choix est retenu pour tout le monde."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:12:00+00:00", "title": "Coût FIFO : valider un prix douteux", "category": "Inventaire", "changes": [
+      {"type": "new", "text": "Fiche pièce, Achats : un clic sur l'icône orange de la colonne « En stock » marque le prix comme vérifié et retire l'alerte ; la coche verte annule. L'alerte revient si le prix change."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:03:35+00:00", "title": "Vue globale : carte « Revenus expédiés » retirée", "category": "Dashboards", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "La carte « Revenus expédiés — 28 j » n'apparaît plus dans la bande d'indicateurs de la vue globale."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:02:20+00:00", "title": "Vue globale : carte « Marge brute » retirée", "category": "Dashboards", "requester": "Pierre-Alexandre Papillon", "changes": [
+      {"type": "improved", "text": "La carte « Marge brute — 28 j » n'apparaît plus dans la bande d'indicateurs de la vue globale."}
+    ]},
+    {"date": "2026-10-02", "at": "2026-10-02T01:02:11+00:00", "title": "Coût FIFO : inventaire de départ", "category": "Inventaire", "changes": [
+      {"type": "fixed", "text": "Une pièce dont le stock dépasse ses achats (inventaire de départ) n'est plus en alerte « stock sans achat » : le surplus prend le prix du plus ancien achat. L'alerte reste pour les pièces sans aucun achat avec prix."}
+    ]},
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T01:00:40+00:00",
+      "title": "Vue globale : tuile « Comptes clients en retard » retirée",
+      "category": "Dashboards",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La tuile « Comptes clients en retard » n'apparaît plus dans la vue globale du tableau de bord." }
+      ]
+    },
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T00:49:39+00:00",
+      "title": "Prix unitaire visible dans les achats d'une pièce",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Fiche d'une pièce : le tableau « Achats » affiche maintenant le prix unitaire de chaque achat, sans avoir à activer la colonne." }
+      ]
+    },
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T00:47:02+00:00",
+      "title": "Fusionner depuis la fiche entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Bouton « Fusionner » sur la fiche entreprise : choisir l'autre entreprise, la fiche à garder et les valeurs en conflit." }
+      ]
+    },
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T00:39:37+00:00",
+      "title": "Fiche produit : réordonner les sections",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiche produit : en mode personnalisation, chaque section (Mouvements, Achats, BOM…) se déplace par flèches ou glisser-déposer ; l'ordre vaut pour tout le monde." }
+      ]
+    },
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T00:38:50+00:00",
+      "title": "Fiche achat : « Prix unitaire payé »",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche achat : « Prix payé » s'appelle maintenant « Prix unitaire payé »." }
+      ]
+    },
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T00:37:48+00:00",
+      "title": "Coût FIFO des pièces calculé par Boréal",
+      "category": "Inventaire",
+      "changes": [
+        { "type": "new", "text": "Le coût unitaire FIFO des pièces achetées est calculé par Boréal à chaque réception d'achat ou changement de stock, et toutes les heures ; il est renvoyé dans Airtable." },
+        { "type": "improved", "text": "Un achat reçu sans prix ne fait plus baisser le coût : il est mis de côté et signalé." },
+        { "type": "new", "text": "Inventaire : un bouton isole les pièces en alerte (lot sans prix, prix douteux, stock sans achat)." },
+        { "type": "new", "text": "Fiche pièce, Achats : coût FIFO, alertes, et colonne « En stock » par achat." }
+      ]
+    },
+    {
+      "date": "2026-10-02",
+      "at": "2026-10-02T00:33:12+00:00",
+      "title": "Inventaire : « Type » en couleur",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Liste Inventaire : la colonne « Type » affiche chaque valeur en pastille, à la couleur réglée sur le champ." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:20:28+00:00",
+      "title": "« Modifier le système » garde les fenêtres ouvertes",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Ouvrir « Modifier le système » ne ferme plus les fenêtres, menus et panneaux déjà ouverts : on peut cibler un élément à l'intérieur. Échap ne ferme que la fenêtre de demande." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:19:32+00:00",
+      "title": "Fiche achat : groupe « Inventaire »",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche achat : « Date de réception complète » et « Emplacement » sont regroupés sous un titre « Inventaire »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:16:52+00:00",
+      "title": "« Fournisseur préféré » sur la fiche pièce",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche pièce : le champ « Fournisseur » s'appelle maintenant « Fournisseur préféré »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:14:57+00:00",
+      "title": "Fiche pièce allégée",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche pièce : le champ « Soumission : pour toute la ferme » est retiré." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:14:16+00:00",
+      "title": "Prix unitaire des achats d'une pièce",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiche pièce, tableau « Achats » : la colonne « Prix unitaire » est disponible dans le menu « Champs »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:08:55+00:00",
+      "title": "Formules des mouvements d'inventaire",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Fiche pièce, tableau « Mouvements » : les colonnes calculées (ex. « Valeur du mouvement ») affichent enfin leur valeur au lieu de rester vides." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:07:24+00:00",
+      "title": "Un clic sur un lien ouvre sa fiche",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans tous les tableaux, cliquer sur le nom d'un enregistrement lié (pièce, fournisseur…) ouvre sa fiche dès le premier clic ; cliquer à côté sélectionne la cellule." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:03:16+00:00",
+      "title": "Flèche de tri sur les colonnes des achats",
+      "category": "Achats",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Achats : une petite flèche ↑/↓ dans l'en-tête indique la ou les colonnes qui trient la vue, et dans quel sens." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T23:01:06+00:00",
+      "title": "Retour depuis la fiche entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche entreprise en pleine page : la flèche de retour ramène à la page précédente plutôt qu'à la liste des entreprises (la liste reste le repli si la fiche a été ouverte directement)." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:59:18+00:00",
+      "title": "Fermeture automatique des projets après 30 jours",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Chaque matin, les projets encore ouverts 30 jours après leur création passent à Vendu « Non », avec la raison du refus « Fermeture automatique » et la date de fermeture du jour. Délai et raison réglables dans Automatisations." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:57:43+00:00",
+      "title": "Clics sur les boutons de paiement des soumissions",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Chaque clic du client sur « S’abonner » ou « Acheter » d’une soumission apparaît dans le fil d’activité du contact et de l’entreprise." },
+        { "type": "new", "text": "Un clic plus de 24 h après l’envoi crée une tâche de relance pour Philippe Chabot (destinataire et délai réglables dans Automations)." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:53:05+00:00",
+      "title": "Signature de courriel personnalisée",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Paramètres › Ma boîte Gmail : chacun saisit sa signature (un copier-coller de la signature Gmail garde liens et logo) ; elle s'ajoute d'office en bas de la fenêtre d'envoi de courriel, modifiable avant l'envoi." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:49:28+00:00",
+      "title": "Suivi des ouvertures et des clics des courriels",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Courriels envoyés depuis Boréal : chaque ouverture et chaque clic sur un lien sont datés ; la fiche du courriel dans le fil affiche les nombres et les moments." },
+        { "type": "improved", "text": "Le fil montre le nombre d'ouvertures et de clics de tout courriel envoyé, plus seulement des envois automatiques ; consulter un courriel dans Boréal ne compte plus comme une ouverture." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:46:45+00:00",
+      "title": "Grammarly coupé dans « Modifier le système »",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Grammarly ne s'active plus dans la fenêtre « Modifier le système » ; il reste disponible partout ailleurs." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:43:13+00:00",
+      "title": "Choisir un contact dans le courriel",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Courriel écrit depuis la fiche d'une entreprise : une liste déroulante à côté de « À » propose les contacts de l'entreprise." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:42:33+00:00",
+      "title": "Statut des numéros de série de l'entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche d'une entreprise : chaque numéro de série de la carte « N° de série » affiche son statut en pastille de couleur." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:39:09+00:00",
+      "title": "Bouton Stripe sur l'abonnement",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Abonnement ouvert depuis la fiche d'une entreprise : le lien Stripe devient un bouton en haut du panneau." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:35:30+00:00",
+      "title": "Id du retour dans la fiche",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche d'un retour : son id s'affiche dans le haut, sous le titre." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:34:19+00:00",
+      "title": "Sauvegarder le code sur GitHub",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Travaux : un bouton nuage, à côté du lien GitHub, sauvegarde le code de l'app sur GitHub ; la date du dernier envoi s'affiche à côté (pastille orange = changements pas encore sauvegardés)." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:31:29+00:00",
+      "title": "Renommer un agent",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Onglet Agents : le nom d'un agent se renomme d'un clic (crayon au survol, Entrée pour valider) ; un nouvel agent arrive avec son nom sélectionné, prêt à être remplacé." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:30:45+00:00",
+      "title": "Champs calculés : réglages d'affichage façon Airtable",
+      "category": "Champs",
+      "changes": [
+        { "type": "new", "text": "Formules et rollups en nombre, devise ou pourcentage : nombre de décimales réglable." },
+        { "type": "new", "text": "Formule, lookup ou rollup en date : choix du format (avec ou sans heure)." },
+        { "type": "fixed", "text": "Le choix « Barre » ou « Pourcentage » d'un champ calculé est conservé dès sa création." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:27:41+00:00",
+      "title": "Historique des changements sur chaque fiche",
+      "category": "Général",
+      "changes": [
+        { "type": "new", "text": "Une barre « Historique » au bas de chaque fiche se déplie vers le haut : qui a changé quel champ, quand, avec l'ancienne valeur barrée en rouge et la nouvelle en vert (mot à mot pour les textes longs)." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:22:08+00:00",
+      "title": "Temps d'un billet en heures:minutes",
+      "category": "Service client",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le champ « Temps » des billets est une durée : il s'affiche et se saisit en h:mm (ex. 1500 → 0:25)." },
+        { "type": "new", "text": "Tout champ de type durée se modifie maintenant directement dans une fiche." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:21:48+00:00",
+      "title": "Calendrier : flèches de mois sur les côtés",
+      "category": "Interface",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Tous les champs date ouvrent un nouveau calendrier : on change de mois avec les bandeaux ‹ › à gauche et à droite, au lieu des petites flèches haut/bas." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:16:23+00:00",
+      "title": "Billets : ID en titre de fiche",
+      "category": "Service client",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le haut de la fiche d'un billet affiche son ID au lieu de « Billet »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:15:27+00:00",
+      "title": "Numéros de série : champ « Garantie »",
+      "category": "Logistique",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Nouveau champ « Garantie » : « Sous garantie » ou « Garantie terminée » selon la date de fin de garantie ; vide pour les unités louées." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T22:11:54+00:00",
+      "title": "Nouveau retour : consignes dans la fenêtre",
+      "category": "Logistique",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fenêtre « Nouveau retour » explique chaque étape (billet, articles, raison, échange immédiat) et indique ce qui manque quand « Créer » est grisé." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:57:22+00:00",
+      "title": "Écrire un courriel depuis une fiche",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiches entreprise et contact : un bouton enveloppe à côté de « Consigner » ouvre une fenêtre de courriel en bas à droite ; l'envoi part de votre Gmail et apparaît au fil." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:55:31+00:00",
+      "title": "Ménage du code",
+      "category": "Système",
+      "changes": [
+        { "type": "improved", "text": "Retrait d'écrans et de fonctions qui ne servaient plus nulle part (ancienne page Propositions, vue 3D de serre inutilisée…) : rien ne change à l'écran." },
+        { "type": "improved", "text": "La comparaison des tarifs UPS est maintenant la même pièce pour l'étiquette d'envoi et l'étiquette de retour : une correction s'applique aux deux." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:54:51+00:00",
+      "title": "Fiche entreprise : bouton Retour en haut",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton de création d'un retour quitte la carte « Retours (RMA) » et se trouve maintenant en haut de la fiche entreprise, à côté de « Nouvelle facture »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:48:05+00:00",
+      "title": "Nouveau retour : tout sélectionner",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Dans « Nouveau retour », une case devant « Articles » coche ou décoche d'un coup tous les articles affichés (ceux de la recherche en cours)." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:46:17+00:00",
+      "title": "Agents autonomes",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Nouvel onglet « Agents autonomes » dans Travaux : on crée un agent, on décrit sa mission et ses heures de réveil ; à chaque heure choisie, il dépose son passage dans la file, qui inspecte et corrige la partie visée." },
+        { "type": "new", "text": "Chaque agent se met en veille, se lance à la demande ou se supprime d'un clic." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:45:39+00:00",
+      "title": "Nouveau retour : image, statut et adresse",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans « Nouveau retour » d'une entreprise, chaque numéro de série affiche l'image du produit, son statut et son adresse." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:35:22+00:00",
+      "title": "Vue « À envoyer » vide",
+      "category": "Commandes",
+      "changes": [
+        { "type": "fixed", "text": "La vue « À envoyer » des commandes affiche de nouveau les commandes à expédier." },
+        { "type": "fixed", "text": "Les champs recréés sous le nom d'un ancien champ supprimé (Items des commandes et des paies, certains champs produits) arrivent de nouveau dans les listes." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:33:07+00:00",
+      "title": "Articles d'une commande : saisie façon Excel",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans le tableau « Articles » d'une commande, modifier une valeur (ex. la quantité) se fait directement dans la cellule, sans petit cadre à l'intérieur." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:19:19+00:00",
+      "title": "Champs rollup toujours à jour",
+      "category": "Champs",
+      "changes": [
+        { "type": "fixed", "text": "La colonne « Items » de la liste des commandes (et la carte « articles » de la priorité d'assemblage) suit maintenant le réglage du champ — p. ex. somme des quantités — au lieu de compter les lignes." },
+        { "type": "fixed", "text": "Tous les champs rollup des listes (commandes, factures, paies, retours, billets) se mettent à jour en quelques secondes quand une ligne liée change, sans recharger la page." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:15:22+00:00",
+      "title": "Nouvelle commande assignée à soi",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le formulaire « Nouvelle commande » de la page Commandes préremplit « Assigné à » avec l'utilisateur connecté." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T21:14:24+00:00",
+      "title": "Créer un retour depuis la fiche entreprise",
+      "category": "Retours",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Bouton « + » sur la carte Retours d'une entreprise : choisir les n° de série opérationnels ou les articles envoyés à retourner, leur raison et précision (applicables à tous d'un clic), et lier un billet." },
+        { "type": "new", "text": "Échange immédiat : nouvelle commande ou commande existante, adresse de livraison et produit de remplacement par article ; le n° de série retourné est inscrit dans « # de série remplacé » de la ligne de remplacement." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:52:00+00:00",
+      "title": "Entreprises : synchronisation bidirectionnelle avec Airtable",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Dans la configuration des champs des entreprises, chaque champ Airtable peut passer en « Bidirectionnel » ou « Boréal → Airtable » : une modification faite dans la fiche part alors vers Airtable au lieu d'être écrasée au prochain import." },
+        { "type": "improved", "text": "Fiche entreprise : les champs personnalisés réglés en bidirectionnel se modifient sur place." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:50:05+00:00",
+      "title": "Commandes de l'ERP envoyées dans Airtable",
+      "category": "Commandes",
+      "changes": [
+        { "type": "fixed", "text": "Une commande créée dans l'ERP apparaît maintenant dans Airtable, avec ses articles, même ajoutés après coup." },
+        { "type": "improved", "text": "Airtable reprend le numéro de commande de Boréal ; une commande créée dans Airtable reçoit le numéro suivant de Boréal, sans doublon." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:47:49+00:00",
+      "title": "Colonne « Type » des interactions sur une ligne",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Interactions : la pastille du type (Courriel, Appel…) garde son icône et son libellé sur la même ligne, au lieu de s'empiler et d'épaissir chaque rangée." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:46:17+00:00",
+      "title": "Date de la commande remplie dès la création",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Une commande créée dans l'ERP affiche sa « Date de la commande » tout de suite ; les commandes restées vides sont comblées avec leur date de création." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:41:44+00:00",
+      "title": "Fiche commande : champ « Items » retiré",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le nombre d'articles n'apparaît plus parmi les champs de la fiche commande ; le tableau « Articles » reste juste en dessous." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:39:56+00:00",
+      "title": "« Phase du cycle de vie » sur la fiche entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le champ « Phase » de la fiche entreprise s'appelle maintenant « Phase du cycle de vie »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:38:09+00:00",
+      "title": "Montant avant taxes en gros sur la facture",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Le haut de la fiche facture affiche en gros le montant après rabais et avant taxes." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:36:02+00:00",
+      "title": "Lignes de facture sans colonne Produit",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fiche facture n'affiche plus la colonne « Produit » dans ses lignes ; la description suffit." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:35:19+00:00",
+      "title": "Date de commande inscrite à la création",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Une nouvelle commande reçoit automatiquement la date du jour comme « Date de commande »." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:32:41+00:00",
+      "title": "Historique des statuts en couleur",
+      "category": "Assemblage",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche numéro de série : l'historique des changements d'état affiche les statuts avec les couleurs du tableau." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:32:41+00:00",
+      "title": "Paiement d'une facture : page de remerciement",
+      "category": "Ventes",
+      "changes": [
+        { "type": "fixed", "text": "Après le paiement d'une facture, le client voit une page de remerciement au lieu du System builder, désormais réservé aux liens de paiement des soumissions." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:30:37+00:00",
+      "title": "Statut coloré sur la fiche numéro de série",
+      "category": "Assemblage",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche numéro de série : le statut et les listes de choix reprennent les couleurs du tableau." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:28:00+00:00",
+      "title": "Adresses de livraison lisibles en entier",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Fiche commande : la liste des adresses de livraison s'ouvre plus large et affiche chaque adresse au complet." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:25:00+00:00",
+      "title": "Capteur de sol fusionné",
+      "category": "Produits",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "« Capteur de sol » et « Capteur de température du sol » ne font plus qu'un produit : « Capteur de température du sol », vendable, qui reprend les ventes et factures de l'autre." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:24:49+00:00",
+      "title": "Article supprimé dans Airtable = supprimé dans Boréal",
+      "category": "Commandes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Un article de commande supprimé dans Airtable disparaît aussi de Boréal, même s'il portait des numéros de série (ils sont détachés), et la fiche ouverte se met à jour sans rafraîchir." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T20:20:28+00:00",
+      "title": "Factures Stripe rattachées automatiquement",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Une facture qui arrive de Stripe se rattache seule à son entreprise (abonnement, courriel d'un contact, nom) et à son projet (autres factures de l'abonnement, ou seul projet de l'entreprise) quand il n'y a aucun doute." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:54:29+00:00",
+      "title": "Slack : une seule app pour toutes les alertes",
+      "category": "Système",
+      "changes": [
+        { "type": "improved", "text": "Toutes les notifications Slack partent maintenant de la même app, aux mêmes canaux et personnes qu'avant." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:45:16+00:00",
+      "title": "Créer une commande depuis une facture",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiche facture : le sélecteur « Commande » propose « Nouvelle commande », qui ouvre le formulaire de la page Commandes (entreprise et projet préremplis) et lie la commande créée à la facture." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:40:01+00:00",
+      "title": "Décimales des champs lookup",
+      "category": "Champs personnalisés",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Un champ lookup qui récupère un nombre, un montant ou un pourcentage propose maintenant le nombre de décimales à afficher." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:30:41+00:00",
+      "title": "Plus d'alerte Slack « Connexion à réparer »",
+      "category": "Connecteurs",
+      "requester": "Guillaume",
+      "changes": [
+        { "type": "improved", "text": "La vérification des sessions (Instagram…) n'envoie plus de message Slack ; l'état reste visible dans Connecteurs." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:29:34+00:00",
+      "title": "Historique HubSpot importé",
+      "category": "Ventes",
+      "changes": [
+        { "type": "new", "text": "Les notes, réunions, appels et courriels HubSpot depuis 2018 apparaissent dans le fil de chaque contact et entreprise, avec leurs pièces jointes et enregistrements." },
+        { "type": "improved", "text": "La fiche d'un appel affiche maintenant ses notes." },
+        { "type": "new", "text": "La carte « Pièces jointes » d'un contact inclut celles venues de HubSpot." },
+        { "type": "fixed", "text": "L'import de l'historique HubSpot reprend tout seul où il s'était arrêté après un redémarrage." },
+        { "type": "improved", "text": "Les courriels HubSpot liés à personne sont rattachés au contact Boréal dont l'adresse y figure." },
+        { "type": "new", "text": "Connecteurs › HubSpot : bouton « Importer » de l'historique, avec le compte importé par type." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:19:03+00:00",
+      "title": "Problèmes d'opérations : heure modifiable",
+      "category": "Opérations",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans la fiche d'un problème, le champ « Date » permet maintenant de choisir aussi l'heure." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:16:58+00:00",
+      "title": "Problèmes d'opérations : heure de saisie",
+      "category": "Opérations",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans la colonne « Date » au format « + heure », un problème noté le jour même montre l'heure à laquelle il a été saisi au lieu de 00:00." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:13:41+00:00",
+      "title": "Factures en retard",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Une facture impayée dont l'échéance est passée s'affiche « En retard » au lieu de « À payer » ; le statut se met à jour chaque jour et à chaque synchro Stripe." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:13:35+00:00",
+      "title": "Facture payée → alerte #paiements",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Quand une facture est payée (hors abonnement, ou 1er paiement d'un abonnement), un message sur Slack #paiements demande de la lier au projet, avec le lien vers la facture. Texte et canal réglables dans Automations." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T19:07:36+00:00",
+      "title": "Factures : lien vers Stripe dans la liste",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Une icône à côté du numéro de facture ouvre la facture dans le tableau de bord Stripe." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T18:30:58+00:00",
+      "title": "Retours : étagère indiquée à la réception",
+      "category": "Logistique",
+      "requester": "Martin Audesse",
+      "changes": [
+        { "type": "fixed", "text": "« Réceptionner » sur des articles cochés affiche maintenant l'étagère où poser chacun." },
+        { "type": "improved", "text": "Fin d'abonnement → étagère de reconditionnement ; tous les autres retours → étagère d'analyse." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T17:37:27+00:00",
+      "title": "Expédition : rappel pour le capteur solaire",
+      "category": "Logistique",
+      "requester": "Martin Audesse",
+      "changes": [
+        { "type": "new", "text": "Au scan d'un capteur solaire, un rappel à cocher demande d'avoir mis le support à capteur et la feuille de calibration." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T17:35:24+00:00",
+      "title": "Numéros de série : statut modifiable",
+      "category": "Logistique",
+      "requester": "Martin Audesse",
+      "changes": [
+        { "type": "new", "text": "Le statut d'un numéro de série se change directement depuis sa fiche, et le changement est renvoyé à Airtable." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T17:29:39+00:00",
+      "title": "Formulaires : bouton « Sans mot de passe » retiré",
+      "category": "Marketing",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fiche d'un formulaire n'affiche plus le bouton « Sans mot de passe » du script à la soumission." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T17:15:37+00:00",
+      "title": "Scripts : accès aux sites orisha.io",
+      "category": "Marketing",
+      "changes": [
+        { "type": "fixed", "text": "Les scripts des formulaires peuvent maintenant appeler les sites orisha.io (création des comptes serveur)." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T15:56:55+00:00",
+      "title": "Formulaires : « Sans mot de passe » depuis le 31 décembre 2025",
+      "category": "Marketing",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton « Sans mot de passe » d'un formulaire prend maintenant les contacts qui l'ont rempli depuis le 31 décembre 2025." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T15:45:17+00:00",
+      "title": "Formulaires : lancement « Sans mot de passe » limité au 1er juin",
+      "category": "Marketing",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton « Sans mot de passe » d'un formulaire ne lance plus le script que pour les contacts qui l'ont rempli depuis le 1er juin 2026." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T15:18:31+00:00",
+      "title": "Quotas IA : sigle du titulaire",
+      "category": "Travaux",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Dans la barre de gauche, les jauges de quotas IA affichent GL (compte de Guillaume) et CJ (compte de Charles) au lieu de CL pour les deux." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T15:05:10+00:00",
+      "title": "File de travaux sur deux comptes Claude",
+      "category": "Travaux",
+      "changes": [
+        { "type": "new", "text": "La file de travaux répartit ses exécutions entre les deux licences Claude : chaque tâche part sur le compte le plus loin de sa limite, et bascule sur l'autre si l'un est à sec." },
+        { "type": "new", "text": "Le bandeau « Quotas Claude » de Travaux montre la fenêtre 5 h et la semaine de chaque compte ; un point vert marque celui qu'utilise la file." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T14:58:58+00:00",
+      "title": "Formulaires : lancer le script pour les contacts sans mot de passe serveur",
+      "category": "Marketing",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Sur la fiche d'un formulaire, le bouton « Sans mot de passe » lance le script pour chaque contact HubSpot ayant soumis le formulaire dont la propriété new_server_password est vide, après confirmation du nombre de contacts. L'avancement s'affiche sur le bouton et chaque lancement apparaît dans les déclenchements." }
+      ]
+    },
+    {
+      "date": "2026-10-01",
+      "at": "2026-10-01T14:58:41+00:00",
+      "title": "Pièces : le nom modifié reste",
+      "category": "Inventaire",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "fixed", "text": "Le nom (FR) d'une pièce modifié dans sa fiche n'est plus remplacé par l'ancien au sync Airtable : il est aussi écrit dans « Nom modifiable » d'Airtable." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T21:02:28+00:00",
+      "title": "Formulaires : script à la soumission",
+      "category": "Marketing",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "La fiche d'un formulaire peut lancer un script à chaque nouvelle soumission (création du compte serveur Orisha préremplie), activable et modifiable, avec l'historique des déclenchements et leur code de réponse (200, 404, 409…) et un bouton pour relancer." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:53:59+00:00",
+      "title": "Fiche contact : la flèche revient en arrière",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur une fiche contact ouverte en pleine page, la flèche de retour ramène à la page précédente plutôt qu'à la liste des contacts." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:53:08+00:00",
+      "title": "Soumission : historique des envois et ouvertures",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiche soumission : un petit chevron à côté de la date d'envoi déplie l'historique complet des envois et de chaque ouverture du courriel." },
+        { "type": "improved", "text": "Par défaut, la fiche montre le dernier envoi et sa dernière ouverture." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:51:41+00:00",
+      "title": "Plus d'avis Slack de pause de la file",
+      "category": "Travaux",
+      "requester": "Charles",
+      "changes": [
+        { "type": "improved", "text": "La mise en pause de la file de travaux quand le quota Claude baisse n'envoie plus de message Slack." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:49:36+00:00",
+      "title": "Courriel d'envoi de soumission",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le courriel proposé à l'envoi d'une soumission reprend le texte type des vendeurs (paiement S'abonner / Acheter, page des tarifs, démo, déduction des 12 premiers mois au rachat, rencontre avec Phil, formation 40hr farmer), en anglais ou en français selon le contact." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:46:50+00:00",
+      "title": "Contact lié : contacts de l'entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un projet, « Contact lié » ne propose plus que les contacts de l'entreprise du projet (liste complète si aucune entreprise)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:45:26+00:00",
+      "title": "Soumission modifiable jusqu'à l'envoi",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Une soumission se modifie (serres, extras, rabais) tant qu'elle n'est pas envoyée ; une fois envoyée, son contenu est figé — la dupliquer pour en faire une nouvelle version. Les notes restent modifiables." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:42:36+00:00",
+      "title": "Travaux : lien vers le GitHub",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "La page Travaux affiche en haut à droite une icône GitHub qui ouvre le dépôt de l'app dans un nouvel onglet." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:42:02+00:00",
+      "title": "Diamètre côté : liste même sans type de tuyau",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche d'un formulaire de découverte, « Diamètre côté » offre toujours les choix du formulaire client, y compris quand le type de tuyau est inconnu (les choix des deux profils)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:39:54+00:00",
+      "title": "Formulaire de découverte : hauteur et diamètre des côtés en liste",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Sur la fiche, « Hauteur côtés » et « Diamètre côté » se corrigent par une liste déroulante offrant les mêmes choix que le formulaire client ; la hauteur exacte (plus de 6 pi) et le diamètre « Autre » se précisent juste dessous." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:33:17+00:00",
+      "title": "Travaux : seuil de pause exprimé en consommation",
+      "category": "Agent",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bandeau des quotas affiche « Pause au-delà de 95 % 5 h · 90 % sem. » au lieu de la marge restante, comme les jauges voisines." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:32:38+00:00",
+      "title": "Marketing : page Formulaires reliée à HubSpot",
+      "category": "Marketing",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Nouvelle section Marketing dans le menu, avec la page Formulaires : tous les formulaires HubSpot, leur nombre de soumissions et la date de la dernière." },
+        { "type": "new", "text": "Fiche d'un formulaire : renommage, champs, code d'intégration à copier, liste des soumissions (le courriel ouvre le contact s'il existe) et lien vers l'éditeur HubSpot." },
+        { "type": "new", "text": "« Nouveau formulaire » crée le formulaire de capture directement dans HubSpot ; la synchro se refait toute seule chaque heure." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:28:53+00:00",
+      "title": "Bouton de paiement vert",
+      "category": "Comptabilité",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Le bouton « Voir et payer la facture » du courriel de facture est maintenant vert Orisha." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:25:51+00:00",
+      "title": "Adresse principale ou secondaire",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Chaque adresse (livraison, facturation, ferme) porte un rang « Principale » ou « Secondaire », affiché sur la fiche entreprise et réglable dans l'adresse. Une seule principale par type : en choisir une rétrograde l'autre ; la première adresse d'un type devient principale d'office." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:23:37+00:00",
+      "title": "Devise verrouillée sur le client Stripe",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        { "type": "improved", "text": "Une soumission ne peut plus être faite dans une autre devise que celle du client dans Stripe : le choix de devise est verrouillé." },
+        { "type": "new", "text": "Avant l'envoi d'une soumission ou d'une facture, le client est créé (ou mis à jour) dans Stripe avec les adresses de facturation et de livraison de sa fiche." },
+        { "type": "improved", "text": "Plus de second client Stripe créé automatiquement pour payer dans une autre devise." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:19:44+00:00",
+      "title": "Fiche soumission : articles comme à la création",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "La fiche d'une soumission remplace le tableau « Articles » par la mise en page de la création : totaux, nombre de Chef de culture / Assistant, Extra et Rabais." },
+        { "type": "improved", "text": "Les changements s'y enregistrent tout seuls et le PDF se met à jour ; lecture seule pour une soumission d'Airtable ou déjà convertie en commande." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:19:22+00:00",
+      "title": "Soumissions : envoi et ouverture suivis",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Une soumission déjà envoyée affiche « Ré-envoyer », avec la date et l'heure du dernier envoi." },
+        { "type": "new", "text": "La date et l'heure d'ouverture du courriel par le client s'affichent à côté (œil vert), en direct." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T20:07:55+00:00",
+      "title": "Factures : ouvrir dans Stripe depuis l'entreprise",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "new", "text": "Fiche entreprise, tableau Factures : nouvelle colonne « Stripe » qui ouvre la facture dans Stripe (vide pour les factures QuickBooks)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:56:42+00:00",
+      "title": "Code sauvegardé sur GitHub",
+      "category": "Système",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "L'état actuel de l'app est sauvegardé sur GitHub ; l'adresse Slack des factures manquantes n'est plus écrite dans le code (le réglage reste inchangé)." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:51:16+00:00",
+      "title": "Numéros de soumission QTE-1000+",
+      "category": "Ventes",
+      "requester": "Pierre-Alexandre Papillon",
+      "changes": [
+        { "type": "improved", "text": "Les nouvelles soumissions créées dans Boréal sont numérotées QTE-1000, QTE-1001… (sans le Z), à la suite d'Airtable sans conflit." }
+      ]
+    },
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:48:22+00:00",
+      "title": "Lien Stripe depuis la fiche entreprise",
+      "category": "Ventes",
+      "requester": "Charles",
+      "changes": [
+        { "type": "new", "text": "La fiche d'une entreprise cliente Stripe offre un lien « Stripe » qui ouvre sa fiche client dans le tableau de bord Stripe." }
+      ]
+    },
     { "date": "2026-09-30", "at": "2026-09-30T19:47:50+00:00", "title": "Quotas Claude : pourcentage utilisé",
       "category": "Travaux", "requester": "Pierre-Alexandre Papillon",
       "changes": [ { "type": "improved", "text": "Les quotas Claude (Travaux et indicateur du menu de gauche) affichent maintenant le pourcentage utilisé plutôt que ce qui reste." } ] },
@@ -12,12 +1121,17 @@
       "changes": [
         { "type": "improved", "text": "Dans « Créer une facture », la quantité d'un article n'accepte plus que des nombres entiers." }
       ] },
-    { "date": "2026-09-30", "at": "2026-09-30T19:36:33+00:00", "title": "Paiement d'une soumission dans une autre devise",
-      "category": "Ventes", "requester": "Charles",
+    {
+      "date": "2026-09-30",
+      "at": "2026-09-30T19:36:33+00:00",
+      "title": "Paiement d'une soumission dans une autre devise",
+      "category": "Ventes",
+      "requester": "Charles",
       "changes": [
-        { "type": "fixed", "text": "Les boutons de paiement du PDF fonctionnent même quand le client a déjà payé dans une autre devise (ex. soumission USD pour un client CAD)." },
+        { "type": "fixed", "text": "Les boutons de paiement du PDF affichent un message clair quand la devise de la soumission ne correspond pas à celle du client." },
         { "type": "improved", "text": "La page d'erreur de paiement et le PDF des soumissions renvoient maintenant vers info@orisha.io." }
-      ] },
+      ]
+    },
     {
       "date": "2026-09-30",
       "at": "2026-09-30T19:33:52+00:00",

@@ -7,7 +7,9 @@ import {
   isGmailSendAvailable,
   buildInvoiceEmailHtml,
   createOrRefreshCheckoutSession,
+  syncStripeCustomer,
 } from '../services/stripeInvoices.js'
+import { assertStripeCurrency } from '../services/stripeCustomerCompany.js'
 import { sendEmail } from '../services/gmail.js'
 import { checkForeignKeys } from '../utils/fkExists.js'
 import { TAX_REGIMES, isCanada, suggestTaxRegime } from '../services/taxes.js'
@@ -15,6 +17,7 @@ import { logSync } from '../services/syncLog.js'
 import { APP_URL } from '../config/appUrl.js'
 import { cleanDiscounts, pendingInvoiceTotals, discountsBreakdown } from '../services/invoiceDiscount.js'
 import { soumissionDiscounts, purchasePct } from '../services/soumissionTotals.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -358,6 +361,10 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
   const pending = db.prepare('SELECT * FROM pending_invoices WHERE id=?').get(pendingId)
   if (!pending) throw new Error('pending_not_found')
 
+  // Client Stripe créé (ou mis à jour) avec les adresses de la fiche entreprise.
+  await assertStripeCurrency(stripe, pending.company_id, pending.currency || 'CAD')
+  await syncStripeCustomer(stripe, pending.company_id)
+
   // Pre-create the Checkout Session so the email link works on first click
   const { url: checkoutUrl } = await createOrRefreshCheckoutSession({
     stripe, pending, baseAppUrl: appBaseUrl(),
@@ -406,7 +413,7 @@ async function sendInvoiceEmail({ pendingId, userId, overrides }) {
 
   const cc = overrides?.cc ? String(overrides.cc).trim() || null : null
   const bcc = overrides?.bcc ? String(overrides.bcc).trim() || null : null
-  const sent = await sendEmail(recipientEmail, subject, html, { userId, cc, bcc })
+  const sent = await sendEmail(recipientEmail, subject, trackEmailHtml(html, emailRowId), { userId, cc, bcc })
 
   // L'email est DÉJÀ parti. On persiste l'interaction et l'email dans une seule
   // transaction : sans ça, si le second INSERT échoue on aurait une interaction

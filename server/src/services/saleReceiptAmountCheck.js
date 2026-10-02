@@ -72,16 +72,6 @@ export function parsePrintedNumber(raw) {
   return round2(negative ? -value : value)
 }
 
-// Tous les nombres d'une ligne, dans l'ordre d'impression.
-export function numbersInLine(line) {
-  const out = []
-  for (const raw of String(line || '').match(NUMBER_RE) || []) {
-    const n = parsePrintedNumber(raw)
-    if (n != null) out.push(n)
-  }
-  return out
-}
-
 // Un nombre n'est un MONTANT que s'il porte deux décimales ou un signe de devise
 // collé (« $120 »). Sans ce filtre, une ligne « Total Due » suivie d'un numéro de
 // TVQ ou d'un en-tête « Courant / 30 jours / 60 jours / Total » livrait des montants

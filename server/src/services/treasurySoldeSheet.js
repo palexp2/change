@@ -1083,9 +1083,8 @@ async function notifyNewAnomalies(anomalies, previous) {
     const text = ':warning: *Fichier « Maintien du solde disponible BNC » — lecture incomplète*\n' +
       fresh.map(a => `• ${a.text}`).join('\n') +
       '\nCorriger le fichier : tant que la ligne est illisible, la sortie n\'entre pas dans la projection du solde.'
-    await fetch(url, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
-    })
+    const { postSlack } = await import('./slack.js')
+    await postSlack(url, text)
   } catch (e) {
     console.error('treasurySoldeSheet.notifyNewAnomalies:', e.message)
   }

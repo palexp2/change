@@ -15,8 +15,9 @@ const TONE = {
 // pistolet. Un scan pose la date et la personne sur l'article du retour, puis
 // affiche l'instruction d'étagère (règle reprise d'Airtable, calculée par le
 // serveur — services/returnReception.js). Personne et date appartiennent à la
-// fiche : le bouton « Réceptionner » des articles cochés s'en sert aussi.
-export default function RetourReceptionSection({ retour, person, setPerson, date, setDate, onItemReceived }) {
+// fiche : le bouton « Réceptionner » des articles cochés s'en sert aussi, et
+// sa consigne d'étagère s'affiche ici (`results`, une entrée par article).
+export default function RetourReceptionSection({ retour, person, setPerson, date, setDate, onItemReceived, results, setResults }) {
   // Réceptionnistes = utilisateurs Boréal actifs ; l'utilisateur connecté est
   // pré-choisi par la fiche (RetourDetail).
   const [users, setUsers] = useState([])
@@ -26,26 +27,22 @@ export default function RetourReceptionSection({ retour, person, setPerson, date
     return person && !names.includes(person) ? [person, ...names] : names
   }, [users, person])
 
-  const [result, setResult] = useState(null)
   const [busy, setBusy] = useState(false)
 
   const scan = useCallback(async (code) => {
     setBusy(true)
     try {
       const r = await api.retours.receiveScan(retour.id, { code, received_by: person, received_at: date })
-      setResult(r)
+      setResults([r])
       if (r.action === 'received' && r.item) onItemReceived?.(r.item)
     } catch (e) {
-      setResult({ action: 'not_in_return', message: e.message })
+      setResults([{ action: 'not_in_return', message: e.message }])
     } finally {
       setBusy(false)
     }
-  }, [retour.id, person, date, onItemReceived])
+  }, [retour.id, person, date, onItemReceived, setResults])
 
   useBarcodeScanner(scan)
-
-  const tone = TONE[result?.action] || TONE.not_in_return
-  const Icon = tone.icon
 
   return (
     <div className="card p-5 mb-4" data-testid="retour-reception">
@@ -72,25 +69,30 @@ export default function RetourReceptionSection({ retour, person, setPerson, date
         <ManualScanInput onSubmit={scan} className={busy ? 'opacity-50 pointer-events-none' : ''} />
       </div>
 
-      {result && (
-        <div
-          className={`mt-3 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm font-medium ${tone.cls}`}
-          data-testid="reception-message"
-        >
-          <Icon size={16} className="mt-0.5 flex-shrink-0" />
-          <div>
-            <div>{result.message || `Code ${result.code} : aucun article de ce retour`}</div>
-            {result.item && (
-              <div className="text-xs font-normal opacity-70">
-                {[result.item.serial_number, result.item.product_name].filter(Boolean).join(' · ')}
-                {result.action === 'already_received' && result.item.received_at
-                  ? ` — déjà reçu le ${result.item.received_at}${result.item.received_by ? ` par ${result.item.received_by}` : ''}`
-                  : ''}
-              </div>
-            )}
+      {(results || []).map((result, i) => {
+        const tone = TONE[result.action] || TONE.not_in_return
+        const Icon = tone.icon
+        return (
+          <div
+            key={result.item?.id || i}
+            className={`mt-3 flex items-start gap-2 rounded-xl border px-3 py-2.5 text-sm font-medium ${tone.cls}`}
+            data-testid="reception-message"
+          >
+            <Icon size={16} className="mt-0.5 flex-shrink-0" />
+            <div>
+              <div>{result.message || `Code ${result.code} : aucun article de ce retour`}</div>
+              {result.item && (
+                <div className="text-xs font-normal opacity-70">
+                  {[result.item.serial_number, result.item.product_name].filter(Boolean).join(' · ')}
+                  {result.action === 'already_received' && result.item.received_at
+                    ? ` — déjà reçu le ${result.item.received_at}${result.item.received_by ? ` par ${result.item.received_by}` : ''}`
+                    : ''}
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )
+      })}
     </div>
   )
 }

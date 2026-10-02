@@ -23,6 +23,7 @@ import { APP_URL } from '../config/appUrl.js'
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { resolveInstallationDocsLang } from './orders.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -489,7 +490,7 @@ router.post('/:id/send-tracking', async (req, res) => {
       Cc: cc || undefined,
       Bcc: bcc || undefined,
       Subject: subject,
-      HtmlBody: html,
+      HtmlBody: trackEmailHtml(html, emailId),
     })
 
     // Logger l'interaction

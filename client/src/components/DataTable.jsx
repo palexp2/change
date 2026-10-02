@@ -381,6 +381,13 @@ function DateCellEditor({ value, onCommit, onCancel }) {
 // les colonnes dynamiques (Airtable) on délègue à DynamicCell, et pour les
 // colonnes standard type:'number' on applique le formatage décimal préféré de
 // l'utilisateur (`decimals`). Toute autre colonne : valeur brute.
+// Colonne de lien : le nom de la fiche liée l'ouvre dès le premier clic, même
+// en mode tableur (cliquer à côté sélectionne la cellule). `linkOpenOnClick:
+// false` rend le lien inerte dans une cellule éditable.
+function linkOpensOnClick(col) {
+  return col.linkOpenOnClick ?? !!(col.linkTarget || col.linkMulti || col.fieldType === 'link')
+}
+
 function renderCell(col, item, decimals, selectBadges) {
   if (col.render) return col.render(item)
   const value = item[col.field]
@@ -996,7 +1003,9 @@ export function DataTable({
   // /champs/:table) — c'est son doublon d'affichage qui disparaît.
   const mergedColumns = useMemo(() => {
     const ordered = applyFieldOrder(allColumns || columnsWithOverrides, fieldOverrides)
-      .filter(c => !fieldOverrides.get(c.id)?.hidden)
+      // `keepDeleted` : colonne que la page affiche même si le champ source est
+      // supprimé de sa table (ex. code LIA dans les achats d'une pièce).
+      .filter(c => c.keepDeleted || !fieldOverrides.get(c.id)?.hidden)
     const seen = new Set()
     return ordered.filter(c => {
       const key = c.id ?? c.field
@@ -2826,6 +2835,7 @@ export function DataTable({
                       const ri = rowIndexById.get(item.id)
                       const isActive = sel && sel.focus.rowId === item.id && sel.focus.colId === col.id
                       const editable = isColEditable(col)
+                      const opensLink = linkOpensOnClick(col)
                       const isEditing = editingCell && editingCell.rowId === item.id && editingCell.colId === col.id
                       const showSelectChevron = selectedSelectChevron && isActive && editable && !isEditing && col.type === 'single_select'
                       // Le clic suivant ouvre la liste : curseur « main », pas « croix ».
@@ -2859,8 +2869,10 @@ export function DataTable({
                             // mousedown et le mouseup — le clic ne tombait alors
                             // plus sur le lien, qui semblait mort. Dans une cellule
                             // éditable, au contraire, le clic DOIT sélectionner
-                            // (voir la classe dt-inert-links plus bas).
-                            if (!editable && e.target.closest?.('a[href]')) return
+                            // (voir la classe dt-inert-links plus bas) — sauf
+                            // une colonne de lien : son nom ouvre la fiche,
+                            // cliquer à côté sélectionne.
+                            if ((!editable || opensLink) && e.target.closest?.('a[href]')) return
                             const cell = { rowId: item.id, colId: col.id }
                             if (e.shiftKey && sel) setSel(s => ({ anchor: s.anchor, focus: cell }))
                             else setSel({ anchor: cell, focus: cell })
@@ -3019,6 +3031,9 @@ export function DataTable({
                             // par défaut du `<a>` passait outre. La fiche visée
                             // reste à un clic dans l'éditeur de lien (pastilles
                             // cliquables) et par la gouttière d'ouverture de ligne.
+                            // Exception : une colonne de LIEN (linkOpensOnClick)
+                            // garde ses liens actifs — le mousedown sur le lien
+                            // ne sélectionne pas, donc rien ne re-rend la ligne.
                             //
                             // Colonne `linkChips` : la cellule porte elle-même
                             // ses pastilles et, quand elle est sélectionnée, le
@@ -3038,7 +3053,7 @@ export function DataTable({
                                 onOpenPicker={() => startEdit(item.id, col.id)}
                               />
                             ) : (
-                            <span className={`block truncate${selectValueClass}${editable ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
+                            <span className={`block truncate${selectValueClass}${editable && !opensLink ? ' dt-inert-links' : ''}`}>{renderCell(col, item, getDecimals(table, col.field), selectBadges)}</span>
                             )
                           )}
                         </div>

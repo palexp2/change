@@ -2,9 +2,10 @@ import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildTestApp, listen, closeServer, createTestUser, db } from '../test-helpers/testApp.js'
 import formsRouter from './discovery-forms.js'
+import ordersRouter from './orders.js'
 import { mirrorDiscoveryOrder, settleDiscoveryOrderMirrors, retryPendingDiscoveryOrders, resetDiscoveryOrderRetryState } from '../services/discoveryOrderAirtable.js'
 
-const app = buildTestApp({ '/api/discovery-forms': formsRouter })
+const app = buildTestApp({ '/api/discovery-forms': formsRouter, '/api/orders': ordersRouter })
 const { base, server } = await listen(app)
 after(() => closeServer(server))
 const { token } = createTestUser()
@@ -13,10 +14,12 @@ const realFetch = globalThis.fetch
 // Colonne dynamique de la table Pièces, lue par le calcul du coût expédié.
 try { db.exec('ALTER TABLE products ADD COLUMN cout_unitaire TEXT') } catch {}
 try { db.exec('ALTER TABLE orders ADD COLUMN deleted_at TIMESTAMP') } catch {}
+const { up: createExports } = await import('../db/migrations/106-order-airtable-exports.js')
+createExports(db)
 db.prepare("INSERT INTO connector_oauth (id,connector,account_key,access_token) VALUES ('at','airtable','test','test-token')").run()
 db.prepare('INSERT INTO airtable_orders_config (base_id,orders_table_id,items_table_id,field_map_items) VALUES (?,?,?,?)')
   .run('test-base', 'test-orders', 'test-items', JSON.stringify({ order: 'Commande', product: 'Produit', qty: 'Quantité', item_type: 'Type' }))
-for (const [col, name, options] of [['company_id', 'Client final', { link_target_table: 'companies' }], ['notes', 'Notes', {}]]) {
+for (const [col, name, options] of [['company_id', 'Client final', { link_target_table: 'companies' }], ['notes', 'Notes', {}], ['order_number', '# de commande', { source: 'formula' }]]) {
   db.prepare('INSERT INTO airtable_field_mappings (id,module,erp_table,column_name,airtable_field_name,options) VALUES (?,?,?,?,?,?)')
     .run(col, 'orders', 'orders', col, name, JSON.stringify(options))
 }
@@ -38,7 +41,7 @@ async function create(suffix) {
   return { status: response.status, body }
 }
 
-function mockAirtable(t, failTable) {
+function mockAirtable(t, failTable, extra = {}) {
   const calls = []
   t.mock.method(globalThis, 'fetch', async (url, options) => {
     assert.ok(String(url).startsWith('https://api.airtable.com/v0/test-base/'), String(url))
@@ -47,7 +50,7 @@ function mockAirtable(t, failTable) {
     const fields = JSON.parse(options.body).fields
     calls.push({ table, fields })
     if (table === failTable) return new Response(JSON.stringify({ error: { message: 'Simulated failure' } }), { status: 422 })
-    return new Response(JSON.stringify({ id: table === 'test-orders' ? `recOrder${String(calls.length).padStart(10, '0')}` : 'recItem0000000001', fields }))
+    return new Response(JSON.stringify({ id: table === 'test-orders' ? `recOrder${String(calls.length).padStart(10, '0')}` : 'recItem0000000001', fields: { ...fields, ...(table === 'test-orders' ? extra : {}) } }))
   })
   return calls
 }
@@ -123,4 +126,23 @@ test('un produit non lié ne crée pas une ligne orpheline dans Airtable', async
   assert.equal(again.status, 'partial')
   assert.match(again.failures[0].error, /product_id/)
   assert.equal(calls.length, 1)
+})
+
+test('une commande créée à la main dans l’ERP part dans Airtable, puis ses articles ajoutés ensuite', async t => {
+  const calls = mockAirtable(t)
+  const post = (path, body) => realFetch(`${base}${path}`, {
+    method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  const created = await post('/api/orders', { company_id: 'test-company' })
+  assert.equal(created.status, 201)
+  const order = await created.json()
+  await settleDiscoveryOrderMirrors()
+  assert.deepEqual(calls.map(c => c.table), ['test-orders'])
+  const linked = db.prepare('SELECT airtable_id, order_number FROM orders WHERE id=?').get(order.id)
+  assert.ok(linked.airtable_id)
+  assert.equal(calls[0].fields['# de commande'], `CMD-${order.order_number}`, 'Airtable hérite du numéro de Boréal')
+  assert.equal((await post(`/api/orders/${order.id}/items`, { product_id: 'test-controller', qty: 2 })).status, 201)
+  await settleDiscoveryOrderMirrors()
+  assert.deepEqual(calls.map(c => c.table), ['test-orders', 'test-items'])
+  assert.equal(calls[1].fields.Quantité, 2)
 })

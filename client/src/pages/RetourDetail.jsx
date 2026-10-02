@@ -17,6 +17,7 @@ import { useRealtimeChannel } from '../lib/useRealtimeChannel.js'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
 import { CustomFieldEditor, isEditableCustomField } from '../components/CustomDetailFields.jsx'
 import { useCustomFields } from '../lib/useCustomFields.js'
+import { LinkedRecordsValue } from '../lib/customFieldDisplay.jsx'
 
 
 
@@ -134,6 +135,16 @@ function RetourItemPanel({ item, onClose, onSave }) {
           </dl>
         </section>
 
+        {(item.billets || item.commande) && (
+          <section>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Liés</h3>
+            <dl className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+              {item.billets && <ItemField label="Billet"><LinkedRecordsValue field={{ record_link_target: 'tickets' }} value={item.billets} /></ItemField>}
+              {item.commande && <ItemField label="Commande de remplacement"><LinkedRecordsValue field={{ record_link_target: 'orders' }} value={item.commande} /></ItemField>}
+            </dl>
+          </section>
+        )}
+
         {item.lien_issue_github && (
           <section>
             <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 mb-3">Liens</h3>
@@ -245,6 +256,8 @@ export default function RetourDetail({ recordId: id }) {
   // « Réceptionner » des articles cochés.
   const [receptionPerson, setReceptionPerson] = useState(() => user?.name || '')
   const [receptionDate, setReceptionDate] = useState(() => localISODate())
+  // Consigne d'étagère du dernier geste (scan ou « Réceptionner »).
+  const [receptionResults, setReceptionResults] = useState([])
 
   const receiveItems = useCallback(async (itemIds) => {
     const r = await api.retours.receiveItems(id, {
@@ -253,8 +266,8 @@ export default function RetourDetail({ recordId: id }) {
     for (const itemId of r.received || []) {
       patchItem({ id: itemId, received_at: r.received_at, received_by: r.received_by })
     }
-    addToast({ message: `${r.received?.length || 0} reçu(s)`, type: 'success' })
-  }, [id, receptionPerson, receptionDate, patchItem, addToast])
+    setReceptionResults((r.instructions || []).map(x => ({ action: 'received', ...x })))
+  }, [id, receptionPerson, receptionDate, patchItem])
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: retour, notFound: 'Retour introuvable.' })
   if (pending) return pending
@@ -297,6 +310,8 @@ export default function RetourDetail({ recordId: id }) {
           date={receptionDate}
           setDate={setReceptionDate}
           onItemReceived={patchItem}
+          results={receptionResults}
+          setResults={setReceptionResults}
         />
 
         {/* Articles — DataTable (vues, tri, filtres, groupement, side-peek sur

@@ -28,6 +28,7 @@ import { queueDiscoveryOrderMirror } from '../services/discoveryOrderAirtable.js
 import { emitOrder } from '../services/realtimeEmitters.js'
 import { buildPartialUpdate } from './customer-post-payment.js'
 import { applyOrderItemDefaults } from '../services/orderItemDefaults.js'
+import { localDay } from '../utils/datetime.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -381,8 +382,8 @@ router.post('/:id/create-order', async (req, res) => {
     addresses.shipping_address_id = shipping?.id || null
     addresses.farm_address = farm
     addresses.farm_address_id = farm?.id || null
-    db.prepare("INSERT INTO orders (id, order_number, company_id, project_id, farm_address_id, address_id, assigned_to, status, notes, date_commande) VALUES (?,?,?,?,?,?,?,'Commande vide',?,date('now'))")
-      .run(orderId, orderNumber, row.company_id || null, row.project_id || null, addresses.farm_address_id, addresses.shipping_address_id, req.user?.id || null, calc.orderNotes.join('\n'))
+    db.prepare("INSERT INTO orders (id, order_number, company_id, project_id, farm_address_id, address_id, assigned_to, status, notes, date_commande) VALUES (?,?,?,?,?,?,?,'Commande vide',?,?)")
+      .run(orderId, orderNumber, row.company_id || null, row.project_id || null, addresses.farm_address_id, addresses.shipping_address_id, req.user?.id || null, calc.orderNotes.join('\n'), localDay())
     // Colonnes miroir des liens Airtable « Adresse de livraison » et « Adresse
     // de la ferme (pour coordonnées géographiques) ».
     const orderCols = new Set(db.pragma('table_info(orders)').map(c => c.name))

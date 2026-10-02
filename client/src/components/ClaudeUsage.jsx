@@ -203,7 +203,9 @@ const FLOOR_SCOPES = [
   { scope: 'session', label: 'Fenêtre 5 h', short: '5 h' },
   { scope: 'week', label: 'Semaine', short: 'sem.' },
 ]
-const floorLabel = (pct) => (pct > 0 ? `${pct} %` : 'jamais')
+// Le seuil est stocké en marge restante ; on l'affiche en consommation, comme les
+// jauges d'à côté (marge 5 % → « au-delà de 95 % »).
+const floorLabel = (pct) => (pct > 0 ? `${100 - pct} %` : 'jamais')
 
 function QuotaFloorControl() {
   const { usage } = useClaudeUsage()
@@ -255,7 +257,7 @@ function QuotaFloorControl() {
   }
 
   const title = FLOOR_SCOPES.map(({ scope, label }) => (shown[scope] > 0
-    ? `${label} : pause sous ${shown[scope]} % de marge`
+    ? `${label} : pause au-delà de ${100 - shown[scope]} % consommés`
     : `${label} : garde-fou désarmé`)).join(' · ')
     + '. La file repart dès que le quota remonte. Cliquer pour changer.'
 
@@ -269,7 +271,7 @@ function QuotaFloorControl() {
         title={title}
       >
         <PauseCircle size={13} className="text-slate-400 shrink-0" />
-        Pause sous
+        Pause au-delà de
         {FLOOR_SCOPES.map(({ scope, short }, i) => (
           <span key={scope} className="shrink-0">
             {i > 0 && <span className="text-slate-300"> · </span>}
@@ -311,16 +313,24 @@ function QuotaFloorControl() {
 
 // Le compte Claude dont on montre les plafonds : sans lui, un pourcentage ne dit pas
 // de QUI il parle. Nom court à l'écran, courriel/organisation/forfait en infobulle.
-function AccountTag({ account }) {
-  if (!account) return null
-  const shown = account.name || account.email
+// Plusieurs comptes : celui qui porte la prochaine exécution est marqué d'un point
+// (`active`), un compte à sec affiche son heure de reprise (`limitedUntil`).
+function AccountTag({ account, fallback = null, active = false, limitedUntil = null, testid = 'usage-strip-account' }) {
+  const shown = account?.name || account?.email || fallback
   if (!shown) return null
-  const title = ['Compte Claude de l\'agent', account.email, account.organization,
-    account.plan && `forfait ${account.plan}`].filter(Boolean).join(' · ')
+  const title = [active ? 'Compte utilisé par la file' : 'Compte Claude', account?.email, account?.organization,
+    account?.plan && `forfait ${account.plan}`].filter(Boolean).join(' · ')
   return (
-    <span className="flex items-center gap-1.5 min-w-0 text-slate-500" data-testid="usage-strip-account" title={title}>
-      <UserRound size={13} className="text-slate-400 shrink-0" />
+    <span className={`flex items-center gap-1.5 min-w-0 ${active ? 'text-slate-800 font-semibold' : 'text-slate-500'}`} data-testid={testid} title={title}>
+      {active
+        ? <span className="h-2 w-2 rounded-full bg-emerald-500 shrink-0" data-testid={`${testid}-active`} />
+        : <UserRound size={13} className="text-slate-400 shrink-0" />}
       <span className="truncate">{shown}</span>
+      {limitedUntil && (
+        <span className="text-rose-600 font-normal shrink-0" title={formatResetFull(limitedUntil)}>
+          · à sec, {formatResetAt(limitedUntil)}
+        </span>
+      )}
     </span>
   )
 }
@@ -490,6 +500,26 @@ function StripLimit({ icon: Icon, label, bucket, testid, hint }) {
   )
 }
 
+// Compte + ses deux plafonds. `suffix` distingue les testids des comptes suivants.
+function AccountLimits({ u, active = false, suffix = '' }) {
+  return (
+    <>
+      <AccountTag
+        account={u?.account} fallback={u?.id} active={active} limitedUntil={u?.limitedUntil}
+        testid={`usage-strip-account${suffix}`}
+      />
+      <StripLimit
+        icon={Gauge} label="Fenêtre 5 h" bucket={u?.session} testid={`usage-strip-session${suffix}`}
+        hint="Bloc glissant de 5 h : il s'ouvre au premier message et se referme 5 h plus tard. C'est le plafond qui coupe le plus souvent."
+      />
+      <StripLimit
+        icon={CalendarDays} label="Semaine" bucket={u?.week} testid={`usage-strip-week${suffix}`}
+        hint="Total des 7 derniers jours, tous modèles confondus."
+      />
+    </>
+  )
+}
+
 /**
  * Bandeau discret pour le haut de la page Travaux : où en sont les trois plafonds de
  * l'abonnement et — quand ça arrive — le fait que la file soit arrêtée par un
@@ -511,6 +541,7 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
     : failure && !usage?.subscriptionAvailable
       ? `Quotas illisibles (${failure.label}). Nouvelle tentative ${formatInDelay(failure.retryAt)}.`
       : null
+  const multi = (usage?.accounts?.length || 0) > 1
   const ageHint = usage?.subscriptionAt ? `Chiffres d'il y a ${formatAgo(usage.subscriptionAt)}` : undefined
   return (
     <div className={className} data-testid="claude-usage-strip">
@@ -523,19 +554,18 @@ export function ClaudeUsageStrip({ className = 'mb-5' }) {
                 est là, une roue tournerait dans le vide. */}
             {!usage && !note && <ThinkingOrb size={11} ink className="text-slate-300" />}
           </div>
-          <AccountTag account={usage?.account} />
-          <StripLimit
-            icon={Gauge} label="Fenêtre 5 h" bucket={usage?.session} testid="usage-strip-session"
-            hint="Bloc glissant de 5 h : il s'ouvre au premier message et se referme 5 h plus tard. C'est le plafond qui coupe le plus souvent."
-          />
-          <StripLimit
-            icon={CalendarDays} label="Semaine" bucket={usage?.week} testid="usage-strip-week"
-            hint="Total des 7 derniers jours, tous modèles confondus."
-          />
+          {!multi && <AccountLimits u={usage} />}
           {/* Seule commande admise dans le bandeau : elle porte sur les pourcentages
               affichés juste à côté (à partir de quelle marge on s'arrête). */}
           <QuotaFloorControl />
         </div>
+        {/* Plusieurs licences : une ligne par compte, la file part sur celui qui a le
+            plus de marge (point vert). */}
+        {multi && usage.accounts.map((a, i) => (
+          <div key={a.id} className="flex flex-wrap items-center gap-x-4 gap-y-1.5 mt-1.5" data-testid={`usage-strip-row-${a.id}`}>
+            <AccountLimits u={a} active={a.id === usage.activeAccountId} suffix={i ? `-${a.id}` : ''} />
+          </div>
+        ))}
 
         {note && (
           <p className="mt-1.5 text-[11px] leading-snug text-amber-600" data-testid="usage-strip-note">

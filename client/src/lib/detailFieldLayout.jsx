@@ -15,6 +15,10 @@ import api from './api.js'
 //
 // Format stocké : [{ key, hidden }]. Le format historique (tableau de clés
 // nues) reste lisible.
+//
+// Groupes créés par l'utilisateur : une entrée `{ key: 'grp:…', group: true,
+// label }` dans la même liste. Les champs visibles qui la suivent (jusqu'au
+// groupe suivant) lui appartiennent — réordonner suffit à ranger un champ.
 
 // Cache module + abonnés : plusieurs fiches de la même entité peuvent être
 // montées en même temps (page dessous, panneau dessus) ; elles doivent toutes
@@ -60,10 +64,76 @@ function writeLocalDelete(entityType, allow) {
   } catch { /* quota / mode privé */ }
 }
 
+// Ordre des sections (tableaux) de la fiche : même raison qu'au-dessus.
+const lsSectionsKey = (entityType) => `erp_detail_sections_${entityType}`
+
+function readLocalSections(entityType) {
+  try {
+    const v = JSON.parse(localStorage.getItem(lsSectionsKey(entityType)))
+    return Array.isArray(v) ? v : null
+  } catch { return null }
+}
+
+function writeLocalSections(entityType, order) {
+  try {
+    if (order) localStorage.setItem(lsSectionsKey(entityType), JSON.stringify(order))
+    else localStorage.removeItem(lsSectionsKey(entityType))
+  } catch { /* quota / mode privé */ }
+}
+
+// Hauteur des tableaux de la fiche (entier / limité) : même raison.
+const lsSizesKey = (entityType) => `erp_detail_section_sizes_${entityType}`
+
+function readLocalSizes(entityType) {
+  try {
+    const v = JSON.parse(localStorage.getItem(lsSizesKey(entityType)))
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : null
+  } catch { return null }
+}
+
+function writeLocalSizes(entityType, sizes) {
+  try {
+    if (sizes) localStorage.setItem(lsSizesKey(entityType), JSON.stringify(sizes))
+    else localStorage.removeItem(lsSizesKey(entityType))
+  } catch { /* quota / mode privé */ }
+}
+
+// Bandeau du panneau (titre + sous-titre choisis) : même raison — sans copie
+// locale le titre du code s'afficherait puis sauterait.
+const lsHeaderKey = (entityType) => `erp_detail_header_${entityType}`
+
+function readLocalHeader(entityType) {
+  try { return normalizeHeader(JSON.parse(localStorage.getItem(lsHeaderKey(entityType)))) } catch { return null }
+}
+
+function writeLocalHeader(entityType, header) {
+  try {
+    if (header) localStorage.setItem(lsHeaderKey(entityType), JSON.stringify(header))
+    else localStorage.removeItem(lsHeaderKey(entityType))
+  } catch { /* quota / mode privé */ }
+}
+
+function normalizeHeader(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  return {
+    title: typeof raw.title === 'string' && raw.title ? raw.title : null,
+    // null = sous-titre du code ; [] = aucun sous-titre.
+    subtitle: Array.isArray(raw.subtitle) ? raw.subtitle.filter(k => typeof k === 'string') : null,
+  }
+}
+
 function entryOf(cacheKey) {
   let entry = cache.get(cacheKey)
   if (!entry) {
-    entry = { layout: readLocal(cacheKey), allowDelete: readLocalDelete(cacheKey), loaded: false, promise: null }
+    entry = {
+      layout: readLocal(cacheKey),
+      allowDelete: readLocalDelete(cacheKey),
+      sectionOrder: readLocalSections(cacheKey),
+      sectionSizes: readLocalSizes(cacheKey),
+      header: readLocalHeader(cacheKey),
+      loaded: false,
+      promise: null,
+    }
     cache.set(cacheKey, entry)
   }
   return entry
@@ -74,6 +144,7 @@ function normalize(raw) {
   return raw
     .map(e => {
       if (typeof e === 'string') return { key: e, hidden: false }
+      if (e && e.group && typeof e.key === 'string') return { key: e.key, group: true, label: String(e.label ?? '') }
       if (e && typeof e.key === 'string') {
         // Forme historique { key, visible } : un `visible:false` dit « masqué ».
         // Sans ce repli, un champ retiré avant le passage à `hidden` revenait
@@ -99,6 +170,12 @@ function loadLayout(entityType) {
       writeLocal(entityType, entry.layout)
       entry.allowDelete = typeof d?.allow_delete === 'boolean' ? d.allow_delete : null
       writeLocalDelete(entityType, entry.allowDelete)
+      entry.sectionOrder = Array.isArray(d?.section_order) ? d.section_order : null
+      writeLocalSections(entityType, entry.sectionOrder)
+      entry.sectionSizes = d?.section_sizes && typeof d.section_sizes === 'object' ? d.section_sizes : null
+      writeLocalSizes(entityType, entry.sectionSizes)
+      entry.header = normalizeHeader(d?.header_config)
+      writeLocalHeader(entityType, entry.header)
     })
     .catch(() => { /* pas de disposition = ordre du code */ })
     .finally(() => { entry.loaded = true; entry.promise = null; notify(entityType) })
@@ -114,7 +191,7 @@ function mergeEntries(stored, fields) {
   const seen = new Set()
   const entries = []
   for (const e of stored || []) {
-    if (!known.has(e.key) || seen.has(e.key)) continue
+    if (seen.has(e.key) || !(e.group || known.has(e.key))) continue
     entries.push(e)
     seen.add(e.key)
   }
@@ -172,18 +249,51 @@ export function useDetailFieldLayout(entityType, fields) {
   }, [entityType])
 
   const byKey = useMemo(() => new Map(fields.map(f => [f.key, f])), [fields])
-  const visible = useMemo(
-    () => entries.filter(e => !e.hidden).map(e => byKey.get(e.key)).filter(Boolean),
+  // `items` : champs visibles ET en-têtes de groupe, dans l'ordre (mode édition).
+  const items = useMemo(
+    () => entries.filter(e => !e.hidden).map(e => (e.group ? e : byKey.get(e.key))).filter(Boolean),
     [entries, byKey],
   )
+  const visible = useMemo(() => items.filter(i => !i.group), [items])
   const hidden = useMemo(
     () => entries.filter(e => e.hidden).map(e => byKey.get(e.key)).filter(Boolean),
     [entries, byKey],
   )
+  const userGroups = useMemo(() => {
+    const out = []
+    for (const i of items) {
+      if (i.group) out.push({ id: i.key, label: i.label, keys: [] })
+      else if (out.length) out[out.length - 1].keys.push(i.key)
+    }
+    return out
+  }, [items])
 
+  // `nextVisibleKeys` peut contenir les clés de groupe ; un groupe absent de la
+  // liste est gardé en fin (jamais perdu par un appelant qui l'ignore).
   const applyOrder = useCallback((nextVisibleKeys) => {
-    const hiddenEntries = entries.filter(e => e.hidden)
-    persist([...nextVisibleKeys.map(key => ({ key, hidden: false })), ...hiddenEntries])
+    const groupsByKey = new Map(entries.filter(e => e.group).map(e => [e.key, e]))
+    const next = nextVisibleKeys.map(key => groupsByKey.get(key) || { key, hidden: false })
+    for (const [key, g] of groupsByKey) if (!nextVisibleKeys.includes(key)) next.push(g)
+    persist([...next, ...entries.filter(e => e.hidden)])
+  }, [entries, persist])
+
+  const addGroup = useCallback((label) => {
+    const key = `grp:${Math.random().toString(36).slice(2, 10)}`
+    persist([
+      ...entries.filter(e => !e.hidden),
+      { key, group: true, label },
+      ...entries.filter(e => e.hidden),
+    ])
+    return key
+  }, [entries, persist])
+
+  const renameGroup = useCallback((key, label) => {
+    persist(entries.map(e => (e.key === key ? { ...e, label } : e)))
+  }, [entries, persist])
+
+  // Retirer un groupe ne retire aucun champ : ils rejoignent le groupe précédent.
+  const removeGroup = useCallback((key) => {
+    persist(entries.filter(e => e.key !== key))
   }, [entries, persist])
 
   const hide = useCallback((key) => {
@@ -202,7 +312,7 @@ export function useDetailFieldLayout(entityType, fields) {
     ])
   }, [entries, persist])
 
-  return { fields: visible, hiddenFields: hidden, applyOrder, hide, show }
+  return { fields: visible, items, userGroups, hiddenFields: hidden, applyOrder, hide, show, addGroup, renameGroup, removeGroup }
 }
 
 // ── « Autoriser la suppression de la fiche » ─────────────────────────────────
@@ -238,6 +348,91 @@ export function useRecordDeletePolicy(entityType, fallback = true) {
   }, [entityType])
 
   return { allowed, setAllowed }
+}
+
+// ── Ordre des sections de la fiche ───────────────────────────────────────────
+//
+// Les sections (Informations, Mouvements, Achats…) se réordonnent dans le même
+// mode de personnalisation que les champs, et l'ordre est PARTAGÉ de la même
+// façon (colonne `section_order` de la même ligne ; écriture réservée aux
+// admins). `sections` : clés déclarées par la fiche, dans l'ordre du code —
+// référence stable attendue. Une clé stockée disparue du code est ignorée ; une
+// section neuve se pose à sa place d'origine relative (après sa voisine du code).
+export function useDetailSectionOrder(entityType, sections) {
+  const entry = useDetailConfig(entityType)
+  const stored = entry?.sectionOrder || null
+
+  const ordered = useMemo(() => {
+    if (!stored?.length) return sections
+    const known = new Set(sections)
+    const out = [...new Set(stored.filter(k => known.has(k)))]
+    sections.forEach((k, i) => {
+      if (out.includes(k)) return
+      const prev = sections.slice(0, i).reverse().find(p => out.includes(p))
+      out.splice(prev ? out.indexOf(prev) + 1 : 0, 0, k)
+    })
+    return out
+  }, [stored, sections])
+
+  const applyOrder = useCallback((next) => {
+    if (!entityType) return
+    const entry = entryOf(entityType)
+    entry.sectionOrder = next
+    writeLocalSections(entityType, next)
+    notify(entityType)
+    api.views.saveDetailSectionOrder(entityType, next)
+      .catch(err => console.error('[detailFieldLayout] échec sauvegarde ordre des sections:', err))
+  }, [entityType])
+
+  return { sections: ordered, applyOrder }
+}
+
+// ── Hauteur des tableaux de la fiche ─────────────────────────────────────────
+//
+// Réglée dans le mode personnalisation, PARTAGÉE comme l'ordre des sections
+// (colonne `section_sizes`). 'full' : le tableau s'affiche en entier, sans
+// ascenseur ; sinon il reste borné (défaut).
+export function useDetailSectionSizes(entityType) {
+  const entry = useDetailConfig(entityType)
+  const sizes = entry?.sectionSizes || null
+
+  const isFull = useCallback((key) => sizes?.[key] === 'full', [sizes])
+
+  const setFull = useCallback((key, full) => {
+    if (!entityType) return
+    const entry = entryOf(entityType)
+    const next = { ...(entry.sectionSizes || {}), [key]: full ? 'full' : 'limited' }
+    entry.sectionSizes = next
+    writeLocalSizes(entityType, next)
+    notify(entityType)
+    api.views.saveDetailSectionSizes(entityType, next)
+      .catch(err => console.error('[detailFieldLayout] échec sauvegarde hauteur des tableaux:', err))
+  }, [entityType])
+
+  return { isFull, setFull }
+}
+
+// ── Bandeau du panneau latéral ───────────────────────────────────────────────
+//
+// Réglé dans le mode personnalisation, PARTAGÉ comme le reste (colonne
+// `header_config`). `header` : { title: clé|null, subtitle: [clé…]|null } ;
+// une partie à null = celle du code (registre des fiches / tableau d'origine).
+export function useDetailHeaderConfig(entityType) {
+  const entry = useDetailConfig(entityType)
+  const header = entry?.header || null
+
+  const setHeader = useCallback((next) => {
+    if (!entityType) return
+    const value = normalizeHeader(next)
+    const entry = entryOf(entityType)
+    entry.header = value
+    writeLocalHeader(entityType, value)
+    notify(entityType)
+    api.views.saveDetailHeader(entityType, value)
+      .catch(err => console.error('[detailFieldLayout] échec sauvegarde du bandeau:', err))
+  }, [entityType])
+
+  return { header, setHeader }
 }
 
 // ── Mode édition porté par le panneau latéral ────────────────────────────────

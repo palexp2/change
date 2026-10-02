@@ -265,9 +265,6 @@ function mergeProspects(a, b) {
 //   on ne sait pas par quoi »).
 const VALID_KINDS = new Set(['comment', 'dm_sent', 'reply', 'follow', 'story_reaction', 'dm_in', 'contact'])
 
-/** Natures qui ne portent ni texte de commentaire ni publication. */
-export const NON_COMMENT_KINDS = new Set(['follow', 'story_reaction', 'dm_in', 'contact'])
-
 /**
  * Traite un appel de ManyChat. Synchrone (better-sqlite3), tout sous
  * transaction. Le push Airtable est déclenché APRÈS par l'appelant, en
@@ -563,7 +560,6 @@ export function splitByWeek(prospects, weekKey) {
   const backlog = prospects.filter(p => p.week_key !== weekKey)
   return { ofWeek, backlog }
 }
-
 
 function erpProspectsUrl() {
   const base = APP_URL

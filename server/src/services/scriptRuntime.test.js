@@ -7,7 +7,7 @@ import { AsyncLocalStorage } from 'node:async_hooks'
 import { initTestDb, db } from '../test-helpers/testApp.js'
 import { runScriptSandboxed, scriptRuntimeStatus } from './scriptSandbox.js'
 import { ScriptQueue } from './scriptRuntime/queue.js'
-import { publicIPv4, scriptFetch } from './scriptRuntime/network.js'
+import { originAllowed, publicIPv4, scriptFetch } from './scriptRuntime/network.js'
 import { limits } from './scriptRuntime/config.js'
 initTestDb()
 
@@ -100,6 +100,11 @@ test('guest cannot connect directly to the host loopback network', async t => {
 test('network and email broker are deny-by-default and private addresses stay blocked', async () => {
   for (const ip of ['127.0.0.1', '169.254.169.254', '10.0.0.1', '172.16.0.1', '192.168.1.1', '::1', '100.64.0.1']) assert.equal(publicIPv4(ip), false)
   assert.equal(publicIPv4('8.8.8.8'), true)
+  const wild = ['https://*.orisha.io']
+  assert.equal(originAllowed(new URL('https://app.orisha.io/x'), wild), true)
+  assert.equal(originAllowed(new URL('https://orisha.io'), wild), false)
+  assert.equal(originAllowed(new URL('https://evilorisha.io'), wild), false)
+  assert.equal(originAllowed(new URL('https://app.orisha.io:8443'), wild), false)
   await assert.rejects(runScriptSandboxed("await fetch('http://169.254.169.254/latest/meta-data/')"), /non autorisée/)
   await assert.rejects(runScriptSandboxed("await sendEmail('nobody@example.com','test','test')"), /non autorisé/)
   const saved = process.env.SCRIPT_FETCH_ORIGINS

@@ -9,6 +9,7 @@ import {
 } from '../services/relanceEmail.js'
 import { sendEmail } from '../services/gmail.js'
 import { escapeHtml } from '../utils/sanitizeHtml.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -162,9 +163,10 @@ router.post('/send/:qcId', async (req, res) => {
 
   const htmlBody = bodyToHtml(body)
 
+  const emailRowId = newRecordId()
   let sent
   try {
-    sent = await sendEmail(recipient, subject, htmlBody, { userId: req.user.id })
+    sent = await sendEmail(recipient, subject, trackEmailHtml(htmlBody, emailRowId), { userId: req.user.id })
   } catch (e) {
     return res.status(400).json({ error: e.message || 'Échec d\'envoi Gmail' })
   }
@@ -182,7 +184,6 @@ router.post('/send/:qcId', async (req, res) => {
   // Trace l'envoi côté CRM — même schéma que la sync Gmail (interactions + emails)
   // pour que le courriel apparaisse dans la timeline du contact et de l'entreprise.
   const interactionId = newRecordId()
-  const emailRowId = newRecordId()
   const ts = new Date().toISOString()
   // Atomique : interaction + email écrits ensemble. Si le 2e INSERT échoue,
   // on ne veut pas une interaction orpheline sans corps de courriel — sinon la

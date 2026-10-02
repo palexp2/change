@@ -36,9 +36,9 @@ function rpc(method, args) {
   return result.value
 }
 const job = readLine()
-const log = (...args) => send({ type: 'log', text: args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ') })
+const log = (...args) => send({ type: 'log', text: args.map(a => a && typeof a === 'object' ? (typeof a.stack === 'string' ? String(a.message) : JSON.stringify(a)) : String(a)).join(' ') })
 const context = vm.createContext({
-  log, console: { log },
+  log, console: { log, info: log, warn: log, error: log },
   query: (...args) => rpc('query', args),
   fetch: async (...args) => rpc('fetch', args),
   sendEmail: async (...args) => rpc('sendEmail', args),

@@ -66,16 +66,35 @@ function noteOutcome(orderId, result) {
   backoff.set(orderId, { attempts, nextAt: Date.now() + Math.min(RETRY_BASE_MS * 2 ** (attempts - 1), RETRY_MAX_MS) })
 }
 
-// Commandes System Builder (et seulement elles : les anciennes commandes locales
-// ne sont jamais exportées) dont la commande ou un article n'est pas encore dans
-// Airtable.
+// Commandes nées dans l'ERP (System Builder, ou créées à la main — marquées
+// dans order_airtable_exports) dont la commande ou un article n'est pas encore
+// dans Airtable. Les commandes venues d'Airtable n'y sont jamais renvoyées.
 export function pendingDiscoveryOrders() {
   return db.prepare(`
-    SELECT o.id FROM customer_onboarding_responses r
-    JOIN orders o ON o.id = r.generated_order_id AND o.deleted_at IS NULL
-    WHERE o.airtable_id IS NULL
-       OR EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id AND i.airtable_id IS NULL)
+    SELECT o.id FROM orders o
+    WHERE o.deleted_at IS NULL
+      AND (o.id IN (SELECT generated_order_id FROM customer_onboarding_responses)
+           OR o.id IN (SELECT order_id FROM order_airtable_exports))
+      AND (o.airtable_id IS NULL
+           OR EXISTS (SELECT 1 FROM order_items i WHERE i.order_id = o.id AND i.airtable_id IS NULL))
   `).all().map(r => r.id)
+}
+
+// Commande créée à la main dans l'ERP : la marquer pour Airtable et l'envoyer.
+// Jamais bloquant : la commande est déjà enregistrée, la reprise rattrapera.
+export function exportErpOrder(orderId) {
+  try {
+    db.prepare('INSERT OR IGNORE INTO order_airtable_exports (order_id) VALUES (?)').run(orderId)
+    queueDiscoveryOrderMirror(orderId)
+  } catch (e) { console.error('Commande ERP → Airtable:', e.message) }
+}
+
+// Article ajouté à une commande née dans l'ERP : suivre la commande dans Airtable.
+export function exportErpOrderItems(orderId) {
+  try {
+    const born = db.prepare('SELECT 1 FROM order_airtable_exports WHERE order_id=?').get(orderId)
+    if (born) queueDiscoveryOrderMirror(orderId)
+  } catch (e) { console.error('Article ERP → Airtable:', e.message) }
 }
 
 // Reprise périodique, une commande à la fois.

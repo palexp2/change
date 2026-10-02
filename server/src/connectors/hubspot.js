@@ -18,7 +18,7 @@ export function isHubSpotConfigured() {
   return !!(row && row.value)
 }
 
-async function hsFetch(path, { method = 'GET', body, retries = 3 } = {}) {
+export async function hsFetch(path, { method = 'GET', body, retries = 3 } = {}) {
   const token = getAccessToken()
   let lastError = null
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -31,6 +31,8 @@ async function hsFetch(path, { method = 'GET', body, retries = 3 } = {}) {
           'Content-Type': 'application/json',
         },
         body: body ? JSON.stringify(body) : undefined,
+        // Sans délai, une connexion figée bloquait l'appelant pour toujours.
+        signal: AbortSignal.timeout(120_000),
       })
     } catch (err) {
       // Erreur réseau transitoire (DNS, reset, timeout) — backoff et retry

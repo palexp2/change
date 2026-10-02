@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeftRight, FileText, ExternalLink, RefreshCw, Hammer, AlertTriangle, CheckCircle2, Trash2, SlidersHorizontal, ShoppingCart } from 'lucide-react'
+import { ArrowLeftRight, FileText, ExternalLink, RefreshCw, Hammer, AlertTriangle, CheckCircle2, Trash2, SlidersHorizontal, ShoppingCart, FoldVertical, UnfoldVertical } from 'lucide-react'
 import api from '../lib/api.js'
 import { Badge, stockStatusColor, stockStatusLabel } from '../components/Badge.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
@@ -25,10 +25,10 @@ import { fmtDateTime } from '../lib/formatDate.js'
 import { formatBytes, fmtMoney, fmtNumber } from '../utils/formatters.js'
 import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { DetailFieldGrid, DetailField } from '../components/DetailFieldGrid.jsx'
-import { Field as GatedField } from '../components/Field.jsx'
-import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
+import { useRecordDeleteAllowed, useDetailSectionOrder, useDetailSectionSizes, usePeekFieldEdit } from '../lib/detailFieldLayout.jsx'
+import { useReorderDnd } from '../lib/useReorderDnd.js'
 import { useCustomFields } from '../lib/useCustomFields.js'
-import { columnChoiceValues } from '../lib/customFieldDisplay.jsx'
+import { columnChoiceValues, formatCurrency, currencySymbolOf } from '../lib/customFieldDisplay.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { sync as syncStore } from '../lib/dataSync.js'
 import { useToast } from '../contexts/ToastContext.jsx'
@@ -52,7 +52,7 @@ const PRODUCT_FIELDS = [
   { key: 'min_stock',          label: 'Stock minimum',      type: 'number' },
   { key: 'order_qty',          label: 'Qté à commander',    type: 'number', defaultVisible: false },
   { key: 'location',           label: 'Emplacement',        type: 'text' },
-  { key: 'supplier_company_id',label: 'Fournisseur',        type: 'vendor' },
+  { key: 'supplier_company_id',label: 'Fournisseur préféré', type: 'vendor' },
   { key: 'manufacturier',      label: 'Nom fabricant',      type: 'text' },
   { key: 'supplier',           label: 'Fournisseur (legacy texte)', type: 'text', defaultVisible: false },
   { key: 'buy_via_po',         label: 'Achat par PO',       type: 'checkbox' },
@@ -61,7 +61,6 @@ const PRODUCT_FIELDS = [
   { key: 'weight_lbs',         label: 'Poids (lbs)',        type: 'number', step: '0.01', defaultVisible: false },
   { key: 'notes',              label: 'Notes',              type: 'textarea', span2: true, defaultVisible: false },
   { key: 'is_sellable',        label: 'Vendable',           type: 'checkbox' },
-  { key: 'quote_farm_wide',    label: 'Soumission : pour toute la ferme', type: 'checkbox' },
   { key: 'active',             label: 'Produit actif',      type: 'checkbox' },
 ]
 // Colonnes rendues AILLEURS que dans la carte de champs (image de l'en-tête,
@@ -69,13 +68,17 @@ const PRODUCT_FIELDS = [
 // champs de la table proposée par « Ajouter un champ ».
 const TAKEN_ELSEWHERE = [
   'image_url',
+  // Retiré de la fiche (demande P.-A. Papillon, 2026-10-01) ; la soumission lit
+  // toujours la colonne. Listé ici pour ne pas revenir via « Ajouter un champ ».
+  'quote_farm_wide',
   'lien_pdf_installation_fr', 'lien_pdf_installation_fr_local',
   'lien_pdf_installation_en', 'lien_pdf_installation_en_local',
   'lien_pdf_remplacement_fr', 'lien_pdf_remplacement_fr_local',
   'lien_pdf_remplacement_en', 'lien_pdf_remplacement_en_local',
+  // Section « Ajustement d'inventaire » retirée (demande P.-A. Papillon,
+  // 2026-10-02) : sa raison ne revient pas par la carte de champs.
+  'raison_de_l_ajustement_manuel',
 ]
-
-const ADJUST_REASON = 'raison_de_l_ajustement_manuel'
 
 
 const BOM_RENDERS = {
@@ -121,6 +124,18 @@ const BOM_RENDERS = {
   product_sku: row => <span className="text-xs text-slate-500 font-mono">{row.product_sku || '—'}</span>,
 }
 const BOM_COLUMNS = TABLE_COLUMN_META.bom_items.map(meta => ({ ...meta, render: BOM_RENDERS[meta.id] }))
+// « Utilisé dans » : mêmes lignes de BOM, vues depuis le produit parent.
+const USED_IN_RENDERS = {
+  ...BOM_RENDERS,
+  product_image: row => (
+    row.product_image_url ? (
+      <TableThumb src={row.product_image_url} alt={row.product_name || ''} className="border border-slate-200" />
+    ) : (
+      <div className="h-7 w-7 rounded border border-dashed border-slate-200" />
+    )
+  ),
+}
+const USED_IN_COLUMNS = TABLE_COLUMN_META.product_used_in.map(meta => ({ ...meta, render: USED_IN_RENDERS[meta.id] }))
 
 // Croise le stock courant de chaque composant avec sa quantité requise pour
 // déterminer combien d'unités du produit fini sont assemblables maintenant.
@@ -210,6 +225,85 @@ const MOVEMENT_RENDERS = {
 }
 const MOVEMENT_COLUMNS = TABLE_COLUMN_META.product_movements.map(meta => ({ ...meta, render: MOVEMENT_RENDERS[meta.id] }))
 
+// Nombre de la carte de champs, formaté selon le registre (/champs/products) :
+// hors saisie, « 12,35 $ » pour une devise ou N décimales pour un nombre ; au
+// focus, la valeur brute redevient éditable.
+function ConfiguredNumberInput({ value, config, step, className, onChange }) {
+  const [focused, setFocused] = useState(false)
+  const shown = config.type === 'currency'
+    ? formatCurrency(value, config.decimals ?? 2, config.symbol)
+    : Number.isInteger(config.decimals) && value != null && value !== ''
+      ? fmtNumber(Number(value), { decimals: config.decimals })
+      : null
+  if (!focused && shown != null) {
+    return <input readOnly className={`${className} tabular-nums`} value={shown} onFocus={() => setFocused(true)} />
+  }
+  return (
+    <input type="number" min="0" step={step || '1'} className={className} autoFocus={focused}
+      value={value ?? ''} onBlur={() => setFocused(false)} onChange={e => onChange(parseFloat(e.target.value) || 0)} />
+  )
+}
+
+const FIFO_ISSUE_LABELS ={ sans_prix: 'Sans prix', prix_douteux: 'Prix douteux', stock_sans_achat: 'Stock sans achat' }
+
+// Quantité de l'achat encore en stock (FIFO). Prix douteux : l'icône ambre
+// valide le prix d'un clic ; sans prix : elle marque l'achat gratuit (0 $).
+// Validé, la coche verte annule.
+function FifoQtyCell({ p, onTogglePrice }) {
+  if (p.fifo_qty == null) return <span className="text-slate-300">—</span>
+  const toggle = p.fifo_flag === 'prix_douteux' || p.fifo_flag === 'sans_prix' || p.price_approved
+  const icon = p.fifo_flag ? <AlertTriangle size={12} /> : p.price_approved ? <CheckCircle2 size={12} /> : null
+  return (
+    <span className={`tabular-nums inline-flex items-center gap-1 ${p.fifo_flag ? 'text-amber-600' : p.price_approved ? 'text-emerald-600' : ''}`}
+      title={FIFO_ISSUE_LABELS[p.fifo_flag] || (p.price_approved ? 'Prix vérifié' : undefined)}>
+      {toggle ? (
+        <button type="button" className="inline-flex" data-testid={`purchase-price-approval-${p.id}`}
+          title={p.price_approved ? 'Annuler' : p.fifo_flag === 'sans_prix' ? 'Gratuit (0 $)' : 'Prix vérifié'}
+          onClick={e => { e.stopPropagation(); onTogglePrice(p) }}>
+          {icon}
+        </button>
+      ) : icon}
+      {fmtNumber(p.fifo_qty)}
+    </span>
+  )
+}
+
+// En-tête de la section Achats : coût FIFO calculé et alertes.
+// Stock que les achats ne couvrent pas (inventaire de départ) : son coût
+// unitaire se saisit ici, enregistré à la sortie du champ.
+function FifoSummary({ fifo, onOpeningCost }) {
+  const byKind = {}
+  for (const i of fifo.issues || []) byKind[i.kind] = (byKind[i.kind] || []).concat(i)
+  const showOpening = fifo.uncovered > 0 || fifo.opening_cost != null
+  const [opening, setOpening] = useState(fifo.opening_cost ?? '')
+  useEffect(() => { setOpening(fifo.opening_cost ?? '') }, [fifo.opening_cost])
+  function commitOpening() {
+    const v = opening === '' ? null : Number(opening)
+    if (v === (fifo.opening_cost ?? null) || (v != null && !(v >= 0))) return
+    onOpeningCost(v)
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-2 text-sm" data-testid="product-fifo-summary">
+      <span className="text-slate-500">FIFO</span>
+      <span className="font-medium tabular-nums">{money(fifo.cost)}</span>
+      {showOpening && (
+        <label className="flex items-center gap-1 text-slate-500" title={`Inventaire de départ · ${fmtNumber(fifo.uncovered)}`}>
+          Départ
+          <input type="number" min="0" step="0.0001" value={opening} data-testid="product-opening-cost"
+            onChange={e => setOpening(e.target.value)} onBlur={commitOpening}
+            onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur() }}
+            className="w-24 border border-slate-200 rounded px-2 py-0.5 text-sm text-slate-900 tabular-nums" />
+        </label>
+      )}
+      {Object.entries(byKind).map(([kind, list]) => (
+        <Badge key={kind} color="orange">
+          {FIFO_ISSUE_LABELS[kind]}{kind === 'stock_sans_achat' ? ` · ${fmtNumber(fifo.uncovered)}` : list.length > 1 ? ` · ${list.length}` : ''}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 // Sous-tableau « Achats » : `purchases.product_id` a été droppée (migration 035),
 // le rattachement passe désormais par le champ lien `nom_de_la_piece` — c'est le
 // serveur qui le résout (GET /products/:id/purchases).
@@ -220,6 +314,7 @@ const PURCHASE_RENDERS = {
     </Link>
   ),
   quantite_commande: p => <span className="tabular-nums">{fmtNumber(p.quantite_commande, { fallback: <span className="text-slate-300">—</span> })}</span>,
+  prix_unitaire: p => <span className="tabular-nums">{money(p.prix_unitaire)}</span>,
   // Règle FK : le fournisseur s'ouvre si une entreprise est liée. Le miroir
   // Airtable ne remplit souvent que le nom (source de vérité = champ lié).
   supplier: p => (
@@ -241,12 +336,14 @@ function Field({ label, children, span2 = false }) {
   )
 }
 
+const SECTION_KEYS = ['info', 'mouvements', 'achats', 'bom', 'utilise', 'docs']
+
 const SECTION_LABELS = {
   info: 'Informations',
-  ajustement: "Ajustement d'inventaire",
   mouvements: 'Mouvements',
   achats: 'Achats',
   bom: 'BOM',
+  utilise: 'Utilisé dans',
   docs: 'Documents',
 }
 
@@ -345,8 +442,10 @@ export default function ProductDetail({ recordId, onClose }) {
   const id = recordId
   // « Suppression permise » : case du mode de personnalisation de la fiche.
   const canDelete = useRecordDeleteAllowed('products')
+  const peekEdit = usePeekFieldEdit()
   const [form, setForm] = useState({})
   const [bom, setBom] = useState([])
+  const [usedIn, setUsedIn] = useState([])
   const [purchases, setPurchases] = useState([])
   const [companies, setCompanies] = useState([])
   const [showPoModal, setShowPoModal] = useState(false)
@@ -379,6 +478,14 @@ export default function ProductDetail({ recordId, onClose }) {
     }
     return map
   }, [registryFields])
+  // Format des nombres réglé dans le registre (type Devise, décimales).
+  const registryNumberFormat = useMemo(() => {
+    const map = {}
+    for (const f of registryFields || []) {
+      map[f.column_name] = { type: f.type, decimals: f.decimals, symbol: f.type === 'currency' ? currencySymbolOf(f) : undefined }
+    }
+    return map
+  }, [registryFields])
   const bomSummary = useMemo(() => computeBuildable(bom), [bom])
 
   const { record: product, setRecord: setProduct, loading, loadError, reload: load } =
@@ -395,7 +502,6 @@ export default function ProductDetail({ recordId, onClose }) {
         monthly_price_cad: data.monthly_price_cad ?? 0,
         monthly_price_usd: data.monthly_price_usd ?? 0,
         is_sellable: data.is_sellable === 1,
-        quote_farm_wide: data.quote_farm_wide === 1,
         min_stock: data.min_stock ?? 0,
         order_qty: data.order_qty ?? 0,
         location: data.location || '',
@@ -422,9 +528,38 @@ export default function ProductDetail({ recordId, onClose }) {
   // chargée au montage (plus de chargement paresseux à la sélection d'un onglet).
   useEffect(() => {
     api.bom.list({ product_id: id, limit: 'all' }).then(r => setBom(r.data || [])).catch(() => {})
+    api.bom.list({ component_id: id, limit: 'all' }).then(r => setUsedIn(r.data || [])).catch(() => setUsedIn([]))
     api.products.purchases(id).then(r => setPurchases(r.data || [])).catch(() => setPurchases([]))
     api.products.deleteCheck(id).then(setDeleteCheck).catch(() => setDeleteCheck(null))
   }, [id])
+
+  async function saveOpeningCost(v) {
+    try {
+      await api.products.setOpeningCost(id, v)
+      const [list, fresh] = await Promise.all([api.products.purchases(id), api.products.get(id)])
+      setPurchases(list.data || [])
+      setProduct(prev => prev ? { ...prev, fifo: fresh.fifo, unit_cost: fresh.unit_cost } : prev)
+    } catch (e) {
+      addToast({ type: 'error', message: e.message || 'Enregistrement impossible', duration: 6000 })
+    }
+  }
+  async function togglePurchasePrice(p) {
+    try {
+      await api.products.purchasePriceApproval(id, p.id, !p.price_approved)
+      const [list, fresh] = await Promise.all([api.products.purchases(id), api.products.get(id)])
+      setPurchases(list.data || [])
+      setProduct(prev => prev ? { ...prev, fifo: fresh.fifo } : prev)
+    } catch (e) {
+      addToast({ type: 'error', message: e.message || 'Action impossible', duration: 6000 })
+    }
+  }
+  // Colonnes stables (le tableau ne doit pas se réinitialiser à chaque rendu) :
+  // le clic passe par une ref vers la dernière version du gestionnaire.
+  const togglePriceRef = useRef(togglePurchasePrice)
+  togglePriceRef.current = togglePurchasePrice
+  const purchaseColumns = useMemo(() => PURCHASE_COLUMNS.map(c => c.id === 'fifo_qty'
+    ? { ...c, render: p => <FifoQtyCell p={p} onTogglePrice={row => togglePriceRef.current(row)} /> }
+    : c), [])
 
   // Liste des entreprises pour le champ « Fournisseur » (LinkedRecordField).
   useEffect(() => {
@@ -494,21 +629,14 @@ export default function ProductDetail({ recordId, onClose }) {
     setImageBusy(false)
   }
 
-  // Section « Ajustement d'inventaire » (comme la fiche Pièce d'Airtable) : la
-  // raison part vers Airtable. Le champ « Ajustement manuel » a été retiré de
-  // la fiche — l'inventaire s'ajuste par « Ajuster l'inventaire ».
-  const [adjust, setAdjust] = useState({ [ADJUST_REASON]: '' })
+  // L'inventaire s'ajuste par « Ajuster l'inventaire » (section Mouvements).
   const adjustTimers = useRef({})
   // Liens PDF en cours de saisie (autosave par champ via saveAdjust).
   const [docDraft, setDocDraft] = useState({})
   useEffect(() => { setDocDraft({}) }, [id])
-  useEffect(() => {
-    if (!product) return
-    setAdjust({ [ADJUST_REASON]: product[ADJUST_REASON] || '' })
-  }, [product?.[ADJUST_REASON]]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Un minuteur par champ : choisir la raison ne doit pas annuler la
-  // sauvegarde encore en attente de l'ajustement saisi juste avant.
+  // Un minuteur par champ : une saisie ne doit pas annuler la sauvegarde
+  // encore en attente d'un autre champ.
   function saveAdjust(key, val, delay = 0) {
     clearTimeout(adjustTimers.current[key])
     adjustTimers.current[key] = setTimeout(() => {
@@ -520,8 +648,34 @@ export default function ProductDetail({ recordId, onClose }) {
     }, delay)
   }
 
-  const sections = useMemo(() => ['info', 'ajustement', 'mouvements', 'achats', 'bom', 'docs'], [])
-  const { activeSection, goToSection, registerSection } = useSectionNav(sections, { ready: !loading && !!product })
+  // Ordre des sections réglable dans le mode personnalisation du panneau
+  // (flèches / glisser sur le titre de chaque section), partagé comme celui des champs.
+  const { sections, applyOrder: applySectionOrder } = useDetailSectionOrder('products', SECTION_KEYS)
+  const sectionSiblings = useCallback(() => sections, [sections])
+  const sectionDnd = useReorderDnd({ siblingsOf: sectionSiblings, applyOrder: applySectionOrder })
+  const sectionReorder = peekEdit?.editing ? sectionDnd : undefined
+  // Pièce achetée : pas de nomenclature à montrer. « Utilisé dans » n'apparaît
+  // que si la pièce figure dans le BOM d'au moins un produit.
+  const shownSections = useMemo(
+    () => sections.filter(k => !(k === 'bom' && form.procurement_type === 'Acheté') && !(k === 'utilise' && !usedIn.length)),
+    [sections, form.procurement_type, usedIn.length],
+  )
+  const { activeSection, goToSection, registerSection } = useSectionNav(shownSections, { ready: !loading && !!product })
+  // Hauteur de chaque tableau (entier / limité), réglée en mode personnalisation.
+  const { isFull: tableIsFull, setFull: setTableFull } = useDetailSectionSizes('products')
+  const tableHeight = (key, rows) => (tableIsFull(key) ? 'auto' : stackedTableHeight(rows))
+  const sizeToggle = (key) => {
+    if (!peekEdit?.editing) return null
+    const full = tableIsFull(key)
+    return (
+      <button type="button" onClick={() => setTableFull(key, !full)}
+        className={`btn-sm ${full ? 'btn-primary' : 'btn-secondary'} flex items-center`}
+        title={full ? 'Tableau en entier — limiter la hauteur' : 'Hauteur limitée — afficher en entier'}
+        aria-pressed={full} data-testid={`section-size-${key}`}>
+        {full ? <UnfoldVertical size={14} /> : <FoldVertical size={14} />}
+      </button>
+    )
+  }
 
   const change = (key, val) => {
     const next = { ...form, [key]: val }
@@ -612,8 +766,8 @@ export default function ProductDetail({ recordId, onClose }) {
     }
     if (field.type === 'number') {
       return (
-        <input type="number" min="0" step={field.step || '1'} className={inp}
-          value={form[field.key] ?? ''} onChange={e => change(field.key, parseFloat(e.target.value) || 0)} />
+        <ConfiguredNumberInput value={form[field.key]} config={registryNumberFormat[field.key] || {}}
+          step={field.step} className={inp} onChange={v => change(field.key, v)} />
       )
     }
     return <input className={inp} value={form[field.key] || ''} onChange={e => change(field.key, e.target.value)} />
@@ -623,10 +777,249 @@ export default function ProductDetail({ recordId, onClose }) {
     mouvements: product?.movements?.length || undefined,
     achats: purchases.length || undefined,
     bom: bom.length || undefined,
+    utilise: usedIn.length || undefined,
   }
 
   const pending = detailPending({ loading, loadError, onRetry: load, record: product, notFound: 'Produit introuvable.' })
   if (pending) return pending
+
+  // Sections rendues dans l'ordre réglé (mode personnalisation du panneau).
+  const sectionBlocks = {
+    info: (
+      <Section key="info" reorder={sectionReorder} id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
+        {/* Carte de champs commune : le panneau y gagne son bouton
+            « Personnaliser les champs » (ordre, retrait, ajout d'un champ de
+            la table, modification du champ par clic droit). Les champs
+            personnalisés de la table s'y posent seuls — d'où `record`. */}
+        <DetailFieldGrid
+          entityType="products"
+          linkifyTextUrls
+          allowGroups
+          bareReorder
+          renameInPlace
+          record={product}
+          taken={TAKEN_ELSEWHERE}
+          className="card p-6"
+          testId="product-fields"
+        >
+          {PRODUCT_FIELDS.map(field => (
+            <DetailField
+              key={field.key}
+              id={field.key}
+              label={field.label}
+              span2={field.span2}
+              // Champs secondaires : ils attendent dans « Ajouter un champ »
+              // plutôt que de charger la carte d'office.
+              defaultHidden={field.defaultVisible === false}
+            >
+              {fieldEditor(field)}
+            </DetailField>
+          ))}
+        </DetailFieldGrid>
+      </Section>
+    ),
+    mouvements: (
+      <Section key="mouvements" reorder={sectionReorder}
+        id="mouvements"
+        label={SECTION_LABELS.mouvements}
+        count={sectionCounts.mouvements}
+        registerRef={registerSection('mouvements')}
+        action={
+          <div className="flex items-center gap-1.5">
+            {sizeToggle('mouvements')}
+            <button onClick={() => setShowStockAdjust(true)} className="btn-secondary btn-sm flex items-center gap-1.5">
+              <SlidersHorizontal size={14} /> Ajuster l'inventaire
+            </button>
+          </div>
+        }
+      >
+        <DataTable
+          table="product_movements"
+          columns={MOVEMENT_COLUMNS}
+          data={product.movements || []}
+          searchFields={['type', 'reason', 'user_name']}
+          height={tableHeight('mouvements', product.movements?.length)}
+          emptyState={{ icon: ArrowLeftRight, title: 'Aucun mouvement', description: "Aucune entrée, sortie ou ajustement de stock n'a encore été enregistré pour ce produit." }}
+        />
+      </Section>
+    ),
+    achats: (
+      <Section key="achats" reorder={sectionReorder} id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}
+        action={<div className="flex items-center gap-1.5">
+          {sizeToggle('achats')}
+          <button type="button" onClick={() => setShowPurchaseModal(true)} className="btn-secondary btn-sm flex items-center gap-1.5">
+            <ShoppingCart size={14} /> Ajouter un achat
+          </button>
+        </div>}>
+        {product.fifo && <FifoSummary fifo={product.fifo} onOpeningCost={saveOpeningCost} />}
+        <DataTable
+          table="product_purchases"
+          columns={purchaseColumns}
+          data={purchases}
+          searchFields={['at_id', 'supplier_company_name', 'supplier_vendor_name', 'emplacement']}
+          height={tableHeight('achats', purchases.length)}
+          peek={{
+            title: row => row.at_id || 'Achat',
+            subtitle: row => row.supplier_company_name || row.supplier_vendor_name || '',
+            to: row => `/purchases/${row.id}`,
+            width: 680,
+            render: (row, { close }) => <PurchaseDetail recordId={row.id} embedded onClose={close} />,
+          }}
+          emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucun achat ne cite cette pièce." }}
+        />
+      </Section>
+    ),
+    bom: (
+      <Section key="bom" reorder={sectionReorder} id="bom" label={SECTION_LABELS.bom} count={sectionCounts.bom} registerRef={registerSection('bom')}
+        action={sizeToggle('bom')}>
+        {bom.length > 0 && <BomBuildableBanner summary={bomSummary} />}
+        <DataTable
+          table="bom_items"
+          columns={BOM_COLUMNS}
+          data={bomSummary.rows}
+          searchFields={['component_name', 'component_sku', 'ref_des']}
+          height={tableHeight('bom', bomSummary.rows.length)}
+          // Clic sur une ligne → fiche du composant en side-peek.
+          peek={{
+            title: row => row.component_name || 'Composant',
+            subtitle: row => row.component_sku || '',
+            to: row => row.component_id ? `/products/${row.component_id}` : undefined,
+            key: 'products',
+            width: 720,
+            render: (row, { close }) => row.component_id
+              ? <ProductDetail recordId={row.component_id} embedded onClose={close} />
+              : <div className="p-6 text-sm text-slate-400">—</div>,
+          }}
+          emptyState={{ icon: Hammer, title: 'Aucune nomenclature', description: "Ce produit n'a aucun composant de nomenclature (BOM)." }}
+        />
+      </Section>
+    ),
+    utilise: (
+      <Section key="utilise" reorder={sectionReorder} id="utilise" label={SECTION_LABELS.utilise} count={sectionCounts.utilise} registerRef={registerSection('utilise')}
+        action={sizeToggle('utilise')}>
+        <DataTable
+          table="product_used_in"
+          columns={USED_IN_COLUMNS}
+          data={usedIn}
+          searchFields={['product_name', 'product_sku', 'ref_des']}
+          height={tableHeight('utilise', usedIn.length)}
+          peek={{
+            title: row => row.product_name || 'Produit',
+            subtitle: row => row.product_sku || '',
+            to: row => row.product_id ? `/products/${row.product_id}` : undefined,
+            key: 'products',
+            width: 720,
+            render: (row, { close }) => row.product_id
+              ? <ProductDetail recordId={row.product_id} embedded onClose={close} />
+              : <div className="p-6 text-sm text-slate-400">—</div>,
+          }}
+        />
+      </Section>
+    ),
+    docs: (
+      <Section key="docs" reorder={sectionReorder} id="docs" label={SECTION_LABELS.docs} count={sectionCounts.docs} registerRef={registerSection('docs')}>
+      {(() => {
+        const docFields = [
+          { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', label: 'Lien PDF installation (FR)' },
+          { url: 'lien_pdf_installation_en', local: 'lien_pdf_installation_en_local', label: 'Lien PDF installation (EN)' },
+          { url: 'lien_pdf_remplacement_fr', local: 'lien_pdf_remplacement_fr_local', label: 'Lien PDF remplacement (FR)' },
+          { url: 'lien_pdf_remplacement_en', local: 'lien_pdf_remplacement_en_local', label: 'Lien PDF remplacement (EN)' },
+        ]
+        const filled = docFields.filter(f => product[f.url])
+        return (
+          <div className="card p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div className="text-sm text-slate-500">
+                Copies locales (mises à jour à la demande à partir des liens Airtable).
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowRefreshDocsModal(true)}
+                disabled={filled.length === 0}
+                className="btn-primary flex items-center gap-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                title={filled.length === 0 ? 'Aucun lien à télécharger' : 'Télécharger les PDFs depuis les liens'}
+              >
+                <RefreshCw size={14} /> Mettre à jour les PDFs
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              {docFields.map(f => {
+                const raw = docDraft[f.url] ?? product[f.url] ?? ''
+                const urls = raw.split(',').map(s => s.trim()).filter(Boolean)
+                const locals = (product[f.local] || '').split(',').map(s => s.trim()).filter(Boolean)
+                return (
+                  <Field key={f.url} label={f.label} span2>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        className={inp}
+                        value={raw}
+                        onChange={e => {
+                          const v = e.target.value
+                          setDocDraft(d => ({ ...d, [f.url]: v }))
+                          saveAdjust(f.url, v.trim(), 600)
+                        }}
+                      />
+                      {urls.length === 1 && (
+                        <a
+                          href={urls[0]}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100"
+                          title="Ouvrir"
+                        >
+                          <ExternalLink size={14} />
+                        </a>
+                      )}
+                    </div>
+                    {(urls.length > 0 || locals.length > 0) && (
+                      <div className="flex flex-wrap gap-3 mt-2">
+                        {Array.from({ length: Math.max(urls.length, locals.length) }, (_, i) => {
+                          const url = urls[i]
+                          const localPath = locals[i] || null
+                          const localFilename = localPath ? localPath.replace(/^products\/docs\//, '') : null
+                          const localUrl = localFilename ? `/erp/api/product-docs/${encodeURIComponent(localFilename)}` : null
+                          return (
+                            <div key={localPath || i} className="flex flex-col items-start gap-1.5 min-w-0">
+                              {url && urls.length > 1 && (
+                                <a
+                                  href={url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs link-record truncate"
+                                  title={url}
+                                >
+                                  <ExternalLink size={12} className="shrink-0" /> [{i + 1}]
+                                </a>
+                              )}
+                              {localUrl ? (
+                                <AttachmentPreview
+                                  url={localUrl}
+                                  fileName={localFilename}
+                                  title={`${f.label.replace('Lien PDF ', '')}${locals.length > 1 ? ` · ${i + 1}` : ''}`}
+                                  kind="pdf"
+                                  showFileName={false}
+                                  overModal
+                                  testId={`product-doc-${f.url}-${i}`}
+                                />
+                              ) : (
+                                <div className="text-xs text-slate-400 italic">Aucune copie locale</div>
+                              )}
+                            </div>
+                          )
+                        })}
+                      </div>
+                    )}
+                  </Field>
+                )
+              })}
+            </div>
+          </div>
+        )
+      })()}
+      </Section>
+    ),
+  }
 
   return (
     <DetailShell
@@ -660,232 +1053,12 @@ export default function ProductDetail({ recordId, onClose }) {
           </button>
         ),
       }}
-      nav={{ sections, labels: SECTION_LABELS, counts: sectionCounts, active: activeSection, onSelect: goToSection, testId: 'product-section-nav' }}
+      nav={{ sections: shownSections, labels: SECTION_LABELS, counts: sectionCounts, active: activeSection, onSelect: goToSection, testId: 'product-section-nav' }}
     >
         {/* Sections */}
         <div className="min-w-0">
 
-        <Section id="info" label={SECTION_LABELS.info} registerRef={registerSection('info')}>
-          {/* Carte de champs commune : le panneau y gagne son bouton
-              « Personnaliser les champs » (ordre, retrait, ajout d'un champ de
-              la table, modification du champ par clic droit). Les champs
-              personnalisés de la table s'y posent seuls — d'où `record`. */}
-          <DetailFieldGrid
-            entityType="products"
-            linkifyTextUrls
-            record={product}
-            taken={TAKEN_ELSEWHERE}
-            className="card p-6"
-            testId="product-fields"
-          >
-            {PRODUCT_FIELDS.map(field => (
-              <DetailField
-                key={field.key}
-                id={field.key}
-                label={field.label}
-                span2={field.span2}
-                // Champs secondaires : ils attendent dans « Ajouter un champ »
-                // plutôt que de charger la carte d'office.
-                defaultHidden={field.defaultVisible === false}
-              >
-                {fieldEditor(field)}
-              </DetailField>
-            ))}
-          </DetailFieldGrid>
-        </Section>
-
-        <Section id="ajustement" label={SECTION_LABELS.ajustement} registerRef={registerSection('ajustement')}>
-          <div className="card p-6 grid grid-cols-2 gap-4" data-testid="product-adjustment">
-            <GatedField table="products" id="stock_qty" label="Quantité en inventaire" className="col-span-2">
-              <div className="text-sm text-slate-900 py-1.5 tabular-nums">{product.stock_qty ?? '—'}</div>
-            </GatedField>
-            <GatedField table="products" id={ADJUST_REASON} label="Raison de l'ajustement manuel">
-              {(() => {
-                const declared = registryChoices[ADJUST_REASON] || []
-                const current = adjust[ADJUST_REASON]
-                const options = current && !declared.includes(current) ? [current, ...declared] : declared
-                return (
-                  <select className={inp} value={current} onChange={e => {
-                      const v = e.target.value
-                      setAdjust(a => ({ ...a, [ADJUST_REASON]: v }))
-                      saveAdjust(ADJUST_REASON, v)
-                    }}
-                    data-testid={`product-field-${ADJUST_REASON}`}>
-                    <option value="">—</option>
-                    {options.map(o => <option key={o} value={o}>{o}</option>)}
-                  </select>
-                )
-              })()}
-            </GatedField>
-          </div>
-        </Section>
-
-        <Section
-          id="mouvements"
-          label={SECTION_LABELS.mouvements}
-          count={sectionCounts.mouvements}
-          registerRef={registerSection('mouvements')}
-          action={
-            <button onClick={() => setShowStockAdjust(true)} className="btn-secondary btn-sm flex items-center gap-1.5">
-              <SlidersHorizontal size={14} /> Ajuster l'inventaire
-            </button>
-          }
-        >
-          <DataTable
-            table="product_movements"
-            columns={MOVEMENT_COLUMNS}
-            data={product.movements || []}
-            searchFields={['type', 'reason', 'user_name']}
-            height={stackedTableHeight(product.movements?.length)}
-            emptyState={{ icon: ArrowLeftRight, title: 'Aucun mouvement', description: "Aucune entrée, sortie ou ajustement de stock n'a encore été enregistré pour ce produit." }}
-          />
-        </Section>
-
-        <Section id="achats" label={SECTION_LABELS.achats} count={sectionCounts.achats} registerRef={registerSection('achats')}
-          action={<button type="button" onClick={() => setShowPurchaseModal(true)} className="btn-secondary btn-sm flex items-center gap-1.5">
-            <ShoppingCart size={14} /> Ajouter un achat
-          </button>}>
-          <DataTable
-            table="product_purchases"
-            columns={PURCHASE_COLUMNS}
-            data={purchases}
-            searchFields={['at_id', 'supplier_company_name', 'supplier_vendor_name', 'emplacement']}
-            height={stackedTableHeight(purchases.length)}
-            peek={{
-              title: row => row.at_id || 'Achat',
-              subtitle: row => row.supplier_company_name || row.supplier_vendor_name || '',
-              to: row => `/purchases/${row.id}`,
-              width: 680,
-              render: (row, { close }) => <PurchaseDetail recordId={row.id} embedded onClose={close} />,
-            }}
-            emptyState={{ icon: ShoppingCart, title: 'Aucun achat', description: "Aucun achat ne cite cette pièce." }}
-          />
-        </Section>
-
-        <Section id="bom" label={SECTION_LABELS.bom} count={sectionCounts.bom} registerRef={registerSection('bom')}>
-          {bom.length > 0 && <BomBuildableBanner summary={bomSummary} />}
-          <DataTable
-            table="bom_items"
-            columns={BOM_COLUMNS}
-            data={bomSummary.rows}
-            searchFields={['component_name', 'component_sku', 'ref_des']}
-            height={stackedTableHeight(bomSummary.rows.length)}
-            // Clic sur une ligne → fiche du composant en side-peek.
-            peek={{
-              title: row => row.component_name || 'Composant',
-              subtitle: row => row.component_sku || '',
-              to: row => row.component_id ? `/products/${row.component_id}` : undefined,
-              key: 'products',
-              width: 720,
-              render: (row, { close }) => row.component_id
-                ? <ProductDetail recordId={row.component_id} embedded onClose={close} />
-                : <div className="p-6 text-sm text-slate-400">—</div>,
-            }}
-            emptyState={{ icon: Hammer, title: 'Aucune nomenclature', description: "Ce produit n'a aucun composant de nomenclature (BOM)." }}
-          />
-        </Section>
-
-        <Section id="docs" label={SECTION_LABELS.docs} count={sectionCounts.docs} registerRef={registerSection('docs')}>
-        {(() => {
-          const docFields = [
-            { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', label: 'Lien PDF installation (FR)' },
-            { url: 'lien_pdf_installation_en', local: 'lien_pdf_installation_en_local', label: 'Lien PDF installation (EN)' },
-            { url: 'lien_pdf_remplacement_fr', local: 'lien_pdf_remplacement_fr_local', label: 'Lien PDF remplacement (FR)' },
-            { url: 'lien_pdf_remplacement_en', local: 'lien_pdf_remplacement_en_local', label: 'Lien PDF remplacement (EN)' },
-          ]
-          const filled = docFields.filter(f => product[f.url])
-          return (
-            <div className="card p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div className="text-sm text-slate-500">
-                  Copies locales (mises à jour à la demande à partir des liens Airtable).
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowRefreshDocsModal(true)}
-                  disabled={filled.length === 0}
-                  className="btn-primary flex items-center gap-1.5 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                  title={filled.length === 0 ? 'Aucun lien à télécharger' : 'Télécharger les PDFs depuis les liens'}
-                >
-                  <RefreshCw size={14} /> Mettre à jour les PDFs
-                </button>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                {docFields.map(f => {
-                  const raw = docDraft[f.url] ?? product[f.url] ?? ''
-                  const urls = raw.split(',').map(s => s.trim()).filter(Boolean)
-                  const locals = (product[f.local] || '').split(',').map(s => s.trim()).filter(Boolean)
-                  return (
-                    <Field key={f.url} label={f.label} span2>
-                      <div className="flex items-center gap-1.5">
-                        <input
-                          type="text"
-                          className={inp}
-                          value={raw}
-                          onChange={e => {
-                            const v = e.target.value
-                            setDocDraft(d => ({ ...d, [f.url]: v }))
-                            saveAdjust(f.url, v.trim(), 600)
-                          }}
-                        />
-                        {urls.length === 1 && (
-                          <a
-                            href={urls[0]}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="shrink-0 p-1.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100"
-                            title="Ouvrir"
-                          >
-                            <ExternalLink size={14} />
-                          </a>
-                        )}
-                      </div>
-                      {(urls.length > 0 || locals.length > 0) && (
-                        <div className="flex flex-wrap gap-3 mt-2">
-                          {Array.from({ length: Math.max(urls.length, locals.length) }, (_, i) => {
-                            const url = urls[i]
-                            const localPath = locals[i] || null
-                            const localFilename = localPath ? localPath.replace(/^products\/docs\//, '') : null
-                            const localUrl = localFilename ? `/erp/api/product-docs/${encodeURIComponent(localFilename)}` : null
-                            return (
-                              <div key={localPath || i} className="flex flex-col items-start gap-1.5 min-w-0">
-                                {url && urls.length > 1 && (
-                                  <a
-                                    href={url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-1 text-xs link-record truncate"
-                                    title={url}
-                                  >
-                                    <ExternalLink size={12} className="shrink-0" /> [{i + 1}]
-                                  </a>
-                                )}
-                                {localUrl ? (
-                                  <AttachmentPreview
-                                    url={localUrl}
-                                    fileName={localFilename}
-                                    title={`${f.label.replace('Lien PDF ', '')}${locals.length > 1 ? ` · ${i + 1}` : ''}`}
-                                    kind="pdf"
-                                    showFileName={false}
-                                    overModal
-                                    testId={`product-doc-${f.url}-${i}`}
-                                  />
-                                ) : (
-                                  <div className="text-xs text-slate-400 italic">Aucune copie locale</div>
-                                )}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
-                    </Field>
-                  )
-                })}
-              </div>
-            </div>
-          )
-        })()}
-        </Section>
+        {shownSections.map(key => sectionBlocks[key])}
 
         </div>
 

@@ -48,8 +48,6 @@ export const TAX_REGIMES = {
   none: { label: 'Aucune taxe', rates: [] },
 }
 
-export const TAX_REGIME_KEYS = Object.keys(TAX_REGIMES)
-
 const HST_REGIME_BY_PROVINCE = { ON: 'hst_on', NB: 'hst_nb', NL: 'hst_nl', NS: 'hst_ns', PE: 'hst_pe' }
 
 export function isCanada(country) {

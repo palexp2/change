@@ -22,7 +22,7 @@ import { createHash } from 'node:crypto'
 import { Router } from 'express'
 import db, { openReaderConnection } from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
-import { CACHED_TABLES, getAllCachedTableSpecs, CHANGE_LOG_RETENTION_HOURS } from '../db/changeLog.js'
+import { CACHED_TABLES, getAllCachedTableSpecs, CHANGE_LOG_RETENTION_HOURS, rollupParentsChangedSince } from '../db/changeLog.js'
 
 import { filterCachedSpecs } from '../services/dataAccess.js'
 
@@ -195,6 +195,12 @@ router.get('/delta', requireAuth, (req, res) => {
   // Tranche ordonnée : la dernière écriture pour une clé écrase les précédentes.
   const lastByKey = new Map()
   for (const c of slice) lastByKey.set(`${c.table_name} ${c.record_id}`, c)
+  // Parents dont un rollup a bougé (ligne enfant modifiée) : à relire comme un
+  // upsert, sauf s'ils ont eux-mêmes été supprimés dans la tranche.
+  for (const p of rollupParentsChangedSince(since)) {
+    const key = `${p.table_name} ${p.record_id}`
+    if (!lastByKey.has(key)) lastByKey.set(key, { ...p, change_type: 'upsert' })
+  }
 
   // Delta démesuré (onglet en veille depuis des heures, ou grosse resynchro
   // Airtable) : le renvoyer coûterait plus cher qu'un snapshot complet, et sans

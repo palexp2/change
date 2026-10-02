@@ -456,15 +456,8 @@ export async function sendPiecesSlack(month, { userId = null } = {}) {
   if (!url) throw new Error(`Webhook Slack manquant : ajouter ${cfg.slackWebhookEnv} dans server/.env`)
 
   const text = piecesSlackText(state)
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => '')
-    throw new Error(`Slack HTTP ${resp.status}${body ? ` : ${body.slice(0, 160)}` : ''}`)
-  }
+  const { postSlack } = await import('./slack.js')
+  await postSlack(url, text)
 
   db.prepare(`
     UPDATE pieces_disbursements

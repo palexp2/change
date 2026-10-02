@@ -30,10 +30,6 @@ export function parseDiscounts(json) {
   try { return cleanDiscounts(JSON.parse(json)) } catch { return [] }
 }
 
-export function parseDiscount(json) {
-  return parseDiscounts(json)[0] || null
-}
-
 // Montant du rabais en dollars, plafonné au sous-total.
 export function discountAmount(discount, subtotal) {
   if (!discount || !(subtotal > 0)) return 0

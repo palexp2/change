@@ -74,16 +74,6 @@ export function rememberAirtableFieldTypes(baseId, tableId, fields) {
   } catch { return 0 }   // table absente (tests) : le cache reste simplement vide
 }
 
-/** Type Airtable connu d'un champ, ou null s'il n'a jamais été observé. */
-export function airtableFieldType(baseId, tableId, fieldName) {
-  if (!baseId || !tableId || !fieldName) return null
-  try {
-    return db.prepare(
-      'SELECT field_type FROM airtable_field_types WHERE base_id=? AND table_id=? AND field_name=?'
-    ).get(baseId, tableId, fieldName)?.field_type || null
-  } catch { return null }
-}
-
 /** Noms des champs CALCULÉS d'une table Airtable (vide si rien n'est connu). */
 export function computedAirtableFieldNames(baseId, tableId) {
   if (!baseId || !tableId) return new Set()

@@ -7,10 +7,6 @@ export function parseLimit(value, { def, max }) {
   return Math.min(max, Math.max(1, Number(value) || def))
 }
 
-export function parseOffset(value) {
-  return Math.max(0, Number(value) || 0)
-}
-
 // Pagination `?page=&limit=` des listes ; `limit=all` désactive la pagination
 // (limitVal -1 = « tout » en SQLite).
 export function parsePage(query, def = 50) {

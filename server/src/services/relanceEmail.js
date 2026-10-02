@@ -118,7 +118,6 @@ function monthsSince(dateStr) {
 
 const REGEN_MODEL = 'gpt-4o'
 
-
 // Limites de l'historique injecté dans le prompt IA. 12 / 18 mois = ~1000 tokens
 // dans le pire cas (12 courriels longs), reste sous le budget contexte raisonnable.
 const HISTORY_MAX_ITEMS = 12
@@ -454,11 +453,6 @@ try { db.exec('ALTER TABLE email_relance_drafts ADD COLUMN sent_from TEXT') } ca
 try { db.exec('ALTER TABLE email_relance_drafts ADD COLUMN sent_message_id TEXT') } catch {}
 
 const GLOBAL_SCOPE = 'global'
-
-export function getOverride(scope) {
-  const row = db.prepare('SELECT instructions FROM email_relance_overrides WHERE scope = ?').get(scope)
-  return row?.instructions || null
-}
 
 export function setOverride(scope, instructions) {
   const value = (instructions || '').trim() || null

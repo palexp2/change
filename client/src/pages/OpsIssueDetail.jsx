@@ -11,12 +11,12 @@ import { useDetailRecord } from '../lib/useDetailRecord.js'
 import { useRecordDeleteAllowed } from '../lib/detailFieldLayout.jsx'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
 import { useAutosave } from '../lib/useAutosave.js'
-import { fmtDate } from '../lib/formatDate.js'
+import { fmtDate, fmtDateTime } from '../lib/formatDate.js'
 import { useFieldOverrides, parseNativeChoices } from '../lib/fieldOverrides.jsx'
 import { ChoiceBadge } from '../lib/customFieldDisplay.jsx'
 import {
   OPS_AREA_OPTIONS, OPS_SEVERITY_OPTIONS, OPS_STATUS_OPTIONS,
-  OPS_SEVERITY_COLORS, OPS_STATUS_COLORS,
+  OPS_SEVERITY_COLORS, OPS_STATUS_COLORS, occurredWithCreationTime,
 } from '../lib/opsIssues.js'
 
 // Même configuration que le tableau : valeurs stockées, libellés et couleurs.
@@ -91,7 +91,7 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
         meta: (
           <>
             {issue.area && choicePill(areaChoices.find(c => c.value === issue.area))}
-            <span>{fmtDate(issue.occurred_at)}</span>
+            <span>{fmtDateTime(occurredWithCreationTime(issue))}</span>
             {issue.reported_by_name && <span>{issue.reported_by_name}</span>}
           </>
         ),
@@ -121,7 +121,7 @@ export default function OpsIssueDetail({ recordId: id, onClose }) {
           <InlineText value={issue.title} required saving={savingKeys.title} onSave={v => save('title', v)} testId="ops-issue-title" />
         </DetailField>
         <DetailField id="occurred_at" label="Date" saving={savingKeys.occurred_at}>
-          <InlineDate value={issue.occurred_at} saving={savingKeys.occurred_at} onSave={v => save('occurred_at', v)} testId="ops-issue-occurred-at" />
+          <InlineDate withTime value={occurredWithCreationTime(issue)} saving={savingKeys.occurred_at} onSave={v => save('occurred_at', v)} testId="ops-issue-occurred-at" />
         </DetailField>
         <DetailField id="area" label="Secteur" saving={savingKeys.area}>
           <SearchableSelect

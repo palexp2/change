@@ -279,6 +279,10 @@ export const api = {
   // Products
   products: {
     list: (params = {}) => get('/products?' + new URLSearchParams(params)),
+    fifoAlerts: () => get('/products/fifo/alerts'),
+    setOpeningCost: (id, unitCost) => put(`/products/${id}/opening-cost`, { unit_cost: unitCost }),
+    purchasePriceApproval: (id, purchaseId, approve) =>
+      (approve ? post : del)(`/products/${id}/purchases/${purchaseId}/price-approval`, ...(approve ? [{}] : [])),
     get: (id) => get(`/products/${id}`),
     create: (data) => post('/products', data),
     update: (id, data) => put(`/products/${id}`, data),
@@ -477,7 +481,9 @@ export const api = {
       : get('/interactions?' + new URLSearchParams(params)),
     get: (id) => get(`/interactions/${id}`),
     create: (data) => post('/interactions', data),
+    sendEmail: (data) => post('/interactions/send-email', data),
     emailBody: (id) => get(`/interactions/${id}/email-body`),
+    tracking: (id) => get(`/interactions/${id}/tracking`),
     attachments: (id) => get(`/interactions/${id}/attachments`),
     downloadAttachment: (id, attId) => apiBlobNamed(`/interactions/${id}/attachments/${attId}/download`),
     pin: (id, pinned) => patch(`/interactions/${id}/pin`, { pinned }),
@@ -573,6 +579,8 @@ export const api = {
     saveToken: (access_token) => put('/connectors/hubspot', { access_token }),
     deleteToken: () => del('/connectors/hubspot'),
     sync: (full = false) => post('/connectors/sync/hubspot', { full }),
+    historyStatus: () => get('/connectors/hubspot/history'),
+    importHistory: (types) => post('/connectors/hubspot/history', { types }),
     setMapping: (user_id, hubspot_owner_id) => put('/connectors/hubspot/mapping', { user_id, hubspot_owner_id }),
     createContactSegment: (name, emails, createMissing = false) => post('/hubspot/contact-segment', { name, emails, createMissing }),
   },
@@ -738,6 +746,12 @@ export const api = {
     // « Autoriser la suppression de la fiche » (mode de personnalisation) :
     // true/false, ou null pour revenir au comportement d'origine de la fiche.
     setDetailDeleteAllowed: (entityType, allow_delete) => put(`/views/detail/${entityType}`, { allow_delete }),
+    // Ordre des sections (tableaux) de la fiche : [clé…], ou null = ordre du code.
+    saveDetailSectionOrder: (entityType, section_order) => put(`/views/detail/${entityType}`, { section_order }),
+    // Hauteur des tableaux de la fiche : { clé: 'full' | 'limited' }.
+    saveDetailSectionSizes: (entityType, section_sizes) => put(`/views/detail/${entityType}`, { section_sizes }),
+    // Bandeau du panneau : { title: clé|null, subtitle: [clé…] }, ou null = celui du code.
+    saveDetailHeader: (entityType, header_config) => put(`/views/detail/${entityType}`, { header_config }),
   },
 
   // Purchases
@@ -873,6 +887,9 @@ export const api = {
     instructionsEmail: (id) => get(`/retours/${id}/instructions-email`),
     sendInstructions: (id, data) => post(`/retours/${id}/send-instructions`, data),
     bulkFromSerials: (data) => post('/retours/bulk-from-serials', data),
+    // Formulaire « Créer un retour » de la fiche entreprise.
+    companyCandidates: (companyId) => get(`/retours/company-candidates/${companyId}`),
+    create: (data) => post('/retours/create', data),
   },
 
   // Abonnements
@@ -1665,6 +1682,7 @@ export const api = {
   records: {
     update: (table, id, data) => patch(`/records/${table}/${id}`, data),
     delete: (table, id) => del(`/records/${table}/${id}`),
+    revisions: (table, id) => getFresh(`/records/${table}/${encodeURIComponent(id)}/revisions`),
   },
 
 
@@ -1732,10 +1750,12 @@ export const api = {
       update: (id, data) => put(`/documents/soumissions/${id}`, data),
       delete: (id) => del(`/documents/soumissions/${id}`),
       duplicate: (id) => post(`/documents/soumissions/${id}/duplicate`),
+      stripeCurrency: (companyId) => get(`/documents/stripe-currency/${encodeURIComponent(companyId)}`),
       pdfUrl: (id) => `${BASE}/documents/soumissions/${id}/pdf`,
       pdfBlob: (id) => apiBlob(`/documents/soumissions/${id}/pdf`),
       emailDraft: (id) => getFresh(`/documents/soumissions/${id}/email`),
       sendEmail: (id, data) => post(`/documents/soumissions/${id}/send-email`, data),
+      sends: (id) => getFresh(`/documents/soumissions/${id}/sends`),
     },
   },
 
@@ -1786,6 +1806,9 @@ export const api = {
     getQueuePause: ()          => getFresh('/travaux/queue/pause'),
     // Lignes de code de Boréal (fichiers suivis par git, lignes non vides).
     codeStats:     ()          => getFresh('/travaux/code-stats'),
+    // Sauvegarde du code sur GitHub : état (date du dernier push) + snapshot/push.
+    githubState:   ()          => getFresh('/travaux/github'),
+    githubPush:    ()          => post('/travaux/github/push', {}),
     // Utilisation CPU de la machine (%, tous cœurs).
     cpu:           ()          => getFresh('/travaux/cpu'),
     setQueuePaused:(paused, reason) => post('/travaux/queue/pause', { paused, reason }),
@@ -1813,6 +1836,11 @@ export const api = {
 
     // Carnet d'idées : rien ne s'exécute d'ici ; `promoteIdea` dépose un item de
     // file « de côté », à lancer à la main.
+    listAgents:   ()         => getFresh('/travaux/agents'),
+    createAgent:  (data)     => post('/travaux/agents', data),
+    updateAgent:  (id, data) => patch(`/travaux/agents/${id}`, data),
+    deleteAgent:  (id)       => del(`/travaux/agents/${id}`),
+    runAgent:     (id)       => post(`/travaux/agents/${id}/run`, {}),
     listIdeas:    ()         => getFresh('/travaux/ideas'),
     createIdea:   (data)     => post('/travaux/ideas', data),
     updateIdea:   (id, data) => patch(`/travaux/ideas/${id}`, data),
@@ -1910,6 +1938,17 @@ export const api = {
     upload: (formData) => uploadRequest('/public-files/upload', formData),
     // Remplace le contenu d'un fichier en conservant son lien public (token).
     replace: (id, formData) => uploadRequest(`/public-files/${id}/replace`, formData),
+  },
+
+  marketingForms: {
+    list: () => get('/marketing-forms'),
+    get: (id) => get(`/marketing-forms/${id}`),
+    fieldPresets: () => get('/marketing-forms/field-presets'),
+    create: (data) => post('/marketing-forms', data),
+    update: (id, data) => patch(`/marketing-forms/${id}`, data),
+    sync: () => post('/marketing-forms/sync'),
+    syncSubmissions: (id) => post(`/marketing-forms/${id}/sync`),
+    retryScriptRun: (id, runId) => post(`/marketing-forms/${id}/script-runs/${runId}/retry`),
   },
 
   stripePayouts: {

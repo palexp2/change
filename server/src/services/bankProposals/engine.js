@@ -31,8 +31,6 @@ import {
 import { invalidateBankLabelCache } from '../scrapers/vendorFromBankLabel.js'
 import { invalidateBankRulesCache } from '../bankRules/store.js'
 
-export const BANK_ENGINE_AUTOMATION_ID = 'sys_bank_engine'
-
 export const ENGINE_KINDS = [
   'doc_match', 'paie_debit', 'debt_payment', 'aga_repartition',
   'payment_clear', 'vendor_expense',

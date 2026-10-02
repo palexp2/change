@@ -9,7 +9,7 @@ import { SaveStatus, useSaveStatus } from '../components/SaveStatus.jsx'
 import { SearchableSelect } from '../components/SearchableSelect.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import { AddressCheckBadge, AddressCheckPanel, AddressConfirmPanel } from '../components/AddressCheckIssues.jsx'
-import { US_STATES, CA_PROVINCES } from '../components/AdresseModal.jsx'
+import { US_STATES, CA_PROVINCES, ADDRESS_RANKS } from '../components/AdresseModal.jsx'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
 import EnvoisDetail from './EnvoisDetail.jsx'
 import { useDetailRecord } from '../lib/useDetailRecord.js'
@@ -136,6 +136,7 @@ export default function AdresseDetail({ recordId: id, onClose }) {
         badge: (
           <>
             {adresse.address_type && <Badge color="slate">{adresse.address_type}</Badge>}
+            {adresse.address_rank && <Badge color={adresse.address_rank === 'Principale' ? 'blue' : 'slate'}>{adresse.address_rank}</Badge>}
             <AddressCheckBadge status={adresse.check_status} />
           </>
         ),
@@ -228,6 +229,18 @@ export default function AdresseDetail({ recordId: id, onClose }) {
             data-testid="adresse-field-address_type"
           >
             {ADDRESS_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </DetailField>
+        <DetailField id="address_rank" label="Rang" saving={fieldSaving.address_rank}>
+          <select
+            value={adresse.address_rank || ''}
+            onChange={e => saveField({ address_rank: e.target.value })}
+            className="select text-sm w-full"
+            disabled={!!fieldSaving.address_rank}
+            data-testid="adresse-field-address_rank"
+          >
+            <option value="">—</option>
+            {ADDRESS_RANKS.map(t => <option key={t} value={t}>{t}</option>)}
           </select>
         </DetailField>
         <DetailField id="contact_id" label="Contact associé" span2 saving={fieldSaving.contact_id}>

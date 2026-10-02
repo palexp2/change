@@ -5,7 +5,7 @@ import {
   Barcode, MessageSquare, CheckSquare, Hammer,
   Landmark, Users, Banknote, Contact,
   Clock, Tag, Mail, PhoneCall,
-  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send } from 'lucide-react'
+  FolderOpen, Building2, ListChecks, Bot, Zap, Plug, Instagram, AlertTriangle, MessageCircle, Send, Megaphone, ClipboardList } from 'lucide-react'
 import { FINANCE_GROUPS, FINANCE_SECTIONS } from './financeSections.js'
 
 // Structure canonique du menu de gauche, partagée entre la sidebar (Layout)
@@ -83,6 +83,9 @@ export const defaultNavItems = [
     { to: '/relance-qualification', icon: Mail, label: 'Relances qualification' },
     { to: '/discovery-forms', icon: FileText, label: 'System builder' },
     { to: '/instagram', icon: Instagram, label: 'Instagram' },
+  ]},
+  { group: 'Marketing', icon: Megaphone, accent: 'marketing', items: [
+    { to: '/formulaires', icon: ClipboardList, label: 'Formulaires' },
   ]},
   { group: 'Transport', icon: Truck, accent: 'envois', items: [
     { to: '/orders',   icon: ShoppingCart, label: 'Commandes' },

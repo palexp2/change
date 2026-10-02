@@ -32,7 +32,7 @@ const ALLOWED_TABLES = new Set([
   'company_contacts', 'company_projects', 'company_orders', 'company_factures',
   'company_abonnements', 'company_envois', 'company_tasks', 'company_achats',
   'company_retours',
-  'product_purchases', 'fourniture_achats',
+  'product_purchases', 'product_used_in', 'fourniture_achats',
   'project_factures', 'project_soumissions', 'project_commissions',
   'contact_tasks', 'serial_state_changes',
   // Pages listes sans table SQL propre (ou dérivée) qui n'avaient pas leur clé.
@@ -373,28 +373,57 @@ router.delete('/:table/pills/:id', requireAdmin, (req, res) => {
 // GET /api/views/detail/:entityType
 router.get('/detail/:entityType', requireAuth, (req, res) => {
   const config = db.prepare(
-    'SELECT field_order, allow_delete FROM detail_field_configs WHERE entity_type=?'
+    'SELECT field_order, allow_delete, section_order, section_sizes, header_config FROM detail_field_configs WHERE entity_type=?'
   ).get(req.params.entityType)
+  let sectionOrder = null
+  try { sectionOrder = config?.section_order ? JSON.parse(config.section_order) : null } catch { /* illisible = ordre du code */ }
+  let sectionSizes = null
+  try { sectionSizes = config?.section_sizes ? JSON.parse(config.section_sizes) : null } catch { /* illisible = limité */ }
+  let headerConfig = null
+  try { headerConfig = config?.header_config ? JSON.parse(config.header_config) : null } catch { /* illisible = bandeau du code */ }
   res.json({
     field_order: config ? JSON.parse(config.field_order) : null,
     // null = non réglé : la fiche garde son comportement d'origine.
     allow_delete: config?.allow_delete == null ? null : config.allow_delete === 1,
+    section_order: Array.isArray(sectionOrder) ? sectionOrder : null,
+    section_sizes: isPlainSizes(sectionSizes) ? sectionSizes : null,
+    header_config: isHeaderConfig(headerConfig) ? headerConfig : null,
   })
 })
 
 // PUT /api/views/detail/:entityType
-// Deux réglages, chacun envoyé seul : la disposition des champs (`field_order`)
-// et « suppression permise » (`allow_delete`, cochée dans le même mode de
-// personnalisation).
+// Cinq réglages, chacun envoyé seul : la disposition des champs (`field_order`),
+// « suppression permise » (`allow_delete`, cochée dans le même mode de
+// personnalisation), l'ordre des sections de la fiche (`section_order`), la
+// hauteur de ses tableaux (`section_sizes` : { clé: 'full' | 'limited' }) et le
+// bandeau du panneau (`header_config` : { title, subtitle: [clé…] }, null = code).
 router.put('/detail/:entityType', requireAdmin, (req, res) => {
-  const { field_order, allow_delete } = req.body
+  const { field_order, allow_delete, section_order, section_sizes, header_config } = req.body
   const hasOrder = field_order !== undefined
   const hasDelete = allow_delete !== undefined
+  const hasSections = section_order !== undefined
+  const hasSizes = section_sizes !== undefined
+  const hasHeader = header_config !== undefined
+  if (hasHeader && header_config !== null && !isHeaderConfig(header_config)) {
+    return res.status(400).json({ error: 'header_config { title: string|null, subtitle: string[]|null }|null required' })
+  }
+  if (hasSizes && section_sizes !== null && !isPlainSizes(section_sizes)) {
+    return res.status(400).json({ error: "section_sizes { clé: 'full'|'limited' }|null required" })
+  }
   if (hasOrder && !Array.isArray(field_order)) return res.status(400).json({ error: 'field_order array required' })
   if (hasDelete && allow_delete !== null && typeof allow_delete !== 'boolean') {
     return res.status(400).json({ error: 'allow_delete boolean|null required' })
   }
-  if (!hasOrder && !hasDelete) return res.status(400).json({ error: 'field_order ou allow_delete requis' })
+  if (hasSections && section_order !== null
+    && !(Array.isArray(section_order) && section_order.every(k => typeof k === 'string'))) {
+    return res.status(400).json({ error: 'section_order string[]|null required' })
+  }
+  if (!hasOrder && !hasDelete && !hasSections && !hasSizes && !hasHeader) {
+    return res.status(400).json({ error: 'field_order, allow_delete, section_order, section_sizes ou header_config requis' })
+  }
+  const sectionsVal = section_order ? JSON.stringify(section_order) : null
+  const sizesVal = section_sizes ? JSON.stringify(section_sizes) : null
+  const headerVal = header_config ? JSON.stringify(header_config) : null
 
   const deleteVal = allow_delete === null ? null : (allow_delete ? 1 : 0)
   const existing = db.prepare(
@@ -406,13 +435,30 @@ router.put('/detail/:entityType', requireAdmin, (req, res) => {
     const vals = []
     if (hasOrder) { sets.push('field_order=?'); vals.push(JSON.stringify(field_order)) }
     if (hasDelete) { sets.push('allow_delete=?'); vals.push(deleteVal) }
+    if (hasSections) { sets.push('section_order=?'); vals.push(sectionsVal) }
+    if (hasSizes) { sets.push('section_sizes=?'); vals.push(sizesVal) }
+    if (hasHeader) { sets.push('header_config=?'); vals.push(headerVal) }
     db.prepare(`UPDATE detail_field_configs SET ${sets.join(', ')}, updated_at=datetime('now') WHERE id=?`)
       .run(...vals, existing.id)
   } else {
-    db.prepare('INSERT INTO detail_field_configs (id, entity_type, field_order, allow_delete) VALUES (?,?,?,?)')
-      .run(newRecordId(), req.params.entityType, JSON.stringify(hasOrder ? field_order : []), hasDelete ? deleteVal : null)
+    db.prepare('INSERT INTO detail_field_configs (id, entity_type, field_order, allow_delete, section_order, section_sizes, header_config) VALUES (?,?,?,?,?,?,?)')
+      .run(newRecordId(), req.params.entityType, JSON.stringify(hasOrder ? field_order : []),
+        hasDelete ? deleteVal : null, hasSections ? sectionsVal : null, hasSizes ? sizesVal : null,
+        hasHeader ? headerVal : null)
   }
   res.json({ ok: true })
 })
+
+function isHeaderConfig(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+    && (v.title === null || v.title === undefined || typeof v.title === 'string')
+    && (v.subtitle === null || v.subtitle === undefined
+      || (Array.isArray(v.subtitle) && v.subtitle.every(k => typeof k === 'string')))
+}
+
+function isPlainSizes(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v)
+    && Object.values(v).every(s => s === 'full' || s === 'limited')
+}
 
 export default router

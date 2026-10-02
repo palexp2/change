@@ -63,8 +63,14 @@ test('aucune colonne exclue du snapshot n\'est lue par une page du cache', (t) =
   let supprimes
   try {
     supprimes = db.prepare(`
-      SELECT erp_table, column_name FROM custom_fields WHERE deleted_at IS NOT NULL
-      UNION SELECT erp_table, column_name FROM purged_fields
+      SELECT erp_table, column_name FROM (
+        SELECT erp_table, column_name FROM custom_fields WHERE deleted_at IS NOT NULL
+        UNION SELECT erp_table, column_name FROM purged_fields
+      ) s
+      -- Colonne réattribuée à un champ vivant : elle reste dans le snapshot
+      -- (droppedFieldColumns, db/changeLog.js).
+      WHERE NOT EXISTS (SELECT 1 FROM custom_fields c WHERE c.erp_table = s.erp_table
+                          AND c.column_name = s.column_name AND c.deleted_at IS NULL)
     `).all()
   } finally { db.close() }
 

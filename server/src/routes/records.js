@@ -18,6 +18,7 @@ import db from '../db/database.js'
 import { requireAuth } from '../middleware/auth.js'
 import { patchRow, deleteRow } from '../utils/crudRouter.js'
 import { getRecordSpec, listRecordTables } from '../db/recordRegistry.js'
+import { REVISION_TABLES, listRevisions } from '../services/recordRevisions.js'
 
 const router = Router()
 router.use(requireAuth)
@@ -132,6 +133,13 @@ router.get('/:table/:id/history', (req, res) => {
   // Plus récent d'abord (tri lexicographique = chrono car ISO UTC avec Z).
   events.sort((a, b) => String(b.created_at || '').localeCompare(String(a.created_at || '')))
   res.json({ data: events })
+})
+
+// GET /api/records/:table/:id/revisions — historique champ par champ (ancienne
+// → nouvelle valeur, auteur) affiché au bas des fiches. Voir services/recordRevisions.js.
+router.get('/:table/:id/revisions', (req, res) => {
+  if (!Object.hasOwn(REVISION_TABLES, req.params.table)) return res.status(404).json({ error: 'Historique non disponible' })
+  res.json(listRevisions(req.params.table, req.params.id))
 })
 
 // Récupère le spec ou répond 404. Les noms table/colonnes proviennent du registre

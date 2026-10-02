@@ -102,8 +102,9 @@ export const PEEK_ROUTES = {
     Component: lazy(() => import('../pages/RetourDetail.jsx')),
     load: id => api.retours.get(id),
     // Ni n° RMA ni entreprise sur un retour depuis la migration serveur 037,
-    // ni statut depuis la 041 : plus rien à mettre en sous-titre.
+    // ni statut depuis la 041 : l'id du retour sert de sous-titre.
     title: () => 'Retour',
+    subtitle: r => r.id,
   },
   purchases: {
     label: 'Achat',
@@ -121,8 +122,9 @@ export const PEEK_ROUTES = {
     Component: lazy(() => import('../pages/TicketDetail.jsx')),
     load: id => api.tickets.get(id),
     // Titre, entreprise et contact ont été droppés (migration 040) : un billet
-    // n'a plus de libellé propre.
-    title: () => 'Billet',
+    // n'a plus de libellé propre : on affiche son ID (`cf_billet`, formule
+    // Airtable « ID »).
+    title: r => r.cf_billet || 'Billet',
   },
   soumissions: {
     label: 'Soumission',
@@ -197,6 +199,15 @@ export const PEEK_ROUTES = {
     load: id => api.fournitures.get(id),
     title: r => r.name || 'Fourniture',
     subtitle: r => r.supplier || '',
+  },
+  formulaires: {
+    label: 'Formulaire',
+    width: 760,
+    list: '/formulaires',
+    Component: lazy(() => import('../pages/MarketingFormDetail.jsx')),
+    load: id => api.marketingForms.get(id),
+    title: r => r.name || 'Formulaire',
+    subtitle: r => [r.language?.toUpperCase(), `${r.submission_count || 0} soumissions`].filter(Boolean).join(' · '),
   },
   employees: {
     label: 'Employé',

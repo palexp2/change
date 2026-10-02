@@ -18,6 +18,7 @@ process.env.DATABASE_PATH = join(tmpdir(), `erp-test-field-retype-${process.pid}
 const db = (await import('../db/database.js')).default
 const { initSchema } = await import('../db/schema.js')
 initSchema()
+;(await import('../db/migrations/043-airtable-field-types.js')).up(db)
 
 const { planTypeConversion, applyTypeConversion, convertSingleValue, valueToText, sqlAffinityFor } =
   await import('./fieldTypeConvert.js')
@@ -102,6 +103,19 @@ test('durée ↔ texte fait l’aller-retour', () => {
   assert.equal(plan.unconvertible, 0)
   db.transaction(() => applyTypeConversion(back, plan))()
   assert.equal(read(col, ids[0]), 5400)
+})
+
+test('texte miroir d’une durée Airtable → durée : les nombres nus sont des secondes', () => {
+  const { field, col, ids } = fieldWith('text', ['1500', '1:30'])
+  db.prepare(`INSERT INTO airtable_field_mappings (id, module, erp_table, airtable_field_id, airtable_field_name, column_name)
+    VALUES ('m-dur', 'test', ?, 'fldDur', 'Temps', ?)`).run(TABLE, col)
+  db.prepare(`INSERT INTO airtable_field_types (base_id, table_id, field_name, field_id, field_type, updated_at)
+    VALUES ('app', 'tbl', 'Temps', 'fldDur', 'duration', '2026-10-01')`).run()
+  const adopted = { ...field, source: 'airtable', airtable_mapping_id: 'm-dur' }
+  const plan = planTypeConversion(adopted, 'duration', null)
+  db.transaction(() => applyTypeConversion(adopted, plan))()
+  assert.equal(read(col, ids[0]), 1500)
+  assert.equal(read(col, ids[1]), 5400)
 })
 
 test('pourcentage ↔ nombre : la valeur ne bouge pas, seul le rendu change', () => {

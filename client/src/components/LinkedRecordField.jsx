@@ -39,6 +39,9 @@ export default function LinkedRecordField({
   createLabel = 'Créer',
   // Option : libellé long affiché en entier (retour à la ligne) au lieu d'être tronqué.
   wrap = false,
+  // Option : liste déroulante large, libellés en entier sur plusieurs lignes
+  // (adresses longues de la fiche Commande).
+  widePicker = false,
 }) {
   const fieldTestId = name ? `linked-record-field-${name}` : 'linked-record-field'
   const [open, setOpen] = useState(false)
@@ -85,7 +88,11 @@ export default function LinkedRecordField({
   useEffect(() => {
     if (!open) { setSearch(''); return }
     const rect = btnRef.current?.getBoundingClientRect()
-    if (rect) setPos({ top: rect.bottom + 4, left: rect.left, width: Math.max(rect.width, 240) })
+    if (rect) {
+      const width = widePicker ? Math.min(Math.max(rect.width, 460), window.innerWidth - 16) : Math.max(rect.width, 240)
+      const left = widePicker ? Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)) : rect.left
+      setPos({ top: rect.bottom + 4, left, width })
+    }
     const focusTimer = setTimeout(() => inputRef.current?.focus(), 0)
     function handler(e) {
       const portal = document.getElementById('linked-record-portal')
@@ -98,7 +105,7 @@ export default function LinkedRecordField({
       clearTimeout(focusTimer)
       document.removeEventListener('mousedown', handler)
     }
-  }, [open])
+  }, [open, widePicker])
 
   const spinner = saving && (
     <ThinkingOrb size={12} ink className="text-slate-400 flex-shrink-0" />
@@ -124,7 +131,7 @@ export default function LinkedRecordField({
           />
         </div>
       </div>
-      <div className="max-h-52 overflow-y-auto">
+      <div className={`${widePicker ? 'max-h-80' : 'max-h-52'} overflow-y-auto`}>
         {filtered.length === 0 ? (
           <p className="text-xs text-slate-400 text-center py-3">Aucun résultat</p>
         ) : filtered.map(o => (
@@ -132,10 +139,10 @@ export default function LinkedRecordField({
             key={o.id}
             type="button"
             onClick={() => { onChange(o.id); setOpen(false) }}
-            className={`flex w-full items-center gap-2 text-left px-3 py-2 text-sm hover:bg-slate-50 ${String(o.id) === String(value) ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
+            className={`flex w-full ${widePicker ? 'items-start' : 'items-center'} gap-2 text-left px-3 py-2 text-sm hover:bg-slate-50 ${String(o.id) === String(value) ? 'text-brand-600 font-medium' : 'text-slate-700'}`}
           >
-            <span className="flex-1 truncate">{getLabel(o)}</span>
-            {o.sub && <span className="text-xs text-slate-400 truncate max-w-[40%]">{o.sub}</span>}
+            <span className={`flex-1 ${widePicker ? 'min-w-0 break-words' : 'truncate'}`}>{getLabel(o)}</span>
+            {o.sub && <span className={`text-xs text-slate-400 max-w-[40%] ${widePicker ? 'break-words' : 'truncate'}`}>{o.sub}</span>}
           </button>
         ))}
         {!search && !searchTarget && options.length > 60 && (

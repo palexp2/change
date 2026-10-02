@@ -3,6 +3,7 @@ import { useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { Plus, Package } from 'lucide-react'
 import api from '../lib/api.js'
 import { useTable } from '../lib/dataStore.js'
+import { useAuth } from '../lib/auth.jsx'
 import { useListData } from '../lib/useListData.js'
 import { ListPage, FilterBanner } from '../components/ListPage.jsx'
 import { Badge, orderStatusColor } from '../components/Badge.jsx'
@@ -31,6 +32,7 @@ const COLUMNS = TABLE_COLUMN_META.orders.map(meta => ({ ...meta, render: RENDERS
 
 export default function Orders() {
   const navigate = useNavigate()
+  const { user } = useAuth()
   const [formOpen, setFormOpen] = useState(false)
   const [searchParams, setSearchParams] = useSearchParams()
   // Filtre temporaire posé par un clic sur une barre du graphique « Revenus
@@ -62,22 +64,17 @@ export default function Orders() {
     return () => { cancelled = true }
   }, [])
 
-  // Enrichissement : company_name, items_count — joints côté client depuis les
+  // Enrichissement : company_name — joint côté client depuis les
   // autres tables en cache (vs server-side LEFT JOIN). Le nom de l'assigné n'y
   // est plus : son champ a été supprimé des commandes le 2026-09-03, la colonne
   // sort du snapshot et plus rien ne l'affiche.
   const orders = useMemo(() => {
     const cById = new Map(companies.map(c => [c.id, c.name]))
-    const itemCountByOrder = new Map()
-    for (const it of orderItems) {
-      itemCountByOrder.set(it.order_id, (itemCountByOrder.get(it.order_id) || 0) + 1)
-    }
     return ordersRaw.map(r => ({
       ...r,
       company_name: cById.get(r.company_id) || r.company_name,
-      items_count: itemCountByOrder.get(r.id) || 0,
     }))
-  }, [ordersRaw, companies, orderItems])
+  }, [ordersRaw, companies])
 
   // Semaine d'expédition : mêmes règles que la barre « Revenus expédiés » du
   // dashboard (voir weeklyProfitability dans server/src/routes/dashboard.js) —
@@ -118,6 +115,8 @@ export default function Orders() {
       title="Commandes"
       create={{
         label: 'Nouvelle commande', table: 'orders', fields: formFields, includeAllFields: true,
+        // « Assigné à » prérempli avec l'utilisateur connecté (modifiable).
+        initial: user?.id ? { assigned_to: user.id } : undefined,
         onSubmit: handleCreate, submitLabel: 'Créer la commande', savingLabel: 'Création...',
         onOpenChange: setFormOpen,
       }}

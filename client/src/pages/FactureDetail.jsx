@@ -1,6 +1,5 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { useState, useEffect, useCallback } from 'react'
-import { Link } from 'react-router-dom'
 import { ExternalLink, Send, Hourglass, Trash2, Ban } from 'lucide-react'
 import api from '../lib/api.js'
 import { DetailShell, detailPending } from '../components/DetailShell.jsx'
@@ -8,6 +7,7 @@ import { Badge, FACTURE_STATUS_COLORS as STATUS_COLORS } from '../components/Bad
 import { Modal } from '../components/Modal.jsx'
 import { AbonnementDetailModal } from '../components/AbonnementDetailModal.jsx'
 import { SendPaymentLinkModal } from '../components/SendPaymentLinkModal.jsx'
+import { OrderCreateModal } from '../components/OrderCreateModal.jsx'
 import LinkedRecordField from '../components/LinkedRecordField.jsx'
 import FacturePaymentsSection from '../components/FacturePaymentsSection.jsx'
 import FactureAccountingSection from '../components/FactureAccountingSection.jsx'
@@ -55,6 +55,7 @@ const FACTURE_RULE_FIELDS = [
 
 
 import { fmtMoney } from '../utils/formatters.js'
+import { stripeFactureUrl } from '../lib/stripeLinks.js'
 
 
 function formatTechValue(v) {
@@ -63,17 +64,7 @@ function formatTechValue(v) {
   return String(v)
 }
 
-function buildStripeUrl(facture) {
-  if (facture.lien_stripe) return facture.lien_stripe
-  const id = facture.invoice_id
-  if (!id) return null
-  if (id.startsWith('in_')) return `https://dashboard.stripe.com/invoices/${id}`
-  if (id.startsWith('re_')) return `https://dashboard.stripe.com/refunds/${id}`
-  if (id.startsWith('ch_') || id.startsWith('pi_') || id.startsWith('py_') || id.startsWith('pyr_')) {
-    return `https://dashboard.stripe.com/payments/${id}`
-  }
-  return null
-}
+const buildStripeUrl = stripeFactureUrl
 
 
 function FactureNotesField({ value, onSave }) {
@@ -144,6 +135,7 @@ export default function FactureDetail({ recordId, onClose }) {
   const [voiding, setVoiding] = useState(false)
   const [voidError, setVoidError] = useState(null)
   const [pdfRetryError, setPdfRetryError] = useState(null)
+  const [showOrderCreate, setShowOrderCreate] = useState(false)
 
   async function handleDelete() {
     setDeleting(true)
@@ -327,12 +319,23 @@ export default function FactureDetail({ recordId, onClose }) {
   // finalisée impayée. Mêmes règles que POST /factures/:id/void.
   const canVoid = facture.source === 'pending'
     ? (facture.pending_status === 'draft' || facture.pending_status === 'sent')
-    : (String(facture.invoice_id || '').startsWith('in_') && (facture.status === 'À payer' || facture.status === 'Uncollectible'))
+    : (String(facture.invoice_id || '').startsWith('in_') && ['À payer', 'En retard', 'Uncollectible'].includes(facture.status))
+
+  // HT après rabais (déjà net de rabais, voir le sous-total plus bas).
+  const displayedBeforeTax = facture.montant_avant_taxes != null
+    ? parseFloat(facture.montant_avant_taxes)
+    : facture.amount_before_tax_cad
 
   return (
     <FieldGuardProvider context="facture" record={facture} fields={FACTURE_RULE_FIELDS}>
       <DetailShell
         header={{
+          actions: displayedBeforeTax != null && !Number.isNaN(displayedBeforeTax) && (
+            <div className="text-right" data-testid="facture-hero-before-tax" title="Après rabais, avant taxes">
+              <div className="text-3xl font-semibold tabular-nums text-slate-900 leading-none">{fmtMoney(displayedBeforeTax, facture.currency)}</div>
+              <div className="text-xs text-slate-500 mt-1">avant taxes</div>
+            </div>
+          ),
           badge: (
             <>
               {facture.status && (
@@ -491,6 +494,8 @@ export default function FactureDetail({ recordId, onClose }) {
                   getHref={o => `/orders/${o.id}`}
                   saving={saving}
                   onChange={handleOrderChange}
+                  onCreate={() => setShowOrderCreate(true)}
+                  createLabel="Nouvelle commande"
                 />
               ) : (
                 <span className="text-slate-400 text-sm">Associer une entreprise d'abord</span>
@@ -588,7 +593,6 @@ export default function FactureDetail({ recordId, onClose }) {
             <table className="w-full text-sm">
               <thead className="text-xs text-slate-400 uppercase tracking-wide">
                 <tr>
-                  <th className="text-left pb-2">Produit</th>
                   <th className="text-left pb-2">Description</th>
                   <th className="text-right pb-2 w-16">Qté</th>
                   <th className="text-right pb-2 w-32">Prix unit.</th>
@@ -602,12 +606,7 @@ export default function FactureDetail({ recordId, onClose }) {
                   const total = it.total != null ? Number(it.total) : (unit != null ? qty * unit : null)
                   return (
                     <tr key={it.id || i} className="border-t border-slate-100">
-                      <td className="py-2 text-slate-700">
-                        {it.product_id
-                          ? <Link to={`/products/${it.product_id}`} className="link-record">{it.product_name || it.product_sku || '—'}</Link>
-                          : <span className="text-slate-400">—</span>}
-                      </td>
-                      <td className="py-2 text-slate-700">{it.description || <span className="text-slate-400">—</span>}</td>
+                      <td className="py-2 text-slate-700">{it.description || it.product_name || <span className="text-slate-400">—</span>}</td>
                       <td className="py-2 text-right tabular-nums">{qty}</td>
                       <td className="py-2 text-right tabular-nums">{unit != null ? fmtMoney(unit, facture.currency) : '—'}</td>
                       <td className="py-2 text-right tabular-nums">{total != null ? fmtMoney(total, facture.currency) : '—'}</td>
@@ -616,7 +615,7 @@ export default function FactureDetail({ recordId, onClose }) {
                 })}
                 {Array.isArray(facture.discounts) && facture.discounts.map((d, i) => (
                   <tr key={`disc-${i}`} className="border-t border-slate-100 text-slate-700">
-                    <td className="py-2" colSpan={2}>Rabais{d.label ? ` : ${d.label}` : ''}</td>
+                    <td className="py-2">Rabais{d.label ? ` : ${d.label}` : ''}</td>
                     <td className="py-2"></td>
                     <td className="py-2"></td>
                     <td className="py-2 text-right tabular-nums">−{fmtMoney(d.amount, facture.currency)}</td>
@@ -628,21 +627,14 @@ export default function FactureDetail({ recordId, onClose }) {
                     Ne rien redéduire ici : les lignes de rabais ci-dessus expliquent
                     l'écart entre la somme des lignes et ce sous-total, elles ne
                     s'appliquent pas une deuxième fois. */}
-                {(() => {
-                  const displayedBeforeTax = facture.montant_avant_taxes != null
-                    ? parseFloat(facture.montant_avant_taxes)
-                    : facture.amount_before_tax_cad
-                  return (
-                    <tr className="border-t-2 border-slate-200 text-slate-700" data-testid="facture-line-subtotal">
-                      <td className="pt-3 pb-2 font-medium" colSpan={4}>Avant taxes</td>
-                      <td className="pt-3 pb-2 text-right tabular-nums font-medium">{fmtMoney(displayedBeforeTax, facture.currency)}</td>
-                    </tr>
-                  )
-                })()}
+                <tr className="border-t-2 border-slate-200 text-slate-700" data-testid="facture-line-subtotal">
+                  <td className="pt-3 pb-2 font-medium" colSpan={3}>Avant taxes</td>
+                  <td className="pt-3 pb-2 text-right tabular-nums font-medium">{fmtMoney(displayedBeforeTax, facture.currency)}</td>
+                </tr>
                 {/* Taxes — split par juridiction (TPS / TVQ / HST / etc.) */}
                 {Array.isArray(facture.taxes) && facture.taxes.map((t, i) => (
                   <tr key={`tax-${i}`} className="border-t border-slate-100 text-slate-700" data-testid="facture-line-tax">
-                    <td className="py-2" colSpan={4}>
+                    <td className="py-2" colSpan={3}>
                       {t.name}
                       {t.percentage != null && <span className="text-slate-400 ml-1">({t.percentage}%)</span>}
                     </td>
@@ -651,7 +643,7 @@ export default function FactureDetail({ recordId, onClose }) {
                 ))}
                 {/* Total */}
                 <tr className="border-t-2 border-slate-300 text-slate-900" data-testid="facture-line-total">
-                  <td className="pt-2 pb-1 font-semibold" colSpan={4}>Total</td>
+                  <td className="pt-2 pb-1 font-semibold" colSpan={3}>Total</td>
                   <td className="pt-2 pb-1 text-right tabular-nums font-semibold">{fmtMoney(facture.total_amount, facture.currency)}</td>
                 </tr>
               </tbody>
@@ -717,6 +709,22 @@ export default function FactureDetail({ recordId, onClose }) {
       {subscriptionModal && (
         <AbonnementDetailModal abonnement={subscriptionModal} onClose={() => setSubscriptionModal(null)} />
       )}
+
+      {/* Même formulaire que la page Commandes ; la commande créée est liée
+          d'emblée à la facture. */}
+      <OrderCreateModal
+        isOpen={showOrderCreate}
+        onClose={() => setShowOrderCreate(false)}
+        initial={facture ? {
+          ...(facture.company_id ? { company_id: facture.company_id } : {}),
+          ...(facture.project_id ? { project_id: facture.project_id } : {}),
+        } : undefined}
+        onCreated={async (order) => {
+          setShowOrderCreate(false)
+          setOrders(prev => [order, ...prev.filter(o => o.id !== order.id)])
+          await handleOrderChange(order.id)
+        }}
+      />
 
       <SendPaymentLinkModal
         pendingInvoiceId={facture?.id}

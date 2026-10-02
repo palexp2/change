@@ -1,6 +1,8 @@
 // Helpers partagés entre NovoxpressLabelModal (envois sortants) et
 // RetourActionsSection (étiquettes de retour) — extraits pour éviter la
 // duplication du choix de boîte / affichage de tarif entre les deux flux.
+import { useState } from 'react'
+import { Truck } from 'lucide-react'
 import { fmtMoney } from '../utils/formatters.js'
 
 export const BOX_PRESETS = {
@@ -82,5 +84,76 @@ export function DebugDetails({ details }) {
         })}
       </div>
     </details>
+  )
+}
+
+// Comparaison des tarifs UPS directs, sous la liste Novoxpress. `fetchRates`
+// fait l'appel propre au flux (envoi ou retour) ; `outbound` = envoi sortant
+// (sinon retour). L'état vit ici : il se vide en quittant l'étape des tarifs.
+export function UpsRateComparison({ fetchRates, outbound }) {
+  const [ups, setUps] = useState(null) // { rates, customs, environment }
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleCompare() {
+    setLoading(true); setError(''); setUps(null)
+    try {
+      setUps(await fetchRates())
+    } catch (e) {
+      // Message brut de l'API UPS — jamais un échec silencieux.
+      setError(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <div className="border-t border-slate-100 pt-3 space-y-2" data-testid="ups-rate-comparison">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-medium text-slate-700 flex items-center gap-1.5"><Truck size={14} className="text-amber-700" /> Tarifs UPS (direct)</p>
+        <button onClick={handleCompare} disabled={loading} className="btn-secondary btn-sm text-xs" data-testid="ups-compare-rates">
+          {loading ? 'Interrogation…' : ups ? 'Rafraîchir' : 'Comparer avec UPS'}
+        </button>
+      </div>
+      {error && (
+        <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2 whitespace-pre-wrap break-words" data-testid="ups-rate-error">{error}</p>
+      )}
+      {ups?.rates?.length > 0 && (
+        <>
+          {ups.environment !== 'production' && (
+            <p className="text-[11px] text-amber-700">Environnement CIE (test) — tarifs indicatifs.</p>
+          )}
+          <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+            {ups.rates.map(r => (
+              <div key={r.service_id} className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg border border-slate-200 text-sm">
+                <div>
+                  <p className="font-medium text-slate-800">{r.service_name}</p>
+                  <p className="text-xs text-slate-400">
+                    UPS{r.negotiated ? ' · tarif négocié' : ''}{r.total_transit_day ? ` · ${r.total_transit_day} jour(s)` : ''}
+                  </p>
+                </div>
+                <span className="font-semibold text-slate-700 whitespace-nowrap">{fmtPrice(r)}</span>
+              </div>
+            ))}
+          </div>
+          <p className="text-[11px] text-slate-400">
+            {outbound ? "Comparaison seulement — l'achat d'étiquette sortante passe par Novoxpress." : "Comparaison seulement — l'étiquette de retour s'achète via Novoxpress."}
+          </p>
+        </>
+      )}
+      {ups?.customs?.length > 0 && (
+        <details className="text-xs text-slate-500">
+          <summary className="cursor-pointer select-none">Déclaration douanière ({outbound ? 'envoi' : 'retour'} hors Canada)</summary>
+          <ul className="mt-1 space-y-0.5">
+            {ups.customs.map((c, i) => (
+              <li key={i}>{c.qty} × {c.description} — {Number(c.unit_value).toFixed(2)} $ · origine {c.origin_country} · SH {c.hs_code}</li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {ups && !ups.rates?.length && !error && (
+        <p className="text-xs text-slate-400">UPS n'a retourné aucun tarif pour {outbound ? 'cet envoi' : 'ce retour'}.</p>
+      )}
+    </div>
   )
 }

@@ -33,14 +33,3 @@ export function percentFill(value) {
   return Math.max(0, Math.min(100, n))
 }
 
-// Saisie → nombre de pourcents. Tolère « 45 % », « 45,5 », les espaces
-// (insécables compris). null = vide, undefined = illisible (l'appelant garde
-// alors la valeur en place).
-export function parsePercent(input) {
-  if (input === null || input === undefined) return null
-  let t = String(input).replace(/[\s\u00a0%]/g, '')
-  if (t === '') return null
-  if (t.includes(',') && !t.includes('.')) t = t.replace(',', '.')
-  const n = Number(t)
-  return Number.isFinite(n) ? n : undefined
-}

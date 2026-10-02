@@ -9,6 +9,7 @@ import { APP_URL } from '../config/appUrl.js';
 import { resolveFromAddress, getPostmarkClient } from '../services/postmarkConfig.js';
 import db from '../db/database.js';
 import { requireAuth } from '../middleware/auth.js';
+import { sanitizeSignatureHtml } from '../utils/sanitizeHtml.js';
 
 const router = Router();
 
@@ -281,6 +282,11 @@ function validDecimalPreferences(obj) {
   ));
 }
 
+// Signature de courriel (HTML nettoyé), ajoutée en bas de la fenêtre d'envoi.
+function readEmailSignature(userId) {
+  return db.prepare('SELECT email_signature FROM users WHERE id = ?').get(userId)?.email_signature || '';
+}
+
 // GET /api/auth/preferences — préférences UI de l'utilisateur courant
 router.get('/preferences', requireAuth, (req, res) => {
   res.json({
@@ -290,12 +296,13 @@ router.get('/preferences', requireAuth, (req, res) => {
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
     peek_widths: readPeekWidths(req.user.id),
+    email_signature: readEmailSignature(req.user.id),
   });
 });
 
 // PATCH /api/auth/preferences — maj des préférences UI (menu de gauche, décimales, largeur side-peek, etc.)
 router.patch('/preferences', requireAuth, (req, res) => {
-  const { nav_hidden, nav_order, nav_bookmarks, decimal_preferences, peek_width, peek_widths } = req.body || {};
+  const { nav_hidden, nav_order, nav_bookmarks, decimal_preferences, peek_width, peek_widths, email_signature } = req.body || {};
   if (nav_hidden !== undefined) {
     if (!Array.isArray(nav_hidden) || !nav_hidden.every((k) => typeof k === 'string')) {
       return res.status(400).json({ error: 'nav_hidden doit être un tableau de chaînes' });
@@ -338,6 +345,12 @@ router.patch('/preferences', requireAuth, (req, res) => {
     const merged = { ...readPeekWidths(req.user.id), ...peek_widths };
     db.prepare('UPDATE users SET peek_widths = ? WHERE id = ?').run(JSON.stringify(merged), req.user.id);
   }
+  if (email_signature !== undefined) {
+    if (email_signature !== null && (typeof email_signature !== 'string' || email_signature.length > 50000)) {
+      return res.status(400).json({ error: 'email_signature doit être une chaîne (50 000 caractères max)' });
+    }
+    db.prepare('UPDATE users SET email_signature = ? WHERE id = ?').run(sanitizeSignatureHtml(email_signature) || null, req.user.id);
+  }
   res.json({
     nav_hidden: readNavHidden(req.user.id),
     nav_order: readNavOrder(req.user.id),
@@ -345,6 +358,7 @@ router.patch('/preferences', requireAuth, (req, res) => {
     decimal_preferences: readDecimalPreferences(req.user.id),
     peek_width: readPeekWidth(req.user.id),
     peek_widths: readPeekWidths(req.user.id),
+    email_signature: readEmailSignature(req.user.id),
   });
 });
 

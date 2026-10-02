@@ -20,8 +20,6 @@ const OPS_ISSUE_COLUMNS = [
   'description', 'resolution', 'reported_by', 'resolved_at',
 ]
 
-export const OPS_ISSUE_STATUSES = ['Ouvert', 'En cours', 'Résolu']
-
 export const RECORD_REGISTRY = {
   activity_codes: {
     table: 'activity_codes',

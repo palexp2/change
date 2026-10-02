@@ -1,3 +1,5 @@
+import { ChevronUp, ChevronDown, GripVertical } from 'lucide-react'
+
 // Sélecteur de sections d'une fiche : barre horizontale posée en haut du corps
 // de la fiche et collante au défilement (avant : une colonne à côté des
 // sections, qui mangeait la largeur du panneau).
@@ -7,11 +9,50 @@
 export const SECTION_NAV_INSET = 56
 
 // Bloc de section : ancre pour le scroll-spy + titre et action optionnelle.
-export function Section({ id, label, count, action, registerRef, children }) {
+// `reorder` (optionnel) : l'objet de useReorderDnd sur les clés de section —
+// la section devient déplaçable (flèches + poignée + cible de dépôt). La fiche
+// ne le passe qu'en mode personnalisation.
+export function Section({ id, label, count, action, registerRef, reorder, children }) {
+  const dnd = reorder
   return (
-    <section ref={registerRef} data-section={id} className="pt-1 pb-8 scroll-mt-16">
+    <section
+      ref={registerRef}
+      data-section={id}
+      className={`relative pt-1 pb-8 scroll-mt-16 ${dnd ? `rounded-lg ${dnd.dragId === id ? 'opacity-50' : ''}` : ''}`}
+      onDragOver={dnd ? e => dnd.dragOver(e, id) : undefined}
+      onDrop={dnd ? e => dnd.drop(e, id) : undefined}
+    >
+      {dnd?.dragOverId === id && (
+        <span className={`absolute left-0 right-0 h-0.5 bg-brand-500 rounded pointer-events-none ${dnd.dragOverSide === 'before' ? '-top-1' : 'bottom-3'}`} />
+      )}
       <div className="flex items-center justify-between gap-3 mb-3">
         <h2 className="flex items-center gap-2 text-[13px] font-semibold uppercase tracking-wide text-slate-400">
+          {dnd && (
+            <span className="flex items-center normal-case tracking-normal" data-testid={`section-reorder-${id}`}>
+              <button
+                type="button"
+                className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+                title="Monter la section" aria-label={`Monter ${label}`}
+                data-testid={`section-up-${id}`}
+                disabled={dnd.isFirst(id)} onClick={() => dnd.move(id, -1)}
+              ><ChevronUp size={14} /></button>
+              <span
+                draggable
+                onDragStart={e => dnd.dragStart(e, id, e.currentTarget.closest('section'))}
+                onDragEnd={dnd.dragEnd}
+                className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500"
+                title="Glisser pour déplacer la section"
+                data-testid={`section-handle-${id}`}
+              ><GripVertical size={14} /></span>
+              <button
+                type="button"
+                className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+                title="Descendre la section" aria-label={`Descendre ${label}`}
+                data-testid={`section-down-${id}`}
+                disabled={dnd.isLast(id)} onClick={() => dnd.move(id, 1)}
+              ><ChevronDown size={14} /></button>
+            </span>
+          )}
           {label}
           {count > 0 && (
             <span className="bg-slate-100 text-slate-500 text-[11px] font-medium px-1.5 py-0.5 rounded-full leading-none normal-case tracking-normal">{count}</span>

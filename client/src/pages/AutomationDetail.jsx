@@ -36,7 +36,8 @@ const CONFIGURABLE_SYSTEM_AUTOMATIONS = new Set([
   'sys_revenue_recognition', CTB_AUTOMATION_ID,
   'sys_treasury_alert', 'sys_paie_repartition', 'sys_card_payment_reminder',
   'sys_card_ceiling_alert', 'sys_stripe_weekly_payout_push', 'sys_ticket_survey_slack',
-  'sys_order_item_shipped_cost',
+  'sys_order_item_shipped_cost', 'sys_facture_paid_slack', 'sys_soumission_late_click_task',
+  'sys_project_auto_close',
 ])
 
 // Champs de config des automations à éditeur générique clé-valeur.
@@ -110,6 +111,34 @@ const GENERIC_CONFIG_FIELDS = {
       { key: 'slack_webhook_env', label: 'Webhook Slack — nom de la variable d\'environnement', def: 'SLACK_WEBHOOK_PHILIPPE', hint: 'Dernier recours. Si la variable est absente de server/.env, le message part sur SLACK_WEBHOOK_TREASURY avec un préfixe d\'avertissement.' },
       { key: 'recipient', label: 'Nom du destinataire (affichage)', def: 'Philippe', hint: 'Sert uniquement au libellé du message de repli.' },
       { key: 'low_rating_max', label: 'Note maximale considérée « insatisfait »', def: '2', hint: 'Une note inférieure ou égale déclenche l\'alerte. Les notes supérieures n\'alertent que si le client accepte un appel ou modifie sa réponse.' },
+    ],
+  },
+  sys_soumission_late_click_task: {
+    title: 'Relance d\'un clic tardif',
+    intro: 'Vider un champ revient au défaut.',
+    fields: [
+      { key: 'assignee_email', label: 'Tâche pour (courriel)', def: 'philippe@orisha.io' },
+      { key: 'delay_hours', label: 'Délai après l\'envoi (heures)', def: '24' },
+    ],
+  },
+  sys_project_auto_close: {
+    title: 'Fermeture automatique des projets',
+    intro: 'Vider un champ revient au défaut.',
+    fields: [
+      { key: 'days', label: 'Fermer après (jours)', def: '30' },
+      { key: 'reason', label: 'Raison du refus', def: 'Fermeture automatique' },
+    ],
+  },
+  sys_facture_paid_slack: {
+    title: 'Facture payée → Slack',
+    intro: 'Vider un champ revient au défaut.',
+    fields: [
+      { key: 'slack_channel', label: 'Canal Slack', def: '#paiements' },
+      { key: 'message', label: 'Message', def: '(texte par défaut)', hint: '{lien} = lien vers la facture, {numero} = son numéro.', multiline: true },
+      { key: 'paid_statuses', label: 'Statuts « payée »', def: 'Payé, Payée' },
+      { key: 'skip_zero_amount', label: 'Ignorer les factures à 0 $ (0 / 1)', def: '1' },
+      { key: 'slack_webhook_url', label: 'Webhook Slack — URL', def: '(aucune)', hint: 'Secours si le bot n\'est pas utilisé.' },
+      { key: 'slack_webhook_env', label: 'Webhook Slack — variable d\'environnement', def: '(aucune)' },
     ],
   },
   sys_paie_repartition: {
@@ -2032,16 +2061,27 @@ function GenericConfigEditor({ spec, actionConfig, onChange }) {
       <p className="text-xs text-gray-500 mb-4">{spec.intro}</p>
       <div className="grid grid-cols-2 gap-4">
         {spec.fields.map(f => (
-          <div key={f.key} className={f.key === 'splits' || f.key === 'aga_splits' ? 'col-span-2' : ''}>
+          <div key={f.key} className={f.multiline || f.key === 'splits' || f.key === 'aga_splits' ? 'col-span-2' : ''}>
             <label className="label">{f.label}</label>
-            <input
-              type="text"
-              value={actionConfig?.[f.key] ?? ''}
-              onChange={e => set(f.key, e.target.value)}
-              placeholder={f.def || '—'}
-              className="input"
-              data-testid={`generic-config-${f.key}`}
-            />
+            {f.multiline ? (
+              <textarea
+                rows={5}
+                value={actionConfig?.[f.key] ?? ''}
+                onChange={e => set(f.key, e.target.value)}
+                placeholder={f.def || '—'}
+                className="input"
+                data-testid={`generic-config-${f.key}`}
+              />
+            ) : (
+              <input
+                type="text"
+                value={actionConfig?.[f.key] ?? ''}
+                onChange={e => set(f.key, e.target.value)}
+                placeholder={f.def || '—'}
+                className="input"
+                data-testid={`generic-config-${f.key}`}
+              />
+            )}
             {f.hint && <p className="text-[11px] text-gray-400 mt-1">{f.hint}</p>}
           </div>
         ))}

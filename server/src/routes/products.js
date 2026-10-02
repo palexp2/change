@@ -16,6 +16,9 @@ import { writeBackRecord, createInAirtable } from '../services/airtableWriteback
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
 import { productPurchasePrefill, createProductPurchase, syncProductPurchase, readProductPurchase, createPurchasesFromPo } from '../services/productPurchase.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
+import { purchaseUnitPrice, computeFifo, applyFifo } from '../services/fifoCost.js'
+import { runFifoFullPass } from '../services/fifoCostWatcher.js'
 
 const INSTALLATION_DOC_FIELDS = [
   { url: 'lien_pdf_installation_fr', local: 'lien_pdf_installation_fr_local', type: 'installation-fr' },
@@ -95,11 +98,28 @@ router.get('/', (req, res) => {
 
   const total = db.prepare(`SELECT COUNT(*) as c FROM products ${where}`).get(...params).c;
   const products = db.prepare(
-    `SELECT * FROM products ${where} ORDER BY name_fr LIMIT ? OFFSET ?`
+    `SELECT products.*, (SELECT issue_count FROM product_fifo f WHERE f.product_id = products.id) AS fifo_issue_count
+     FROM products ${where} ORDER BY name_fr LIMIT ? OFFSET ?`
   ).all(...params, limitVal, offset);
 
   res.json({ data: products, total, page: parseInt(page), limit: parseInt(limit) });
 });
+
+// Coût FIFO (services/fifoCost.js) : pièces en alerte, et recalcul complet
+// à la demande (relit aussi les prix d'achat dans Airtable).
+router.get('/fifo/alerts', (req, res) => {
+  const rows = db.prepare(`
+    SELECT f.product_id, f.cost, f.qty, f.uncovered, f.issues, f.issue_count, f.computed_at, p.sku, p.name_fr
+    FROM product_fifo f JOIN products p ON p.id = f.product_id
+    WHERE f.issue_count > 0 AND p.deleted_at IS NULL ORDER BY p.name_fr
+  `).all()
+  res.json({ data: rows.map(r => ({ ...r, issues: JSON.parse(r.issues || '[]') })) })
+})
+
+router.post('/fifo/recompute', async (req, res) => {
+  try { res.json(await runFifoFullPass({ source: 'manuel' })) }
+  catch (e) { res.status(500).json({ error: e.message }) }
+})
 
 // GET /api/products/:id
 router.get('/:id', (req, res) => {
@@ -107,7 +127,7 @@ router.get('/:id', (req, res) => {
   if (!product) return res.status(404).json({ error: 'Product not found' });
 
   const movements = db.prepare(
-    `SELECT sm.*, u.name as user_name FROM stock_movements sm
+    `SELECT sm.*, u.name as user_name FROM ${readRelation('stock_movements')} sm
      LEFT JOIN users u ON sm.user_id = u.id
      WHERE sm.product_id = ?
      ORDER BY sm.created_at DESC LIMIT 50`
@@ -118,7 +138,9 @@ router.get('/:id', (req, res) => {
     supplier_company = db.prepare('SELECT id, name FROM companies WHERE id = ?').get(product.supplier_company_id) || null
   }
 
-  res.json({ ...product, movements, supplier_company });
+  const f = computeFifo(product.id);
+  const fifo = f?.eligible ? { cost: f.cost, uncovered: f.uncovered, opening_cost: f.opening_cost, issues: f.issues } : null;
+  res.json({ ...product, movements, supplier_company, fifo });
 });
 
 // GET /api/products/:id/purchases — les achats (PO du miroir Airtable
@@ -142,8 +164,61 @@ router.get('/:id/purchases', (req, res) => {
     ORDER BY COALESCE(p.date_de_commande, p.created_at) DESC
   `).all(...keys);
 
-  res.json({ data: rows });
+  // Quantité de chaque achat encore en stock selon le FIFO (null = épuisé).
+  const inStock = new Map((computeFifo(product.id)?.layers || []).map(l => [l.purchase_id, l]))
+  res.json({ data: rows.map(r => ({
+    ...r,
+    prix_unitaire: purchaseUnitPrice(r),
+    fifo_qty: inStock.get(r.id)?.qty_in_stock ?? null,
+    fifo_flag: inStock.get(r.id)?.flag ?? null,
+    price_approved: inStock.get(r.id)?.approved ?? false,
+  })) });
 });
+
+// Prix d'achat vérifié (alerte « prix douteux » levée) ou achat gratuit
+// (alerte « sans prix » levée, compté à 0 $) / vérification annulée.
+// Le prix est mémorisé : s'il change ensuite, l'alerte revient.
+function setPriceApproval(req, res, approve) {
+  const product = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+  const purchase = db.prepare(`SELECT * FROM ${readRelation('purchases')} WHERE id = ?`).get(req.params.purchaseId);
+  if (!product || !purchase) return res.status(404).json({ error: 'Achat introuvable' });
+  if (approve) {
+    // Achat sans prix : marqué gratuit (fournisseur qui ne facture pas), 0 $.
+    const price = purchaseUnitPrice(purchase) ?? 0;
+    db.prepare(`
+      INSERT INTO purchase_price_approvals (purchase_id, unit_price, approved_by, approved_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(purchase_id) DO UPDATE SET unit_price=excluded.unit_price, approved_by=excluded.approved_by, approved_at=excluded.approved_at
+    `).run(purchase.id, price, req.user?.id || null, new Date().toISOString());
+  } else {
+    db.prepare('DELETE FROM purchase_price_approvals WHERE purchase_id = ?').run(purchase.id);
+  }
+  // Seule l'alerte change ; un coût qui bougerait part vers Airtable à la minute.
+  applyFifo(product.id);
+  res.json({ ok: true });
+}
+// Coût unitaire de l'inventaire de départ (null = effacé).
+router.put('/:id/opening-cost', (req, res) => {
+  const product = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Product not found' });
+  const raw = req.body?.unit_cost;
+  if (raw == null || raw === '') {
+    db.prepare('DELETE FROM product_opening_costs WHERE product_id = ?').run(product.id);
+  } else {
+    const v = Number(raw);
+    if (!Number.isFinite(v) || v < 0) return res.status(400).json({ error: 'Coût invalide' });
+    db.prepare(`
+      INSERT INTO product_opening_costs (product_id, unit_cost, set_by, set_at) VALUES (?, ?, ?, ?)
+      ON CONFLICT(product_id) DO UPDATE SET unit_cost=excluded.unit_cost, set_by=excluded.set_by, set_at=excluded.set_at
+    `).run(product.id, v, req.user?.id || null, new Date().toISOString());
+  }
+  // Un coût changé part vers Airtable à la minute (fifoCostWatcher).
+  applyFifo(product.id);
+  res.json({ ok: true });
+});
+
+router.post('/:id/purchases/:purchaseId/price-approval', (req, res) => setPriceApproval(req, res, true));
+router.delete('/:id/purchases/:purchaseId/price-approval', (req, res) => setPriceApproval(req, res, false));
+
 
 router.get('/:id/purchases/prefill', (req, res) => {
   res.json(productPurchasePrefill(req.params.id))
@@ -194,6 +269,14 @@ function docUrlColumns() {
   return INSTALLATION_DOC_FIELDS.map(f => f.url).filter(c => cols.has(c));
 }
 
+// « Nom » d'Airtable est une formule (TRIM de « Nom modifiable ») : impossible à
+// écrire, et le sync réimporte la formule par-dessus `name_fr`. Le nom saisi ici
+// part donc dans « Nom modifiable », la vraie source.
+function nameSourceColumn() {
+  const cols = new Set(db.prepare('PRAGMA table_info(products)').all().map(c => c.name));
+  return cols.has('nom_modifiable') ? 'nom_modifiable' : null;
+}
+
 // PUT /api/products/:id — partial update
 router.put('/:id', async (req, res) => {
   const existing = db.prepare('SELECT id FROM products WHERE id = ?').get(req.params.id);
@@ -231,10 +314,15 @@ router.put('/:id', async (req, res) => {
     db.prepare(`UPDATE products SET ${setClause}, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`)
       .run(...values, req.params.id);
   }
+  const nameSource = 'name_fr' in req.body ? nameSourceColumn() : null;
+  if (nameSource) {
+    db.prepare(`UPDATE products SET ${nameSource} = name_fr WHERE id = ?`).run(req.params.id);
+  }
 
   // Attendu (et non fire-and-forget) : un échec Airtable doit se voir dans la
   // fiche, sinon l'ajustement resterait local et serait écrasé au prochain sync.
   const pushCols = [...AIRTABLE_ADJUSTMENT_COLUMNS, ...docCols].filter(c => c in req.body);
+  if (nameSource) pushCols.push(nameSource);
   const airtable = pushCols.length ? await writeBackRecord('pieces', req.params.id, pushCols) : undefined;
 
   const updated = db.prepare('SELECT * FROM products WHERE id = ?').get(req.params.id);
@@ -520,7 +608,8 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
     ? String(body_html)
     : `<p>Bonjour,</p><p>Vous trouverez ci-joint notre bon de commande <strong>${po.po_number}</strong>.</p><p>Merci,<br>Automatisation Orisha inc.</p>`
 
-  const result = await sendGmail(to, finalSubject, finalHtml, {
+  const emailId = newRecordId()
+  const result = await sendGmail(to, finalSubject, trackEmailHtml(finalHtml, emailId), {
     cc: cc || undefined,
     attachments: [{ filename, content: pdf, contentType: 'application/pdf' }],
     userId: req.user?.id,
@@ -533,7 +622,6 @@ router.post('/:id/purchase-order/send-email', async (req, res) => {
     ? (db.prepare('SELECT id FROM contacts WHERE company_id=? AND email=? AND deleted_at IS NULL').get(companyId, to)?.id || null)
     : null
   const interactionId = newRecordId()
-  const emailId = newRecordId()
   const achatId = newRecordId()
   const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email)=lower(?)').get(result.account_email)?.id || req.user?.id || null
 

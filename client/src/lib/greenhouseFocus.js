@@ -41,36 +41,6 @@ export const FOCUS_LABELS = {
   valves: 'Les valves d’irrigation',
 }
 
-// Préfixe d'identifiant du schéma → focus. Ordre significatif : le premier
-// préfixe qui correspond gagne, donc du plus précis au plus large.
-const BY_PREFIX = [
-  ['network.mobile', 'network_mobile'],
-  ['network.wifi', 'network_wifi_credentials'],
-  ['network.', 'network'],
-  ['order_type.', 'site'],
-  ['farm.', 'farm'],
-  ['shipping.', 'shipping'],
-  ['greenhouses.count', 'count'],
-  ['greenhouse.length', 'length'],
-  ['greenhouse.side_vent_height', 'vent_height'],
-  ['greenhouse.side_vents', 'side_vents'],
-  ['greenhouse.motors', 'side_vents'],
-  ['greenhouse.side_pipe', 'side_pipe'],
-  ['greenhouse.diameter_other', 'side_pipe'],
-  ['greenhouse.guide_pipes', 'guide_pipes'],
-  ['roofs.', 'roof_vents'],
-  ['screens.', 'thermal_screens'],
-  ['chief.furnaces', 'furnaces'],
-  ['chief.has_furnaces', 'furnaces'],
-  ['chief.num_furnaces', 'furnaces'],
-  ['chief.irrigation', 'irrigation'],
-  ['chief.orisha_valves', 'valves'],
-  ['furnace.dry_contact', 'furnace_dry_contact'],
-  ['furnace.wire', 'furnace_wire'],
-  ['furnace.thermostat', 'thermostat'],
-  ['furnace.', 'furnaces'],
-]
-
 const BY_SECTION = {
   intro: 'overview',
   order_type: 'site',
@@ -80,12 +50,6 @@ const BY_SECTION = {
   greenhouse: 'overview',
   greenhouse_chief: 'overview',
   end: 'overview',
-}
-
-/** Focus d'un libellé du schéma (`greenhouse.side_vents_count_label`…). */
-export function focusForSchemaItem(id) {
-  for (const [prefix, focus] of BY_PREFIX) if (String(id).startsWith(prefix)) return focus
-  return 'overview'
 }
 
 /** Focus d'une question ajoutée depuis l'éditeur, d'après sa section. */

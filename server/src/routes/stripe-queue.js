@@ -8,8 +8,9 @@ import { requireAuth, requireAdmin } from '../middleware/auth.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { downloadStripeInvoicePdf } from '../services/stripeInvoicePdf.js'
 import { upsertFromInvoiceLines } from '../services/stripeInvoiceItems.js'
-import { linkFactureToProject } from '../services/stripeProjectLink.js'
+import { autoLinkStripeFacture } from '../services/stripeProjectLink.js'
 import { APP_URL } from '../config/appUrl.js'
+import { refreshOverdueFactures } from '../services/factureBalance.js'
 import {
   STRIPE_FACTURE_FIELDS, STRIPE_FACTURE_FIXED, getCustomFieldSpecs,
   getFactureFieldMap, saveFactureFieldMap, resolveStripeInvoiceFields,
@@ -240,7 +241,7 @@ router.post('/batch-enrich', async (req, res) => {
 
         // Champs personnalisés mappés via la modale « Mapping Stripe »
         applyStripeCustomFieldColumns(factureId, inv)
-        linkFactureToProject(factureId, inv)
+        autoLinkStripeFacture(factureId, inv)
 
         if (!hasPdf && inv.invoice_pdf) {
           try {
@@ -277,6 +278,8 @@ router.post('/batch-enrich', async (req, res) => {
 
     console.log(`✅ Batch Stripe terminé: ${batchProgress.updated} MAJ, ${batchProgress.created} créées, ${batchProgress.errors.length} erreurs`)
     const appUrl = APP_URL
+    // Stripe dit « open » sans distinguer l'échéance passée.
+    try { refreshOverdueFactures() } catch (e) { console.error('factures en retard:', e.message) }
     const resultLines = [
       `${batchProgress.total} factures Stripe traitées`,
       `Mises à jour : ${batchProgress.updated}`,

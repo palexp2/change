@@ -94,5 +94,3 @@ export function patternVariants(pattern) {
   return out
 }
 
-// Ce motif a-t-il une traduction connue ? Sert à l'afficher.
-export const hasTranslation = (pattern) => patternVariants(pattern).length > 1

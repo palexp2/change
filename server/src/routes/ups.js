@@ -11,6 +11,7 @@ import { RETURN_COMPANY_SQL } from '../services/returnCompany.js'
 import { logSystemRun } from '../services/systemAutomations.js'
 import { getAutomationFrom, getPostmarkClient } from '../services/postmarkConfig.js'
 import { uploadsPath } from '../config/uploads.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
 
 // Intégration UPS — connecteur (OAuth client_credentials), étiquettes de retour
 // (Shipping API, ReturnService 9), tarifs (Rating API /Shop) et suivi
@@ -239,6 +240,7 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
     <p>Merci,<br>L'équipe Orisha</p>
   `
 
+  const emailId = newRecordId()
   try {
     const fromAddress = getAutomationFrom('sys_ups_return_label_email')
     if (!fromAddress) throw new Error('Adresse expéditeur Postmark non configurée')
@@ -247,7 +249,7 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
       From: fromAddress,
       To: to,
       Subject: subject,
-      HtmlBody: html,
+      HtmlBody: trackEmailHtml(html, emailId),
       Attachments: [{
         Name: `etiquette-retour-ups-${label}.pdf`,
         Content: fs.readFileSync(labelPath).toString('base64'),
@@ -256,7 +258,6 @@ router.post('/returns/:id/return-label/send', async (req, res) => {
     })
 
     const interactionId = newRecordId()
-    const emailId = newRecordId()
     db.transaction(() => {
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)

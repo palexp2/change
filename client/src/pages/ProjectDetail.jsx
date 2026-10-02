@@ -286,6 +286,15 @@ export default function ProjectDetail({ recordId, onClose }) {
     return [{ id: project.company_id, name: project.company_name || 'Entreprise liée' }, ...companies]
   }, [companies, project?.company_id, project?.company_name])
 
+  // « Contact lié » ne propose que les contacts de l'entreprise du projet.
+  // Sans entreprise liée, la liste reste complète ; le contact déjà posé reste
+  // affiché quoi qu'il arrive (règle des filtres de champ lien).
+  const projectFieldLinkFilters = useMemo(() => (
+    project?.company_id
+      ? { contact_lie: [{ column: 'company_id', op: 'is', value: String(project.company_id) }] }
+      : {}
+  ), [project?.company_id])
+
   // Types proposés par le sélecteur. Un type déjà posé sur le projet mais absent
   // de la liste (import Airtable, ancien libellé) reste proposé — sinon le
   // champ paraîtrait vide et un simple coup d'œil l'effacerait.
@@ -552,6 +561,7 @@ export default function ProjectDetail({ recordId, onClose }) {
             savingKeys={fieldSaving}
             className="card p-6"
             testId="project-fields"
+            customFieldLinkFilters={projectFieldLinkFilters}
           >
             {/* Le numéro de projet vient du champ Airtable « ID » (une formule) :
                 tant que l'import est branché, le serveur refuse l'écriture — la

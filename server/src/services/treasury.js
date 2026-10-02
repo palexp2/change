@@ -382,14 +382,14 @@ export function clientPaymentDelayStats() {
 
 // ── Sources d'événements optionnelles ────────────────────────────────────────
 
-// Encaissements clients : factures « À payer » CAD, projetées à
+// Encaissements clients : factures « À payer » / « En retard » CAD, projetées à
 // due_date + délai historique du client (médiane en réaliste, p90 en
 // pessimiste, fallback global) + délai de settlement Stripe→BNC.
 function buildArEvents({ scenario, settleDays, today }) {
   const open = db.prepare(`
     SELECT f.id, f.document_number, f.due_date, f.document_date, f.balance_due, f.company_id, c.name AS company_name
     FROM factures f LEFT JOIN companies c ON c.id = f.company_id
-    WHERE f.status = 'À payer' AND f.balance_due > 0 AND COALESCE(f.currency, 'CAD') = 'CAD'
+    WHERE f.status IN ('À payer', 'En retard') AND f.balance_due > 0 AND COALESCE(f.currency, 'CAD') = 'CAD'
   `).all()
   if (!open.length) return []
   const delays = clientPaymentDelayStats()

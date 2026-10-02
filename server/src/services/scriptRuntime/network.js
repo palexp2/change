@@ -11,10 +11,15 @@ export function publicIPv4(ip) {
     (a === 172 && b >= 16 && b <= 31) || (a === 192 && [0, 2, 168].includes(b)) ||
     (a === 198 && [18, 19, 51].includes(b)) || (a === 203 && b === 0))
 }
+// `https://*.exemple.com` autorise tous les sous-domaines (pas le domaine nu).
+export function originAllowed(url, origins) {
+  return origins.some(o => o === url.origin ||
+    (o.startsWith('https://*.') && !url.port && url.hostname.endsWith(o.slice('https://*'.length))))
+}
 export async function scriptFetch(urlString, options = {}, signal) {
   const url = new URL(urlString)
   const origins = (process.env.SCRIPT_FETCH_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean)
-  if (url.protocol !== 'https:' || url.username || url.password || !origins.includes(url.origin)) throw new Error('Destination réseau non autorisée')
+  if (url.protocol !== 'https:' || url.username || url.password || !originAllowed(url, origins)) throw new Error('Destination réseau non autorisée')
   const addresses = await lookup(url.hostname, { family: 4, all: true })
   signal.throwIfAborted()
   if (!addresses.length || addresses.some(a => !publicIPv4(a.address))) throw new Error('Adresse réseau privée ou réservée interdite')

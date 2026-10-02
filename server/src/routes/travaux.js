@@ -29,6 +29,9 @@ import {
 } from '../services/workIdeas.js'
 import { KNOWN_MODELS } from '../services/agentModel.js'
 import {
+  listAgents, createAgent, updateAgent, deleteAgent, getAgent, runAgent,
+} from '../services/autonomousAgents.js'
+import {
   getSettings, setSettings, isRunnerBusy, findAgentTask,
   getRunningQuestionCount, getMaxParallelQuestions, stopRunningTask,
   getRunningExecutionCount, getExecLaneCount,
@@ -131,6 +134,52 @@ router.get('/code-stats', async (req, res) => {
     }
     res.json(locCache)
   } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+// ─── Sauvegarde du code sur GitHub ────────────────────────────────────────────
+// Bouton de /travaux : snapshot de tout l'arbre (git add -A, .gitignore exclut
+// DB, .env, uploads) puis push sur origin/main. --no-verify : le hook pre-push
+// lance la suite de tests (~2 min, dans le process serveur) et bloque sur des
+// routes mortes préexistantes — c'est une sauvegarde, pas une livraison. Jamais
+// de --force : si GitHub a divergé, le push est refusé et l'erreur remonte.
+// Date du dernier push = reflog d'origin/main (« update by push »).
+const GIT_TIMEOUT_MS = 5 * 60_000
+let gitPushing = false
+
+async function git(args) {
+  const { stdout } = await execFileAsync('git', args, { cwd: REPO_ROOT, timeout: GIT_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 })
+  return stdout
+}
+
+async function githubState() {
+  const reflog = await git(['reflog', 'show', '--date=iso-strict', '--format=%gd %gs', 'refs/remotes/origin/main', '-n', '200']).catch(() => '')
+  const m = reflog.split('\n').map(l => l.match(/@\{(.+?)\} update by push/)).find(Boolean)
+  const lastPushAt = m ? m[1] : (await git(['log', '-1', '--format=%cI', 'origin/main']).catch(() => '')).trim() || null
+  const ahead = Number((await git(['rev-list', '--count', 'origin/main..HEAD']).catch(() => '0')).trim()) || 0
+  const dirty = (await git(['status', '--porcelain']).catch(() => '')).trim().length > 0
+  return { last_push_at: lastPushAt, pending: ahead > 0 || dirty, pushing: gitPushing }
+}
+
+router.get('/github', async (req, res) => {
+  try { res.json(await githubState()) } catch (e) { res.status(500).json({ error: e.message }) }
+})
+
+router.post('/github/push', async (req, res) => {
+  if (gitPushing) return res.status(409).json({ error: 'Sauvegarde déjà en cours' })
+  gitPushing = true
+  try {
+    await git(['add', '-A'])
+    if ((await git(['diff', '--cached', '--name-only'])).trim()) {
+      await git(['commit', '--no-verify', '-q', '-m', "Snapshot WIP : état actuel de l'app"])
+    }
+    await git(['push', '--no-verify', '-q', 'origin', 'main'])
+    gitPushing = false
+    res.json(await githubState())
+  } catch (e) {
+    gitPushing = false
+    const msg = String(e.stderr || e.message || e).trim().split('\n').slice(-3).join(' ')
+    res.status(500).json({ error: /rejected|non-fast-forward|fetch first/.test(msg) ? 'GitHub a une version plus récente — sauvegarde refusée' : msg })
+  }
 })
 
 // ─── Utilisation du CPU de la machine ─────────────────────────────────────────
@@ -656,6 +705,39 @@ router.post('/recurring/:id/completion', (req, res) => {
 
 router.get('/recurring/:id/completions', (req, res) => {
   res.json({ completions: listCompletions(req.params.id) })
+})
+
+// ─── Agents autonomes ─────────────────────────────────────────────────────────
+
+router.get('/agents', (req, res) => {
+  res.json({ agents: listAgents() })
+})
+
+router.post('/agents', (req, res) => {
+  const { name, instructions, run_hours } = req.body || {}
+  res.status(201).json(createAgent({ name, instructions, run_hours, created_by: req.user?.id || null }))
+})
+
+router.patch('/agents/:id', (req, res) => {
+  const updated = updateAgent(req.params.id, req.body || {})
+  if (!updated) return res.status(404).json({ error: 'introuvable' })
+  res.json(updated)
+})
+
+router.delete('/agents/:id', (req, res) => {
+  if (!deleteAgent(req.params.id)) return res.status(404).json({ error: 'introuvable' })
+  res.json({ ok: true })
+})
+
+// « Lancer maintenant » : dépose un passage hors horaire.
+router.post('/agents/:id/run', (req, res) => {
+  const agent = getAgent(req.params.id)
+  if (!agent) return res.status(404).json({ error: 'introuvable' })
+  if (!agent.instructions) return res.status(400).json({ error: 'mission vide' })
+  const out = runAgent(agent, { force: true })
+  if (out?.busy) return res.status(409).json({ error: 'passage précédent encore en cours' })
+  advanceQueue()
+  res.status(201).json({ ...out, agent: getAgent(agent.id) })
 })
 
 export default router

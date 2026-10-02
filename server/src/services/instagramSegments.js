@@ -371,11 +371,6 @@ export function unblock(username) {
   `).run(u).changes
 }
 
-export function isBlockedUsername(username) {
-  if (!username) return false
-  return !!db.prepare('SELECT 1 FROM instagram_blocked WHERE ig_username = ?').get(String(username).toLowerCase())
-}
-
 /** Réponse à une story et rien d'autre : hors de la liste, sans être perdue. */
 function markStoryOnly(prospectId) {
   db.prepare(`
@@ -508,16 +503,6 @@ async function rewriteStaleDrafts(prospectIds) {
     try { await writeDraft(id, { force: true }); n++ } catch { /* le message reste, Philippe peut « Réécrire » */ }
   }
   return n
-}
-
-/** Remet au tri les fiches non choisies à la main (toutes, ou celles d'une pile). */
-export function requeueForSegmentation({ segment = null } = {}) {
-  return db.prepare(`
-    UPDATE instagram_prospects SET segment_at = NULL
-    WHERE deleted_at IS NULL AND segment_source IS NOT 'manual'
-      AND COALESCE(segment,'') NOT IN ('robot','story')
-      ${segment ? 'AND segment = ?' : ''}
-  `).run(...(segment ? [segment] : [])).changes
 }
 
 export function previewSegmentation() {

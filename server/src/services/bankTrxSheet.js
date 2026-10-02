@@ -13,7 +13,6 @@
 // L'historique (2024 → juillet 2026) a été importé avec des descriptions
 // parfois composées différemment : la déduplication se fait par
 // (date, montant signé) et non par libellé — voir planImportFromCounts.
-import xlsx from 'xlsx'
 import db from '../db/database.js'
 import { parseAmount } from './bankReconciliation.js'
 import { shiftDate } from '../utils/datetime.js'
@@ -85,13 +84,6 @@ export function specForTab(tabName) {
   return TAB_SPECS[strip(tabName)] || null
 }
 
-// L'onglet du fichier qui correspond à un compte ERP — le chemin inverse de
-// specForTab, dont le miroir sortant a besoin (services/trxSheetMirror.js).
-export function tabForAccount(accountName) {
-  const hit = Object.entries(TAB_SPECS).find(([, spec]) => spec.account === accountName)
-  return hit ? { key: hit[0], ...hit[1] } : null
-}
-
 // Les comptes dont le relevé note les achats en POSITIF (cartes Visa
 // Desjardins). Une seule table de vérité pour le sens du montant : la sync du
 // fichier et le dépôt de relevés (services/bankStatementImport.js) la partagent.
@@ -120,27 +112,8 @@ export const SHEET_COLORS = {
   'F4CCCC': 'rouge',
 }
 
-export const SHEET_COLOR_LABELS = {
-  vert: 'Rapprochée avec la banque (fichier)',
-  jaune: 'Comptabilisée (fichier)',
-  bleu: 'Facture retracée (fichier)',
-  rouge: 'Pas encore comptabilisée (fichier)',
-}
-
 // Une couleur verte ou jaune est une affirmation : « c'est dans QuickBooks ».
 export const COLOR_MEANS_IN_QB = new Set(['vert', 'jaune'])
-
-// Accès aux remplissages d'un onglet, indexé comme la grille de
-// sheet_to_json({header:1}) — même origine (coin haut-gauche de !ref).
-export function colorReader(sheet) {
-  if (!sheet || !sheet['!ref']) return () => null
-  const range = xlsx.utils.decode_range(sheet['!ref'])
-  return (r, c) => {
-    const cell = sheet[xlsx.utils.encode_cell({ r: range.s.r + r, c: range.s.c + c })]
-    if (!cell || cell.s?.patternType !== 'solid') return null
-    return SHEET_COLORS[String(cell.s.fgColor?.rgb || '').toUpperCase()] || null
-  }
-}
 
 // ── Parsing (pur, testable) ──────────────────────────────────────────────────
 

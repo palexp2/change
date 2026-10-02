@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { RecordScope } from '../lib/recordLive.jsx'
+import RecordRevisionHistory from '../components/RecordRevisionHistory.jsx'
 import api from '../lib/api.js'
 import OrderDetail from './OrderDetail.jsx'
 
@@ -35,6 +36,7 @@ export default function OrderDetailPage() {
       <RecordScope id={id}>
         <OrderDetail recordId={id} onClose={() => navigate('/orders')} />
       </RecordScope>
+      <RecordRevisionHistory table="orders" id={id} variant="page" />
     </Layout>
   )
 }

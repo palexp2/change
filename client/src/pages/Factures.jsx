@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
-import { X, FileText, SlidersHorizontal, RefreshCw } from 'lucide-react'
+import { X, FileText, SlidersHorizontal, RefreshCw, ExternalLink } from 'lucide-react'
+import { stripeFactureUrl } from '../lib/stripeLinks.js'
 import api from '../lib/api.js'
 import { ListPage } from '../components/ListPage.jsx'
 import { useListData } from '../lib/useListData.js'
@@ -26,7 +27,28 @@ import CompanyDetail from './CompanyDetail.jsx'
 
 
 const RENDERS = {
-  document_number: row => <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>,
+  // Icône à côté du numéro : ouvre la facture dans le tableau de bord Stripe.
+  document_number: row => {
+    const stripeUrl = stripeFactureUrl(row)
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <span className="font-mono font-medium text-slate-900">{row.document_number || '—'}</span>
+        {stripeUrl && (
+          <a
+            href={stripeUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={e => e.stopPropagation()}
+            title="Ouvrir dans Stripe"
+            data-testid="facture-stripe-link"
+            className="text-slate-400 hover:text-brand-600"
+          >
+            <ExternalLink size={12} />
+          </a>
+        )}
+      </span>
+    )
+  },
   // company_name : render surchargé dans COLUMNS_WITH_CUSTOM (ouvre le
   // side-peek entreprise au lieu de naviguer) — fallback lien simple ici.
   company_name:    row => row.company_id

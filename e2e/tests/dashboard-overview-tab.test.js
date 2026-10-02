@@ -55,10 +55,12 @@ describe('Dashboard — onglet « Vue globale » (planche façon Power BI)', () 
     await page.locator('[data-testid="overview-treasury"], [data-testid="overview-treasury-error"]')
       .first().waitFor({ timeout: 30000 })
 
-    // Toutes les infos d'un coup d'œil : une douzaine d'indicateurs…
+    // Toutes les infos d'un coup d'œil : une bande d'indicateurs…
     const tiles = page.locator('[data-testid^="overview-tile-"]')
-    assert.ok(await tiles.count() >= 10, `trop peu de tuiles d'indicateurs (${await tiles.count()})`)
-    assert.match(await page.locator('[data-testid="overview-tile-revenue"]').innerText(), /Revenus expédiés/)
+    assert.ok(await tiles.count() >= 6, `trop peu de tuiles d'indicateurs (${await tiles.count()})`)
+    assert.match(await page.locator('[data-testid="overview-tile-projects"]').innerText(), /Projets créés/)
+    // « Revenus expédiés » retirée à la demande de Pierre-Alexandre Papillon (2026-10-02).
+    assert.equal(await page.locator('[data-testid="overview-tile-revenue"]').count(), 0)
 
     // …et une planche de graphiques compacts.
     const charts = page.locator('[data-testid^="overview-chart-"]:not([data-testid*="toggle"]):not([data-testid*="table"])')

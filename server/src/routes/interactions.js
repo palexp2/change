@@ -5,7 +5,9 @@ import db from '../db/database.js'
 import { normalizeToUtcIso } from '../utils/datetime.js'
 import { checkForeignKeys } from '../utils/fkExists.js'
 import { emitEntity } from '../services/realtimeEmitters.js'
-import { listInteractionEmailAttachments, downloadInteractionEmailAttachment } from '../services/gmail.js'
+import { listInteractionEmailAttachments, downloadInteractionEmailAttachment, sendEmail } from '../services/gmail.js'
+import { interactionFile } from '../services/hubspotHistoryImport.js'
+import { trackEmailHtml, emailTrackingSummary } from '../services/emailTracking.js'
 
 // Reuse the LIST query shape (lightweight, without heavy fields) so the
 // realtime payload matches what `Interactions.jsx` consumes in its table.
@@ -24,7 +26,7 @@ const INTERACTION_LIST_SELECT = `
       WHEN i.type='call' THEN COALESCE(ca.callee_number, ca.caller_number)
       ELSE NULL
     END as phone_number,
-    e.subject, e.from_address, e.to_address, e.automated, e.open_count,
+    e.subject, e.from_address, e.to_address, e.automated, e.open_count, e.click_count,
     m.title AS meeting_title, m.duration_minutes
   FROM interactions i
   LEFT JOIN contacts c ON i.contact_id = c.id
@@ -91,7 +93,7 @@ router.get('/', requireAuth, (req, res) => {
         WHEN i.type='call' THEN COALESCE(ca.callee_number, ca.caller_number)
         ELSE NULL
       END as phone_number,
-      e.subject, e.from_address, e.to_address, e.automated, e.open_count,
+      e.subject, e.from_address, e.to_address, e.automated, e.open_count, e.click_count,
       ${heavySelect}
       m.title AS meeting_title, m.duration_minutes
     FROM interactions i
@@ -129,7 +131,7 @@ router.get('/:id', requireAuth, (req, res) => {
         WHEN i.type='call' THEN COALESCE(ca.callee_number, ca.caller_number)
         ELSE NULL
       END as phone_number,
-      e.subject, e.from_address, e.to_address, e.body_text, e.body_html, e.automated, e.open_count,
+      e.subject, e.from_address, e.to_address, e.body_text, e.body_html, e.automated, e.open_count, e.click_count,
       m.title AS meeting_title, m.duration_minutes, m.notes AS meeting_notes
     FROM interactions i
     LEFT JOIN contacts c ON i.contact_id = c.id
@@ -142,6 +144,14 @@ router.get('/:id', requireAuth, (req, res) => {
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   res.json(row)
+})
+
+// GET /api/interactions/:id/tracking — ouvertures et clics d'un courriel
+// envoyé depuis Boréal (fiche du fil). tracked=false : courriel sans suivi.
+router.get('/:id/tracking', requireAuth, (req, res) => {
+  const email = db.prepare('SELECT e.id FROM emails e WHERE e.interaction_id = ?').get(req.params.id)
+  if (!email) return res.json({ tracked: false, opens: [], links: [] })
+  res.json(emailTrackingSummary(email.id))
 })
 
 // GET /api/interactions/:id/email-body
@@ -162,7 +172,13 @@ router.get('/:id/attachments', requireAuth, async (req, res) => {
   const row = db.prepare(`SELECT id FROM interactions WHERE id=? AND deleted_at IS NULL`).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
   try {
-    res.json(await listInteractionEmailAttachments(req.params.id))
+    // + pièces jointes importées de HubSpot (notes, réunions, courriels d'avant Gmail)
+    const hs = db.prepare(`
+      SELECT f.id, f.file_name, f.content_type, f.file_size, f.created_at AS fetched_at, i.timestamp
+      FROM interaction_files f JOIN interactions i ON i.id = f.interaction_id
+      WHERE f.interaction_id = ? AND f.file_path IS NOT NULL ORDER BY f.file_name
+    `).all(req.params.id)
+    res.json([...(await listInteractionEmailAttachments(req.params.id)), ...hs])
   } catch (e) {
     res.status(500).json({ error: e.message })
   }
@@ -171,7 +187,8 @@ router.get('/:id/attachments', requireAuth, async (req, res) => {
 // GET /api/interactions/:id/attachments/:attId/download
 router.get('/:id/attachments/:attId/download', requireAuth, async (req, res) => {
   try {
-    const { absPath, fileName, contentType } = await downloadInteractionEmailAttachment(req.params.id, req.params.attId)
+    const { absPath, fileName, contentType } = interactionFile(req.params.id, req.params.attId)
+      || await downloadInteractionEmailAttachment(req.params.id, req.params.attId)
     if (contentType) res.type(contentType)
     res.download(absPath, fileName || 'piece-jointe')
   } catch (e) {
@@ -204,6 +221,50 @@ router.post('/', requireAuth, (req, res) => {
     }
   })
   insertInteraction()
+
+  const created = db.prepare(INTERACTION_LIST_SELECT).get(id)
+  if (created) emitEntity('interaction', 'created', id, created, req.user?.id)
+  res.status(201).json({ id })
+})
+
+// POST /api/interactions/send-email — courriel libre écrit depuis une fiche
+// entreprise ou contact, envoyé depuis le Gmail de l'utilisateur (ou
+// `from_account`) et consigné au fil. Pixel de suivi comme pour les soumissions
+// (absent du corps consigné : l'afficher dans l'ERP compterait une ouverture).
+router.post('/send-email', requireAuth, async (req, res) => {
+  const { to, cc, bcc, subject, body_html, company_id, contact_id, from_account } = req.body || {}
+  if (!to || !String(to).includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
+  if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Objet requis' })
+  const fkErr = checkForeignKeys({ company_id, contact_id })
+  if (fkErr) return res.status(400).json({ error: fkErr.message })
+
+  const emailId = newRecordId()
+  let result
+  try {
+    result = await sendEmail(to, String(subject).trim(), trackEmailHtml(body_html, emailId), {
+      cc: cc || undefined,
+      bcc: bcc || undefined,
+      userId: req.user?.id,
+      accountEmail: from_account || undefined,
+    })
+  } catch (e) {
+    console.error('Interaction send-email error:', e.message)
+    return res.status(502).json({ error: e.message })
+  }
+
+  const contactId = db.prepare('SELECT id FROM contacts WHERE lower(email) = lower(?) AND deleted_at IS NULL').get(to)?.id || contact_id || null
+  const senderUserId = db.prepare('SELECT id FROM users WHERE lower(email) = lower(?)').get(result.account_email)?.id || req.user?.id || null
+  const id = newRecordId()
+  db.transaction(() => {
+    db.prepare(`
+      INSERT INTO interactions (id, contact_id, company_id, user_id, type, direction, timestamp)
+      VALUES (?, ?, ?, ?, 'email', 'out', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    `).run(id, contactId, company_id || null, senderUserId)
+    db.prepare(`
+      INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, bcc, gmail_message_id, gmail_thread_id, automated)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(emailId, id, String(subject).trim(), String(body_html || ''), result.account_email, to, cc || null, bcc || null, result.message_id, result.thread_id)
+  })()
 
   const created = db.prepare(INTERACTION_LIST_SELECT).get(id)
   if (created) emitEntity('interaction', 'created', id, created, req.user?.id)

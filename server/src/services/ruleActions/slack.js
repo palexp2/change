@@ -35,13 +35,6 @@ export async function sendSlack({ rule, rendered }) {
   if (!text || !String(text).trim()) {
     throw new Error('Template `text` manquant ou vide')
   }
-  const resp = await fetch(webhookUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) {
-    const body = await resp.text().catch(() => '')
-    throw new Error(`Slack HTTP ${resp.status}${body ? ': ' + body.slice(0, 160) : ''}`)
-  }
+  const { postSlack } = await import('../slack.js')
+  await postSlack(webhookUrl, text)
 }

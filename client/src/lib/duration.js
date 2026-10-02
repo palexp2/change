@@ -94,14 +94,6 @@ export function fmtDurationSeconds(s) {
   return m > 0 ? `${m}m ${sec}s` : `${sec}s`
 }
 
-// Durée courte en MINUTES pour l'affichage : « 2h30m » / « 45m ».
-// Retourne '—' pour 0/absent. Ne pas confondre avec fmtDurationSeconds.
-export function fmtDurationMinutes(mins) {
-  if (!mins) return '—'
-  const h = Math.floor(mins / 60), m = mins % 60
-  return h === 0 ? `${m}m` : `${h}h${m > 0 ? m + 'm' : ''}`
-}
-
 // ISO Monday-start week number (YYYY-Www) for grouping.
 export function weekKey(dateStr) {
   // dateStr: 'YYYY-MM-DD'

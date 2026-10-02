@@ -44,7 +44,10 @@ const ITEM_TYPE_COLORS = { 'Facturable': 'green', 'Remplacement': 'yellow', 'Non
 // L'entreprise est déjà affichée par le champ de liaison company_id.
 // `responsable_de_la_commande` : miroir Airtable (ids `rec…` d'une table non
 // miroitée) — la fiche le remplace par le choix d'un utilisateur (`assigned_to`).
-const ORDER_TAKEN_FIELDS = ['company_name', 'responsable_de_la_commande']
+// items_count : redondant avec le tableau « Articles » juste dessous.
+const ORDER_TAKEN_FIELDS = ['company_name', 'responsable_de_la_commande', 'items_count']
+// Adresses longues : la liste s'ouvre large pour qu'on les lise en entier.
+const ORDER_WIDE_LINK_PICKERS = ['adresse_de_livraison']
 
 // Les anciennes commandes gardent la référence automatique en première ligne.
 // La liaison dédiée la remplace à l'écran, sans toucher aux véritables notes.
@@ -99,12 +102,14 @@ function ScanToast({ toast, onClose }) {
 // ── Rappels de prélèvement — selon le préfixe du numéro de série ──────────────
 //
 // Certains produits partent toujours avec un accessoire que le scan ne voit pas
-// (le paquet de 3 piles d'un contrôleur TH…, la boîte de carton d'un CV…). Le
+// (le paquet de 3 piles d'un contrôleur TH…, la boîte de carton d'un CV…, le
+// support et la feuille de calibration d'un capteur solaire PY…). Le
 // rappel bloque le scan tant que l'opérateur ne l'a pas coché : ni X, ni Échap,
 // ni clic hors modale (pas de titre → pas de bouton fermer, `onClose` no-op).
 const SERIAL_REMINDERS = [
   { prefix: /^TH/i, message: "N'oubliez pas le paquet de 3 piles!" },
   { prefix: /^CV/i, message: "N'oubliez pas la boîte de carton !" },
+  { prefix: /^PY/i, message: "S'assurer d'avoir mis le support à capteur et la feuille de calibration !" },
 ]
 
 function serialReminderMessage(serial) {
@@ -1894,6 +1899,7 @@ export default function OrderDetail({ recordId, onClose }) {
           testId="order-fields"
           onDeleted={onClose}
           customFieldLinkFilters={orderFieldLinkFilters}
+          wideLinkPickers={ORDER_WIDE_LINK_PICKERS}
           arrangeFields={arrangeOrderAddresses}
         >
           <DetailField id="status" label="Statut">
@@ -2078,6 +2084,7 @@ export default function OrderDetail({ recordId, onClose }) {
             selectedSelectClickOpens
             singleSelectEmptyLabel=""
             fullHeightCells
+            seamlessCellInput
             onRowReorder={handleReorderItems}
             // Table manipulable : clic droit = dupliquer/supprimer l'article,
             // « + » sous la dernière ligne = article ajouté en place (voir

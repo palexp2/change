@@ -96,6 +96,18 @@ const SIDE_INVERTER_OPTIONS = [
   { value: DONT_KNOW, label: DONT_KNOW },
 ]
 
+// Diamètre du tuyau de côté : mêmes choix que le formulaire client (voir
+// `diameter` dans pages/CustomerPostPayment.jsx), selon le type de tuyau.
+// Type inconnu : les choix des deux profils.
+const DIAMETER_OTHER = '__other'
+const DIAMETER_ALU = [{ value: '2"', label: '2"' }]
+const DIAMETER_STEEL = [{ value: '1 5/16"', label: 'Entre 3/4 po et 1 14/4 po' }, { value: '1 1/2"', label: 'Entre 1 5/16 po et 1 1/2 po' }]
+const sideDiameterOptions = pipe => [
+  ...(pipe === 'aluminum_C' ? DIAMETER_ALU : pipe === 'steel_O' ? DIAMETER_STEEL : [...DIAMETER_ALU, ...DIAMETER_STEEL]),
+  { value: DIAMETER_OTHER, label: pipe === 'steel_O' ? 'Autre, préciser' : 'Autre (préciser)' },
+  { value: DONT_KNOW, label: DONT_KNOW },
+]
+
 // `edit` : { kind: 'text'|'number'|'select', value, options?, patch(v) → corps de la route }.
 function EditableValue({ edit, children }) {
   const ctx = useContext(AnswerEdit)
@@ -299,6 +311,12 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
   // Longueur : plage choisie, puis la longueur exacte au-delà de 200 pi (comme le formulaire client).
   const lengthRange = g.length_range || (Number(g.length) > 0 ? (Number(g.length) > 200 ? 'over_200' : 'up_to_200') : '')
   const keepsLength = range => (range === 'up_to_200' ? Number(g.length) > 0 && Number(g.length) <= 200 : range === 'over_200' && Number(g.length) > 200)
+  // Hauteur des côtés : même lecture que le formulaire client (plage, puis la hauteur exacte au-delà de 6 pi).
+  const heightRange = g.side_vent_height_range || (g.side_vent_height === DONT_KNOW ? 'unknown' : Number(g.side_vent_height) > 0 ? (Number(g.side_vent_height) > 6 ? 'over_6' : 'up_to_6') : '')
+  const keepsHeight = range => (range === 'up_to_6' ? Number(g.side_vent_height) > 0 && Number(g.side_vent_height) <= 6 : range === 'over_6' && Number(g.side_vent_height) > 6)
+  const diameterOptions = sideDiameterOptions(g.side_pipe_type)
+  const diameterOther = typeof g.side_pipe_diameter === 'string' && g.side_pipe_diameter.startsWith('Autre:')
+  const diameterExact = diameterOther ? g.side_pipe_diameter.slice('Autre:'.length).trim() : ''
   const furnaceValues = (i, field) => v => ({ furnaces: furnaces.map((f, j) => (j === i ? { ...f, [field]: v } : f)) })
   // Même lecture que le formulaire client : 25/50/75/100 tels quels, tout autre nombre = « Plus de 100 pi ».
   const wireRange = f => f.control_wire_range || (Number(f.control_wire_feet) > 0 ? (['25', '50', '75', '100'].includes(String(Number(f.control_wire_feet))) ? String(Number(f.control_wire_feet)) : 'over_100') : '')
@@ -336,9 +354,11 @@ function GreenhouseCard({ g, idx, form, equipment, images, types, ids, names, re
           <>
             <Row label="Longueur" edit={ed('select', lengthRange, range => ({ length_range: range, length: keepsLength(range) ? g.length : '' }), form.opts('greenhouse.length_range_options'))}>{choiceLabel(form, 'greenhouse.length_range_options', lengthRange)}</Row>
             {lengthRange === 'over_200' && <Row label="Longueur (pi)" edit={ed('number', g.length, v => ({ length_range: 'over_200', length: v }))}>{Number(g.length) > 0 ? g.length : null}</Row>}
-            <Row label="Hauteur côtés (pi)" edit={ed('number', Number(g.side_vent_height) > 0 ? g.side_vent_height : '', v => ({ side_vent_height: v, side_vent_height_range: v === '' ? '' : v > 6 ? 'over_6' : 'up_to_6' }))}>{g.side_vent_height || (g.side_vent_height_range === 'up_to_6' ? '6 pi et moins' : null)}</Row>
+            <Row label="Hauteur côtés" edit={ed('select', heightRange, range => ({ side_vent_height_range: range, side_vent_height: range === 'unknown' ? DONT_KNOW : keepsHeight(range) ? g.side_vent_height : '' }), form.opts('greenhouse.side_vent_height_range_options'))}>{choiceLabel(form, 'greenhouse.side_vent_height_range_options', heightRange)}</Row>
+            {heightRange === 'over_6' && <Row label="Hauteur côtés (pi)" edit={ed('number', Number(g.side_vent_height) > 0 ? g.side_vent_height : '', v => ({ side_vent_height_range: 'over_6', side_vent_height: v }))}>{Number(g.side_vent_height) > 0 ? g.side_vent_height : null}</Row>}
             <Row label="Tuyau de côté" edit={ed('select', g.side_pipe_type, v => ({ side_pipe_type: v, side_pipe_diameter: '' }), form.opts('greenhouse.side_pipe_type_options'))}>{choiceLabel(form, 'greenhouse.side_pipe_type_options', g.side_pipe_type, PIPE_LABELS)}</Row>
-            <Row label="Diamètre côté" edit={ed('text', g.side_pipe_diameter, set('side_pipe_diameter'))}>{g.side_pipe_diameter}</Row>
+            <Row label="Diamètre côté" edit={ed('select', diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter, v => ({ side_pipe_diameter: v === DIAMETER_OTHER ? (diameterOther ? g.side_pipe_diameter : 'Autre: ') : v }), diameterOptions)}>{diameterOptions.find(o => o.value === (diameterOther ? DIAMETER_OTHER : g.side_pipe_diameter))?.label || g.side_pipe_diameter}</Row>
+            {diameterOther && <Row label="Diamètre précis" edit={ed('text', diameterExact, v => ({ side_pipe_diameter: `Autre: ${v}` }))}>{diameterExact}</Row>}
             <Row label="Tuyaux guides 1 à 1 5/16 po" edit={ed('select', g.guide_pipes_state, v => ({ guide_pipes_state: v, guide_pipe_diameter: '' }), form.opts('greenhouse.guide_pipes_options'))}>{choiceLabel(form, 'greenhouse.guide_pipes_options', g.guide_pipes_state, GUIDE_LABELS)}</Row>
             {!weShipGuides && <Row label="Diamètre guides" edit={ed('text', g.guide_pipe_diameter, set('guide_pipe_diameter'))}>{g.guide_pipe_diameter}</Row>}
             {g.wants_compatible_guide_pipes && <Row label="Guides compatibles">À fournir</Row>}

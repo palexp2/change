@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { useNavigate, useParams } from 'react-router-dom'
+import { useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
 import { Layout } from '../components/Layout.jsx'
 import { PageTitle } from '../components/PageTitle.jsx'
 import { RecordScope } from '../lib/recordLive.jsx'
+import RecordRevisionHistory from '../components/RecordRevisionHistory.jsx'
 import api from '../lib/api.js'
 import CompanyDetail from './CompanyDetail.jsx'
 
@@ -13,6 +14,8 @@ import CompanyDetail from './CompanyDetail.jsx'
 export default function CompanyDetailPage() {
   const { id } = useParams()
   const navigate = useNavigate()
+  const location = useLocation()
+  const goBack = () => (location.key !== 'default' ? navigate(-1) : navigate('/companies'))
   const [name, setName] = useState('')
 
   useEffect(() => {
@@ -26,17 +29,18 @@ export default function CompanyDetailPage() {
     <Layout>
       <div className="flex items-center gap-3 px-5 pt-4">
         <button
-          onClick={() => navigate('/companies')}
+          onClick={goBack}
           className="p-1 -ml-1 text-slate-400 hover:text-slate-600 flex-shrink-0"
-          aria-label="Retour aux entreprises"
+          aria-label="Retour"
         >
           <ArrowLeft size={20} />
         </button>
         <PageTitle icon={null}>{name || 'Entreprise'}</PageTitle>
       </div>
       <RecordScope id={id}>
-        <CompanyDetail recordId={id} onClose={() => navigate('/companies')} />
+        <CompanyDetail recordId={id} onClose={goBack} />
       </RecordScope>
+      <RecordRevisionHistory table="companies" id={id} variant="page" />
     </Layout>
   )
 }

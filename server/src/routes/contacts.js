@@ -10,6 +10,7 @@ import { findContactDuplicates } from '../utils/duplicateMatch.js';
 import { readRelation } from '../services/customFieldsView.js'
 import { parsePage } from '../utils/pagination.js'
 import { listContactEmailAttachments, downloadEmailAttachment } from '../services/gmail.js'
+import { listContactHubSpotFiles, contactHubSpotFile } from '../services/hubspotHistoryImport.js'
 
 const router = Router();
 router.use(requireAuth);
@@ -118,7 +119,8 @@ router.get('/:id/email-attachments', async (req, res) => {
   const contact = db.prepare('SELECT id FROM contacts WHERE id = ?').get(req.params.id);
   if (!contact) return res.status(404).json({ error: 'Contact not found' });
   try {
-    res.json(await listContactEmailAttachments(req.params.id));
+    const all = [...(await listContactEmailAttachments(req.params.id)), ...listContactHubSpotFiles(req.params.id)]
+    res.json(all.sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))));
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -126,7 +128,8 @@ router.get('/:id/email-attachments', async (req, res) => {
 
 router.get('/:id/email-attachments/:attId/download', async (req, res) => {
   try {
-    const { absPath, fileName, contentType } = await downloadEmailAttachment(req.params.id, req.params.attId);
+    const { absPath, fileName, contentType } = contactHubSpotFile(req.params.id, req.params.attId)
+      || await downloadEmailAttachment(req.params.id, req.params.attId);
     if (contentType) res.type(contentType);
     res.download(absPath, fileName || 'piece-jointe');
   } catch (e) {

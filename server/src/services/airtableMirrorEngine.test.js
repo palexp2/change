@@ -136,6 +136,23 @@ test('un orphelin encore référencé est SIGNALÉ, pas supprimé, et ne bloque 
   assert.equal(readParent('recLibre'), undefined)
 })
 
+test('detachOnDelete : la référence est vidée et la ligne part quand même', () => {
+  reset()
+  seedParent('recArticle')
+  db.prepare('INSERT INTO t_child (id, parent_id) VALUES (?,?)').run('serie1', 'id_recArticle')
+
+  const res = __test.purgeOrphansTolerant('t_parent', [], { detachOnDelete: [['t_child', 'parent_id']] })
+
+  assert.deepEqual(res, { purged: 1, blocked: [] })
+  assert.equal(readParent('recArticle'), undefined)
+  assert.equal(db.prepare('SELECT parent_id FROM t_child WHERE id=?').get('serie1').parent_id, null,
+    'la référence survit, détachée — comme Airtable vide le lien')
+})
+
+test('le plan order_items détache les numéros de série', () => {
+  assert.deepEqual(CORE_PLANS.order_items.detachOnDelete, [['serial_numbers', 'order_item_id']])
+})
+
 test('aucun orphelin : aucune écriture, aucun signalement', () => {
   reset()
   seedParent('rec1')

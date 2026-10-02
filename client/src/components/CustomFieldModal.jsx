@@ -88,6 +88,9 @@ const ROLLUP_AGG_OPTIONS = [
   { value: 'ARRAYUNIQUE', label: 'UNIQUE' },
 ]
 
+// Formats d'un champ calculé qui portent un nombre de décimales.
+const DECIMAL_RESULT_TYPES = ['number', 'currency', 'percent']
+
 // Lookup : nombre d'enregistrements liés récupérés (borne serveur : 1 à 50).
 const LOOKUP_LIMIT_MAX = 50
 function clampLookupLimit(v) {
@@ -1118,7 +1121,7 @@ function NativeFieldModal({ isOpen, onClose, erpTable, native, onSaved, mappingS
 //   - formula : expression SQLite calculée à la lecture via la VUE
 //   - lookup  : valeur tirée d'une table liée via FK
 //   - auto    : champ système lecture seule (created_time, last_modified_time, created_by, last_modified_by)
-// En mode édition, le kind est figé.
+// En mode édition, changer de kind passe par une conversion (handleConvert).
 function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, onDeleted, mappingSlot, formulaColumns, formulaLabelSearch = false, showFormulaSyntaxHelp = true, showFormulaAutocompleteHint = true, showFormulaKeyboardHint = true }) {
   const { addToast } = useToast()
   const [kind, setKind] = useState('data')
@@ -1200,7 +1203,12 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       lastSaved.current = {
         name: editing.name || '',
         type: editing.type || 'text',
-        decimals: editing.decimals ?? (editing.type === 'percent' ? 0 : 2),
+        // Lookup nombre sans réglage : valeur brute affichée → champ vide.
+        // Formule / rollup : le défaut suit le format (pourcentage → 0), comme
+        // l'affichage des cellules.
+        decimals: editing.decimals ?? (editing.kind === 'lookup'
+          ? ({ percent: 0, currency: 2 }[editing.result_type] ?? null)
+          : ((['formula', 'rollup'].includes(editing.kind) ? editing.result_type : editing.type) === 'percent' ? 0 : 2)),
         default_value: editing.default_value ?? '',
         options: editing.options || '',
         formula_expr: editing.formula_expr || '',
@@ -1225,7 +1233,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       setName(editing.name || '')
       setDescription(editing.description || '')
       setType(editing.type || 'text')
-      setDecimals(editing.decimals ?? (editing.type === 'percent' ? 0 : 2))
+      setDecimals(lastSaved.current.decimals)
       setDefaultValue(editing.default_value ?? '')
       // Devise : le symbole (texte libre) est lu depuis options ; défaut « $ »
       // pour les champs créés avant ce choix.
@@ -1457,6 +1465,17 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   // change la nature du champ (exception admise à « autosave partout »).
   const editingKind = editing ? (AUTO_KINDS.includes(editing.kind) ? 'auto' : (editing.kind || 'data')) : null
   const converting = !!editing && kind !== editingKind
+  // Nouveau lookup (création ou conversion) : décimales par défaut du format
+  // récupéré — « 45 % », pas « 45,00 % ».
+  useEffect(() => {
+    if (kind !== 'lookup' || (editing && !converting)) return
+    setDecimals(lookupFormat === 'percent' ? 0 : 2)
+  }, [kind, editing, converting, lookupFormat])
+  // Lookup sans réglage (décimales vides) converti vers un autre kind : le
+  // reste du formulaire attend un entier.
+  useEffect(() => {
+    if (kind !== 'lookup' && decimals == null) setDecimals(type === 'percent' ? 0 : 2)
+  }, [kind, decimals, type])
   // Champ lien Airtable : sa colonne porte l'id du record lié, c'est le sync qui
   // l'écrit. Pas plus convertible qu'une liaison — et surtout pas « Texte ».
   const atLink = !!editing && isAirtableLinkField(editing)
@@ -1740,6 +1759,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
       if (!expr) { setError('Expression requise'); return }
       payload.formula_expr = expr
       payload.result_type = resultType
+      Object.assign(payload, computedFormatPayload(resultType))
     } else if (kind === 'lookup') {
       if (!lookupFk || !lookupTargetTable || !lookupTargetColumn) {
         setError('Choisir un champ de référence, une table cible et une colonne'); return
@@ -1751,17 +1771,19 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
         lookup_target_column: lookupTargetColumn,
         lookup_limit_n: lookupLimitDir ? clampLookupLimit(lookupLimitN) : null,
         lookup_limit_dir: lookupLimitDir || null,
+        ...computedFormatPayload(lookupFormat),
       })
     } else if (kind === 'rollup') {
       if (!rollupTable || !rollupFk) { setError('Choisir une table liée'); return }
       if (rollupAgg !== 'COUNT' && !rollupColumn) { setError('Choisir une colonne à agréger'); return }
+      const rt = isArrayAgg(rollupAgg) ? 'text' : resultType
       Object.assign(payload, {
         rollup_target_table: rollupTable,
         rollup_target_fk: rollupFk,
         rollup_target_column: rollupAgg === 'COUNT' ? null : rollupColumn,
         rollup_agg: rollupAgg,
-        result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
-        ...(!isArrayAgg(rollupAgg) && resultType === 'number' ? { decimals } : {}),
+        result_type: rt,
+        ...computedFormatPayload(rt),
       })
     } else if (kind === 'button') {
       const lab = buttonLabel.trim()
@@ -1789,10 +1811,34 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
   // en texte (liste de valeurs) — même règle que maybeAutosaveRollup.
   function changeResultType(v) {
     setResultType(v)
-    if (!editing || converting) return
+    // Nouveau format (création / conversion) : décimales par défaut du format,
+    // comme pour un champ de donnée — « 45 % », pas « 45,00 % ».
+    if (!editing || converting) {
+      if (DECIMAL_RESULT_TYPES.includes(v)) setDecimals(v === 'percent' ? 0 : 2)
+      return
+    }
     const rt = kind === 'rollup' && isArrayAgg(rollupAgg) ? 'text' : v
     if (rt === lastSaved.current.result_type) return
     autosave({ result_type: rt })
+  }
+
+  // Réglages d'affichage d'un champ calculé à envoyer avec sa création ou sa
+  // conversion (en édition, chacun s'autosauvegarde) : décimales, symbole,
+  // barre/%, format de date.
+  function computedFormatPayload(rt) {
+    return {
+      ...(DECIMAL_RESULT_TYPES.includes(rt) && decimals != null ? { decimals } : {}),
+      ...(rt === 'currency' ? { options: { currency: currencySymbol } } : {}),
+      ...(rt === 'percent' ? { options: { display: percentDisplay } } : {}),
+      ...(rt === 'date' ? { options: { format: dateFormat } } : {}),
+    }
+  }
+
+  // Format de date d'un champ calculé : autosave immédiat en édition.
+  function changeComputedDateFormat(v) {
+    setDateFormat(v)
+    if (!editing || converting) return
+    if (v !== normalizeDateFormat(dateFormat)) autosave({ options: { format: v } })
   }
 
   // Devise : simple symbole texte (ex. « $ », « € »), pas de code ISO — champ de
@@ -1909,10 +1955,10 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
     setError(null)
     if (editing) {
       // En conversion, Enter applique la conversion ; sinon pas de submit
-      // global — autosave au blur, Enter sauvegarde le nom.
+      // global — Enter valide le réglage en cours de saisie (nom, décimales,
+      // valeur par défaut…) en déclenchant son autosave au blur.
       if (converting) { handleConvert(); return }
-      const v = name.trim()
-      if (v && v !== lastSaved.current.name) autosave({ name: v })
+      if (e?.currentTarget?.contains(document.activeElement)) document.activeElement.blur()
       return
     }
     if (!name.trim()) { setError('Nom requis'); return }
@@ -1950,7 +1996,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           name: name.trim(),
           formula_expr: formulaExpr.trim(),
           result_type: resultType,
-          ...(resultType === 'currency' ? { options: { currency: currencySymbol } } : {}),
+          ...computedFormatPayload(resultType),
           ...descPayload,
         })
       } else if (kind === 'lookup') {
@@ -1966,7 +2012,9 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           ...(lookupLimitDir
             ? { lookup_limit_n: clampLookupLimit(lookupLimitN), lookup_limit_dir: lookupLimitDir }
             : {}),
-          // Format déduit du champ récupéré, côté serveur.
+          // Format déduit du champ récupéré, côté serveur ; seuls ses réglages
+          // d'affichage partent d'ici.
+          ...computedFormatPayload(lookupFormat),
           ...descPayload,
         })
       } else if (kind === 'rollup') {
@@ -1985,8 +2033,7 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           // ARRAY / ARRAYUNIQUE produisent une liste texte → forcer le type texte
           // (le tri/filtre/affichage numérique n'a pas de sens sur une liste).
           result_type: isArrayAgg(rollupAgg) ? 'text' : resultType,
-          ...(!isArrayAgg(rollupAgg) && resultType === 'currency' ? { options: { currency: currencySymbol } } : {}),
-          ...(!isArrayAgg(rollupAgg) && resultType === 'number' ? { decimals } : {}),
+          ...computedFormatPayload(isArrayAgg(rollupAgg) ? 'text' : resultType),
           ...descPayload,
         })
       } else if (kind === 'auto') {
@@ -2384,6 +2431,23 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
                 </p>
               )}
             </div>
+            {/* Seul réglage d'affichage d'un lookup : les décimales, quand la
+                valeur récupérée est un nombre. */}
+            {lookupTargetColumn && ['number', 'currency', 'percent'].includes(lookupFormat) && (
+              <div>
+                <label className="label">Décimales (0 à 5)</label>
+                <input
+                  type="number" min={0} max={5}
+                  value={decimals ?? ''}
+                  onChange={e => setDecimals(Math.max(0, Math.min(5, parseInt(e.target.value) || 0)))}
+                  onBlur={() => {
+                    if (editing && !converting && decimals != null && decimals !== lastSaved.current.decimals) autosave({ decimals })
+                  }}
+                  className="input text-sm w-24"
+                  data-testid="cf-lookup-decimals"
+                />
+              </div>
+            )}
             {/* Un champ de référence peut porter PLUSIEURS enregistrements liés
                 (champ lien Airtable). Sans limite, seul un lien direct est suivi ;
                 avec, on garde les n premiers / derniers de la liste. */}
@@ -2503,22 +2567,26 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
               </div>
             )}
             <ResultTypeSelect value={resultType} onChange={changeResultType} />
-            {resultType === 'number' && !isArrayAgg(rollupAgg) && (
-              <div>
-                <label className="label">Décimales (0 à 5)</label>
-                <input
-                  type="number" min={0} max={5}
-                  value={decimals}
-                  onChange={e => setDecimals(Math.max(0, Math.min(5, parseInt(e.target.value) || 0)))}
-                  onBlur={() => {
-                    if (editing && !converting && decimals !== lastSaved.current.decimals) autosave({ decimals })
-                  }}
-                  className="input text-sm w-24"
-                  data-testid="cf-rollup-decimals"
-                />
-              </div>
-            )}
           </>
+        )}
+
+        {/* Formule / rollup numérique : décimales, comme la « précision »
+            d'Airtable (le lookup a son propre champ, plus haut). */}
+        {['formula', 'rollup'].includes(kind) && DECIMAL_RESULT_TYPES.includes(resultType)
+          && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && (
+          <div>
+            <label className="label">Décimales (0 à 5)</label>
+            <input
+              type="number" min={0} max={5}
+              value={decimals ?? ''}
+              onChange={e => setDecimals(Math.max(0, Math.min(5, parseInt(e.target.value) || 0)))}
+              onBlur={() => {
+                if (editing && !converting && decimals != null && decimals !== lastSaved.current.decimals) autosave({ decimals })
+              }}
+              className="input text-sm w-24"
+              data-testid={`cf-${kind}-decimals`}
+            />
+          </div>
         )}
 
         {/* Mode "auto" — champ système lecture seule. Le sous-type (créé le,
@@ -2590,8 +2658,15 @@ function CustomFieldModalInner({ isOpen, onClose, erpTable, editing, onSaved, on
           && (kind === 'lookup' ? lookupFormat : resultType) === 'percent' && (
           <PercentDisplaySelect value={percentDisplay} onChange={changePercentDisplay} />
         )}
-        {['formula', 'rollup'].includes(kind) && resultType === 'currency' && !converting
+        {['formula', 'rollup'].includes(kind) && resultType === 'currency'
           && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && renderCurrencySymbol()}
+        {/* Champ calculé rendu en date : même choix de format (avec ou sans
+            heure) qu'un champ date. */}
+        {['formula', 'lookup', 'rollup'].includes(kind)
+          && (kind === 'lookup' ? lookupTargetColumn && lookupFormat : resultType) === 'date'
+          && !(kind === 'rollup' && isArrayAgg(rollupAgg)) && (
+          <DateFormatSelect value={dateFormat} name="cf-computed-date-format" onChange={changeComputedDateFormat} />
+        )}
 
         {editing && viewError && (
           <div className="rounded bg-red-50 border border-red-200 p-2 text-xs text-red-700">
@@ -3323,11 +3398,49 @@ function ChoicesEditor({
     applyChoices(choices.map((c, i) => ({ ...c, color: next ? NO_COLOR : cycleColor(i) })), true)
   }
 
-  function addChoice() {
+  // Ligne à focaliser au prochain rendu (choix tout juste ajouté), comme Airtable.
+  const listRef = useRef(null)
+  const focusIdx = useRef(null)
+  useEffect(() => {
+    if (focusIdx.current == null) return
+    listRef.current?.querySelector(`[data-testid="cf-choice-label-${focusIdx.current}"]`)?.focus()
+    focusIdx.current = null
+  }, [choices])
+
+  // Nouveau choix vide à la position `at` (fin par défaut), curseur dedans.
+  function addChoice(at = choices.length) {
     const color = noColor ? NO_COLOR : cycleColor(choices.length)
-    const next = [...choices, { id: tmpChoiceId(), label: '', color }]
+    const next = [...choices.slice(0, at), { id: tmpChoiceId(), label: '', color }, ...choices.slice(at)]
+    focusIdx.current = at
     // Pas d'autosave tant que le libellé est vide (buildOptions le filtrerait).
     applyChoices(next, false)
+  }
+
+  // Entrée dans un libellé : choix suivant, sans soumettre la modale.
+  function onLabelKeyDown(e, idx) {
+    if (e.key !== 'Enter' || e.nativeEvent.isComposing) return
+    e.preventDefault()
+    addChoice(idx + 1)
+  }
+
+  // Coller plusieurs lignes : un choix par ligne.
+  function onLabelPaste(e, idx) {
+    const lines = (e.clipboardData?.getData('text') || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean)
+    if (lines.length < 2) return
+    e.preventDefault()
+    const fillCurrent = !choices[idx].label.trim()
+    const rest = fillCurrent ? lines.slice(1) : lines
+    const added = rest.map((label, i) => ({
+      id: tmpChoiceId(), label, color: noColor ? NO_COLOR : cycleColor(choices.length + i),
+    }))
+    const next = [
+      ...choices.slice(0, idx),
+      fillCurrent ? { ...choices[idx], label: lines[0] } : choices[idx],
+      ...added,
+      ...choices.slice(idx + 1),
+    ]
+    focusIdx.current = idx + added.length
+    applyChoices(next, true)
   }
 
   function removeChoice(idx) {
@@ -3401,7 +3514,7 @@ function ChoicesEditor({
           </div>
         )}
       </div>
-      <div className="space-y-1.5">
+      <div ref={listRef} className="space-y-1.5">
         {choices.length === 0 && (
           <p className="text-[11px] text-slate-400">Aucun choix — ajoutez-en au moins un.</p>
         )}
@@ -3468,6 +3581,8 @@ function ChoicesEditor({
                 value={c.label}
                 data-testid={`cf-choice-label-${idx}`}
                 onChange={e => setLabel(idx, e.target.value)}
+                onKeyDown={e => onLabelKeyDown(e, idx)}
+                onPaste={e => onLabelPaste(e, idx)}
                 onBlur={() => onPersist?.({ ch: choices })}
                 className="input text-sm w-full"
               />
@@ -3505,7 +3620,7 @@ function ChoicesEditor({
       </div>
       <button
         type="button"
-        onClick={addChoice}
+        onClick={() => addChoice()}
         data-testid="cf-add-choice"
         className="mt-2 inline-flex items-center gap-1 text-xs text-brand-600 hover:text-brand-700"
       >

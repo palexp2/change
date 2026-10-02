@@ -72,7 +72,7 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
   // premier lien.
   return (
     <div
-      className={`flex min-h-[1.5rem] min-w-0 items-center gap-1 ${col.linkChipsScrollable ? 'overflow-x-auto' : 'overflow-hidden'}${active || col.linkOpenOnClick ? '' : ' dt-inert-links'}`}
+      className={`flex min-h-[1.5rem] min-w-0 items-center gap-1 ${col.linkChipsScrollable ? 'overflow-x-auto' : 'overflow-hidden'}${active || col.linkOpenOnClick !== false ? '' : ' dt-inert-links'}`}
       data-testid="link-chips-cell"
     >
       {keys.map((key, i) => {
@@ -81,7 +81,7 @@ export default function LinkChipsCell({ col, row, value, active, editing, onComm
         const href = hrefFor(i)
         const title = rec?.sub ? `${label} · ${rec.sub}` : label
         const chip = href
-          ? <Link to={href} onMouseDown={col.linkOpenOnClick ? e => e.stopPropagation() : undefined} onClick={e => e.stopPropagation()} title={title} className="chip-record">{label}</Link>
+          ? <Link to={href} onMouseDown={col.linkOpenOnClick !== false ? e => e.stopPropagation() : undefined} onClick={e => e.stopPropagation()} title={title} className="chip-record">{label}</Link>
           : <span className="chip-record" title={title}>{label}</span>
         if (!showRemove) return <span key={`${key}-${i}`} className={`min-w-0 truncate${col.linkChipsScrollable ? ' shrink-0' : ''}`}>{chip}</span>
         return (

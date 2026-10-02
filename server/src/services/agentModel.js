@@ -130,6 +130,6 @@ export function attributeLimitScope(usage) {
   return 'model'
 }
 
-export async function fetchLimitScope() {
-  try { return attributeLimitScope(await getClaudeUsage({ allowStale: false })) } catch { return 'model' }
+export async function fetchLimitScope(accountId = null) {
+  try { return attributeLimitScope(await getClaudeUsage({ allowStale: false, accountId })) } catch { return 'model' }
 }

@@ -334,4 +334,3 @@ export async function runWebhook(automation, ctx) {
   }
 }
 
-export const WEBHOOK_WRITABLE_TABLES = WEBHOOK_TABLES

@@ -364,7 +364,9 @@ export function applyFieldOverrides(columns, overrides) {
       // Date native avec un format choisi (ex. + heure) : rendu générique au
       // format, à la place du rendu de la page (qui ne connaît que la date).
       // `col.dateOnlyAsMidnight` (option de la page) : date sans heure → 00:00.
-      next.render = row => renderOverriddenValue({ type: 'date', options: ov.options }, row[col.field], { dateOnlyAsMidnight: !!col.dateOnlyAsMidnight })
+      // `col.dateDisplayValue(row)` (option de la page) : valeur affichée à la
+      // place de la brute (ex. date complétée par l'heure de création).
+      next.render = row => renderOverriddenValue({ type: 'date', options: ov.options }, col.dateDisplayValue ? col.dateDisplayValue(row) : row[col.field], { dateOnlyAsMidnight: !!col.dateOnlyAsMidnight })
     }
     return next
   })

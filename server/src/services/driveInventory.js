@@ -198,11 +198,6 @@ export function computeFrequency({ createdTime, modifiedTime, version }, now = n
   return { editsPerMonth, daysSinceModified: daysSince, frequency }
 }
 
-export const FREQUENCY_LABELS = {
-  quotidienne: 'Quotidienne', hebdomadaire: 'Hebdomadaire', mensuelle: 'Mensuelle',
-  rare: 'Rare', inactive: 'Inactive', inconnue: 'Inconnue',
-}
-
 // ── Statut proposé ───────────────────────────────────────────────────────────
 export function classify(file, { registry, folderName }) {
   const syncedFile = registry.files.get(file.id)

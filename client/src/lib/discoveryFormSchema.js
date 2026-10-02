@@ -226,14 +226,6 @@ export const CUSTOM_SECTIONS = [
   { id: 'end', label: 'Avant le bouton Soumettre' },
 ]
 
-// Sections dont les réponses vivent sur la carte de serre (et non à la racine
-// du formulaire) : une question qui y vit lit ses conditions dans la serre.
-export const GREENHOUSE_SECTIONS = ['greenhouse', 'greenhouse_chief']
-
-export function sectionScope(section) {
-  return GREENHOUSE_SECTIONS.includes(section) ? 'greenhouse' : 'form'
-}
-
 // Réponses du formulaire qui peuvent piloter l'affichage d'une question.
 // `scope` dit où lire la réponse : racine du formulaire, ou carte de serre.
 export const CONDITION_SOURCES = [
@@ -261,8 +253,6 @@ export const CONDITION_OPS = [
   { value: 'gt', label: '>', numeric: true },
   { value: 'lt', label: '<', numeric: true },
 ]
-
-export const YESNO_OPTIONS = [{ value: 'yes', label: 'Oui' }, { value: 'no', label: 'Non' }]
 
 export const CUSTOM_TYPES = [
   { value: 'text', label: 'Texte court' },
@@ -452,21 +442,6 @@ function mergeChoiceList(id, defaults, override) {
   return merged.length ? merged : defaults
 }
 
-/**
- * Valeur stable d'un choix ajouté : dérivée du libellé (lisible dans la fiche
- * de réponse), unique dans la liste. Elle est figée à la création — renommer le
- * choix plus tard ne doit pas orpheliner les réponses déjà enregistrées.
- */
-export function slugChoiceValue(label, taken = []) {
-  const base = String(label || '')
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-    .toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 40) || 'choix'
-  let v = base
-  let i = 2
-  while (taken.includes(v)) v = `${base}_${i++}`
-  return v
-}
-
 // ─── Affichage conditionnel ───────────────────────────────────────────────
 //
 // Une question ajoutée peut ne s'afficher que si d'autres réponses remplissent
@@ -564,34 +539,6 @@ export function fansHpRangeValue(greenhouse) {
   const hp = greenhouse?.fans_combined_hp
   if (hp === 'Je ne sais pas') return hp
   return Number(hp) > 0 ? (Number(hp) > 1 ? 'over_1' : 'up_to_1') : ''
-}
-
-/** Champs pilotes proposés dans l'éditeur pour une question d'une section. */
-export function conditionSources(section, allCustom, selfId) {
-  const scope = sectionScope(section)
-  const builtin = CONDITION_SOURCES.filter(s => scope === 'greenhouse' || s.scope === 'form')
-  const questions = (allCustom || [])
-    .filter(q => q.id !== selfId && q.label && (scope === 'greenhouse' || sectionScope(q.section) === 'form'))
-    .map(q => ({ field: `custom:${q.id}`, label: q.label, question: q }))
-  return [...builtin, ...questions]
-}
-
-/** Choix proposés comme valeur de comparaison, ou `null` pour une saisie libre. */
-export function conditionValueOptions(source, form) {
-  if (!source) return null
-  const q = source.question
-  if (q) {
-    if (q.type === 'select' || q.type === 'radio') return q.options || []
-    if (q.type === 'yesno' || q.type === 'checkbox') return YESNO_OPTIONS
-    return null
-  }
-  if (source.choices) return form ? form.opts(source.choices) : (DEFAULT_CHOICES[source.choices] || [])
-  if (source.bool) return YESNO_OPTIONS
-  return null
-}
-
-export function conditionIsNumeric(source) {
-  return !!(source?.number || source?.question?.type === 'number')
 }
 
 /**

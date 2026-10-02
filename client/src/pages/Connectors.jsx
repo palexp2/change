@@ -1782,6 +1782,27 @@ function StripeConfig({ configured: initialConfigured, syncStatus, onRefresh }) 
   )
 }
 
+const HS_HISTORY_LABELS = { notes: 'Notes', meetings: 'Réunions', calls: 'Appels', emails: 'Courriels' }
+
+// Import de l'historique HubSpot (depuis 2018) dans le fil d'interactions.
+function HubSpotHistory({ syncStatus }) {
+  const [types, setTypes] = useState(null)
+  const running = syncStatus?.hubspot_history?.running
+  useEffect(() => { api.hubspot.historyStatus().then(r => setTypes(r.types)).catch(() => {}) }, [running])
+  if (!types) return null
+  return (
+    <div className="bg-slate-50 rounded-xl p-4 space-y-2">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Historique HubSpot</p>
+      <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+        {Object.entries(types).map(([t, s]) => (
+          <span key={t}>{HS_HISTORY_LABELS[t] || t} : <span className="tabular-nums font-medium">{s.imported}</span>{s.done ? ' ✓' : ''}</span>
+        ))}
+      </div>
+      <SyncBtn label="Importer" syncKey="hubspot_history" syncStatus={syncStatus} onSync={() => api.hubspot.importHistory()} />
+    </div>
+  )
+}
+
 function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh }) {
   const { addToast } = useToast()
   const [configured, setConfigured] = useState(initialConfigured)
@@ -1904,6 +1925,8 @@ function HubSpotConfig({ configured: initialConfigured, syncStatus, onRefresh })
               Resync complète
             </button>
           </div>
+
+          <HubSpotHistory syncStatus={syncStatus} />
 
           <div className="bg-slate-50 rounded-xl p-4 space-y-2">
             <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Segment à partir d'une liste d'emails</p>

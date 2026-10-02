@@ -49,4 +49,3 @@ export function isHR(user) {
 
 // Compatibility names; authorization is now the explicit RH grant only.
 export const requireHROrAdmin = requireHR
-export const isHROrAdmin = isHR

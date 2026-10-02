@@ -1135,6 +1135,10 @@ export function initSchema() {
     'ALTER TABLE adresses ADD COLUMN confirm_suggestion TEXT',
     'ALTER TABLE adresses ADD COLUMN confirm_signature TEXT',
     'ALTER TABLE adresses ADD COLUMN confirmed_at TEXT',
+    // Rang de l'adresse dans son type (livraison / facturation / ferme) :
+    // 'Principale' | 'Secondaire' (NULL = non précisé). Une seule principale
+    // par entreprise et par type — tenu par routes/projets.js.
+    'ALTER TABLE adresses ADD COLUMN address_rank TEXT',
 
     'DROP TABLE IF EXISTS webhooks',
     'ALTER TABLE notifications ADD COLUMN read_at TEXT',
@@ -1619,6 +1623,12 @@ export function initSchema() {
   // Suppression permise sur cette fiche (mode de personnalisation). NULL = non
   // réglé : la fiche garde le comportement d'origine, et rien n'est bloqué.
   try { db.exec(`ALTER TABLE detail_field_configs ADD COLUMN allow_delete INTEGER`) } catch { /* déjà là */ }
+  // Ordre des sections (tableaux) de la fiche : JSON [clé…]. NULL = ordre du code.
+  try { db.exec(`ALTER TABLE detail_field_configs ADD COLUMN section_order TEXT`) } catch { /* déjà là */ }
+  // Hauteur des tableaux de la fiche : JSON { clé: 'full' }. Absent = limité.
+  try { db.exec(`ALTER TABLE detail_field_configs ADD COLUMN section_sizes TEXT`) } catch { /* déjà là */ }
+  // Bandeau du panneau : JSON { title: clé|null, subtitle: [clé…] }. NULL = celui du code.
+  try { db.exec(`ALTER TABLE detail_field_configs ADD COLUMN header_config TEXT`) } catch { /* déjà là */ }
 
   // ── Airtable dynamic field definitions ─────────────────────────────────────
   db.exec(`
@@ -2061,6 +2071,53 @@ export function initSchema() {
   try { db.exec('ALTER TABLE purchases ADD COLUMN price_check_issues TEXT') } catch {}
   try { db.exec('ALTER TABLE purchases ADD COLUMN price_checked_at TEXT') } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_purchases_supplier_vendor ON purchases(supplier_vendor_name)') } catch {}
+  // Dernier calcul du coût FIFO d'une pièce (services/fifoCost.js) : lots
+  // encore en stock et alertes (lot sans prix, prix douteux, stock sans achat).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_fifo (
+      product_id TEXT PRIMARY KEY,
+      cost REAL,
+      qty REAL,
+      uncovered REAL,
+      layers TEXT,
+      issues TEXT,
+      issue_count INTEGER NOT NULL DEFAULT 0,
+      computed_at TEXT
+    )
+  `)
+  // Dernier coût confirmé dans Airtable ; NULL = envoi en attente (refusé,
+  // limite de débit…) — repris à la passe suivante.
+  try { db.exec('ALTER TABLE product_fifo ADD COLUMN pushed_cost REAL') } catch {}
+  // Coût unitaire de l'inventaire de départ d'une pièce, saisi à la main :
+  // valorise le stock qu'aucun achat reçu ne couvre (services/fifoCost.js).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS product_opening_costs (
+      product_id TEXT PRIMARY KEY,
+      unit_cost REAL NOT NULL,
+      set_by TEXT,
+      set_at TEXT
+    )
+  `)
+  // Prix d'achat vérifié à la main : l'alerte « prix douteux » ne revient que
+  // si le prix change ensuite.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_price_approvals (
+      purchase_id TEXT PRIMARY KEY,
+      unit_price REAL NOT NULL,
+      approved_by TEXT,
+      approved_at TEXT
+    )
+  `)
+  // Prix unitaire de chaque achat, relu dans Airtable (« Prix unitaire ($ CAD) » :
+  // override payé, sinon facturé d'après les lignes de dépense liées). Les
+  // colonnes de prix de `purchases` ne sont plus importées depuis 2026-04.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS purchase_prices (
+      airtable_id TEXT PRIMARY KEY,
+      unit_price REAL,
+      fetched_at TEXT
+    )
+  `)
   // Cache de la table Airtable « Fournisseurs » : rec id → nom canonique + Id vendor QB.
   // Rafraîchi à chaque sync complète des achats ; sert à résoudre le champ lié ci-dessus.
   db.exec(`
@@ -4739,6 +4796,28 @@ export function initSchema() {
   try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_txn_anomalies_fp ON transaction_anomalies(fingerprint)`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_txn_anomalies_entity ON transaction_anomalies(entity_type, entity_id, status)`) } catch {}
 
+  // ── Historique des révisions des fiches (services/recordRevisions.js) ─────
+  // Instantané compact par record + champs changés (ancienne → nouvelle valeur).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS record_snapshots (
+      table_name TEXT NOT NULL,
+      record_id  TEXT NOT NULL,
+      data       TEXT NOT NULL,
+      PRIMARY KEY (table_name, record_id)
+    ) WITHOUT ROWID;
+    CREATE TABLE IF NOT EXISTS record_revisions (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      table_name TEXT NOT NULL,
+      record_id  TEXT NOT NULL,
+      kind       TEXT NOT NULL,
+      changes    TEXT,
+      user_id    TEXT,
+      changed_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_record_revisions_rec ON record_revisions(table_name, record_id, id);
+    CREATE TABLE IF NOT EXISTS record_revision_state (key TEXT PRIMARY KEY, value TEXT);
+  `)
+
   // ── Contrôles comptables (page /comptabilite, carte « Contrôles ») ─────────
   //
   // Les vérifications du rapprochement bancaire se recalculaient à chaque
@@ -4959,6 +5038,27 @@ export function initSchema() {
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_work_ideas_pos ON work_ideas(position)`) } catch {}
   // Épingler une idée pour qu'elle ressorte visuellement et remonte en tête du carnet.
   try { db.exec(`ALTER TABLE work_ideas ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`) } catch {}
+
+  // Agents autonomes (onglet « Agents » de /travaux) : une mission décrite en
+  // clair, réveillée à heures fixes. Chaque réveil dépose un item dans la file —
+  // l'historique des passages, c'est la file elle-même (work_prompts.autonomous_agent_id).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS autonomous_agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      instructions TEXT NOT NULL DEFAULT '',
+      -- Heures de réveil (Montréal), tableau JSON d'entiers 0-23.
+      run_hours TEXT NOT NULL DEFAULT '[9,15]',
+      enabled INTEGER NOT NULL DEFAULT 1,
+      last_run_at TEXT,
+      last_prompt_id TEXT,
+      created_by TEXT REFERENCES users(id),
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+      deleted_at TEXT
+    )
+  `)
+  try { db.exec(`ALTER TABLE work_prompts ADD COLUMN autonomous_agent_id TEXT`) } catch {}
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS recurring_tasks (
@@ -5827,6 +5927,32 @@ export function initSchema() {
   try { db.exec(`ALTER TABLE emails ADD COLUMN attachments_listed_at TEXT`) } catch {}
   // Cci d'un courriel sortant (champ Cci de la modale de composition)
   try { db.exec(`ALTER TABLE emails ADD COLUMN bcc TEXT`) } catch {}
+  // 1re ouverture d'un courriel suivi (pixel) ; dernier envoi d'une soumission
+  // au client et son courriel (bouton « Ré-envoyer », dates d'envoi/ouverture).
+  try { db.exec(`ALTER TABLE emails ADD COLUMN first_opened_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE soumissions ADD COLUMN sent_at TEXT`) } catch {}
+  try { db.exec(`ALTER TABLE soumissions ADD COLUMN sent_email_id TEXT`) } catch {}
+  // Historique complet : chaque envoi d'une soumission, chaque ouverture d'un
+  // courriel suivi. Les colonnes ci-dessus ne gardent que le dernier/le 1er.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS soumission_sends (
+      email_id TEXT PRIMARY KEY,
+      soumission_id TEXT NOT NULL,
+      sent_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_soumission_sends_soumission ON soumission_sends(soumission_id, sent_at);
+    CREATE TABLE IF NOT EXISTS email_opens (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      email_id TEXT NOT NULL,
+      opened_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_email_opens_email ON email_opens(email_id, opened_at);
+    INSERT OR IGNORE INTO soumission_sends (email_id, soumission_id, sent_at)
+      SELECT sent_email_id, id, sent_at FROM soumissions WHERE sent_email_id IS NOT NULL AND sent_at IS NOT NULL;
+    INSERT INTO email_opens (email_id, opened_at)
+      SELECT e.id, e.first_opened_at FROM emails e
+      WHERE e.first_opened_at IS NOT NULL AND NOT EXISTS (SELECT 1 FROM email_opens o WHERE o.email_id = e.id);
+  `)
 
   // Coût des API d'IA (Paramètres → Coûts IA) : un appel = une ligne, jetons
   // seulement. Le coût se calcule à la lecture avec ai_model_prices — changer un
@@ -5972,14 +6098,96 @@ db.exec(`
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_greenhouse_leads_src ON greenhouse_leads(source, external_id)`) } catch {}
 
 // Compteurs séquentiels qui ne reculent jamais (un numéro supprimé n'est pas
-// réattribué). `quote` = numéro QTE-Z-n des soumissions créées dans l'ERP.
+// réattribué). `quote` = numéro QTE-n (dès 1000) des soumissions créées dans l'ERP.
 db.exec(`CREATE TABLE IF NOT EXISTS sequences (name TEXT PRIMARY KEY, value INTEGER NOT NULL DEFAULT 0)`)
-// Un doublon portait le titre « Copie de QTE-Z-n » : il reprend son propre numéro.
+// Un doublon portait le titre « Copie de QTE-n » : il reprend son propre numéro.
 try {
-  db.exec(`UPDATE soumissions SET title = 'QTE-Z-' || quote_number, generated_pdf_path = NULL
+  db.exec(`UPDATE soumissions SET title = 'QTE-' || quote_number, generated_pdf_path = NULL
            WHERE airtable_id IS NULL AND quote_number IS NOT NULL AND title LIKE 'Copie de %'`)
 } catch {}
 try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_soumissions_quote_number ON soumissions(quote_number) WHERE quote_number IS NOT NULL`) } catch {}
+
+// Formulaires de capture de leads (page Marketing → Formulaires) : miroir des
+// formulaires HubSpot et de leurs soumissions (services/hubspotForms.js).
+db.exec(`
+  CREATE TABLE IF NOT EXISTS marketing_forms (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    form_type TEXT,
+    language TEXT,
+    embed_type TEXT,
+    fields_json TEXT,
+    field_count INTEGER DEFAULT 0,
+    submit_text TEXT,
+    post_submit_type TEXT,
+    post_submit_value TEXT,
+    archived INTEGER DEFAULT 0,
+    submission_count INTEGER DEFAULT 0,
+    last_submission_at TEXT,
+    hs_created_at TEXT,
+    hs_updated_at TEXT,
+    synced_at TEXT,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  )
+`)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS marketing_form_submissions (
+    id TEXT PRIMARY KEY,
+    form_id TEXT NOT NULL,
+    submitted_at TEXT,
+    email TEXT,
+    first_name TEXT,
+    last_name TEXT,
+    company TEXT,
+    page_url TEXT,
+    values_json TEXT
+  )
+`)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mfs_form ON marketing_form_submissions(form_id, submitted_at)`) } catch {}
+// 1 = tout l'historique des soumissions a été lu une fois (ensuite : incrémental).
+try { db.exec(`ALTER TABLE marketing_forms ADD COLUMN submissions_complete INTEGER DEFAULT 0`) } catch {}
+// Script lancé à chaque nouvelle soumission (fiche du formulaire). Seules les
+// soumissions postérieures à l'activation (on_submit_enabled_at) le déclenchent.
+try { db.exec(`ALTER TABLE marketing_forms ADD COLUMN on_submit_script TEXT`) } catch {}
+try { db.exec(`ALTER TABLE marketing_forms ADD COLUMN on_submit_enabled INTEGER DEFAULT 0`) } catch {}
+try { db.exec(`ALTER TABLE marketing_forms ADD COLUMN on_submit_enabled_at TEXT`) } catch {}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS marketing_form_script_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    form_id TEXT NOT NULL,
+    submission_id TEXT,
+    email TEXT,
+    ran_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    status_code INTEGER,
+    ok INTEGER DEFAULT 0,
+    error TEXT,
+    output TEXT,
+    duration_ms INTEGER
+  )
+`)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_mfsr_form ON marketing_form_script_runs(form_id, ran_at)`) } catch {}
+
+// Historique HubSpot importé (notes, réunions, appels, courriels depuis 2018) —
+// services/hubspotHistoryImport.js. hubspot_id rend l'import rejouable sans
+// doublon ; interaction_files garde les pièces jointes HubSpot d'une
+// interaction (email_attachments exige un courriel Gmail).
+try { db.exec(`ALTER TABLE interactions ADD COLUMN hubspot_id TEXT`) } catch {}
+try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_interactions_hubspot_id ON interactions(hubspot_id) WHERE hubspot_id IS NOT NULL`) } catch {}
+db.exec(`
+  CREATE TABLE IF NOT EXISTS interaction_files (
+    id TEXT PRIMARY KEY,
+    interaction_id TEXT NOT NULL REFERENCES interactions(id) ON DELETE CASCADE,
+    hubspot_file_id TEXT,
+    file_name TEXT,
+    content_type TEXT,
+    file_size INTEGER,
+    file_path TEXT,
+    error TEXT,
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(interaction_id, hubspot_file_id)
+  )
+`)
+try { db.exec(`CREATE INDEX IF NOT EXISTS idx_interaction_files_interaction ON interaction_files(interaction_id)`) } catch {}
 
 export function seedPaymentCards() {
   const insert = db.prepare(`

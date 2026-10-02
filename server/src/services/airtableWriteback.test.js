@@ -645,3 +645,13 @@ test('mouvements d’inventaire : variation signée et libellé Airtable', () =>
   assert.equal(fieldMapDirection('stock_movements', 'qty_change'), 'pull')
   assert.equal(isDirectionConfigurable('stock_movements', 'qty_change'), true)
 })
+
+test('entreprises : sens choisissable, rien ne part tant que tout reste en import', () => {
+  assert.equal(writebackModuleForTable('companies'), 'companies')
+  db.prepare(`INSERT OR REPLACE INTO airtable_field_mappings
+    (id, module, erp_table, airtable_field_id, airtable_field_name, column_name, options, import_disabled)
+    VALUES ('co-notes', 'airtable_companies', 'companies', 'fldNotes', 'Notes', 'notes', '{}', 0)`).run()
+  assert.equal(buildColumnMap('companies', {}).notes, undefined)
+  setFieldDirection('companies', 'dyn:notes', 'both')
+  assert.equal(buildColumnMap('companies', {}).notes, 'Notes')
+})

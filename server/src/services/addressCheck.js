@@ -460,9 +460,6 @@ const watcher = createChangeLogWatcher({
   startLog: `watcher démarré (poll ${POLL_MS}ms sur change_log(adresses))`,
 })
 
-/** Une passe. Exportée pour les tests (déterministe, sans minuterie). */
-export const pollAddressChangesOnce = watcher.pollOnce
-
 export function startAddressCheckWatcher() {
   // Démarre à la pointe : on ne rejoue pas l'historique au boot (la passe
   // complète est disponible à la demande depuis Paramètres → Adresses).

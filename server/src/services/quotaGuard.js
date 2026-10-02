@@ -115,21 +115,6 @@ export function decideQuotaGuard({ remaining, paused, active, muted, floor = QUO
   return { action: null, active: nextActive, muted: nextMuted }
 }
 
-let _notified = false
-
-/** Un seul avis Slack par pause de quota — la reprise réarme le suivant. */
-async function notifyPause(worst, floor) {
-  if (_notified) return
-  _notified = true
-  const url = process.env.SLACK_WEBHOOK_PERSO
-  if (!url) return
-  const text = `:battery: *File de travaux en pause* — quota Claude sous ${floor} % ` +
-    `(reste ${worst.remaining} % · ${worst.label}). Reprise automatique dès qu'il remonte.`
-  try {
-    await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }) })
-  } catch (e) { console.error('🤖 Garde-fou de quota: avis Slack non envoyé —', e.message) }
-}
-
 /** Un passage du garde-fou. Retourne l'action posée ('pause' | 'resume' | null). */
 export async function syncQuotaGuard() {
   let usage
@@ -144,7 +129,6 @@ export async function syncQuotaGuard() {
     const resetAt = Date.parse(s.quotaPauseResetAt || '') || 0
     if (s.quotaPauseActive && s.queuePaused && resetAt && resetAt <= Date.now()) {
       setSettings({ quotaPauseActive: false, quotaPauseMuted: false, quotaPauseResetAt: null })
-      _notified = false
       resumeQueue()
       console.warn('🤖 Garde-fou de quota: quotas illisibles mais fenêtre réinitialisée — file reprise')
       return 'resume'
@@ -181,9 +165,7 @@ export async function syncQuotaGuard() {
         + 'la file repartira toute seule dès que le quota remonte.',
     })
     console.warn(`🤖 Garde-fou de quota: reste ${worst.remaining} % (seuil ${floor} %, ${worst.label}) — file en pause`)
-    notifyPause(worst, floor).catch(() => {})
   } else if (out.action === 'resume') {
-    _notified = false
     resumeQueue()
     console.log(`🤖 Garde-fou de quota: quota remonté (reste ${worst.remaining} %) — file reprise`)
   }

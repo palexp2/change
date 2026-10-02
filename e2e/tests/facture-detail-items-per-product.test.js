@@ -84,19 +84,12 @@ describe('FactureDetail — une ligne par produit', () => {
 
     // En-têtes
     const headers = await itemsCard.locator('thead th').allTextContents()
-    assert.ok(headers.some(h => h.trim() === 'Produit'), `colonne Produit attendue, reçu: ${headers}`)
+    // Colonne Produit retirée à la demande (2026-10-01) — la Description suffit
+    assert.ok(!headers.some(h => h.trim() === 'Produit'), `colonne Produit inattendue, reçu: ${headers}`)
     assert.ok(headers.some(h => h.trim() === 'Description'), `colonne Description attendue`)
 
     // Au moins une ligne
     const rowCount = await itemsCard.locator('tbody tr').count()
     assert.ok(rowCount >= 1, `au moins 1 ligne attendue, reçu ${rowCount}`)
-
-    if (setup.productId) {
-      // Vérifie qu'au moins une cellule Produit est un lien vers /products/:id
-      const link = itemsCard.locator(`a[href="/products/${setup.productId}"], a[href="/erp/products/${setup.productId}"]`).first()
-      await link.waitFor({ timeout: 3000 })
-      const text = (await link.textContent() || '').trim()
-      assert.ok(text.length > 0, 'le lien produit doit avoir un libellé')
-    }
   })
 })

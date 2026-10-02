@@ -27,8 +27,14 @@ import { uploadsPath } from '../config/uploads.js'
 import { createInAirtable, writeBackRecord } from '../services/airtableWriteback.js'
 import { refusedAirtablePullKeys, AIRTABLE_PULL_EDIT_ERROR } from '../services/customFieldWritability.js'
 import { matchReturnItem, receptionInstruction, receptionShelf } from '../services/returnReception.js'
-import { emitEntity } from '../services/realtimeEmitters.js'
+import { emitEntity, emitOrder, emitOrderItem } from '../services/realtimeEmitters.js'
+import { returnCompanyLinkColumn } from '../services/returnCompany.js'
+import { applyOrderItemDefaults } from '../services/orderItemDefaults.js'
+import { exportErpOrder, exportErpOrderItems } from '../services/discoveryOrderAirtable.js'
+import { localDay } from '../utils/datetime.js'
+import { stampOrderDate, alignAddressColumns } from './orders.js'
 import { logSync } from '../services/syncLog.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const router = Router()
@@ -385,6 +391,7 @@ router.post('/:id/send-instructions', async (req, res) => {
   const finalSubject = (subject && String(subject).trim()) || emailCtx.subject
   const html = (body_html && String(body_html).trim()) || emailCtx.html
 
+  const emailId = newRecordId()
   const attachments = []
   try {
     for (const a of instructionsAttachments(ret, req.params.id)) {
@@ -399,12 +406,11 @@ router.post('/:id/send-instructions', async (req, res) => {
       To: to,
       Cc: cc || undefined,
       Subject: finalSubject,
-      HtmlBody: html,
+      HtmlBody: trackEmailHtml(html, emailId),
       Attachments: attachments,
     })
 
     const interactionId = newRecordId()
-    const emailId = newRecordId()
     db.transaction(() => {
       db.prepare(`
         INSERT INTO interactions (id, contact_id, company_id, type, direction, timestamp)
@@ -519,6 +525,207 @@ router.post('/bulk-from-serials', (req, res) => {
   }
 })
 
+// ── « Créer un retour » depuis la fiche entreprise ─────────────────────────
+//
+// Candidats au retour : les numéros de série OPÉRATIONNELS de l'entreprise, et
+// les articles sans numéro de série (produit non sérialisé) qui lui ont été
+// envoyés — envoi marqué « Envoyé », ligne envoyée, ou date d'envoi Airtable.
+router.get('/company-candidates/:companyId', (req, res) => {
+  const companyId = req.params.companyId
+  const serials = db.prepare(`
+    SELECT sn.id, sn.serial, sn.status, sn.address, sn.product_id, pr.name_fr AS product_name, pr.sku, pr.image_url
+    FROM serial_numbers sn
+    LEFT JOIN products pr ON pr.id = sn.product_id
+    WHERE sn.company_id = ? AND sn.deleted_at IS NULL AND sn.status LIKE 'Opérationnel%'
+    ORDER BY sn.serial COLLATE NOCASE
+  `).all(companyId)
+  const items = db.prepare(`
+    SELECT oi.id, oi.product_id, oi.qty, o.id AS order_id, o.order_number,
+           pr.name_fr AS product_name, pr.sku, pr.image_url,
+           COALESCE(sh.shipped_at, oi.date_de_l_envoi) AS shipped_at
+    FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id AND o.deleted_at IS NULL
+    LEFT JOIN products pr ON pr.id = oi.product_id
+    LEFT JOIN shipments sh ON sh.id = oi.shipment_id
+    WHERE o.company_id = ? AND oi.product_id IS NOT NULL
+      AND (pr.besoin_d_un_numero_de_serie IS NULL OR pr.besoin_d_un_numero_de_serie != '1.0')
+      AND (oi.fulfillment_status = 'Envoyé' OR sh.status = 'Envoyé' OR oi.date_de_l_envoi IS NOT NULL)
+    ORDER BY COALESCE(sh.shipped_at, oi.date_de_l_envoi) DESC
+  `).all(companyId)
+  res.json({ serials, items })
+})
+
+const linkKey = row => row?.airtable_id || row?.id || null
+
+// POST /api/retours/create — retour complet saisi dans le formulaire :
+//   { company_id, ticket_id?,
+//     items: [{ serial_id | order_item_id, qty?, reason, notes?, substitute_product_id? }],
+//     exchange?: { order_id? (sinon nouvelle commande), address_id? } }
+//
+// Un article de retour = une unité : un article sans n° de série retourné en
+// quantité N donne N articles. Avec échange immédiat, chaque article substitué
+// devient une ligne « Remplacement » dans la commande (nouvelle ou existante),
+// dont le « # de série remplacé » porte le n° retourné — c'est par lui que
+// l'appareil envoyé hérite de la date de début de garantie.
+//
+// Les articles naissent « déjà traités » (rma_processed_at) : l'automatisation
+// « Création d'un item de retour » créerait sinon une seconde commande de
+// remplacement pour la raison « échange immédiat ».
+router.post('/create', (req, res) => {
+  const { company_id, ticket_id, items, exchange } = req.body || {}
+  const company = company_id && db.prepare('SELECT id, airtable_id FROM companies WHERE id = ?').get(company_id)
+  if (!company) return res.status(400).json({ error: 'Entreprise introuvable' })
+  if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: 'Aucun article à retourner' })
+
+  const ticket = ticket_id ? db.prepare('SELECT id, airtable_id FROM tickets WHERE id = ?').get(ticket_id) : null
+  if (ticket_id && !ticket) return res.status(400).json({ error: 'Billet introuvable' })
+
+  const getSerial = db.prepare('SELECT id, airtable_id, serial, product_id, company_id FROM serial_numbers WHERE id = ?')
+  const getOrderItem = db.prepare(`
+    SELECT oi.id, oi.airtable_id, oi.product_id, oi.qty FROM order_items oi
+    JOIN orders o ON o.id = oi.order_id WHERE oi.id = ? AND o.company_id = ?`)
+  const getProduct = db.prepare('SELECT id FROM products WHERE id = ?')
+
+  const lines = []
+  for (const it of items) {
+    const reason = String(it?.reason || '').trim()
+    if (!reason) return res.status(400).json({ error: 'Raison du retour requise pour chaque article' })
+    const sub = it.substitute_product_id || null
+    if (sub && !getProduct.get(sub)) return res.status(400).json({ error: 'Produit de substitution introuvable' })
+    if (it.serial_id) {
+      const sn = getSerial.get(it.serial_id)
+      if (!sn || sn.company_id !== company.id) return res.status(400).json({ error: 'Numéro de série introuvable pour cette entreprise' })
+      lines.push({ serial: sn, qty: 1, reason, notes: it.notes || null, sub })
+    } else if (it.order_item_id) {
+      const oi = getOrderItem.get(it.order_item_id, company.id)
+      if (!oi) return res.status(400).json({ error: 'Article introuvable pour cette entreprise' })
+      const qty = parsePositiveQty(it.qty)
+      if (!qty || qty > (oi.qty || 1)) return res.status(400).json({ error: 'Quantité invalide' })
+      lines.push({ orderItem: oi, qty, reason, notes: it.notes || null, sub })
+    } else {
+      return res.status(400).json({ error: 'Article sans référence' })
+    }
+  }
+
+  const substituted = lines.filter(l => l.sub)
+  let order = null
+  let address = null
+  if (exchange && substituted.length) {
+    if (exchange.order_id) {
+      order = db.prepare('SELECT id, airtable_id, order_number FROM orders WHERE id = ? AND company_id = ? AND deleted_at IS NULL').get(exchange.order_id, company.id)
+      if (!order) return res.status(400).json({ error: 'Commande introuvable pour cette entreprise' })
+    }
+    if (exchange.address_id) {
+      address = db.prepare('SELECT id, airtable_id FROM adresses WHERE id = ?').get(exchange.address_id)
+      if (!address) return res.status(400).json({ error: 'Adresse introuvable' })
+    }
+  }
+
+  try {
+    const returnId = newRecordId()
+    const itemIds = []
+    const orderItemIds = []
+    let createdOrder = false
+    const now = "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')"
+    db.transaction(() => {
+      // Champ « Entreprise » du retour (lien miroité) quand il existe : la liste
+      // des retours l'affiche, les articles portent déjà `company_id`.
+      const companyCol = returnCompanyLinkColumn()
+      db.prepare(`INSERT INTO returns (id, created_at, updated_at${companyCol ? `, [${companyCol}]` : ''})
+                  VALUES (?, ${now}, ${now}${companyCol ? ', ?' : ''})`)
+        .run(returnId, ...(companyCol ? [linkKey(company)] : []))
+
+      if (exchange && substituted.length) {
+        if (!order) {
+          const orderId = newRecordId()
+          const orderNumber = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
+          db.prepare(`INSERT INTO orders (id, order_number, company_id, status, notes, date_commande)
+                      VALUES (?, ?, ?, 'Commande vide', ?, ?)`)
+            .run(orderId, orderNumber, company.id, 'Remplacement — échange immédiat', localDay())
+          stampOrderDate(orderId)
+          order = { id: orderId, airtable_id: null, order_number: orderNumber }
+          createdOrder = true
+        }
+        if (address) {
+          const body = { address_id: address.id }
+          alignAddressColumns(body)
+          db.prepare(`UPDATE orders SET address_id = ?, adresse_de_livraison = ?, updated_at = ${now} WHERE id = ?`)
+            .run(body.address_id, body.adresse_de_livraison, order.id)
+        }
+        db.prepare('UPDATE returns SET order_id = ? WHERE id = ?').run(order.id, returnId)
+      }
+
+      const insertItem = db.prepare(`
+        INSERT INTO return_items (id, return_id, serial_id, product_id, company_id, return_reason, return_reason_notes,
+                                  billets, items_de_commande, commande, rma_processed_at, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${now}, ${now})`)
+      const insertOrderItem = db.prepare(`
+        INSERT INTO order_items (id, order_id, product_id, qty, item_type, document_type, return_id, replaced_serial, de_serie_remplace)
+        VALUES (?, ?, ?, ?, 'Remplacement', 'Remplacement', ?, ?, ?)`)
+      const serialEnRetour = db.prepare(`UPDATE serial_numbers SET status = 'En retour', updated_at = ${now} WHERE id = ?`)
+      const ticketLink = ticket ? JSON.stringify([linkKey(ticket)]) : null
+
+      for (const l of lines) {
+        const orderLink = order && l.sub ? JSON.stringify([linkKey(order)]) : null
+        for (let i = 0; i < l.qty; i++) {
+          const itemId = newRecordId()
+          itemIds.push(itemId)
+          insertItem.run(
+            itemId, returnId, l.serial?.id || null, l.orderItem?.product_id || null, company.id,
+            l.reason, l.notes, ticketLink,
+            l.orderItem ? JSON.stringify([linkKey(l.orderItem)]) : null, orderLink,
+          )
+        }
+        if (l.serial) serialEnRetour.run(l.serial.id)
+        if (order && l.sub) {
+          const oiId = newRecordId()
+          orderItemIds.push(oiId)
+          insertOrderItem.run(oiId, order.id, l.sub, l.qty, returnId,
+            l.serial?.id || null, l.serial ? linkKey(l.serial) : null)
+          applyOrderItemDefaults(oiId)
+        }
+      }
+    })()
+
+    mirrorNewReturn(returnId, itemIds)
+    if (order) {
+      if (createdOrder) { emitOrder('created', order.id, req.user?.id); exportErpOrder(order.id) }
+      else { emitOrder('updated', order.id, req.user?.id); exportErpOrderItems(order.id) }
+      for (const oiId of orderItemIds) emitOrderItem('created', order.id, { id: oiId }, req.user?.id)
+    }
+    res.status(201).json({
+      return_id: returnId,
+      count: itemIds.length,
+      order: order ? { id: order.id, order_number: order.order_number, created: createdOrder } : null,
+    })
+  } catch (e) {
+    console.error('Retours create error:', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
+
+function parsePositiveQty(v) {
+  const n = Number(v ?? 1)
+  return Number.isInteger(n) && n > 0 ? n : null
+}
+
+// Articles d'un retour avec ce qu'il faut pour les reconnaître au scan et leur
+// dire leur étagère.
+function receptionItems(returnId) {
+  return db.prepare(`
+    SELECT ri.id, ri.return_reason, ri.received_at, ri.received_by,
+           sn.serial AS serial_number,
+           COALESCE(pr.sku, psn.sku) AS sku,
+           COALESCE(pr.name_fr, psn.name_fr) AS product_name
+    FROM return_items ri
+    LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
+    LEFT JOIN products psn ON sn.product_id = psn.id
+    LEFT JOIN products pr ON ri.product_id = pr.id
+    WHERE ri.return_id = ?
+    ORDER BY ri.created_at
+  `).all(returnId)
+}
+
 // POST /api/retours/:id/receive-scan — réception au pistolet d'un article.
 //
 // Un seul geste : le code scanné désigne l'article du retour, à qui on pose la
@@ -547,18 +754,7 @@ router.post('/:id/receive-scan', (req, res) => {
   const refused = refusedAirtablePullKeys('return_items', { received_at: receivedAt, received_by: receivedBy })
   if (refused.length) return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
 
-  const items = db.prepare(`
-    SELECT ri.id, ri.return_reason, ri.received_at, ri.received_by,
-           sn.serial AS serial_number,
-           COALESCE(pr.sku, psn.sku) AS sku,
-           COALESCE(pr.name_fr, psn.name_fr) AS product_name
-    FROM return_items ri
-    LEFT JOIN serial_numbers sn ON ri.serial_id = sn.id
-    LEFT JOIN products psn ON sn.product_id = psn.id
-    LEFT JOIN products pr ON ri.product_id = pr.id
-    WHERE ri.return_id = ?
-    ORDER BY ri.created_at
-  `).all(req.params.id)
+  const items = receptionItems(req.params.id)
 
   const item = matchReturnItem(items, code)
   if (!item) return res.json({ action: 'not_in_return', code })
@@ -601,9 +797,9 @@ router.post('/:id/receive', (req, res) => {
   const refused = refusedAirtablePullKeys('return_items', { received_at: receivedAt, received_by: receivedBy })
   if (refused.length) return res.status(400).json({ error: AIRTABLE_PULL_EDIT_ERROR })
 
-  const inReturn = db.prepare(
-    `SELECT id FROM return_items WHERE return_id = ? AND id IN (${ids.map(() => '?').join(',')})`
-  ).all(req.params.id, ...ids).map(r => r.id)
+  const wanted = new Set(ids)
+  const chosen = receptionItems(req.params.id).filter(i => wanted.has(String(i.id)))
+  const inReturn = chosen.map(i => i.id)
   if (!inReturn.length) return res.status(400).json({ error: 'Aucun article de ce retour' })
 
   const update = db.prepare('UPDATE return_items SET received_at = ?, received_by = ? WHERE id = ?')
@@ -614,7 +810,13 @@ router.post('/:id/receive', (req, res) => {
     traceRetourPush(writeBackRecord('retour_items', itemId, ['received_at', 'received_by']), itemId)
     emitEntity('return_item', 'updated', itemId, readUpdated.get(itemId), req.user?.id)
   }
-  res.json({ received: inReturn, received_at: receivedAt, received_by: receivedBy || null })
+  // Même consigne d'étagère que le scan, article par article.
+  const instructions = chosen.map(i => ({
+    item: { ...i, received_at: receivedAt, received_by: receivedBy },
+    message: receptionInstruction(i.return_reason, receivedBy),
+    shelf: receptionShelf(i.return_reason),
+  }))
+  res.json({ received: inReturn, received_at: receivedAt, received_by: receivedBy || null, instructions })
 })
 
 export default router

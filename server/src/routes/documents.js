@@ -14,6 +14,9 @@ import { sendEmail as sendGmail } from '../services/gmail.js'
 import { mirrorSoumissionPdf } from '../services/airtable.js'
 import { purchasePct, soumissionDiscounts, storeSoumissionTotals } from '../services/soumissionTotals.js'
 import { recomputeProjectValeurCad } from '../services/projectValeur.js'
+import { getStripeClient, syncStripeCustomer } from '../services/stripeInvoices.js'
+import { assertStripeCurrency, stripeCurrencyOf } from '../services/stripeCustomerCompany.js'
+import { trackEmailHtml } from '../services/emailTracking.js'
 
 // Prix achat / abo de la soumission (colonnes des listes), puis la valeur du
 // projet qui en découle.
@@ -23,16 +26,18 @@ function syncSoumissionTotals(id) {
   if (projectId) recomputeProjectValeurCad(projectId).catch(e => console.error('[valeur_cad_calc]', projectId, e.message))
 }
 
-// Numéro QTE-Z-n : séquentiel, unique, jamais réattribué après suppression.
+// Numéro QTE-n : séquentiel, unique, jamais réattribué après suppression.
+// Part de 1000 pour ne pas croiser les QTE-n d'Airtable (~300 en 2026-09).
 // `peek` = le prochain numéro sans le réserver (aperçu du PDF).
+const QUOTE_FIRST = 1000
 function nextQuoteNumber({ peek = false } = {}) {
   const seq = db.prepare(`SELECT value FROM sequences WHERE name = 'quote'`).get()?.value || 0
   const max = db.prepare('SELECT COALESCE(MAX(quote_number), 0) AS m FROM soumissions').get().m
-  const n = Math.max(seq, max) + 1
+  const n = Math.max(seq, max, QUOTE_FIRST - 1) + 1
   if (!peek) db.prepare(`INSERT INTO sequences (name, value) VALUES ('quote', ?) ON CONFLICT(name) DO UPDATE SET value = excluded.value`).run(n)
   return n
 }
-const quoteTitle = n => `QTE-Z-${n}`
+const quoteTitle = n => `QTE-${n}`
 
 // Reuse the LIST query shape so realtime payload matches what the
 // soumissions list page consumes (Soumissions.jsx).
@@ -40,11 +45,14 @@ const SOUMISSION_LIST_SELECT = `
   SELECT s.*,
     p.name as project_name,
     co.name as company_name,
-    c.first_name || ' ' || c.last_name as contact_name
+    c.first_name || ' ' || c.last_name as contact_name,
+    se.first_opened_at as sent_opened_at,
+    (SELECT MAX(o.opened_at) FROM email_opens o WHERE o.email_id = s.sent_email_id) as sent_last_opened_at
   FROM soumissions s
   LEFT JOIN projects p ON s.project_id = p.id
   LEFT JOIN companies co ON s.company_id = co.id
   LEFT JOIN contacts c ON s.contact_id = c.id
+  LEFT JOIN emails se ON se.id = s.sent_email_id
   WHERE s.id = ?
 `
 
@@ -364,11 +372,14 @@ router.get('/soumissions/:id', (req, res) => {
       p.name as project_name,
       co.name as company_name, co.city as company_city, co.province as company_province,
       c.first_name || ' ' || c.last_name as contact_name,
-      c.email as contact_email
+      c.email as contact_email,
+      se.first_opened_at as sent_opened_at,
+      (SELECT MAX(o.opened_at) FROM email_opens o WHERE o.email_id = s.sent_email_id) as sent_last_opened_at
     FROM soumissions s
     LEFT JOIN projects p ON s.project_id = p.id
     LEFT JOIN companies co ON s.company_id = co.id
     LEFT JOIN contacts c ON s.contact_id = c.id
+    LEFT JOIN emails se ON se.id = s.sent_email_id
     WHERE s.id = ?
   `).get(req.params.id)
   if (!row) return res.status(404).json({ error: 'Not found' })
@@ -437,11 +448,28 @@ router.post('/soumissions/preview', (req, res) => {
   res.json({ html })
 })
 
+// Devise imposée par le client Stripe de l'entreprise. Stripe non configuré ou
+// injoignable : pas de verrou (on ne bloque pas la saisie d'une soumission).
+async function lockedCurrency(companyId) {
+  if (!companyId) return null
+  try { return await stripeCurrencyOf(getStripeClient(), companyId) } catch { return null }
+}
+function currencyError(res, locked) {
+  return res.status(400).json({ error: `Ce client paie en ${locked} dans Stripe : la soumission doit être en ${locked}.`, code: 'currency_mismatch', locked })
+}
+
+// GET /api/documents/stripe-currency/:companyId — { currency } ou null.
+router.get('/stripe-currency/:companyId', async (req, res) => {
+  res.json({ currency: await lockedCurrency(req.params.companyId) })
+})
+
 router.post('/soumissions', async (req, res) => {
   const {
     company_id, contact_id, project_id, language = 'French', currency = 'CAD',
     notes, discount_pct = 0, discount_amount = 0, items = []
   } = req.body
+  const locked = await lockedCurrency(company_id)
+  if (locked && locked !== String(currency).toUpperCase()) return currencyError(res, locked)
   const discounts = sanitizeDiscounts(req.body.discounts)
   // Contact du projet par défaut : son nom figure sur la couverture du PDF.
   const contactId = contact_id || projectContactId(project_id)
@@ -493,9 +521,22 @@ router.post('/soumissions', async (req, res) => {
 })
 
 router.put('/soumissions/:id', async (req, res) => {
-  const existing = db.prepare('SELECT id FROM soumissions WHERE id = ?').get(req.params.id)
+  const existing = db.prepare('SELECT id, company_id, currency, language, status, sent_at FROM soumissions WHERE id = ?').get(req.params.id)
   if (!existing) return res.status(404).json({ error: 'Not found' })
 
+  // Une soumission envoyée est figée : le client a ce PDF-là. Ses notes et son
+  // statut bougent encore ; pour changer le contenu, on la duplique.
+  const sent = existing.sent_at || ['Envoyée', 'Acceptée', 'Refusée'].includes(existing.status)
+  const b = req.body || {}
+  if (sent && (Array.isArray(b.items) || Array.isArray(b.discounts) || b.discount_pct != null || b.discount_amount != null ||
+      (b.language && b.language !== existing.language) || (b.currency && b.currency !== existing.currency))) {
+    return res.status(409).json({ error: 'Soumission déjà envoyée : dupliquez-la pour la modifier.' })
+  }
+
+  if (req.body.currency && req.body.currency !== existing.currency) {
+    const locked = await lockedCurrency(existing.company_id)
+    if (locked && locked !== String(req.body.currency).toUpperCase()) return currencyError(res, locked)
+  }
   const { language, currency, status, notes, discount_pct, discount_amount, discount_valid_until, items } = req.body
   // Rabais nommés : remplacés s'ils sont envoyés ; effacés si la fiche modifie
   // le rabais global (sinon le PDF garderait les anciens).
@@ -640,19 +681,64 @@ router.get('/soumissions/:id/pdf', async (req, res) => {
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))
 
-// Courriel générique, dans la langue du contact, personnalisé par son prénom.
+// Courriel type des vendeurs (texte de Pierre-Alexandre Papillon), dans la
+// langue du contact, personnalisé par son prénom. Les boutons nommés sont ceux
+// du PDF joint.
+const QUOTE_LINKS = {
+  pricing: 'https://www.orisha.io/pricing',
+  demo: 'https://app.orisha.io/#try-it-out',
+  meet: 'https://meetings.hubspot.com/philippe-chabot/meet-with-phil',
+  farmer: 'https://the40hourfarmer.orisha.io/',
+}
+const a = (href, label) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`
+const ul = items => `<ul style="list-style:disc;padding-left:24px;margin:0 0 16px">${items.map(i => `<li><em>${i}</em></li>`).join('')}</ul>`
+
 function soumissionEmailTemplate({ language, firstName, title, senderName }) {
   const en = String(language || '').toLowerCase().startsWith('en')
   const hi = firstName ? ` ${esc(firstName)}` : ''
   const sign = senderName ? `${esc(senderName)}<br>Orisha` : 'Orisha'
   return en ? {
     subject: `Your Orisha quote ${title}`,
-    bodyHtml: `<p>Hi${hi},</p><p>Please find attached your quote <strong>${esc(title)}</strong>.</p>`
-      + `<p>Feel free to reach out if you have any questions.</p><p>Best regards,<br>${sign}</p>`,
+    bodyHtml: `<p>Hi${hi},</p><p>Thanks again for your time. It was great to learn more about your project!</p>`
+      + `<p>I've attached your quote below.</p>`
+      + `<p>To access the checkout session and make your payment, click on <strong>Subscribe</strong> for the pay-as-you-go or click on <strong>Buy Now</strong> for the lifetime access.</p>`
+      + `<p>Here is also the link to <em>${a(QUOTE_LINKS.pricing, 'the pricing page')}</em> of our website for an overview of the different options.<br>`
+      + `I also added a ${a(QUOTE_LINKS.demo, 'demo of the app')} that manages our systems.</p>`
+      + `<p>Orisha is now offering the option to deduct the monthly payment made during year one from the overall purchase price.<br>`
+      + `<em>For the products chief and helper sold starting April 1, 2026:</em></p>`
+      + ul([
+        'The first 12 months are deductible from the amount to be paid upon buyback.',
+        'The base price for calculating the buyback price is the one indicated on the quote(s).',
+        'Starting from the second anniversary, a progressive discount of 10% is applied.',
+        'People with a partner discount and/or another discount are also eligible.',
+      ])
+      + `<p>If you have any questions, don't hesitate to contact us.<br>Our offices are open Monday through Friday, 9:00 a.m. to 4:00 p.m. EST.</p>`
+      + `<p>To book another meeting, you can click ${a(QUOTE_LINKS.meet, 'Meet with Phil (video call)')}.</p>`
+      + `<p>Thank you,<br>${sign}</p>`
+      + `<p><em>Want to learn more about how you, too, can maximize efficiency on the farm?<br>`
+      + `Sign up to our ${a(QUOTE_LINKS.farmer, '40hr farmer class')}<br>`
+      + `PSSST it's free for Orisha users &amp; Growing for market subscribers</em></p>`,
   } : {
     subject: `Votre soumission Orisha ${title}`,
-    bodyHtml: `<p>Bonjour${hi},</p><p>Vous trouverez ci-joint votre soumission <strong>${esc(title)}</strong>.</p>`
-      + `<p>N'hésitez pas à me contacter pour toute question.</p><p>Au plaisir,<br>${sign}</p>`,
+    bodyHtml: `<p>Bonjour${hi},</p><p>Merci encore pour votre temps. Ce fut un plaisir d'en apprendre plus sur votre projet !</p>`
+      + `<p>Vous trouverez ci-joint votre soumission <strong>${esc(title)}</strong>.</p>`
+      + `<p>Pour accéder au paiement, cliquez sur <strong>S’abonner</strong> pour le paiement mensuel ou sur <strong>Acheter</strong> pour l'accès à vie.</p>`
+      + `<p>Voici aussi le lien vers <em>${a(QUOTE_LINKS.pricing, 'la page des tarifs')}</em> de notre site pour un aperçu des différentes options.<br>`
+      + `J'ai aussi ajouté une ${a(QUOTE_LINKS.demo, "démo de l'application")} qui gère nos systèmes.</p>`
+      + `<p>Orisha offre maintenant la possibilité de déduire du prix d'achat les mensualités payées la première année.<br>`
+      + `<em>Pour les produits Chief et Helper vendus à partir du 1er avril 2026 :</em></p>`
+      + ul([
+        'Les 12 premiers mois sont déductibles du montant à payer lors du rachat.',
+        'Le prix de base du rachat est celui indiqué sur la ou les soumissions.',
+        'À partir du deuxième anniversaire, un rabais progressif de 10 % s’applique.',
+        'Les personnes ayant un rabais partenaire ou un autre rabais sont aussi admissibles.',
+      ])
+      + `<p>Pour toute question, n'hésitez pas à nous contacter.<br>Nos bureaux sont ouverts du lundi au vendredi, de 9 h à 16 h (HNE).</p>`
+      + `<p>Pour réserver une autre rencontre, cliquez sur ${a(QUOTE_LINKS.meet, 'Rencontrer Phil (appel vidéo)')}.</p>`
+      + `<p>Merci,<br>${sign}</p>`
+      + `<p><em>Envie d'en apprendre plus sur comment maximiser l'efficacité de votre ferme ?<br>`
+      + `Inscrivez-vous à notre ${a(QUOTE_LINKS.farmer, 'formation 40hr farmer')}<br>`
+      + `Psst, c'est gratuit pour les utilisateurs d'Orisha et les abonnés de Growing for Market</em></p>`,
   }
 }
 
@@ -701,7 +787,9 @@ router.get('/soumissions/:id/email', (req, res) => {
 
 // POST /api/documents/soumissions/:id/send-email — PDF en pièce jointe, envoyé
 // depuis le Gmail de l'utilisateur (ou `from_account`). Consigne l'interaction
-// et passe la soumission « Envoyée ».
+// et passe la soumission « Envoyée ». Un pixel de suivi, absent du corps
+// consigné (l'afficher dans l'ERP compterait une ouverture), date la 1re
+// ouverture du courriel.
 router.post('/soumissions/:id/send-email', async (req, res) => {
   const soumission = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!soumission) return res.status(404).json({ error: 'Not found' })
@@ -709,10 +797,25 @@ router.post('/soumissions/:id/send-email', async (req, res) => {
   if (!to || !String(to).includes('@')) return res.status(400).json({ error: 'Adresse courriel invalide' })
   if (!subject || !String(subject).trim()) return res.status(400).json({ error: 'Objet requis' })
 
+  // Client Stripe créé (ou mis à jour) avec les adresses de la fiche avant que
+  // le client puisse payer depuis le PDF.
+  if (soumission.company_id) {
+    try {
+      const stripe = getStripeClient()
+      await assertStripeCurrency(stripe, soumission.company_id, soumission.currency || 'CAD')
+      await syncStripeCustomer(stripe, soumission.company_id)
+    } catch (e) {
+      if (e.code === 'currency_mismatch') return currencyError(res, e.locked)
+      console.error('Soumission send-email stripe customer:', e.message)
+      return res.status(502).json({ error: `Client Stripe : ${e.message}` })
+    }
+  }
+
+  const emailId = newRecordId()
   let result
   try {
     const pdfPath = await ensureSoumissionPdf(soumission)
-    result = await sendGmail(to, String(subject).trim(), String(body_html || ''), {
+    result = await sendGmail(to, String(subject).trim(), trackEmailHtml(body_html, emailId), {
       cc: cc || undefined,
       bcc: bcc || undefined,
       attachments: [{ filename: soumissionPdfFilename(soumission), content: fs.readFileSync(pdfPath), contentType: 'application/pdf' }],
@@ -735,10 +838,17 @@ router.post('/soumissions/:id/send-email', async (req, res) => {
     db.prepare(`
       INSERT INTO emails (id, interaction_id, subject, body_html, from_address, to_address, cc, bcc, gmail_message_id, gmail_thread_id, automated)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-    `).run(newRecordId(), interactionId, String(subject).trim(), String(body_html || ''), result.account_email, to, cc || null, bcc || null, result.message_id, result.thread_id)
-    if (soumission.status === 'Brouillon') {
-      db.prepare(`UPDATE soumissions SET status = 'Envoyée', updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(soumission.id)
-    }
+    `).run(emailId, interactionId, String(subject).trim(), String(body_html || ''), result.account_email, to, cc || null, bcc || null, result.message_id, result.thread_id)
+    db.prepare(`
+      UPDATE soumissions SET sent_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), sent_email_id = ?,
+        status = CASE WHEN status = 'Brouillon' THEN 'Envoyée' ELSE status END,
+        updated_at = CASE WHEN status = 'Brouillon' THEN strftime('%Y-%m-%dT%H:%M:%fZ', 'now') ELSE updated_at END
+      WHERE id = ?
+    `).run(emailId, soumission.id)
+    db.prepare(`
+      INSERT INTO soumission_sends (email_id, soumission_id, sent_at)
+      SELECT sent_email_id, id, sent_at FROM soumissions WHERE id = ?
+    `).run(soumission.id)
   })()
 
   const updated = db.prepare(SOUMISSION_LIST_SELECT).get(soumission.id)
@@ -746,11 +856,25 @@ router.post('/soumissions/:id/send-email', async (req, res) => {
   res.json({ success: true, interaction_id: interactionId, soumission: updated })
 })
 
+// GET /api/documents/soumissions/:id/sends — historique complet : chaque envoi
+// (le plus récent d'abord) et toutes les ouvertures de son courriel.
+router.get('/soumissions/:id/sends', (req, res) => {
+  const sends = db.prepare(`
+    SELECT ss.email_id, ss.sent_at, e.to_address, e.from_address
+    FROM soumission_sends ss LEFT JOIN emails e ON e.id = ss.email_id
+    WHERE ss.soumission_id = ? ORDER BY ss.sent_at DESC
+  `).all(req.params.id)
+  const opens = db.prepare('SELECT opened_at FROM email_opens WHERE email_id = ? ORDER BY opened_at DESC')
+  res.json(sends.map(s => ({ ...s, opens: opens.all(s.email_id).map(o => o.opened_at) })))
+})
+
 // ── Duplicate ─────────────────────────────────────────────────────────────────
 
 router.post('/soumissions/:id/duplicate', async (req, res) => {
   const src = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(req.params.id)
   if (!src) return res.status(404).json({ error: 'Not found' })
+  const locked = await lockedCurrency(src.company_id)
+  if (locked && locked !== (src.currency || 'CAD')) return currencyError(res, locked)
 
   const newId = newRecordId()
   // La copie a son propre numéro, jamais « Copie de … »

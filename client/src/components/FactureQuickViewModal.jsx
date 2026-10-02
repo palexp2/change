@@ -24,19 +24,10 @@ const STATUS_COLORS = {
 }
 
 import { fmtMoney } from '../utils/formatters.js'
+import { stripeFactureUrl } from '../lib/stripeLinks.js'
 import ThinkingOrb from './ThinkingOrb'
 
-function buildStripeUrl(facture) {
-  if (facture.lien_stripe) return facture.lien_stripe
-  const id = facture.invoice_id
-  if (!id) return null
-  if (id.startsWith('in_')) return `https://dashboard.stripe.com/invoices/${id}`
-  if (id.startsWith('re_')) return `https://dashboard.stripe.com/refunds/${id}`
-  if (id.startsWith('ch_') || id.startsWith('pi_') || id.startsWith('py_') || id.startsWith('pyr_')) {
-    return `https://dashboard.stripe.com/payments/${id}`
-  }
-  return null
-}
+const buildStripeUrl = stripeFactureUrl
 
 function Field({ label, children }) {
   return (

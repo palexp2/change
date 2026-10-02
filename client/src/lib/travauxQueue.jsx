@@ -5,7 +5,7 @@
 // réglages) et le panneau rapide accessible depuis n'importe quelle page
 // (TravauxQuickPanel). Tout ce qui est ici doit rester utilisable sans la page.
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { HelpCircle, Send, ChevronsDown, ChevronsUp, Zap, Moon, Clock } from 'lucide-react'
+import { HelpCircle, Send, ChevronsDown, ChevronsUp, Clock } from 'lucide-react'
 import api from './api.js'
 import ThinkingOrb from '../components/ThinkingOrb'
 
@@ -265,56 +265,6 @@ export function PlacementToggle({ value, onChange, testId = 'travaux-placement',
     >
       {first ? <ChevronsUp size={12} /> : <ChevronsDown size={12} />}
       {first ? 'Au début de la file' : 'À la fin de la file'}
-    </button>
-  )
-}
-
-/** Heure de départ « ce soir, 19 h » — le soir suivant si 19 h est déjà passé. */
-export const EVENING_HOUR = 19
-
-export function eveningStart() {
-  const d = new Date()
-  d.setHours(EVENING_HOUR, 0, 0, 0)
-  if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1)
-  return d.toISOString()
-}
-
-/** Vrai si « ce soir 19 h » tombe déjà demain (19 h passé) — l'étiquette le dit. */
-function eveningIsTomorrow() {
-  const d = new Date()
-  d.setHours(EVENING_HOUR, 0, 0, 0)
-  return d.getTime() <= Date.now()
-}
-
-/**
- * Quand la tâche qu'on dépose doit-elle DÉMARRER : tout de suite (dès qu'un poste
- * est libre) ou en soirée, à 19 h. Même forme que PlacementToggle — le bouton dit
- * l'état courant, cliquer le bascule — et même vocabulaire partout : le placement
- * dit OÙ dans la file, celui-ci dit QUAND.
- *
- * Défaut : maintenant, le comportement d'origine. Programmer sert à laisser la
- * journée tranquille : l'agent redéploie le frontend et redémarre le serveur en
- * travaillant, ce qui se voit quand on est en train d'utiliser l'ERP.
- */
-export function StartToggle({ value, onChange, testId = 'travaux-start', className = '' }) {
-  const evening = value === 'evening'
-  const label = evening ? (eveningIsTomorrow() ? `Demain ${EVENING_HOUR} h` : `Ce soir ${EVENING_HOUR} h`) : 'Maintenant'
-  return (
-    <button
-      type="button"
-      data-testid={testId}
-      data-start={evening ? 'evening' : 'now'}
-      aria-pressed={evening}
-      onClick={() => onChange(evening ? 'now' : 'evening')}
-      title={evening
-        ? `Démarrera à ${EVENING_HOUR} h, à la suite des autres tâches programmées — cliquer pour la lancer tout de suite`
-        : `Part tout de suite, en parallèle des autres demandes du moment — cliquer pour la programmer à ${EVENING_HOUR} h`}
-      className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
-        evening ? 'text-indigo-600 hover:text-indigo-700' : 'text-slate-400 hover:text-slate-600'
-      } ${className}`}
-    >
-      {evening ? <Moon size={12} /> : <Zap size={12} />}
-      {label}
     </button>
   )
 }

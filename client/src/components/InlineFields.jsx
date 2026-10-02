@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { ExternalLink } from 'lucide-react'
 import { isCheckboxTruthy } from '../lib/customFieldDisplay.jsx'
 import { toDateTimeLocalInput, fromDateTimeLocalInput } from '../lib/formatDate.js'
+import { parseDurationToSeconds, formatDurationSeconds } from '../lib/duration.js'
 
 // Éditeurs « inline » pour les champs d'une fiche détail : la valeur s'édite sur
 // place et part toute seule au blur (règle de design CLAUDE.md — autosave
@@ -100,12 +101,19 @@ export function InlineTextarea({ value, saving, onSave, testId, minRows = 2 }) {
 
 // Nombre : borné côté client quand `min`/`max` sont fournis, pour ne pas envoyer
 // une valeur que la route rejetterait (ex. probabilité hors 0–100).
+// `compact` : affiche « 6 » plutôt que « 6.0 » (zéros décimaux inutiles retirés).
 export function InlineNumber({
   value, saving, onSave, min, max, step = 'any',
-  suffix, className = 'input text-sm w-28', testId,
+  suffix, className = 'input text-sm w-28', testId, compact = false,
 }) {
-  const [local, setLocal] = useState(value ?? '')
-  useEffect(() => { setLocal(value ?? '') }, [value])
+  const shown = v => {
+    if (v == null) return ''
+    if (!compact || v === '') return v
+    const n = Number(v)
+    return Number.isFinite(n) ? n : v
+  }
+  const [local, setLocal] = useState(shown(value))
+  useEffect(() => { setLocal(shown(value)) }, [value, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const commit = (raw) => {
     const str = String(raw ?? '').trim()
@@ -137,6 +145,36 @@ export function InlineNumber({
       />
       {suffix && <span className="text-xs text-slate-400">{suffix}</span>}
     </div>
+  )
+}
+
+// Durée : la valeur est en SECONDES, l'écran en h:mm (ou h:mm:ss). On tape
+// « 1:30 », « 1h30 », « 90 » (minutes)… ; une saisie illisible remet l'ancienne.
+export function InlineDuration({ value, saving, onSave, format = 'h:mm', className = 'input text-sm w-full', testId }) {
+  const shown = v => (v == null || v === '' ? '' : formatDurationSeconds(Number(v), format))
+  const [local, setLocal] = useState(shown(value))
+  useEffect(() => { setLocal(shown(value)) }, [value, format]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const commit = raw => {
+    const str = String(raw ?? '').trim()
+    if (str === '') { if ((value ?? '') !== '') onSave(''); return }
+    const sec = parseDurationToSeconds(str)
+    if (sec == null) { setLocal(shown(value)); return }
+    setLocal(shown(sec))
+    if (value == null || value === '' || Number(value) !== sec) onSave(sec)
+  }
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      value={local}
+      onChange={e => setLocal(e.target.value)}
+      onBlur={e => commit(e.target.value)}
+      className={`${className} tabular-nums`}
+      disabled={saving}
+      data-testid={testId}
+    />
   )
 }
 

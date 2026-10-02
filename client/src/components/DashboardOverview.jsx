@@ -782,7 +782,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const [accountBalancesError, setAccountBalancesError] = useState(false)
   const [accountBalancesLoading, setAccountBalancesLoading] = useState(true)
   const [history, setHistory] = useState(null)
-  const [aging, setAging] = useState(null)
   const [qbRevenue, setQbRevenue] = useState(null)
   const [qbRevenueError, setQbRevenueError] = useState(null)
   const [pnl, setPnl] = useState(null)
@@ -798,7 +797,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
       .catch(e => { setPnl(null); setPnlError(e?.message || 'Erreur QuickBooks') })
     api.dashboard.bankAccounts(opts).then(setBank).catch(e => setBankError(e?.message || 'Erreur QuickBooks'))
     api.dashboard.bankAccountsHistory({ months: 12, ...opts }).then(setHistory).catch(() => setHistory({ months: [] }))
-    api.dashboard.agingReceivables().then(setAging).catch(() => setAging(null))
     api.dashboard.revenueByMonth({ months: 12, ...opts })
       .then(setQbRevenue)
       .catch(e => { setQbRevenue(null); setQbRevenueError(e?.message || 'Erreur QuickBooks') })
@@ -853,13 +851,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
     const rev = sum(win, 'revenue')
     return { ...w, label: `4 sem. au ${w.short}`, value: rev > 0 ? ((rev - sum(win, 'cogs')) / rev) * 100 : 0 }
   })
-
-  const last4 = profitWeeks.slice(-4)
-  const prev4 = profitWeeks.slice(-8, -4)
-  const rev28 = sum(last4, 'revenue')
-  const revPrev28 = sum(prev4, 'revenue')
-  const margin28 = rev28 > 0 ? ((rev28 - sum(last4, 'cogs')) / rev28) * 100 : 0
-  const revDeltaPct = revPrev28 > 0 ? ((rev28 - revPrev28) / revPrev28) * 100 : null
 
   /* Revenus QuickBooks par mois, un compte de revenu par série. Les comptes et
      leur ordre viennent du serveur (plan comptable QB), pas d'une liste figée
@@ -936,8 +927,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
   const replacement28 = parkValue > 0 ? ((data?.replacementRate?.last28 || 0) / parkValue) * 100 : 0
   const shippingCosts = data?.weeklyShippingCosts || []
   const shipping28 = shippingCosts.length ? shippingCosts[shippingCosts.length - 1].amount : 0
-  const agingTotal = aging?.total ?? null
-  const aging90 = aging?.buckets?.find(b => b.key === 'b90')?.total || 0
   const failedSections = Object.keys(data?._errors || {})
 
   const bankRows = bank?.accounts || []
@@ -1035,27 +1024,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
 
       {/* Bande d'indicateurs */}
       <section className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6" data-testid="overview-tiles">
-        <Tile
-          id="revenue"
-          label="Revenus expédiés — 28 j"
-          value={fmtMoneyCompact(rev28)}
-          tone="brand"
-          to="/dashboard/rentabilite"
-          delta={revDeltaPct == null ? null : {
-            value: revDeltaPct,
-            good: revDeltaPct >= 0,
-            text: `${revDeltaPct >= 0 ? '+' : ''}${revDeltaPct.toFixed(0)} %`,
-            period: 'vs 4 sem. préc.',
-          }}
-        />
-        <Tile
-          id="margin"
-          label="Marge brute — 28 j"
-          value={fmtPct(margin28, 0)}
-          tone="brand"
-          sub={`Coût des marchandises ${fmtMoneyCompact(sum(last4, 'cogs'))}`}
-          to="/dashboard/rentabilite"
-        />
         {/* Projets : on lit les mêmes sources que les sections « Projets créés »
             et « Taux de closing » (creation + cf_vendu). Les agrégats
             projects.openValue / wonThisMonth du endpoint reposent sur la colonne
@@ -1085,15 +1053,6 @@ export function DashboardOverview({ data, subscriptionEvents }) {
           sub={`${Math.round(goalPct)} % de la cible`}
           meter={{ pct: goalPct, tone: goalPct >= 100 ? 'brand' : goalPct >= 60 ? 'amber' : 'rose' }}
           to="/dashboard/objectif-de-projets"
-        />
-        <Tile
-          id="aging"
-          label="Comptes clients en retard"
-          value={agingTotal == null ? '…' : fmtMoneyCompact(agingTotal)}
-          tone={aging90 > 0 ? 'rose' : 'slate'}
-          sub={agingTotal == null ? 'Chargement…' : `dont ${fmtMoneyCompact(aging90)} à 90 j et +`}
-          to="/factures"
-          loading={agingTotal == null}
         />
         <Tile
           id="inventory"

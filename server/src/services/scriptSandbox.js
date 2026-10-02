@@ -55,7 +55,7 @@ function databaseOperation(method, args, tables, allowTriggerWrite, signal) {
 export async function runScriptSandboxed(script, {
   row = null, trigger = {}, enableWrite = false, allowTriggerWrite = false,
   timeoutMs = limits.timeoutMs, params = null, request = null,
-  writableTables = WRITABLE_TABLES, signal,
+  writableTables = WRITABLE_TABLES, signal, onFetch,
 } = {}) {
   if (typeof script !== 'string' || Buffer.byteLength(script) > limits.scriptBytes) throw runtimeError('SCRIPT_INPUT_LIMIT', 'Script trop volumineux')
   if (!Number.isInteger(timeoutMs) || timeoutMs < 1) throw new Error('Délai de script invalide')
@@ -70,7 +70,12 @@ export async function runScriptSandboxed(script, {
       if (Buffer.byteLength(JSON.stringify(args)) > 128 * 1024) throw new Error('Arguments trop volumineux')
       if (method === 'query') return databaseOperation('query', args, READABLE_TABLES, false, operationSignal)
       if (method === 'update' && job.enableWrite) return databaseOperation('update', args, tables, allowTriggerWrite === true, operationSignal)
-      if (method === 'fetch') return scriptFetch(args[0], args[1], operationSignal)
+      if (method === 'fetch') {
+        // onFetch : l'appelant relève le code HTTP de chaque appel (historique).
+        const reply = await scriptFetch(args[0], args[1], operationSignal)
+        onFetch?.(reply)
+        return reply
+      }
       if (method === 'sendEmail') {
         const [to, subject, html] = args
         const allowed = (process.env.SCRIPT_EMAIL_RECIPIENTS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean)

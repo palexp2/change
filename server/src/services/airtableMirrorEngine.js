@@ -37,11 +37,11 @@ import { newRecordId } from '../utils/recordId.js'
 import path from 'path'
 import db from '../db/database.js'
 import { periodStartFromFields } from './paiePeriod.js'
-import { getAccessToken } from '../connectors/airtable.js'
+import { getAccessToken, airtablePatch } from '../connectors/airtable.js'
 import { syncDynamicFields, updateDynamicFields } from './airtableAutoSync.js'
 import { evaluateFieldRules } from './fieldRuleEngine.js'
 import { consumeWritebackEcho, fieldMapDirection, importSkippedCoreKeys } from './airtableWriteback.js'
-import { emitMirrorWrite } from './realtimeEmitters.js'
+import { emitMirrorWrite, emitMirrorDelete } from './realtimeEmitters.js'
 import { sameStored } from './airtableDiff.js'
 import { getFrozenColumns } from './airtableFrozenColumns.js'
 import { syncCompanies } from './airtable.js'
@@ -979,14 +979,19 @@ export const CORE_PLANS = {
       }
       return out
     },
-    // Le numéro de commande : celui d'Airtable s'il est lisible, sinon le
-    // suivant dans la série ERP. Posé à la création, jamais réécrit.
+    // Le numéro de commande vient de la série de Boréal. Une commande créée
+    // dans Airtable garde le sien s'il est lisible et libre ; sinon elle prend
+    // le suivant de Boréal, recopié dans Airtable au finalize. Posé à la
+    // création, jamais réécrit.
     insertExtras: (rec, fieldMap) => {
       const raw = fieldMap?.order_number
         ? parseInt(String(rec.fields[fieldMap.order_number] ?? '').replace(/[^0-9]/g, ''), 10)
         : NaN
-      const next = () => (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
-      return { order_number: isNaN(raw) || raw === 0 ? next() : raw }
+      const taken = n => db.prepare('SELECT 1 FROM orders WHERE order_number=? AND deleted_at IS NULL').get(n)
+      if (raw > 0 && !taken(raw)) return { order_number: raw }
+      const next = (db.prepare('SELECT MAX(order_number) AS m FROM orders').get()?.m || 0) + 1
+      if (fieldMap?.order_number) pendingOrderNumberPush.set(rec.id, next)
+      return { order_number: next }
     },
     prepare: async () => ({ touched: [] }),
     onWrite: (outcome, id, ctx) => { ctx.touched?.push(id) },
@@ -995,7 +1000,8 @@ export const CORE_PLANS = {
     // est idempotent et filtre lui-même (pas d'envoi lié, déjà constatée,
     // abonnement, payout Stripe en attente). Le legacy le lançait pour les
     // 1 159 commandes à chaque sync ; ici, seulement pour celles qui ont bougé.
-    finalize: async ({ ctx }) => {
+    finalize: async ({ ctx, fieldMap }) => {
+      await pushAssignedOrderNumbers(fieldMap)
       const ids = ctx?.touched || []
       if (!ids.length) return
       const { reconcileFacturesForOrder } = await import('./quickbooks.js')
@@ -1036,6 +1042,10 @@ export const CORE_PLANS = {
     // Un item dont la commande n'est pas (encore) importée est sauté :
     // `order_items.order_id` est NOT NULL.
     require: ['order_id'],
+    // Article supprimé dans Airtable : ses numéros de série y perdent leur lien,
+    // il faut faire pareil ici — sinon la clé étrangère des séries bloque la
+    // suppression et l'article reste dans Boréal.
+    detachOnDelete: [['serial_numbers', 'order_item_id']],
     derive: (fields, rec, fieldMap) => {
       const raw = (getVal(fields, fieldMap?.item_type) || '').trim()
       return { item_type: ITEM_TYPES.find(t => t.toLowerCase() === raw.toLowerCase()) || 'Facturable' }
@@ -1251,31 +1261,50 @@ const mirrorSeedById = new Map(MIRROR_SEED.map(m => [m.id, m]))
 // Le bon comportement n'est ni de supprimer (ça casserait le référent) ni de
 // planter : c'est de SIGNALER. Une ligne encore référencée dont l'original a
 // disparu demande une décision humaine, pas une suppression silencieuse.
-function purgeOrphansTolerant(table, records) {
+function purgeOrphansTolerant(table, records, plan = {}) {
   const airtableIds = new Set(records.map(r => r.id))
   const rows = db.prepare(`SELECT id, airtable_id FROM ${table} WHERE airtable_id IS NOT NULL`).all()
   const toDelete = rows.filter(r => !airtableIds.has(r.airtable_id))
   if (!toDelete.length) return { purged: 0, blocked: [] }
 
-  const del = db.prepare(`DELETE FROM ${table} WHERE id=?`)
   let purged = 0
   const blocked = []
   for (const row of toDelete) {
-    try {
-      del.run(row.id)
-      purged++
-    } catch (e) {
-      // Une contrainte de clé étrangère, et rien d'autre : toute autre erreur
-      // est anormale et doit remonter.
-      if (!/FOREIGN KEY constraint failed/i.test(e.message)) throw e
-      blocked.push(row.airtable_id)
-    }
+    if (deleteMirrorRow(table, row.id, plan)) purged++
+    else blocked.push(row.airtable_id)
   }
   if (purged) console.log(`🧹 ${table}: ${purged} orphelin(s) purgé(s)`)
   if (blocked.length) {
     console.warn(`⚠️  ${table}: ${blocked.length} orphelin(s) NON supprimé(s) — encore référencé(s) ailleurs : ${blocked.slice(0, 5).join(', ')}`)
   }
   return { purged, blocked }
+}
+
+/**
+ * Supprime une ligne miroir dont le jumeau Airtable a disparu. Retourne false
+ * si une clé étrangère la retient encore (ligne laissée en place).
+ *
+ * `plan.detachOnDelete` ([[table, colonne], …]) : références à détacher
+ * d'abord, comme Airtable vide le lien quand le record lié disparaît. Le tout
+ * dans une transaction : si la suppression échoue malgré tout, le détachement
+ * est annulé avec elle.
+ */
+function deleteMirrorRow(table, id, plan = {}) {
+  try {
+    db.transaction(() => {
+      for (const [refTable, refCol] of plan.detachOnDelete || []) {
+        const stamp = hasUpdatedAt(refTable) ? `, updated_at=${nowExpr}` : ''
+        db.prepare(`UPDATE ${refTable} SET ${refCol}=NULL${stamp} WHERE ${refCol}=?`).run(id)
+      }
+      db.prepare(`DELETE FROM ${table} WHERE id=?`).run(id)
+    })()
+    return true
+  } catch (e) {
+    // Une contrainte de clé étrangère, et rien d'autre : toute autre erreur
+    // est anormale et doit remonter.
+    if (!/FOREIGN KEY constraint failed/i.test(e.message)) throw e
+    return false
+  }
 }
 
 // ── Écriture différentielle ─────────────────────────────────────────────────
@@ -1298,6 +1327,24 @@ function hasUpdatedAt(table) {
  * supprime le trafic fantôme. Un record dont aucune valeur n'a bougé ne
  * déclenche aucun trigger change_log, donc aucun delta renvoyé aux navigateurs.
  */
+// Numéros attribués par Boréal à des commandes créées dans Airtable, à recopier
+// dans « # de commande » : airtable_id → numéro.
+const pendingOrderNumberPush = new Map()
+
+async function pushAssignedOrderNumbers(fieldMap) {
+  if (!pendingOrderNumberPush.size || !fieldMap?.order_number) return
+  const { base_id: baseId, orders_table_id: tableId } = db.prepare('SELECT base_id, orders_table_id FROM airtable_orders_config').get() || {}
+  if (!baseId || !tableId) return
+  const token = await getAccessToken()
+  for (const [airtableId, num] of [...pendingOrderNumberPush]) {
+    pendingOrderNumberPush.delete(airtableId)
+    try {
+      await airtablePatch(`/${baseId}/${tableId}/${airtableId}`, token, { fields: { [fieldMap.order_number]: `CMD-${num}` } })
+      console.log(`🔢 Airtable ${airtableId} → CMD-${num}`)
+    } catch (e) { console.error(`❌ n° de commande ${airtableId}:`, e.message) }
+  }
+}
+
 function differentialUpsert(table, airtableId, values, { dryRun = false, insertOnly = false, updateOnly = false, existingScope = null, keepIfNull = [], frozen = null, insertExtras = null, onWrite = null } = {}) {
   const columns = Object.keys(values)
   // `existingScope` restreint ce qui compte comme « la ligne jumelle » : les
@@ -1414,8 +1461,29 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
   const airtableMayDelete = mirror.purge_orphans !== 0
   const destroyed = airtableMayDelete ? changes?.[cfg.tableId]?.destroyedIds : null
   if (destroyed?.length && !dryRun) {
-    const del = db.prepare(`DELETE FROM ${erpTable} WHERE airtable_id=?`)
-    for (const id of destroyed) report.deleted += del.run(id).changes
+    // Une ligne encore retenue par une clé étrangère est SIGNALÉE, pas fatale :
+    // une exception ici faisait échouer tout le sync (et ses relances), donc la
+    // ligne restait pour de bon dans Boréal.
+    const find = db.prepare(`SELECT * FROM ${erpTable} WHERE airtable_id=?`)
+    const deletedRows = []
+    const blocked = []
+    for (const airtableId of destroyed) {
+      for (const row of find.all(airtableId)) {
+        if (deleteMirrorRow(erpTable, row.id, plan)) deletedRows.push(row)
+        else blocked.push(airtableId)
+      }
+    }
+    report.deleted = deletedRows.length
+    if (blocked.length) {
+      report.delete_blocked = blocked
+      console.warn(`⚠️  ${erpTable}: ${blocked.length} suppression(s) Airtable NON appliquée(s) — encore référencé(s) : ${blocked.slice(0, 5).join(', ')}`)
+    }
+    // Une fiche ouverte doit voir la ligne disparaître sans rafraîchir.
+    if (deletedRows.length <= LIVE_WRITE_CAP) {
+      for (const row of deletedRows) {
+        try { emitMirrorDelete(erpTable, row) } catch (e) { console.error(`realtime ${mirrorId}: ${e.message}`) }
+      }
+    }
   } else if (destroyed?.length) {
     report.deleted = destroyed.length
   }
@@ -1571,7 +1639,7 @@ export async function syncMirror(mirrorId, changes = null, { dryRun = false, tok
     }
 
     if (!changes && airtableMayDelete) {
-      const purge = await step('purge-orphelins', () => purgeOrphansTolerant(erpTable, records))
+      const purge = await step('purge-orphelins', () => purgeOrphansTolerant(erpTable, records, plan))
       if (purge) { report.purged = purge.purged; report.purge_blocked = purge.blocked }
     }
     if (!plan.noDynamicFields) {

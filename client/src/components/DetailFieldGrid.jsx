@@ -1,8 +1,9 @@
 import { hasRole } from '../../../shared/roles.mjs'
 import { Children, Fragment, isValidElement, useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { GripVertical, ChevronUp, ChevronDown, X, SlidersHorizontal, Plus, Check, Edit2, Trash2 } from 'lucide-react'
+import { GripVertical, ChevronUp, ChevronDown, X, SlidersHorizontal, Plus, Check, Edit2, Trash2, FolderPlus } from 'lucide-react'
 import { useAuth } from '../lib/auth.jsx'
+import api from '../lib/api.js'
 import { useReorderDnd } from '../lib/useReorderDnd.js'
 import { useDetailFieldLayout, usePeekFieldEdit, useRecordDeletePolicy } from '../lib/detailFieldLayout.jsx'
 import { recordDeleteSpec, deleteAllowedByDefault } from '../lib/recordDelete.js'
@@ -92,6 +93,48 @@ function FieldLabel({ label, saving, field, recordId }) {
   )
 }
 
+// Nom d'un groupe créé par l'utilisateur : enregistré à la sortie du champ.
+function GroupNameInput({ group, autoFocus, onRename }) {
+  const commit = e => {
+    const v = e.target.value.trim()
+    if (v !== group.label) onRename(group.key, v)
+  }
+  return (
+    <input
+      key={group.label}
+      defaultValue={group.label}
+      autoFocus={autoFocus}
+      onFocus={e => autoFocus && e.target.select()}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Enter') e.target.blur() }}
+      aria-label="Nom du groupe"
+      data-testid={`detail-group-name-${group.key}`}
+      className="flex-1 min-w-0 bg-transparent text-sm font-semibold text-slate-700 outline-none border-b border-transparent focus:border-brand-400"
+    />
+  )
+}
+
+// Libellé d'un champ renommé en place (option `renameInPlace`) : enregistré à la
+// sortie du champ, Échap annule.
+function FieldLabelInput({ label, onCommit, onCancel, testId }) {
+  return (
+    <input
+      autoFocus
+      defaultValue={label}
+      onFocus={e => e.target.select()}
+      onBlur={e => onCommit(e.target.value.trim())}
+      onKeyDown={e => {
+        if (e.key === 'Enter') e.target.blur()
+        else if (e.key === 'Escape') { e.stopPropagation(); onCancel() }
+      }}
+      onMouseDown={e => e.stopPropagation()}
+      aria-label="Nom du champ"
+      data-testid={testId}
+      className="w-full mb-1 bg-transparent text-xs font-medium text-slate-600 uppercase tracking-wide outline-none border-b border-brand-400"
+    />
+  )
+}
+
 const NO_SAVING = {}
 const NO_TAKEN = []
 const NO_LINK_FILTERS = {}
@@ -117,6 +160,12 @@ export function DetailFieldGrid({
   // adresses de l'entreprise liée à la commande. Référence stable attendue
   // (useMemo) — elle entre dans le calcul des blocs de champ.
   customFieldLinkFilters = NO_LINK_FILTERS,
+  // Champs LIEN dont la liste déroulante s'ouvre large, libellés entiers
+  // (adresse de livraison de la fiche Commande). Référence stable attendue.
+  wideLinkPickers = NO_TAKEN,
+  // Champs nombre affichés sans zéros décimaux inutiles (« 6 », pas « 6.0 »).
+  // Référence stable attendue.
+  compactNumbers = NO_TAKEN,
   // Enveloppe optionnelle autour de CHAQUE bloc de champ : (field, node) => node.
   // La fiche Facture s'en sert pour garder ses règles de visibilité
   // conditionnelle (<FieldGuard>) sur les champs qu'elles concernent — la carte
@@ -126,6 +175,21 @@ export function DetailFieldGrid({
   // Disposition de lecture propre à une fiche, après l'ordre et la visibilité
   // enregistrés. Le mode personnalisation conserve les champs indépendants.
   arrangeFields = null,
+  // Sous-groupes de lecture : [{ id, label, keys }]. Leurs champs quittent la
+  // grille principale pour une sous-section titrée (ordre réglé conservé). Le
+  // mode personnalisation reste à plat. Référence stable attendue.
+  groups = NO_TAKEN,
+  // Option : l'utilisateur peut créer ses propres groupes dans le mode
+  // personnalisation (bouton « Groupe »). Les groupes déjà créés s'affichent
+  // dans tous les cas.
+  allowGroups = false,
+  // Option : mode personnalisation sans flèches ni poignée — on glisse un champ
+  // par son libellé (un groupe, par sa ligne). Fiche Produit.
+  bareReorder = false,
+  // Option : en mode personnalisation, un clic sur le libellé d'un champ le
+  // renomme sur place (même enregistrement que la modale « Modifier le
+  // champ »). Fiche Produit.
+  renameInPlace = false,
 }) {
   const { user } = useAuth()
   const peek = usePeekFieldEdit()
@@ -196,7 +260,7 @@ export function DetailFieldGrid({
         // `onSaveCustom`. Même règle que <CustomDetailFields>.
         const editable = f.type === 'attachment' || (isEditableCustomField(f) && onSaveCustom)
         const editor = editable
-          ? <CustomFieldEditor field={f} value={record[f.key]} saving={saving} onSave={onSaveCustom} recordId={record.id} selectPills={selectPills} linkFilter={customFieldLinkFilters[f.key] || null} />
+          ? <CustomFieldEditor field={f} value={record[f.key]} saving={saving} onSave={onSaveCustom} recordId={record.id} selectPills={selectPills} linkFilter={customFieldLinkFilters[f.key] || null} widePicker={wideLinkPickers.includes(f.key)} compactNumber={compactNumbers.includes(f.key)} />
           : null
         return {
           key: f.key,
@@ -211,14 +275,30 @@ export function DetailFieldGrid({
         }
       }) : []),
     ],
-    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, linkifyTextUrls, customFieldLinkFilters, shownSynced],
+    [codeFields, extraFields, record, gate, onSaveCustom, savingKeys, selectPills, linkifyTextUrls, customFieldLinkFilters, wideLinkPickers, compactNumbers, shownSynced],
   )
 
-  const { fields, hiddenFields, applyOrder, hide, show } = useDetailFieldLayout(entityType, declared)
+  const { fields, items, userGroups, hiddenFields, applyOrder, hide, show, addGroup, renameGroup, removeGroup } = useDetailFieldLayout(entityType, declared)
+  const [newGroupKey, setNewGroupKey] = useState(null)
+  const allGroups = useMemo(() => {
+    if (!userGroups.length) return groups
+    const codeKeys = new Set(groups.flatMap(g => g.keys))
+    return [...groups, ...userGroups.map(g => ({ ...g, label: g.label || 'Sans titre', keys: g.keys.filter(k => !codeKeys.has(k)) }))]
+  }, [groups, userGroups])
   const displayFields = useMemo(
     () => arrangeFields ? arrangeFields(fields) : fields,
     [fields, arrangeFields],
   )
+  const { mainFields, groupSections } = useMemo(() => {
+    if (!allGroups.length) return { mainFields: displayFields, groupSections: [] }
+    const grouped = new Set(allGroups.flatMap(g => g.keys))
+    return {
+      mainFields: displayFields.filter(f => !grouped.has(f.key)),
+      groupSections: allGroups
+        .map(g => ({ ...g, fields: displayFields.filter(f => g.keys.includes(f.key)) }))
+        .filter(g => g.fields.length),
+    }
+  }, [displayFields, allGroups])
 
   // Édition réservée aux admins : la disposition est commune à tous.
   const canEdit = hasRole(user, 'admin')
@@ -232,7 +312,19 @@ export function DetailFieldGrid({
     return register()
   }, [register, canEdit, declared.length])
 
-  const visibleKeys = useMemo(() => fields.map(f => f.key), [fields])
+  // Bandeau du panneau réglable : le panneau a besoin des champs de la fiche
+  // (choix du titre / sous-titre) et de l'enregistrement à jour (leurs valeurs).
+  // Publié pour tous, pas seulement les admins : le bandeau choisi vaut pour tout le monde.
+  const publishHeader = peek?.publishHeader
+  const [headerToken] = useState(() => ({}))
+  const headerFields = useMemo(() => declared.map(f => ({ key: f.key, label: f.label })), [declared])
+  useEffect(() => {
+    if (!publishHeader || !entityType || !record) return
+    publishHeader(headerToken, { entityType, fields: headerFields, record })
+  }, [publishHeader, headerToken, entityType, headerFields, record])
+  useEffect(() => () => publishHeader?.(headerToken, null), [publishHeader, headerToken])
+
+  const visibleKeys = useMemo(() => items.map(f => f.key), [items])
   const siblingsOf = useCallback(() => visibleKeys, [visibleKeys])
   const dnd = useReorderDnd({ siblingsOf, applyOrder })
 
@@ -267,9 +359,30 @@ export function DetailFieldGrid({
     if (cfTable) refreshCustomFields(cfTable)
   }, [reloadFieldOverrides, cfTable])
 
+  // ── Renommer sur place (option `renameInPlace`) ───────────────────────────
+  // Même destination que le champ « Nom » de la modale : custom_fields pour un
+  // champ perso, personnalisation cosmétique pour un champ natif.
+  const { addToast } = useToast()
+  const [renamingKey, setRenamingKey] = useState(null)
+  const renameField = useCallback(async (f, next) => {
+    setRenamingKey(null)
+    if (!next || next === f.label || !fieldTable) return
+    try {
+      if (f.cf) await api.customFields.update(f.cf.id, { name: next })
+      else {
+        const cols = TABLE_COLUMN_META[fieldTable] || []
+        const meta = cols.find(c => (c.id ?? c.field) === f.key) || cols.find(c => (c.field ?? c.id) === f.key)
+        await api.fieldOverrides.save(fieldTable, meta ? (meta.id ?? meta.field) : f.key, { label: next })
+      }
+      onFieldSaved()
+    } catch (e) {
+      addToast({ message: e.message || 'Renommage échoué', type: 'error' })
+    }
+  }, [fieldTable, onFieldSaved, addToast])
+
   // Sortir du mode édition referme ce qu'il avait ouvert.
   useEffect(() => {
-    if (!editing) { setFieldMenu(null); setFieldModal(null) }
+    if (!editing) { setFieldMenu(null); setFieldModal(null); setNewGroupKey(null); setRenamingKey(null) }
   }, [editing])
 
   // Le menu se ferme aussi à Échap : il est posé au curseur, sans ancre visible.
@@ -295,7 +408,6 @@ export function DetailFieldGrid({
     useRecordDeletePolicy(entityType, deleteAllowedByDefault(entityType))
   const undoableDelete = useUndoableDelete()
   const confirm = useConfirm()
-  const { addToast } = useToast()
   const navigate = useNavigate()
   const [deleting, setDeleting] = useState(false)
 
@@ -338,9 +450,66 @@ export function DetailFieldGrid({
     [wrapField],
   )
 
+  const moveControls = (key, label) => (
+    <div className="flex flex-col items-center shrink-0 pt-0.5">
+      <button
+        type="button"
+        className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+        title="Monter d'un cran" aria-label={`Monter ${label}`}
+        data-testid={`detail-field-up-${key}`}
+        disabled={dnd.isFirst(key)} onClick={() => dnd.move(key, -1)}
+      ><ChevronUp size={13} /></button>
+      <span
+        draggable
+        onDragStart={e => dnd.dragStart(e, key)}
+        onDragEnd={dnd.dragEnd}
+        className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500"
+        title="Glisser pour déplacer"
+        data-testid={`detail-field-handle-${key}`}
+      ><GripVertical size={13} /></span>
+      <button
+        type="button"
+        className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
+        title="Descendre d'un cran" aria-label={`Descendre ${label}`}
+        data-testid={`detail-field-down-${key}`}
+        disabled={dnd.isLast(key)} onClick={() => dnd.move(key, 1)}
+      ><ChevronDown size={13} /></button>
+    </div>
+  )
+  const dropLine = key => dnd.dragOverId === key && (
+    <span className={`absolute left-2 right-2 h-0.5 bg-brand-500 rounded pointer-events-none ${dnd.dragOverSide === 'before' ? '-top-1' : '-bottom-1'}`} />
+  )
+  // Les champs qui suivent un groupe lui appartiennent : décalés sous son titre.
+  const groupedKeys = new Set(userGroups.flatMap(g => g.keys))
+
   const body = editing ? (
     <div className="space-y-2" data-testid="detail-fields-editing">
-      {fields.map(f => wrap(f, (
+      {items.map(f => f.group ? (
+        <div
+          key={f.key}
+          data-testid={`detail-group-row-${f.key}`}
+          draggable={bareReorder || undefined}
+          onDragStart={bareReorder ? e => dnd.dragStart(e, f.key, e.currentTarget) : undefined}
+          onDragEnd={bareReorder ? dnd.dragEnd : undefined}
+          onDragOver={e => dnd.dragOver(e, f.key)}
+          onDrop={e => dnd.drop(e, f.key)}
+          className={`relative flex items-center gap-2 rounded-lg border px-2 py-1.5 mt-3 transition-colors ${
+            dnd.dragId === f.key ? 'border-brand-400 bg-brand-50/40 opacity-60' : 'border-brand-200 bg-brand-50/40'
+          }`}
+        >
+          {dropLine(f.key)}
+          {!bareReorder && moveControls(f.key, f.label || 'le groupe')}
+          <GroupNameInput group={f} autoFocus={f.key === newGroupKey} onRename={renameGroup} />
+          <button
+            type="button"
+            onClick={() => removeGroup(f.key)}
+            title="Retirer le groupe (les champs restent)"
+            aria-label={`Retirer le groupe ${f.label}`}
+            data-testid={`detail-group-remove-${f.key}`}
+            className="shrink-0 p-1 rounded text-slate-300 hover:text-red-600 hover:bg-red-50"
+          ><X size={14} /></button>
+        </div>
+      ) : wrap(f, (
         <div
           key={f.key}
           data-testid={f.testId}
@@ -348,39 +517,37 @@ export function DetailFieldGrid({
           onContextMenu={e => onFieldContextMenu(e, f)}
           onDragOver={e => dnd.dragOver(e, f.key)}
           onDrop={e => dnd.drop(e, f.key)}
-          className={`relative flex items-start gap-2 rounded-lg border border-dashed px-2 py-1.5 transition-colors ${
+          className={`relative flex items-start gap-2 rounded-lg border border-dashed px-2 py-1.5 transition-colors ${groupedKeys.has(f.key) ? 'ml-5' : ''} ${
             dnd.dragId === f.key ? 'border-brand-400 bg-brand-50/40 opacity-60' : 'border-slate-200 hover:border-slate-300'
           }`}
         >
-          {dnd.dragOverId === f.key && (
-            <span className={`absolute left-2 right-2 h-0.5 bg-brand-500 rounded pointer-events-none ${dnd.dragOverSide === 'before' ? '-top-1' : '-bottom-1'}`} />
-          )}
-          <div className="flex flex-col items-center shrink-0 pt-0.5">
-            <button
-              type="button"
-              className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-              title="Monter d'un cran" aria-label={`Monter ${f.label}`}
-              data-testid={`detail-field-up-${f.key}`}
-              disabled={dnd.isFirst(f.key)} onClick={() => dnd.move(f.key, -1)}
-            ><ChevronUp size={13} /></button>
-            <span
-              draggable
-              onDragStart={e => dnd.dragStart(e, f.key)}
-              onDragEnd={dnd.dragEnd}
-              className="cursor-grab active:cursor-grabbing text-slate-300 hover:text-slate-500"
-              title="Glisser pour déplacer le champ"
-              data-testid={`detail-field-handle-${f.key}`}
-            ><GripVertical size={13} /></span>
-            <button
-              type="button"
-              className="p-0.5 rounded text-slate-300 hover:text-slate-700 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent"
-              title="Descendre d'un cran" aria-label={`Descendre ${f.label}`}
-              data-testid={`detail-field-down-${f.key}`}
-              disabled={dnd.isLast(f.key)} onClick={() => dnd.move(f.key, 1)}
-            ><ChevronDown size={13} /></button>
-          </div>
+          {dropLine(f.key)}
+          {!bareReorder && moveControls(f.key, f.label)}
           <div className="flex-1 min-w-0">
-            <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />
+            {renamingKey === f.key ? (
+              <FieldLabelInput
+                label={f.label}
+                onCommit={v => renameField(f, v)}
+                onCancel={() => setRenamingKey(null)}
+                testId={`detail-field-rename-${f.key}`}
+              />
+            ) : bareReorder ? (
+              <div
+                draggable
+                onDragStart={e => dnd.dragStart(e, f.key, e.currentTarget.closest('[data-field-key]'))}
+                onDragEnd={dnd.dragEnd}
+                onClick={renameInPlace ? () => setRenamingKey(f.key) : undefined}
+                title={renameInPlace ? 'Cliquer pour renommer' : undefined}
+                className="cursor-grab active:cursor-grabbing"
+                data-testid={`detail-field-handle-${f.key}`}
+              >
+                <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />
+              </div>
+            ) : renameInPlace ? (
+              <div onClick={() => setRenamingKey(f.key)} title="Cliquer pour renommer" className="cursor-text">
+                <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />
+              </div>
+            ) : <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />}
             {f.children}
           </div>
           <button
@@ -394,21 +561,35 @@ export function DetailFieldGrid({
         </div>
       )))}
     </div>
-  ) : (
-    <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
-      {displayFields.map(f => wrap(f, (
-        <div
-          key={f.key}
-          data-testid={f.testId}
-          data-field-key={f.key}
-          className={f.span2 ? 'sm:col-span-2' : ''}
-        >
-          <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />
-          {f.children}
-        </div>
-      )))}
-    </div>
-  )
+  ) : (() => {
+    const grid = list => (
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-4 text-sm">
+        {list.map(f => wrap(f, (
+          <div
+            key={f.key}
+            data-testid={f.testId}
+            data-field-key={f.key}
+            className={f.span2 ? 'sm:col-span-2' : ''}
+          >
+            <FieldLabel label={f.label} saving={f.saving} field={f.key} recordId={record?.id} />
+            {f.children}
+          </div>
+        )))}
+      </div>
+    )
+    if (!groupSections.length) return grid(mainFields)
+    return (
+      <>
+        {mainFields.length > 0 && grid(mainFields)}
+        {groupSections.map(g => (
+          <section key={g.id} className={mainFields.length ? 'mt-5 pt-4 border-t border-slate-100' : ''} data-testid={`detail-group-${g.id}`}>
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">{g.label}</h3>
+            {grid(g.fields)}
+          </section>
+        ))}
+      </>
+    )
+  })()
 
   return (
     <div className={`group/fields relative ${className}`} data-testid={testId}>
@@ -432,7 +613,7 @@ export function DetailFieldGrid({
       {editing && (
         <div className="mb-3 text-xs text-slate-500 flex items-center gap-1.5">
           <SlidersHorizontal size={13} className="text-brand-500" />
-          Glisse pour réordonner, clic droit pour modifier le champ.
+          Glisse pour réordonner{renameInPlace ? ', clic sur un nom pour le renommer' : ''}, clic droit pour modifier le champ.
         </div>
       )}
 
@@ -455,6 +636,17 @@ export function DetailFieldGrid({
                 testId="detail-field-add"
               />
             </div>
+          )}
+          {allowGroups && (
+            <button
+              type="button"
+              onClick={() => setNewGroupKey(addGroup('Nouveau groupe'))}
+              data-testid="detail-group-add"
+              title="Créer un groupe de champs"
+              className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 hover:text-brand-600 hover:bg-slate-100 rounded px-2 py-1"
+            >
+              <FolderPlus size={13} /> Groupe
+            </button>
           )}
           {peek && (
             <button

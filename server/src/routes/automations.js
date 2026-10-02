@@ -327,6 +327,7 @@ const CONFIGURABLE_SYSTEM_SPECS = {
   // Connecteurs), mais l'entrée doit exister pour que l'interrupteur réponde.
   sys_qb_webhook: { actionKeys: new Set() },
   sys_work_suggestions: { actionKeys: new Set() },
+  sys_autonomous_agents: { actionKeys: new Set() },
   sys_month_end_provisions: { actionKeys: new Set() },
   sys_address_check: { actionKeys: new Set() },
   // Confirmation d'adresse auprès de l'API : seuls les types d'adresse
@@ -339,7 +340,26 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
     },
   },
+  // Fermeture automatique des projets : délai en jours + raison inscrite.
+  sys_project_auto_close: {
+    actionKeys: new Set(['days', 'reason']),
+    validateKey(key, v) {
+      // Vide = défaut (30 jours, « Fermeture automatique »).
+      if (key === 'days' && v && !/^[1-9]\d{0,3}$/.test(v)) {
+        throw new Error('days : un nombre entier de jours (ex. 30)')
+      }
+    },
+  },
   sys_return_label: { actionKeys: new Set() },
+  sys_soumission_link_click: { actionKeys: new Set() },
+  // Relance d'un clic tardif : à qui va la tâche, et après combien d'heures.
+  sys_soumission_late_click_task: {
+    actionKeys: new Set(['assignee_email', 'delay_hours']),
+    validateKey(key, v) {
+      if (key === 'assignee_email' && v && !v.includes('@')) throw new Error('assignee_email : adresse courriel requise')
+      if (key === 'delay_hours' && v !== '' && !(Number(v) >= 0)) throw new Error('delay_hours : nombre d’heures requis')
+    },
+  },
   // Corbeille : durée de rétention avant suppression définitive. Le compte à
   // rebours affiché sur chaque élément de /admin/corbeille suit ce réglage.
   sys_trash_auto_cleanup: {
@@ -563,6 +583,25 @@ const CONFIGURABLE_SYSTEM_SPECS = {
       }
       if (key === 'recipient' && v.length > 60) throw new Error('recipient trop long (max 60 caractères)')
       if (key === 'low_rating_max' && !/^[1-5]$/.test(v)) throw new Error('low_rating_max : 1 à 5')
+    },
+  },
+  // « Une facture a été payée » sur #paiements.
+  sys_facture_paid_slack: {
+    actionKeys: new Set(['slack_channel', 'slack_webhook_url', 'slack_webhook_env', 'paid_statuses', 'skip_zero_amount', 'message']),
+    validateKey(key, v) {
+      if (!v) return
+      if (key === 'slack_channel' && !/^(#?[a-z0-9._-]{1,80}|@[A-Za-z0-9._-]{1,80}|[^\s@]+@[^\s@]+\.[^\s@]+|[CGDU][A-Z0-9]{6,})$/.test(v)) {
+        throw new Error('slack_channel : « #canal », « @personne », un courriel ou un identifiant Slack')
+      }
+      if (key === 'slack_webhook_url' && !/^https:\/\/hooks\.slack\.com\//.test(v)) {
+        throw new Error('slack_webhook_url doit commencer par https://hooks.slack.com/')
+      }
+      if (key === 'slack_webhook_env' && !/^[A-Z0-9_]{1,64}$/.test(v)) {
+        throw new Error("slack_webhook_env doit être un nom de variable d'environnement (MAJUSCULES_ET_UNDERSCORES)")
+      }
+      if (key === 'paid_statuses' && v.length > 120) throw new Error('paid_statuses trop long (max 120 caractères)')
+      if (key === 'skip_zero_amount' && v !== '0' && v !== '1') throw new Error('skip_zero_amount doit valoir 0 ou 1')
+      if (key === 'message' && v.length > 2000) throw new Error('message trop long (max 2000 caractères)')
     },
   },
   // Prospects Instagram. Les trois automations sont `configurable: true` : sans

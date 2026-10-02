@@ -31,8 +31,12 @@ export const CA_PROVINCES = [
 ].map(([value, name]) => ({ value, label: `${value} — ${name}` }))
 
 export const EMPTY_ADRESSE_FORM = {
-  line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', contact_id: '',
+  line1: '', city: '', province: '', postal_code: '', country: 'CA', address_type: 'Ferme', address_rank: '', contact_id: '',
 }
+
+// Rang d'une adresse dans son type : une seule principale par type et par
+// entreprise (le serveur rétrograde les autres).
+export const ADDRESS_RANKS = ['Principale', 'Secondaire']
 
 export function adresseToForm(a) {
   return {
@@ -42,6 +46,7 @@ export function adresseToForm(a) {
     postal_code: a?.postal_code || '',
     country: a?.country || 'CA',
     address_type: a?.address_type || 'Ferme',
+    address_rank: a?.address_rank || '',
     contact_id: a?.contact_id || '',
   }
 }
@@ -320,6 +325,18 @@ export function AdresseModalContent({
           className="select"
         >
           {['Ferme', 'Livraison', 'Facturation'].map(t => <option key={t} value={t}>{t}</option>)}
+        </select>
+      </div>
+      <div>
+        <label className="label">Rang</label>
+        <select
+          value={adresseForm.address_rank || ''}
+          onChange={e => isEdit ? saveField('address_rank', e.target.value) : setAdresseForm(f => ({ ...f, address_rank: e.target.value }))}
+          className="select"
+          data-testid="adresse-rank-select"
+        >
+          <option value="">{isEdit ? '—' : 'Auto'}</option>
+          {ADDRESS_RANKS.map(t => <option key={t} value={t}>{t}</option>)}
         </select>
       </div>
       <div className="col-span-2">

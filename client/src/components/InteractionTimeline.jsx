@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Eye, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin } from 'lucide-react'
+import { Phone, Mail, MessageSquare, PhoneIncoming, PhoneOutgoing, Zap, Eye, Edit2, Building2, ArrowUpRight, ArrowDownLeft, Clock, MessagesSquare, Plus, Pin, MousePointerClick } from 'lucide-react'
 import { fmtDateTime, fmtTime, localISODate } from '../lib/formatDate.js'
 import { stripEmailHtml, stripEmailText } from '../lib/emailParser.js'
 import { emailDoc, emailPalette, measureEmailHeight } from '../lib/emailDoc.js'
@@ -8,6 +8,7 @@ import EmailBodyFrame from './EmailBodyFrame.jsx'
 import { Modal } from './Modal.jsx'
 import { useIsDark } from '../lib/theme.js'
 import EmptyState from './EmptyState.jsx'
+import EmailTrackingBlock from './EmailTrackingBlock.jsx'
 
 import { INTERACTION_TYPE_LABELS as TYPE_LABELS } from './Badge.jsx'
 const TYPE_ICONS = { call: Phone, email: Mail, sms: MessageSquare, meeting: Building2, note: Edit2 }
@@ -118,9 +119,14 @@ function Entry({ item, showContact, onOpen, palette, onTogglePin }) {
                 <Zap size={10} />Auto
               </span>
             )}
-            {item.automated === 1 && item.open_count > 0 && (
+            {item.type === 'email' && isOut && item.open_count > 0 && (
               <span className="inline-flex items-center gap-1 text-[11px] text-green-600" title={`Ouvert ${item.open_count}×`}>
                 <Eye size={10} />{item.open_count}
+              </span>
+            )}
+            {item.type === 'email' && isOut && item.click_count > 0 && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-brand-600" title={`${item.click_count} clic(s)`}>
+                <MousePointerClick size={10} />{item.click_count}
               </span>
             )}
             {showContact && item.contact_name?.trim() && (
@@ -373,6 +379,8 @@ function InteractionDetail({ item }) {
           </div>
         </div>
       )}
+
+      {item.type === 'email' && item.direction === 'out' && <EmailTrackingBlock interactionId={item.id} />}
 
       {emailBody?.hasHidden && (
         <button

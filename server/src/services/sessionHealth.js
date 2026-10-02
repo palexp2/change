@@ -214,19 +214,9 @@ export async function runSessionHealthCheck({ force = false, trigger = 'schedule
     return String(row?.notified_at || '').slice(0, 10) !== today
   })
 
+  // Plus aucune alerte Slack (demande de Guillaume, 2026-10-01) : l'état reste
+  // visible dans Connecteurs et dans l'historique de l'automation.
   if (toNotify.length) {
-    try {
-      const { sendSlack } = await import('./slack.js')
-      await sendSlack({
-        channel: cfg.slack_channel,
-        url: cfg.slack_webhook_url,
-        envName: cfg.slack_webhook_env,
-        text: ':warning: *Connexion à réparer dans l\'ERP*\n' +
-          toNotify.map(r => `• *${r.connector}* — ${r.detail}`).join('\n') +
-          '\nTant que ce n\'est pas fait, rien n\'est récolté de ce côté.',
-        fallbackNote: 'Session de connecteur expirée',
-      })
-    } catch (e) { console.error('session health slack:', e.message) }
     const mark = db.prepare('UPDATE connector_sessions SET notified_at=? WHERE connector=?')
     for (const r of toNotify) mark.run(new Date().toISOString(), r.connector)
   }
@@ -248,7 +238,7 @@ export function previewSessionHealth() {
   const rows = getSessionStatus()
   return {
     connecteurs_verifies: cfg.connectors,
-    alerte: `${cfg.recipient || 'personne'} (${cfg.slack_channel || cfg.slack_webhook_env}) — uniquement en cas de panne, jamais quand tout va bien`,
+    alerte: 'aucune (Slack coupé) — état visible dans Connecteurs',
     etat: rows.length
       ? rows.map(r => `${r.connector} : ${r.status}${r.last_ok_at ? ` · dernier succès ${r.last_ok_at.slice(0, 16).replace('T', ' ')}` : ' · jamais vérifiée avec succès'}`)
       : 'aucune vérification encore faite',

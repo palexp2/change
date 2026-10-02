@@ -29,6 +29,8 @@ import { shippedCostSql, refreezeOrderShippedCosts, pieceUnitCostSql } from '../
 import { logSystemRun } from '../services/systemAutomations.js';
 import { uploadsPath, ensureUploadsDir } from '../config/uploads.js'
 import { parsePage } from '../utils/pagination.js'
+import { localDay } from '../utils/datetime.js'
+import { exportErpOrder, exportErpOrderItems } from '../services/discoveryOrderAirtable.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -55,6 +57,15 @@ const ORDER_COLUMN_COERCE = {
   revenue_override_cad: v => (v === '' || v == null ? null : Number(v)),
   cogs_override_cad: v => (v === '' || v == null ? null : Number(v)),
 };
+
+// « Date de la commande » (miroir Airtable, affichée sur la fiche) : une
+// commande née dans l'ERP la reçoit dès sa création, au format du pull
+// Airtable — sinon elle reste vide jusqu'au premier aller-retour Airtable.
+export function stampOrderDate(orderId, day = localDay()) {
+  if (!db.pragma('table_info(orders)').some(c => c.name === 'date_de_la_commande')) return;
+  db.prepare('UPDATE orders SET date_de_la_commande = ? WHERE id = ? AND date_de_la_commande IS NULL')
+    .run(`${String(day).slice(0, 10)}T00:00:00.000Z`, orderId);
+}
 
 // ── Étagère de prélèvement (mode expédition) ─────────────────────────────────
 //
@@ -486,8 +497,9 @@ router.post('/', (req, res) => {
       `INSERT INTO orders (id, order_number, company_id, project_id, assigned_to, status, priority, notes, date_commande${extraCols.map(c => `, ${c}`).join('')})
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?${extraCols.map(() => ', ?').join('')})`
     ).run(id, orderNumber, company_id || null, project_id || null, assigned_to || null,
-      status || 'Commande vide', priority || null, notes || null, date_commande || null,
+      status || 'Commande vide', priority || null, notes || null, date_commande || localDay(),
       ...extraCols.map(c => extras[c]));
+    stampOrderDate(id, date_commande || localDay());
 
     for (const item of items) {
       const itemId = newRecordId();
@@ -519,6 +531,8 @@ router.post('/', (req, res) => {
   // Une nouvelle commande peut être le rachat d'un churn récent du même
   // client — re-scanne les churns sans rachat des 12 derniers mois.
   rescanRachatLogged(order?.company_id, 'order-create');
+  // Airtable suit en arrière-plan ; un échec est repris par la reprise périodique.
+  exportErpOrder(id);
   res.status(201).json({ ...order, items: orderItems });
 });
 
@@ -749,6 +763,7 @@ router.post('/:id/items', (req, res) => {
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?`).run(req.params.id);
   const newItem = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id = ?`).get(itemId);
   emitOrderItem('created', req.params.id, newItem, req.user?.id);
+  exportErpOrderItems(req.params.id);
   res.status(201).json(newItem);
 });
 
@@ -930,6 +945,7 @@ router.post('/:id/items/:itemId/duplicate', (req, res) => {
   db.prepare(`UPDATE orders SET updated_at=strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id=?`).run(req.params.id);
   const dup = db.prepare(`SELECT oi.*, pr.name_fr as product_name, pr.sku, pr.image_url as product_image, pr.location as product_location, pr.type as product_type, ${SHELF_HINT_SQL} FROM ${readRelation('order_items')} oi LEFT JOIN products pr ON oi.product_id = pr.id WHERE oi.id=?`).get(newId);
   emitOrderItem('created', req.params.id, dup, req.user?.id);
+  exportErpOrderItems(req.params.id);
   res.status(201).json(dup);
 });
 

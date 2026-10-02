@@ -3,6 +3,7 @@ import { APP_URL } from '../config/appUrl.js'
 import { ensureStripeCustomer, getOrCreateTaxRate } from './stripeInvoices.js'
 import { suggestTaxRegime, taxesForRegime } from './taxes.js'
 import { totalsOf } from './soumissionPdf.js'
+import { assertStripeCurrency } from './stripeCustomerCompany.js'
 
 // Boutons « S'abonner » / « Acheter » du PDF client d'une soumission : chacun
 // pointe vers un lien permanent (soumissionPayUrl) qui ouvre une session
@@ -80,7 +81,7 @@ async function discountCoupon(stripe, { soumission, kind, cents, currency, month
 /**
  * Crée la session Checkout d'une soumission.
  * @returns {Promise<{ url: string }>}
- * @throws Error avec `.code` : not_found | expired | empty | no_tax_place
+ * @throws Error avec `.code` : not_found | expired | empty | no_tax_place | currency_mismatch
  */
 export async function createSoumissionCheckout({ stripe, soumissionId, kind }) {
   const s = db.prepare('SELECT * FROM soumissions WHERE id = ?').get(soumissionId)
@@ -95,6 +96,7 @@ export async function createSoumissionCheckout({ stripe, soumissionId, kind }) {
   const items = db.prepare(ITEMS_QUERY).all(s.id)
   const unit = it => Number(monthly ? it.unit_monthly_price : it.unit_price_cad) || 0
 
+  await assertStripeCurrency(stripe, s.company_id, currency)
   const place = taxPlace(s.company_id)
   if (!place) throw Object.assign(new Error('Province de taxation inconnue'), { code: 'no_tax_place' })
   const taxRateIds = []
@@ -156,14 +158,7 @@ export async function createSoumissionCheckout({ stripe, soumissionId, kind }) {
       ? { subscription_data: { metadata } }
       : { invoice_creation: { enabled: true, invoice_data: { metadata } } }),
   })
-  let customer = s.company_id ? await ensureStripeCustomer(stripe, s.company_id, { currency }) : undefined
-  let session
-  try { session = await stripe.checkout.sessions.create(params(customer)) }
-  catch (e) {
-    // Client déjà engagé dans une autre devise (session ouverte, rabais…).
-    if (!customer || !/combine currencies/i.test(e.message)) throw e
-    customer = await ensureStripeCustomer(stripe, s.company_id, { currency, forceAlt: true })
-    session = await stripe.checkout.sessions.create(params(customer))
-  }
+  const customer = s.company_id ? await ensureStripeCustomer(stripe, s.company_id) : undefined
+  const session = await stripe.checkout.sessions.create(params(customer))
   return { url: session.url }
 }

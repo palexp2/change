@@ -25,7 +25,9 @@ const FactureDetail = lazy(() => import('../pages/FactureDetail.jsx'))
 // Fiche abonnement : toujours rendue dans un RecordPeekDrawer (side-peek à la
 // Airtable), par-dessus la liste ou par-dessus un autre panneau (depuis la
 // fiche d'une entreprise, d'une facture…).
-export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
+// `stripeButton` : le lien Stripe devient un bouton en tête de fiche (fiche
+// entreprise) au lieu d'une petite cellule de la grille.
+export function AbonnementDetailModal({ abonnement, onClose, onChange, stripeButton = false }) {
   // Facture ouverte par-dessus le panneau abonnement (clic sur une ligne de la
   // section « Factures »).
   const [facturePeek, setFacturePeek] = useState(null)
@@ -101,6 +103,11 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
 
   const body = (
       <div className="space-y-5">
+        {stripeButton && aboState.stripe_url && (
+          <a href={aboState.stripe_url} target="_blank" rel="noopener noreferrer" className="btn-secondary inline-flex items-center gap-1.5" data-testid="abo-stripe-button">
+            <ExternalLink size={14} /> Stripe
+          </a>
+        )}
         <div className="flex items-center justify-between pb-3 border-b border-slate-100">
           <div>
             <div className="text-sm text-slate-500 mb-1">Entreprise</div>
@@ -124,12 +131,14 @@ export function AbonnementDetailModal({ abonnement, onClose, onChange }) {
           <div><div className="text-xs text-slate-400 mb-0.5">Début</div><div className="text-slate-700">{fmtDate(aboState.start_date)}</div></div>
           <div><div className="text-xs text-slate-400 mb-0.5">Fin</div><div className="text-slate-700">{fmtDate(aboState.end_date || aboState.cancel_date)}</div></div>
           <div><div className="text-xs text-slate-400 mb-0.5">Client Stripe</div><div className="text-slate-700 font-mono text-xs">{aboState.customer_email || '—'}</div></div>
-          <div>
-            <div className="text-xs text-slate-400 mb-0.5">Stripe</div>
-            {aboState.stripe_url
-              ? <a href={aboState.stripe_url} target="_blank" rel="noopener noreferrer" className="link-record text-xs inline-flex items-center gap-1"><ExternalLink size={11} /> Voir</a>
-              : <span className="text-slate-400">—</span>}
-          </div>
+          {!stripeButton && (
+            <div>
+              <div className="text-xs text-slate-400 mb-0.5">Stripe</div>
+              {aboState.stripe_url
+                ? <a href={aboState.stripe_url} target="_blank" rel="noopener noreferrer" className="link-record text-xs inline-flex items-center gap-1"><ExternalLink size={11} /> Voir</a>
+                : <span className="text-slate-400">—</span>}
+            </div>
+          )}
         </div>
 
         {loading ? (

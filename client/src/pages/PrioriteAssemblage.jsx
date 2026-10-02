@@ -299,7 +299,6 @@ export default function PrioriteAssemblage() {
   // (filtre status = 'À envoyer'). Enrichi côté client comme dans Orders.jsx.
   const ordersRaw = useTable('orders')
   const companies = useTable('companies')
-  const orderItems = useTable('order_items')
   // Filtre de la vue « À envoyer » de la page Commandes, chargé depuis les pills.
   const [envoiFilter, setEnvoiFilter] = useState(null)
 
@@ -340,20 +339,15 @@ export default function PrioriteAssemblage() {
   useEffect(() => { reload() }, [reload])
 
   // Étape 3 — commandes « à envoyer » : exactement les mêmes que la vue de la page
-  // Commandes (on applique le filtre du pill), enrichies (company_name, items_count).
+  // Commandes (on applique le filtre du pill), enrichies (company_name).
   const envoiList = useMemo(() => {
     if (!envoiFilter) return []
     const cById = new Map(companies.map(c => [c.id, c.name]))
-    const itemCountByOrder = new Map()
-    for (const it of orderItems) {
-      itemCountByOrder.set(it.order_id, (itemCountByOrder.get(it.order_id) || 0) + 1)
-    }
     return ordersRaw
       .filter(o => matchesPill(o, envoiFilter))
       .map(o => ({
         ...o,
         company_name: cById.get(o.company_id) || o.company_name,
-        items_count: itemCountByOrder.get(o.id) || 0,
       }))
       // Une commande sans article n'a rien à préparer : comme dans la vue.
       .filter(hasItemsToShip)
@@ -364,7 +358,7 @@ export default function PrioriteAssemblage() {
         if (ua !== ub) return ua - ub
         return (b.date_commande || '').localeCompare(a.date_commande || '')
       })
-  }, [ordersRaw, companies, orderItems, envoiFilter])
+  }, [ordersRaw, companies, envoiFilter])
 
   // Étape 5 — produits Fabriqué en manque, triés par statut d'assemblage ASC.
   const productionList = useMemo(() => products

@@ -108,4 +108,22 @@ describe('Champ « Pourcentage »', () => {
     assert.equal(edited.status, 200, JSON.stringify(edited.body))
     assert.deepEqual(JSON.parse(edited.body.options), { currency: 'US$' })
   })
+
+  test('formule : barre, décimales et format de date posés dès la création', async () => {
+    const pct = await api('POST', '/api/custom-fields/projects', {
+      name: uniqueName('Formule barre'), kind: 'formula', formula_expr: '1 + 1', result_type: 'percent',
+      options: { display: 'bar' }, decimals: 1,
+    })
+    assert.equal(pct.status, 201, JSON.stringify(pct.body))
+    assert.deepEqual(JSON.parse(pct.body.options), { display: 'bar' })
+    assert.equal(pct.body.decimals, 1)
+
+    const date = await api('POST', '/api/custom-fields/projects', {
+      name: uniqueName('Formule date'), kind: 'formula', formula_expr: "'2026-10-01'", result_type: 'date',
+      options: { format: 'local_datetime' }, decimals: 3,
+    })
+    assert.equal(date.status, 201, JSON.stringify(date.body))
+    assert.deepEqual(JSON.parse(date.body.options), { format: 'local_datetime' })
+    assert.equal(date.body.decimals ?? null, null, 'pas de décimales sur une date')
+  })
 })

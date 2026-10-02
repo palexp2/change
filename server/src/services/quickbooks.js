@@ -4240,12 +4240,8 @@ export function selectStalePayouts({ push_since, staleDays, today = new Date() }
 async function sendPayoutPushSlack(envName, text) {
   const url = process.env[envName]
   if (!url) throw new Error(`Variable d'environnement manquante : ${envName}`)
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text }),
-  })
-  if (!resp.ok) throw new Error(`Slack HTTP ${resp.status}`)
+  const { postSlack } = await import('./slack.js')
+  await postSlack(url, text)
 }
 
 // Orchestre le job « Comptabilisation QB des Stripe payouts » (quotidien) :

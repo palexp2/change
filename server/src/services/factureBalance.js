@@ -1,4 +1,29 @@
 import db from '../db/database.js'
+import { emitEntity } from './realtimeEmitters.js'
+
+const today = () => new Date().toISOString().slice(0, 10)
+
+// Statut d'une facture ouverte (impayée) : « En retard » passé l'échéance.
+export function openFactureStatus(dueDate) {
+  return (dueDate && String(dueDate).slice(0, 10) < today()) ? 'En retard' : 'À payer'
+}
+
+// Une facture « À payer » ne bascule pas seule le jour où l'échéance passe :
+// ce balayage (démarrage + chaque jour) la passe « En retard », et l'inverse
+// si l'échéance a été repoussée.
+export function refreshOverdueFactures() {
+  const d = today()
+  const rows = db.prepare(`
+    UPDATE factures
+    SET status = CASE WHEN status = 'À payer' THEN 'En retard' ELSE 'À payer' END,
+        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE (status = 'À payer' AND due_date IS NOT NULL AND due_date != '' AND substr(due_date, 1, 10) < ?)
+       OR (status = 'En retard' AND (due_date IS NULL OR due_date = '' OR substr(due_date, 1, 10) >= ?))
+    RETURNING id, status, company_id
+  `).all(d, d)
+  for (const r of rows) emitEntity('facture', 'updated', r.id, r, null)
+  return rows.length
+}
 
 // Recalcule factures.balance_due / status à partir des lignes payments locales.
 //
@@ -41,8 +66,7 @@ export function recomputeFactureBalance(factureId) {
     if (newBalance <= 0 && total > 0) {
       newStatus = 'Payé'
     } else {
-      const today = new Date().toISOString().slice(0, 10)
-      newStatus = (f.due_date && f.due_date < today) ? 'En retard' : 'À payer'
+      newStatus = openFactureStatus(f.due_date)
     }
   }
 

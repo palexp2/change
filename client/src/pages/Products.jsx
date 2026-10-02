@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { usePeekOpenId } from '../lib/usePeekOpenId.js'
-import { Plus, Package } from 'lucide-react'
+import { Plus, Package, AlertTriangle } from 'lucide-react'
 import api from '../lib/api.js'
 import { useListData } from '../lib/useListData.js'
 import { useUndoableDelete } from '../lib/undoableDelete.js'
@@ -107,6 +107,17 @@ export default function Products() {
   const { rows: allProducts, loading, reload } = useListData({ table: 'products' })
   const products = useMemo(() => allProducts.filter(p => p.active !== 0), [allProducts])
 
+  // Pièces dont le coût FIFO est en alerte (lot sans prix, prix douteux,
+  // stock sans achat) : le bouton les isole, comme un résultat de scan.
+  const [fifoAlertIds, setFifoAlertIds] = useState([])
+  useEffect(() => {
+    api.products.fifoAlerts().then(r => setFifoAlertIds((r.data || []).map(a => a.product_id))).catch(() => {})
+  }, [])
+  const showFifoAlerts = useCallback(() => {
+    const ids = new Set(fifoAlertIds)
+    setScan({ code: 'FIFO', label: 'Alertes coût FIFO', version: ++scanVersion.current, rows: allProducts.filter(p => ids.has(p.id)), loading: false })
+  }, [fifoAlertIds, allProducts])
+
   const handleScan = useCallback(async value => {
     // La liste reste montée derrière une fiche ou une modale : ne pas capter
     // les scans destinés au panneau au premier plan.
@@ -167,8 +178,14 @@ export default function Products() {
       title="Inventaire"
       banner={scan && (
         <FilterBanner onClear={clearScan} clearLabel="Revenir à la liste" testId="product-scan-filter">
-          <span role="status">{scan.loading ? 'Recherche…' : scan.error ? 'Recherche impossible. Réessayez.' : `Scan : ${scan.code}`}</span>
+          <span role="status">{scan.loading ? 'Recherche…' : scan.error ? 'Recherche impossible. Réessayez.' : (scan.label || `Scan : ${scan.code}`)}</span>
         </FilterBanner>
+      )}
+      actions={fifoAlertIds.length > 0 && (
+        <button type="button" onClick={showFifoAlerts} className="btn-secondary btn-sm flex items-center gap-1.5 text-amber-700"
+          title="Alertes coût FIFO" data-testid="products-fifo-alerts">
+          <AlertTriangle size={14} /> {fifoAlertIds.length}
+        </button>
       )}
       create={{
         label: 'Nouveau produit', table: 'products', fields: PRODUCT_FORM_FIELDS, columns: 2, size: 'lg',
@@ -182,6 +199,7 @@ export default function Products() {
             table="products"
             forceAllView={!!scan}
             manageViews
+            selectBadges
             columns={COLUMNS}
             data={scan ? scan.rows : products}
             loading={scan ? scan.loading : loading}

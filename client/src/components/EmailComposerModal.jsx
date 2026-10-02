@@ -1,12 +1,16 @@
 import { useState, useEffect, useRef } from 'react'
-import { Mail, Paperclip, AlertTriangle } from 'lucide-react'
+import { createPortal } from 'react-dom'
+import { Mail, Paperclip, AlertTriangle, X, Minus } from 'lucide-react'
 import { Modal } from './Modal.jsx'
+import { nextModalZ, registerOverlay } from '../lib/overlayLayers.js'
 import Spinner from './Spinner.jsx'
 import { useUndoSend } from './UndoSendProvider.jsx'
 import { useToast } from '../contexts/ToastContext.jsx'
 import { splitEmailHtml, joinEmailHtml, isValidEmailList } from '../lib/emailHtml.js'
 import ErrorBanner from './ErrorBanner.jsx'
 import AttachmentPreview from './AttachmentPreview.jsx'
+import { SearchableSelect } from './SearchableSelect.jsx'
+import { getEmailSignature, appendSignature } from '../lib/emailSignature.js'
 
 // Modale de composition unique pour TOUS les courriels partant de l'ERP
 // (instructions de retour, suivi d'un envoi, bon de commande au fournisseur…).
@@ -19,7 +23,8 @@ import AttachmentPreview from './AttachmentPreview.jsx'
 //
 // Le corps est édité en place (contentEditable) : l'enveloppe du document
 // (<head>, styles du <body>) est conservée et recollée à l'envoi, cf.
-// lib/emailHtml.js.
+// lib/emailHtml.js. La signature de l'utilisateur (Paramètres › Ma boîte
+// Gmail) est ajoutée en bas du corps, modifiable comme le reste.
 export default function EmailComposerModal({
   isOpen,
   onClose,
@@ -42,6 +47,12 @@ export default function EmailComposerModal({
   // Le texte proposé remplace objet et corps seulement s'ils n'ont pas été
   // retouchés à la main (ex. langue du contact pour un bon de commande).
   onPickRecipient,
+  // Option : les destinataires suggérés passent dans une liste déroulante
+  // recherchable à côté du champ « À » au lieu des pastilles sous l'objet.
+  recipientSelect = false,
+  // Option : fenêtre ancrée en bas à droite (façon Gmail), sans voile — la
+  // fiche reste consultable pendant la rédaction.
+  docked = false,
 }) {
   const scheduleSend = useUndoSend()
   const { addToast } = useToast()
@@ -96,6 +107,14 @@ export default function EmailComposerModal({
     partsRef.current = { prefix: parts.prefix, suffix: parts.suffix }
     bodyRef.current.innerHTML = parts.inner
     autoRef.current = { subject: draft.subject || '', inner: bodyRef.current.innerHTML }
+    let alive = true
+    getEmailSignature().then(sig => {
+      const el = bodyRef.current
+      if (!alive || !el) return
+      const untouched = el.innerHTML === autoRef.current.inner
+      if (appendSignature(el, sig) && untouched) autoRef.current.inner = el.innerHTML
+    })
+    return () => { alive = false }
   }, [draft])
 
   function pickRecipient(r) {
@@ -112,6 +131,10 @@ export default function EmailComposerModal({
       partsRef.current = { prefix: parts.prefix, suffix: parts.suffix }
       bodyRef.current.innerHTML = parts.inner
       auto.inner = bodyRef.current.innerHTML
+      getEmailSignature().then(sig => {
+        const el = bodyRef.current
+        if (el && el.innerHTML === auto.inner && appendSignature(el, sig)) auto.inner = el.innerHTML
+      })
     }
   }
 
@@ -144,10 +167,11 @@ export default function EmailComposerModal({
   }
 
   const attachments = draft?.attachments || []
-  const suggestions = (draft?.recipients || []).filter(r => r.email && r.email !== to)
+  const recipients = (draft?.recipients || []).filter(r => r.email)
+  const suggestions = recipientSelect ? [] : recipients.filter(r => r.email !== to)
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title={title} size={size}>
+    <Frame docked={docked} isOpen={isOpen} onClose={onClose} title={title} size={size}>
       {loading ? (
         <Spinner center />
       ) : loadError ? (
@@ -171,15 +195,39 @@ export default function EmailComposerModal({
 
           <div className="grid grid-cols-[3.5rem_1fr] items-center gap-x-2 gap-y-2">
             <label className="text-xs text-slate-500" htmlFor="email-composer-to">À</label>
-            <input
-              id="email-composer-to"
-              readOnly={!editing}
-              type="email"
-              className="input"
-              value={to}
-              onChange={e => setTo(e.target.value)}
-              data-testid="email-composer-to"
-            />
+            <div className="flex items-center gap-2 min-w-0">
+              <input
+                id="email-composer-to"
+                readOnly={!editing}
+                type="email"
+                className="input flex-1 min-w-0"
+                value={to}
+                onChange={e => setTo(e.target.value)}
+                data-testid="email-composer-to"
+              />
+              {recipientSelect && editing && recipients.length > 0 && (
+                <div className="w-40 shrink-0">
+                  <SearchableSelect
+                    testId="email-composer-to-select"
+                    size="sm"
+                    className="input text-sm w-full"
+                    value={to}
+                    placeholder="Contacts"
+                    options={recipients}
+                    getOptionValue={r => r.email}
+                    getOptionLabel={r => r.name || r.email}
+                    filterOption={(r, q) => `${r.name || ''} ${r.email}`.toLowerCase().includes(q)}
+                    renderOption={r => (
+                      <span className="flex flex-col min-w-0">
+                        <span className="truncate">{r.name || r.email}</span>
+                        {r.name && r.name !== r.email && <span className="truncate text-xs text-slate-400">{r.email}</span>}
+                      </span>
+                    )}
+                    onChange={email => { const r = recipients.find(x => x.email === email); if (r) pickRecipient(r) }}
+                  />
+                </div>
+              )}
+            </div>
             {showCc && (
               <>
                 <label className="text-xs text-slate-500" htmlFor="email-composer-cc">Cc</label>
@@ -305,6 +353,48 @@ export default function EmailComposerModal({
           </div>
         </div>
       )}
-    </Modal>
+    </Frame>
+  )
+}
+
+function Frame({ docked, ...props }) {
+  return docked ? <DockedWindow {...props} /> : <Modal {...props} />
+}
+
+function DockedWindow({ isOpen, onClose, title, children }) {
+  const [minimized, setMinimized] = useState(false)
+  const ref = useRef(null)
+  const zRef = useRef(null)
+  if (isOpen && zRef.current == null) zRef.current = nextModalZ()
+  if (!isOpen) zRef.current = null
+  const z = zRef.current ?? 50
+
+  useEffect(() => {
+    if (!isOpen) return
+    setMinimized(false)
+    const unregister = registerOverlay(z)
+    const raf = requestAnimationFrame(() => ref.current?.querySelector('input')?.focus())
+    // Échap dans la fenêtre ne doit pas fermer le panneau de la fiche derrière.
+    const onKey = e => { if (e.key === 'Escape' && ref.current?.contains(document.activeElement)) e.stopPropagation() }
+    document.addEventListener('keydown', onKey, true)
+    return () => { unregister(); cancelAnimationFrame(raf); document.removeEventListener('keydown', onKey, true) }
+  }, [isOpen, z])
+
+  if (!isOpen) return null
+  return createPortal(
+    <div ref={ref} role="dialog" aria-label={title} data-testid="email-composer-dock"
+      className="fixed bottom-0 right-6 w-[34rem] max-w-[calc(100vw-2rem)] bg-white rounded-t-xl shadow-2xl border border-slate-200 flex flex-col max-h-[85vh]"
+      style={{ zIndex: z }}>
+      <div className="flex items-center gap-1 pl-4 pr-2 py-2 bg-slate-800 text-white rounded-t-xl cursor-pointer select-none"
+        onClick={() => setMinimized(m => !m)}>
+        <span className="flex-1 text-sm font-medium truncate">{title}</span>
+        <button type="button" aria-label="Réduire" className="p-1 rounded hover:bg-white/10"
+          onClick={e => { e.stopPropagation(); setMinimized(m => !m) }}><Minus size={14} /></button>
+        <button type="button" aria-label="Fermer" className="p-1 rounded hover:bg-white/10" data-testid="email-composer-dock-close"
+          onClick={e => { e.stopPropagation(); onClose() }}><X size={14} /></button>
+      </div>
+      <div className={`overflow-y-auto px-4 py-3 ${minimized ? 'hidden' : ''}`}>{children}</div>
+    </div>,
+    document.body,
   )
 }

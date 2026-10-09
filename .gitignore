@@ -19,7 +19,7 @@ server/storage/
 .claude/
 deploy.log
 
-# Agent autonome — fichiers transitoires (le store .json reste versionné)
+# Agent autonome — fichiers transitoires
 .agent-pid
 .agent-pid-*
 .agent-qpid-*
